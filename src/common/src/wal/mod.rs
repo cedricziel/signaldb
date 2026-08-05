@@ -183,7 +183,7 @@ impl WalSegment {
                     entry.processed = true;
                 }
             }
-            log::debug!(
+            tracing::debug!(
                 "Loaded {} processed entries from index for segment {segment_id}",
                 processed_ids.len()
             );
@@ -480,7 +480,7 @@ impl WalSegment {
         if self.index_path.exists() {
             tokio::fs::remove_file(&self.index_path).await?;
         }
-        log::info!("Deleted segment files for segment {}", self.id);
+        tracing::info!("Deleted segment files for segment {}", self.id);
         Ok(())
     }
 }
@@ -761,7 +761,7 @@ impl Wal {
                     )
                     .await
                 {
-                    log::error!("Failed to flush WAL buffer: {e}");
+                    tracing::error!("Failed to flush WAL buffer: {e}");
                 }
             }
         });
@@ -1073,7 +1073,7 @@ impl Wal {
             );
         }
 
-        log::debug!(
+        tracing::debug!(
             "Marked {} WAL entries as processed and persisted indexes",
             entry_ids.len()
         );
@@ -1119,7 +1119,7 @@ impl Wal {
         }
 
         if deleted_count > 0 {
-            log::info!("Deleted {deleted_count} fully-processed WAL segments");
+            tracing::info!("Deleted {deleted_count} fully-processed WAL segments");
         }
 
         Ok(deleted_count)
@@ -1141,7 +1141,7 @@ impl Wal {
         // Store original entry count before filtering
         let original_entry_count = segment.entries.len();
 
-        log::info!(
+        tracing::info!(
             "Compacting segment {} ({:.1}% processed)",
             segment.id,
             processed_pct * 100.0
@@ -1206,7 +1206,7 @@ impl Wal {
         // Replace old segment with compacted one
         *segment = new_segment;
 
-        log::info!(
+        tracing::info!(
             "Compacted segment {} from {} to {} entries",
             temp_segment_id,
             original_entry_count,
@@ -1265,7 +1265,7 @@ impl Wal {
                 };
 
                 if let Err(e) = wal.cleanup().await {
-                    log::error!("Failed to run WAL cleanup: {e}");
+                    tracing::error!("Failed to run WAL cleanup: {e}");
                 }
             }
         });

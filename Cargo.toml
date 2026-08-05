@@ -141,7 +141,6 @@ opentelemetry-appender-tracing = "0.32"
 pyroscope = { version = "2.1", features = ["backend-pprof-rs"] }
 tikv-jemallocator = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 
-log = "0.4"
 anyhow = "1.0.102"
 
 # Use the same axum version that tonic depends on
@@ -192,7 +191,6 @@ humantime-serde = "1.1.1"
 hex = "0.4"
 base64 = "0.23"
 argon2 = { version = "0.5.3", features = ["std"] }
-env_logger = "0.11.5"
 tower = "0.5.2"
 dashmap = "6.2"
 

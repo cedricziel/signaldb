@@ -31,7 +31,6 @@ datafusion.workspace = true
 arrow-flight.workspace = true
 object_store.workspace = true
 tonic.workspace = true
-log.workspace = true
 tempfile.workspace = true
 futures.workspace = true
 opentelemetry-proto.workspace = true
@@ -57,7 +56,6 @@ datafusion_iceberg.workspace = true
 iceberg-rust.workspace = true
 
 # For test-specific utilities
-env_logger.workspace = true
 url.workspace = true
 testcontainers-modules.workspace = true
 

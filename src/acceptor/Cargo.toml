@@ -23,7 +23,6 @@ tracing.workspace = true
 tokio.workspace = true
 futures.workspace = true
 
-log.workspace = true
 anyhow.workspace = true
 
 clap.workspace = true

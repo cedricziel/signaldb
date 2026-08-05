@@ -53,6 +53,6 @@ async fn create_test_bucket(container: &ContainerAsync<MinIO>, bucket: &str) -> 
         anyhow::bail!("Failed to create bucket {bucket} (exit {exit_code:?}): {stderr}");
     }
 
-    log::info!("Created test bucket: {bucket}");
+    tracing::info!("Created test bucket: {bucket}");
     Ok(())
 }

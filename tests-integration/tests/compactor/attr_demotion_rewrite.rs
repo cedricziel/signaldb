@@ -340,7 +340,10 @@ fn register(table: Table, ctx: &SessionContext) -> Result<()> {
 
 #[tokio::test]
 async fn active_demotion_drops_unqueried_column_and_keeps_data_queryable() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let (catalog_manager, service_catalog, identifier) = setup(false, false).await?;
 
     run_compaction(catalog_manager.clone(), service_catalog).await?;
@@ -392,7 +395,10 @@ async fn active_demotion_drops_unqueried_column_and_keeps_data_queryable() -> Re
 
 #[tokio::test]
 async fn pinned_label_is_never_demoted_even_with_zero_demand() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let (catalog_manager, service_catalog, identifier) = setup(false, true).await?;
 
     run_compaction(catalog_manager.clone(), service_catalog).await?;
@@ -421,7 +427,10 @@ async fn pinned_label_is_never_demoted_even_with_zero_demand() -> Result<()> {
 
 #[tokio::test]
 async fn dry_run_demotion_changes_nothing() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let (catalog_manager, service_catalog, identifier) = setup(true, false).await?;
 
     run_compaction(catalog_manager.clone(), service_catalog).await?;

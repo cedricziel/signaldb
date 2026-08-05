@@ -266,7 +266,9 @@ impl TenantSchemaRegistry {
 
         // For now, log that we would create tables
         // TODO: Implement table creation
-        log::info!("Would create default tables for tenant '{tenant_id}' using Iceberg catalog");
+        tracing::info!(
+            "Would create default tables for tenant '{tenant_id}' using Iceberg catalog"
+        );
 
         // Get the default schemas configuration
         let default_schemas = &self.config.schema.default_schemas;
@@ -278,7 +280,7 @@ impl TenantSchemaRegistry {
             // For catalog operations, we'll need to use writer's catalog module
             match &table_schema {
                 iceberg_schemas::TableSchema::Custom(name) => {
-                    log::info!(
+                    tracing::info!(
                         "Would create custom table '{name}' from configuration for tenant {tenant_id}"
                     );
                 }
@@ -286,7 +288,7 @@ impl TenantSchemaRegistry {
                     let _schema = table_schema.schema()?;
                     let _partition_spec = table_schema.partition_spec()?;
 
-                    log::info!(
+                    tracing::info!(
                         "Would create table {table_name} with schema for tenant {tenant_id}"
                     );
                 }
@@ -303,7 +305,7 @@ impl TenantSchemaRegistry {
 
         // For now, return empty list
         // TODO: Implement table listing
-        log::info!("Would list tables for tenant '{tenant_id}' using Iceberg catalog");
+        tracing::info!("Would list tables for tenant '{tenant_id}' using Iceberg catalog");
         Ok(vec![])
     }
 }

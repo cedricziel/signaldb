@@ -25,7 +25,6 @@ axum.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tonic.workspace = true
-log.workspace = true
 
 [dev-dependencies]
 cargo-husky.workspace = true

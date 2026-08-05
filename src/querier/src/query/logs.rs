@@ -129,7 +129,7 @@ impl LogsService {
         let table_ref = build_table_reference(tenant_slug, dataset_slug, "logs")
             .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
         self.session_context.table(table_ref).await.map_err(|e| {
-            log::error!(
+            tracing::error!(
                 "Failed to access logs table for tenant_slug={tenant_slug}, dataset_slug={dataset_slug}: {e}"
             );
             QuerierError::QueryFailed(e)

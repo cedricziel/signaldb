@@ -18,7 +18,7 @@ This document defines the Rust coding standards for the SignalDB project.
 ```rust
 // ✅ Direct variable interpolation
 format!("Service {service_id} at {address}")
-log::info!("Discovered {count} services")
+tracing::info!("Discovered {count} services")
 
 // ✅ Use vec! macro
 let items = vec![item1, item2, item3];
@@ -193,14 +193,18 @@ trait Storage: Clone + Debug + Send + Sync { /* ... */ }
 
 ## Logging & Observability
 
-### Use tracing over log
+### Use tracing, never log
+
+The `log` facade is not a workspace dependency and CI rejects `log::` macro
+calls (span-construction guard). Third-party crates that still emit `log`
+records are bridged into the tracing subscriber automatically.
 
 ```rust
 // Preferred - structured fields for machine parsing
 tracing::info!(tenant_id = %ctx.tenant_id, dataset = %dataset, "Processing request");
 tracing::error!(error = ?err, service_id = %id, "Service registration failed");
 
-// Avoid - string interpolation breaks log aggregation
+// Forbidden - log:: macros bypass span context and break structured fields
 log::info!("Processing request for tenant {}", ctx.tenant_id);
 ```
 
@@ -227,7 +231,7 @@ semconv names, span kinds, and status-mapping rules. Free-form
   explicit, bounded-cardinality fields; auto-recorded arguments leak
   cardinality and PII into telemetry
 - `otel.kind` never appears outside `common::self_monitoring` — setting a
-  span kind *is* boundary-span construction, so route it through a factory
+  span kind _is_ boundary-span construction, so route it through a factory
 
 ### Log Level Guidelines
 
@@ -320,7 +324,7 @@ Every module should have `//!` documentation explaining its purpose:
 
 All `pub` items should have `///` documentation with examples for complex types:
 
-```rust
+````rust
 /// Creates a new Flight client connection to the specified service.
 ///
 /// # Arguments
@@ -339,7 +343,7 @@ All `pub` items should have `///` documentation with examples for complex types:
 /// let client = FlightClient::connect("localhost:50051", config).await?;
 /// ```
 pub async fn connect(address: &str, config: &Config) -> Result<Self> { ... }
-```
+````
 
 ## Async Code Guidelines
 

@@ -93,7 +93,7 @@ impl WalManager {
         {
             let wals = self.wals.lock().await;
             if let Some(wal) = wals.get(&key) {
-                log::debug!(
+                tracing::debug!(
                     "Reusing existing WAL for tenant='{tenant_id}', dataset='{dataset_id}', signal='{signal_type}'"
                 );
                 return Ok(wal.clone());
@@ -116,7 +116,7 @@ impl WalManager {
         {
             let wals = self.wals.lock().await;
             if let Some(wal) = wals.get(&key) {
-                log::debug!(
+                tracing::debug!(
                     "WAL created by concurrent thread for tenant='{tenant_id}', dataset='{dataset_id}', signal='{signal_type}'"
                 );
                 return Ok(wal.clone());
@@ -124,7 +124,7 @@ impl WalManager {
         }
 
         // Create new WAL - we now have exclusive access for this key
-        log::info!(
+        tracing::info!(
             "Creating new WAL for tenant='{tenant_id}', dataset='{dataset_id}', signal='{signal_type}'"
         );
 
@@ -170,7 +170,7 @@ impl WalManager {
         // Clean up the per-key guard (optional, but prevents unbounded growth)
         self.init_guards.lock().await.remove(&key);
 
-        log::info!(
+        tracing::info!(
             "Successfully created WAL for tenant='{tenant_id}', dataset='{dataset_id}', signal='{signal_type}'"
         );
 
@@ -235,12 +235,12 @@ impl WalManager {
                 match self.get_wal(&tenant, &dataset, &signal).await {
                     Ok(_) => {
                         opened += 1;
-                        log::info!(
+                        tracing::info!(
                             "Discovered existing WAL for tenant='{tenant}', dataset='{dataset}', signal='{signal}'"
                         );
                     }
                     Err(e) => {
-                        log::warn!(
+                        tracing::warn!(
                             "Failed to open discovered WAL for tenant='{tenant}', dataset='{dataset}', signal='{signal}': {e}"
                         );
                     }
@@ -312,7 +312,7 @@ impl WalManager {
     pub async fn clear_cache(&self) {
         let mut wals = self.wals.lock().await;
         wals.clear();
-        log::info!("Cleared all cached WAL instances");
+        tracing::info!("Cleared all cached WAL instances");
     }
 }
 

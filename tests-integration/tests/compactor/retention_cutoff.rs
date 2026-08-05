@@ -28,7 +28,10 @@ use tests_integration::generators;
 /// enough to be dropped and some is retained.
 #[tokio::test]
 async fn test_retention_cutoff_basic() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Create test context
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -51,7 +54,7 @@ async fn test_retention_cutoff_basic() -> Result<()> {
 
     // Generate data
     let partitions = generators::generate_traces(&mut writer, &config).await?;
-    log::info!("Generated {} logical day partitions", partitions.len());
+    tracing::info!("Generated {} logical day partitions", partitions.len());
 
     // Set retention policy to 14 days
     let retention_config = RetentionConfig {
@@ -76,7 +79,7 @@ async fn test_retention_cutoff_basic() -> Result<()> {
         .enforce_retention("test-tenant", "test-dataset")
         .await?;
 
-    log::info!(
+    tracing::info!(
         "Retention result: {} dropped, table_results={:?}",
         result.total_partitions_dropped,
         result.table_results
@@ -122,7 +125,10 @@ async fn test_retention_cutoff_basic() -> Result<()> {
 /// strictly more partitions than tenant-a.
 #[tokio::test]
 async fn test_retention_per_tenant_override() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -145,7 +151,7 @@ async fn test_retention_per_tenant_override() -> Result<()> {
     generators::generate_traces(&mut writer_a, &config).await?;
     generators::generate_traces(&mut writer_b, &config).await?;
 
-    log::info!("Generated 40 days of data for both tenants");
+    tracing::info!("Generated 40 days of data for both tenants");
 
     // Create tenant override for tenant-a with 30-day retention
     let mut tenant_overrides = HashMap::new();
@@ -184,7 +190,7 @@ async fn test_retention_per_tenant_override() -> Result<()> {
     let result_a = enforcer.enforce_retention("tenant-a", "production").await?;
     let result_b = enforcer.enforce_retention("tenant-b", "production").await?;
 
-    log::info!(
+    tracing::info!(
         "Tenant A (30d override) dropped {}; Tenant B (7d default) dropped {}",
         result_a.total_partitions_dropped,
         result_b.total_partitions_dropped
@@ -235,7 +241,10 @@ async fn test_retention_per_tenant_override() -> Result<()> {
 /// more partitions than production.
 #[tokio::test]
 async fn test_retention_per_dataset_override() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -258,7 +267,7 @@ async fn test_retention_per_dataset_override() -> Result<()> {
     generators::generate_traces(&mut writer_prod, &config).await?;
     generators::generate_traces(&mut writer_staging, &config).await?;
 
-    log::info!("Generated 100 days of data for production and staging");
+    tracing::info!("Generated 100 days of data for production and staging");
 
     // Create dataset-specific overrides
     let mut dataset_overrides = HashMap::new();
@@ -314,7 +323,7 @@ async fn test_retention_per_dataset_override() -> Result<()> {
     let result_prod = enforcer.enforce_retention("tenant-a", "production").await?;
     let result_staging = enforcer.enforce_retention("tenant-a", "staging").await?;
 
-    log::info!(
+    tracing::info!(
         "Production (90d override) dropped {}; Staging (3d override) dropped {}",
         result_prod.total_partitions_dropped,
         result_staging.total_partitions_dropped
@@ -363,7 +372,10 @@ async fn test_retention_per_dataset_override() -> Result<()> {
 /// This is a safety test ensuring invalid configurations cannot be created.
 #[tokio::test]
 async fn test_retention_zero_days() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -390,7 +402,7 @@ async fn test_retention_zero_days() -> Result<()> {
     match result {
         Err(err) => {
             let err_msg = format!("{:?}", err); // Use Debug format to see full error chain
-            log::info!("Validation correctly rejected zero retention: {}", err_msg);
+            tracing::info!("Validation correctly rejected zero retention: {}", err_msg);
 
             // Check that error chain contains validation message
             assert!(
@@ -418,7 +430,10 @@ async fn test_retention_zero_days() -> Result<()> {
 /// strictly fewer than half of the evaluated partitions.
 #[tokio::test]
 async fn test_retention_with_clock_skew() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -442,7 +457,7 @@ async fn test_retention_with_clock_skew() -> Result<()> {
     };
 
     generators::generate_traces(&mut writer, &config).await?;
-    log::info!("Generated 10 days of data (5 in the past, 5 in the future)");
+    tracing::info!("Generated 10 days of data (5 in the past, 5 in the future)");
 
     // Create retention config with 3-day retention
     let retention_config = RetentionConfig {
@@ -470,7 +485,7 @@ async fn test_retention_with_clock_skew() -> Result<()> {
         .enforce_retention("test-tenant", "test-dataset")
         .await?;
 
-    log::info!(
+    tracing::info!(
         "Clock skew test: {} of {} evaluated partitions dropped",
         result.total_partitions_dropped,
         result

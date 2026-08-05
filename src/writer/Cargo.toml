@@ -24,7 +24,6 @@ iceberg-rust.workspace = true
 tokio.workspace = true
 futures.workspace = true
 
-log.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true

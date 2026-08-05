@@ -73,7 +73,7 @@ impl ServiceRegistry {
             loop {
                 ticker.tick().await;
                 if let Err(e) = registry.refresh_services().await {
-                    log::error!("Failed to refresh service registry: {e}");
+                    tracing::error!("Failed to refresh service registry: {e}");
                 }
             }
         });
@@ -91,10 +91,10 @@ impl ServiceRegistry {
                 for service in services {
                     service_map.insert(service.id, service);
                 }
-                log::debug!("Updated {} services in registry", service_map.len());
+                tracing::debug!("Updated {} services in registry", service_map.len());
             }
             Err(e) => {
-                log::warn!("Failed to list services: {e}");
+                tracing::warn!("Failed to list services: {e}");
             }
         }
 

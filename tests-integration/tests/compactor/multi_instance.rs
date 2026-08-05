@@ -39,9 +39,9 @@ use uuid::Uuid;
 use writer::IcebergTableWriter;
 
 fn init_test_logging() {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
-        .is_test(true)
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
         .try_init()
         .ok();
 }
@@ -169,7 +169,7 @@ async fn run_instance_cycle(
         let key = candidate_key(&candidate);
         match lease_manager.try_acquire_default(&candidate).await? {
             None => {
-                log::info!("[{instance_name}] lease for {key} held elsewhere, skipping");
+                tracing::info!("[{instance_name}] lease for {key} held elsewhere, skipping");
                 continue;
             }
             Some(lease) => {
@@ -187,7 +187,7 @@ async fn run_instance_cycle(
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
                 let result = executor.execute_candidate(candidate).await?;
-                log::info!(
+                tracing::info!(
                     "[{instance_name}] compacted {key}: {} files -> {} files (status {:?})",
                     result.input_files_count,
                     result.output_files_count,
@@ -452,7 +452,7 @@ async fn test_crashed_instance_lease_taken_over() -> Result<()> {
     let result = executor.execute_candidate(candidate).await?;
     healthy.release(&lease).await?;
 
-    log::info!(
+    tracing::info!(
         "Takeover compaction: {} files -> {} files (status {:?})",
         result.input_files_count,
         result.output_files_count,

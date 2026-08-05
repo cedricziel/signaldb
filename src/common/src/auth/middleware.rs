@@ -171,7 +171,7 @@ pub async fn auth_middleware(
     let tenant_context = match auth_result {
         Ok(ctx) => ctx,
         Err(err) => {
-            log::warn!(
+            tracing::warn!(
                 "Authentication failed for tenant '{}': {}",
                 tenant_id,
                 err.message
@@ -189,7 +189,7 @@ pub async fn auth_middleware(
     // suppression scope covers everything from here through the handler.
     if crate::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
         crate::self_monitoring::suppress_self_telemetry(async move {
-            log::debug!(
+            tracing::debug!(
                 "Authenticated request for tenant '{}', dataset '{}' (source: {})",
                 tenant_context.tenant_id,
                 tenant_context.dataset_id,
@@ -200,7 +200,7 @@ pub async fn auth_middleware(
         })
         .await
     } else {
-        log::debug!(
+        tracing::debug!(
             "Authenticated request for tenant '{}', dataset '{}' (source: {})",
             tenant_context.tenant_id,
             tenant_context.dataset_id,

@@ -302,7 +302,10 @@ async fn count_rows(ctx: &SessionContext, sql: &str) -> Result<usize> {
 
 #[tokio::test]
 async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let (catalog_manager, service_catalog, identifier) = setup(false).await?;
 
     run_compaction(catalog_manager.clone(), service_catalog).await?;
@@ -363,7 +366,10 @@ async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()
 
 #[tokio::test]
 async fn dry_run_promotion_changes_nothing() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let (catalog_manager, service_catalog, identifier) = setup(true).await?;
 
     run_compaction(catalog_manager.clone(), service_catalog).await?;

@@ -83,7 +83,7 @@ async fn wait_for_storage_service(
 }
 
 async fn setup_logs_metrics_services() -> TestServices {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).with_test_writer().try_init();
     let temp_dir = TempDir::new().unwrap();
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),

@@ -26,7 +26,10 @@ use tests_integration::generators;
 /// partitions remain.
 #[tokio::test]
 async fn test_partition_drop_removes_old_partitions() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Arrange: Create test context
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -49,7 +52,7 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
 
     // Generate 5 hourly partitions
     let partitions_before = generators::generate_traces(&mut writer, &config).await?;
-    log::info!(
+    tracing::info!(
         "Generated {} partitions spanning 5 hours",
         partitions_before.len()
     );
@@ -78,7 +81,7 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
         .enforce_retention("test-tenant", "test-dataset")
         .await?;
 
-    log::info!(
+    tracing::info!(
         "Retention enforcement completed: {} partitions dropped",
         result.total_partitions_dropped
     );
@@ -117,7 +120,7 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
         .filter(|p| p.timestamp_range.1 >= cutoff_timestamp)
         .collect();
 
-    log::info!(
+    tracing::info!(
         "Expected old partitions: {}, recent partitions: {}",
         old_partitions.len(),
         recent_partitions.len()
@@ -180,7 +183,7 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
         "Recent partitions must survive enforcement"
     );
 
-    log::info!(
+    tracing::info!(
         "Post-enforcement verification: table accessible with snapshot {:?}",
         table_after
             .metadata()
@@ -200,7 +203,10 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
 /// during the grace period.
 #[tokio::test]
 async fn test_partition_drop_respects_grace_period() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Arrange: Create test context
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -222,7 +228,7 @@ async fn test_partition_drop_respects_grace_period() -> Result<()> {
     };
 
     let partitions = generators::generate_traces(&mut writer, &config).await?;
-    log::info!("Generated partition at retention boundary");
+    tracing::info!("Generated partition at retention boundary");
     assert_eq!(partitions.len(), 1);
 
     // Apply retention with 1-hour grace period
@@ -256,7 +262,7 @@ async fn test_partition_drop_respects_grace_period() -> Result<()> {
         .enforce_retention("test-tenant", "test-dataset")
         .await?;
 
-    log::info!(
+    tracing::info!(
         "With grace period - partitions dropped: {}",
         result.total_partitions_dropped
     );
@@ -299,7 +305,10 @@ async fn test_partition_drop_respects_grace_period() -> Result<()> {
 /// according to its specific retention policy.
 #[tokio::test]
 async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Arrange: Create test context
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -321,21 +330,21 @@ async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
         .create_table("test-tenant", "test-dataset", "traces")
         .await?;
     let traces_partitions = generators::generate_traces(&mut traces_writer, &config).await?;
-    log::info!("Generated {} trace partitions", traces_partitions.len());
+    tracing::info!("Generated {} trace partitions", traces_partitions.len());
 
     // Create logs table (7 day retention)
     let mut logs_writer = ctx
         .create_table("test-tenant", "test-dataset", "logs")
         .await?;
     let logs_partitions = generators::generate_logs(&mut logs_writer, &config).await?;
-    log::info!("Generated {} log partitions", logs_partitions.len());
+    tracing::info!("Generated {} log partitions", logs_partitions.len());
 
     // Create metrics table (5 day retention)
     let mut metrics_writer = ctx
         .create_table("test-tenant", "test-dataset", "metrics_gauge")
         .await?;
     let metrics_partitions = generators::generate_metrics(&mut metrics_writer, &config).await?;
-    log::info!("Generated {} metric partitions", metrics_partitions.len());
+    tracing::info!("Generated {} metric partitions", metrics_partitions.len());
 
     // Apply different retention policies per signal type
     let retention_config = RetentionConfig {
@@ -363,7 +372,7 @@ async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
         .enforce_retention("test-tenant", "test-dataset")
         .await?;
 
-    log::info!(
+    tracing::info!(
         "Mixed signal types - tables processed: {}, total partitions dropped: {}",
         result.tables_processed,
         result.total_partitions_dropped
@@ -404,7 +413,7 @@ async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
         .filter(|p| p.timestamp_range.1 < metrics_cutoff)
         .collect();
 
-    log::info!(
+    tracing::info!(
         "Expected drops - traces: {}, logs: {}, metrics: {}",
         traces_old.len(),
         logs_old.len(),
@@ -438,7 +447,10 @@ async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
 /// - Table statistics reflect the partition drop
 #[tokio::test]
 async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Arrange: Create test context
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -459,7 +471,7 @@ async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
     };
 
     let partitions_before = generators::generate_traces(&mut writer, &config).await?;
-    log::info!(
+    tracing::info!(
         "Generated {} partitions with {} files each",
         partitions_before.len(),
         config.files_per_partition
@@ -478,7 +490,7 @@ async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
     };
 
     let snapshot_before = table.metadata().current_snapshot(None).ok().flatten();
-    log::info!(
+    tracing::info!(
         "Initial snapshot: {:?}",
         snapshot_before.as_ref().map(|s| s.snapshot_id())
     );
@@ -506,7 +518,7 @@ async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
         .enforce_retention("test-tenant", "test-dataset")
         .await?;
 
-    log::info!(
+    tracing::info!(
         "Retention enforcement completed: {} partitions dropped",
         result.total_partitions_dropped
     );
@@ -520,7 +532,7 @@ async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
 
     // Verify snapshot history is maintained
     let snapshot_after = table_after.metadata().current_snapshot(None).ok().flatten();
-    log::info!(
+    tracing::info!(
         "Snapshot after retention: {:?}",
         snapshot_after.as_ref().map(|s| s.snapshot_id())
     );
@@ -537,7 +549,7 @@ async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
 
     // Verify table is still readable
     let metadata = table_after.metadata();
-    log::info!(
+    tracing::info!(
         "Table metadata format version: {:?}",
         metadata.format_version
     );
@@ -553,7 +565,10 @@ async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
 /// - No actual changes are made to the table
 #[tokio::test]
 async fn test_partition_drop_dry_run_mode() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Arrange: Create test context
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -574,7 +589,7 @@ async fn test_partition_drop_dry_run_mode() -> Result<()> {
     };
 
     let partitions_before = generators::generate_traces(&mut writer, &config).await?;
-    log::info!(
+    tracing::info!(
         "Generated {} partitions for dry-run test",
         partitions_before.len()
     );
@@ -598,7 +613,7 @@ async fn test_partition_drop_dry_run_mode() -> Result<()> {
         .ok()
         .flatten()
         .map(|s| s.snapshot_id());
-    log::info!("Snapshot before dry-run: {:?}", snapshot_before_id);
+    tracing::info!("Snapshot before dry-run: {:?}", snapshot_before_id);
 
     // Apply retention with DRY RUN enabled
     let retention_config = RetentionConfig {
@@ -623,7 +638,7 @@ async fn test_partition_drop_dry_run_mode() -> Result<()> {
         .enforce_retention("test-tenant", "test-dataset")
         .await?;
 
-    log::info!(
+    tracing::info!(
         "[DRY RUN] Would drop {} partitions",
         result.total_partitions_dropped
     );
@@ -636,7 +651,7 @@ async fn test_partition_drop_dry_run_mode() -> Result<()> {
         .filter(|p| p.timestamp_range.1 < cutoff_timestamp)
         .collect();
 
-    log::info!(
+    tracing::info!(
         "Expected to identify {} old partitions (not dropped due to dry-run)",
         expected_old_partitions.len()
     );
@@ -669,7 +684,7 @@ async fn test_partition_drop_dry_run_mode() -> Result<()> {
         .ok()
         .flatten()
         .map(|s| s.snapshot_id());
-    log::info!("Snapshot after dry-run: {:?}", snapshot_after_id);
+    tracing::info!("Snapshot after dry-run: {:?}", snapshot_after_id);
 
     // In dry-run mode, no new snapshot should be created
     // (This assertion depends on implementation - currently partition drops

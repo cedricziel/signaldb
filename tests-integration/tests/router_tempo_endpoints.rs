@@ -465,8 +465,8 @@ async fn test_tempo_echo_endpoint() {
 #[tokio::test]
 async fn test_tempo_endpoints_end_to_end() {
     // Enable debug logging
-    let _ = env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
         .try_init();
 
     println!("🚀 Starting end-to-end Tempo API test...");
@@ -1208,8 +1208,8 @@ async fn send_trace_for_tenant(
 /// Test multi-tenant read path isolation
 #[tokio::test]
 async fn test_read_path_tenant_isolation() {
-    let _ = env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
         .try_init();
 
     println!("🚀 Starting multi-tenant read path isolation test...");
@@ -1369,8 +1369,8 @@ async fn test_read_path_tenant_isolation() {
 /// Test authentication failures on read path
 #[tokio::test]
 async fn test_read_path_authentication_failures() {
-    let _ = env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
         .try_init();
 
     println!("🚀 Testing read path authentication failures...");
@@ -1478,8 +1478,8 @@ async fn test_trace_attributes_round_trip() {
     use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
     use opentelemetry_proto::tonic::resource::v1::Resource;
 
-    let _ = env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
         .try_init();
 
     println!("Starting trace attributes round-trip test...");
