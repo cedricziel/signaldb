@@ -2258,6 +2258,9 @@ fn querier_error_to_status(e: crate::query::error::QuerierError) -> Status {
     match e {
         crate::query::error::QuerierError::InvalidInput(msg) => Status::invalid_argument(msg),
         crate::query::error::QuerierError::Unsupported(msg) => Status::unimplemented(msg),
+        too_many @ crate::query::error::QuerierError::TooManyGroups { .. } => {
+            Status::invalid_argument(too_many.to_string())
+        }
         other => Status::internal(format!("Profile query failed: {other:?}")),
     }
 }

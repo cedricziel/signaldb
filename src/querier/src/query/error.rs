@@ -10,4 +10,8 @@ pub enum QuerierError {
     InvalidInput(String),
     #[error("Unsupported query feature: {0}")]
     Unsupported(String),
+    #[error(
+        "PromQL query produced too many groups for row-wise evaluation: {count} groups exceeds the limit of {limit}; narrow the label selectors or time range"
+    )]
+    TooManyGroups { count: usize, limit: usize },
 }

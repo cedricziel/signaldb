@@ -10,7 +10,7 @@
 //! `bucket` timestamp, `metric_name`, the grouping columns, and a
 //! `value`. The router shapes that into Prometheus matrix JSON.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -56,6 +56,34 @@ const RESOURCE_ATTRIBUTES: &str = "resource_attributes";
 
 /// Upper bound on distinct attribute documents scanned for discovery.
 const LABEL_SCAN_LIMIT: usize = 1000;
+
+/// Upper bound on distinct groups (e.g. `(bucket, series)` keys) that the
+/// row-wise, post-`collect()` PromQL evaluation paths — vector-to-vector
+/// arithmetic/comparison/logical matching, `topk`/`bottomk`, and subquery
+/// reduction — may materialize in an in-memory hash map. Those paths group
+/// and combine rows in Rust rather than pushing the grouping into
+/// DataFusion, so an unbounded label cardinality (or a pathological
+/// subquery range) can blow up heap usage well before any row-count limit
+/// trips. The bound is deliberately generous: it should never trip for a
+/// legitimate dashboard/alert query, only for cardinality bombs. Lowering
+/// these paths into DataFusion (tracked separately, see #951) would remove
+/// the need for this guard.
+const MAX_PROMQL_GROUPS: usize = 100_000;
+
+/// Guards a row-wise evaluation group count against `limit`, returning
+/// [`QuerierError::TooManyGroups`] instead of letting the caller grow an
+/// unbounded hash map. Takes `limit` as a parameter (rather than always
+/// reading [`MAX_PROMQL_GROUPS`]) so tests can exercise the failure path
+/// with a small limit instead of allocating 100k groups.
+fn check_group_cardinality(group_count: usize, limit: usize) -> Result<(), QuerierError> {
+    if group_count > limit {
+        return Err(QuerierError::TooManyGroups {
+            count: group_count,
+            limit,
+        });
+    }
+    Ok(())
+}
 
 /// Executes PromQL queries against the metrics tables.
 pub struct MetricsService {
@@ -407,6 +435,7 @@ impl MetricsService {
                 rhs.insert((bucket, service), value);
             }
         }
+        check_group_cardinality(rhs.len(), MAX_PROMQL_GROUPS)?;
 
         // BTreeMap keeps output sorted by (bucket, series).
         let mut out: BTreeMap<(i64, String), f64> = BTreeMap::new();
@@ -417,6 +446,7 @@ impl MetricsService {
                 }
             }
         }
+        check_group_cardinality(out.len(), MAX_PROMQL_GROUPS)?;
 
         let mut ts = Vec::with_capacity(out.len());
         let mut names = Vec::with_capacity(out.len());
@@ -479,6 +509,7 @@ impl MetricsService {
                 rhs.insert((bucket, service), value);
             }
         }
+        check_group_cardinality(rhs.len(), MAX_PROMQL_GROUPS)?;
 
         // (bucket, service) → (metric_name, value).
         let mut out: BTreeMap<(i64, String), (String, f64)> = BTreeMap::new();
@@ -496,6 +527,7 @@ impl MetricsService {
                 }
             }
         }
+        check_group_cardinality(out.len(), MAX_PROMQL_GROUPS)?;
 
         let mut ts = Vec::with_capacity(out.len());
         let mut names = Vec::with_capacity(out.len());
@@ -557,6 +589,7 @@ impl MetricsService {
                 right_ids.insert((bucket, service));
             }
         }
+        check_group_cardinality(right_ids.len(), MAX_PROMQL_GROUPS)?;
 
         // (bucket, service) → (metric_name, value).
         let mut out: BTreeMap<(i64, String), (String, f64)> = BTreeMap::new();
@@ -573,6 +606,7 @@ impl MetricsService {
                 }
             }
         }
+        check_group_cardinality(out.len(), MAX_PROMQL_GROUPS)?;
         // `or` adds the right series whose identity is absent from the left.
         if op == LogicalOp::Or {
             let left_ids: BTreeSet<(i64, String)> = out.keys().cloned().collect();
@@ -583,6 +617,7 @@ impl MetricsService {
                     }
                 }
             }
+            check_group_cardinality(out.len(), MAX_PROMQL_GROUPS)?;
         }
 
         let mut ts = Vec::with_capacity(out.len());
@@ -820,6 +855,7 @@ impl MetricsService {
                 samples.entry(service).or_default().push((bucket, value));
             }
         }
+        check_group_cardinality(samples.len(), MAX_PROMQL_GROUPS)?;
         for v in samples.values_mut() {
             v.sort_by_key(|(t, _)| *t);
         }
@@ -1059,6 +1095,10 @@ impl MetricsService {
         // first/last counts (rate). BTreeMap keeps output sorted.
         let mut merged: BTreeMap<(i64, String, String), HistogramAcc> = BTreeMap::new();
         let mut rated: BTreeMap<(i64, String, String), RateHistAcc> = BTreeMap::new();
+        // `explicit_bounds` is typically identical across every row of a
+        // series, so cache its parse instead of re-running `serde_json`
+        // once per data point.
+        let mut bounds_cache: HashMap<String, Vec<f64>> = HashMap::new();
         for batch in &batches {
             let bucket = batch
                 .column_by_name("bucket")
@@ -1082,7 +1122,7 @@ impl MetricsService {
                 }
                 let (Some(row_counts), Some(row_bounds)) = (
                     parse_f64_array(counts.value(i)),
-                    parse_f64_array(bounds.value(i)),
+                    parse_bounds_cached(&mut bounds_cache, bounds.value(i)),
                 ) else {
                     continue;
                 };
@@ -2278,6 +2318,20 @@ fn parse_f64_array(raw: &str) -> Option<Vec<f64>> {
     array.iter().map(|v| v.as_f64()).collect()
 }
 
+/// Parses `explicit_bounds` via [`parse_f64_array`], memoizing on the raw
+/// JSON string in `cache`. `explicit_bounds` is fixed at instrumentation
+/// time, so every data point of a given histogram series carries the same
+/// bounds array — caching avoids re-parsing identical JSON once per row of
+/// a potentially large per-bucket scan.
+fn parse_bounds_cached(cache: &mut HashMap<String, Vec<f64>>, raw: &str) -> Option<Vec<f64>> {
+    if let Some(cached) = cache.get(raw) {
+        return Some(cached.clone());
+    }
+    let parsed = parse_f64_array(raw)?;
+    cache.insert(raw.to_string(), parsed.clone());
+    Some(parsed)
+}
+
 /// Interpolate the `phi`-quantile of a classic histogram, following
 /// Prometheus's `bucketQuantile`: locate the bucket the rank falls in and
 /// linearly interpolate within it, assuming a uniform spread.
@@ -2579,8 +2633,11 @@ fn apply_topk(batches: Vec<RecordBatch>, spec: TopKSpec) -> Result<Vec<RecordBat
     for (i, r) in rows.iter().enumerate() {
         by_bucket.entry(r.bucket).or_default().push(i);
     }
+    check_group_cardinality(by_bucket.len(), MAX_PROMQL_GROUPS)?;
     let mut keep: Vec<usize> = Vec::new();
     for (_bucket, mut idxs) in by_bucket {
+        // Guard the series-per-bucket group about to be ranked/sorted.
+        check_group_cardinality(idxs.len(), MAX_PROMQL_GROUPS)?;
         idxs.sort_by(|&a, &b| {
             let (va, vb) = (rows[a].value, rows[b].value);
             let ord = va.partial_cmp(&vb).unwrap_or(Ordering::Equal);
@@ -3680,5 +3737,43 @@ mod tests {
         let out = matrix(&service, "histogram_sum(latency)", 1000).await;
         assert_eq!(out.len(), 1);
         assert!((out[0].2 - 110.0).abs() < 1e-9, "got {}", out[0].2);
+    }
+
+    #[test]
+    fn group_cardinality_guard_allows_up_to_the_limit() {
+        assert!(check_group_cardinality(5, 5).is_ok());
+        assert!(check_group_cardinality(0, 5).is_ok());
+    }
+
+    #[test]
+    fn group_cardinality_guard_rejects_above_the_limit() {
+        // Inject a small limit rather than allocating MAX_PROMQL_GROUPS
+        // groups just to exercise the failure path.
+        let err = check_group_cardinality(6, 5).expect_err("6 groups exceeds limit of 5");
+        match err {
+            QuerierError::TooManyGroups { count, limit } => {
+                assert_eq!(count, 6);
+                assert_eq!(limit, 5);
+            }
+            other => panic!("expected TooManyGroups, got {other:?}"),
+        }
+        let message = err.to_string();
+        assert!(message.contains('6'), "{message}");
+        assert!(message.contains('5'), "{message}");
+    }
+
+    #[test]
+    fn bounds_parse_cache_matches_uncached_parsing() {
+        let raw_bounds = ["[1,2,4]", "[1,2,4]", "[0.5,1.5]", "not json", "[1,2,4]"];
+        let mut cache: HashMap<String, Vec<f64>> = HashMap::new();
+        for raw in raw_bounds {
+            let cached = parse_bounds_cached(&mut cache, raw);
+            let uncached = parse_f64_array(raw);
+            assert_eq!(cached, uncached, "mismatch for {raw:?}");
+        }
+        // Only the two distinct, parseable bounds strings should be cached.
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get("[1,2,4]"), Some(&vec![1.0, 2.0, 4.0]));
+        assert_eq!(cache.get("[0.5,1.5]"), Some(&vec![0.5, 1.5]));
     }
 }
