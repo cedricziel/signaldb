@@ -2,7 +2,6 @@ use acceptor::handler::WalManager;
 use acceptor::handler::otlp_grpc::TraceHandler;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use common::CatalogManager;
 use common::config::Configuration;
 use common::flight::transport::{
@@ -259,7 +258,7 @@ async fn test_acceptor_writer_flow() {
     );
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
+        .add_service(common::flight::flight_service_server(writer_service))
         .serve(writer_addr);
 
     tokio::spawn(writer_server);
@@ -370,12 +369,21 @@ async fn test_acceptor_writer_flow() {
     );
 
     // Verify the acceptor's own trace WAL was fully processed (forwarded and
-    // acknowledged) rather than just checking the writer's inbound WAL.
+    // acknowledged) rather than just checking the writer's inbound WAL. The
+    // WAL is keyed by the injected tenant context — asking for any other
+    // tenant/dataset would lazily create an empty WAL and pass vacuously.
     let acceptor_wal = wal_manager
-        .get_wal("default", "default", "traces")
+        .get_wal("test-tenant", "test-dataset", "traces")
         .await
         .unwrap();
-    let acceptor_unprocessed = acceptor_wal.get_unprocessed_entries().await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let acceptor_unprocessed = loop {
+        let unprocessed = acceptor_wal.get_unprocessed_entries().await.unwrap();
+        if unprocessed.is_empty() || Instant::now() >= deadline {
+            break unprocessed;
+        }
+        sleep(Duration::from_millis(100)).await;
+    };
     assert_eq!(
         acceptor_unprocessed.len(),
         0,
@@ -439,7 +447,7 @@ async fn test_querier_integration() {
     let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
 
     let querier_server = Server::builder()
-        .add_service(FlightServiceServer::new(querier_service))
+        .add_service(common::flight::flight_service_server(querier_service))
         .serve(querier_addr);
 
     tokio::spawn(querier_server);
@@ -516,7 +524,7 @@ async fn test_direct_acceptor_writer_flight() {
     drop(writer_listener);
 
     let writer_server = Server::builder()
-        .add_service(FlightServiceServer::new(writer_service))
+        .add_service(common::flight::flight_service_server(writer_service))
         .serve(writer_addr);
     tokio::spawn(writer_server);
 

@@ -1,7 +1,6 @@
 use acceptor::handler::WalManager;
 use acceptor::handler::otlp_grpc::TraceHandler;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::utils::flight_data_to_batches;
 use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource};
@@ -92,6 +91,10 @@ struct TestServices {
     pub acceptor_addr: std::net::SocketAddr,
     pub config: Configuration,
     pub _temp_dir: TempDir,
+    // ServiceBootstrap::drop aborts the heartbeat/reaper tasks, so the
+    // writer/querier bootstraps must live as long as the test services.
+    pub _writer_bootstrap: ServiceBootstrap,
+    pub _querier_bootstrap: ServiceBootstrap,
 }
 
 /// Set up the full trace pipeline (acceptor, writer, querier) wired the same
@@ -169,10 +172,14 @@ async fn setup_services() -> TestServices {
         compaction_threshold: 0.5,
     };
 
+    // Bind the acceptor listener before registering so the bootstrap
+    // advertises the real reachable address, not port 0.
+    let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let acceptor_addr = acceptor_listener.local_addr().unwrap();
     let acceptor_bootstrap = ServiceBootstrap::new(
         config.clone(),
         ServiceType::Acceptor,
-        "127.0.0.1:0".to_string(),
+        acceptor_addr.to_string(),
     )
     .await
     .unwrap();
@@ -216,12 +223,13 @@ async fn setup_services() -> TestServices {
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
-            .add_service(FlightServiceServer::new(writer_service))
+            .add_service(common::flight::flight_service_server(writer_service))
             .serve_with_incoming(TcpListenerStream::new(writer_listener)),
     );
-    ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
-        .await
-        .unwrap();
+    let writer_bootstrap =
+        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
+            .await
+            .unwrap();
 
     // Start querier Flight service with per-tenant catalog registration.
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -235,10 +243,10 @@ async fn setup_services() -> TestServices {
     .expect("Failed to create querier service");
     tokio::spawn(
         Server::builder()
-            .add_service(FlightServiceServer::new(querier_service))
+            .add_service(common::flight::flight_service_server(querier_service))
             .serve_with_incoming(TcpListenerStream::new(querier_listener)),
     );
-    ServiceBootstrap::new(
+    let querier_bootstrap = ServiceBootstrap::new(
         config.clone(),
         ServiceType::Querier,
         querier_addr.to_string(),
@@ -275,8 +283,6 @@ async fn setup_services() -> TestServices {
             });
             Ok(req)
         });
-    let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let acceptor_addr = acceptor_listener.local_addr().unwrap();
     tokio::spawn(
         Server::builder()
             .add_service(acceptor_service_with_auth)
@@ -298,6 +304,8 @@ async fn setup_services() -> TestServices {
     TestServices {
         object_store,
         flight_transport,
+        _writer_bootstrap: writer_bootstrap,
+        _querier_bootstrap: querier_bootstrap,
         acceptor_addr,
         config,
         _temp_dir: temp_dir,
