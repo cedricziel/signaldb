@@ -33,7 +33,13 @@ PostgreSQL and S3-compatible object storage.
 
 ## Quick start
 
-Create a minimal `signaldb.toml` defining a tenant and an ingest API key
+Zero config works: start SignalDB with no tenants configured and it
+provisions a `default` tenant (dataset `default`) on first boot, printing a
+fresh ingest API key **once** in the startup logs (`docker logs signaldb`).
+Point your SDK at it with `x-tenant-id=default` and that key.
+
+To choose your own tenant and key instead, create a minimal
+`signaldb.toml` defining a tenant and an ingest API key
 (authentication is always on — even at home, telemetry endpoints shouldn't
 be open writes):
 

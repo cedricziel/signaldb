@@ -43,7 +43,7 @@ Write-Ahead Logging ensures data persistence and crash recovery:
 
 SignalDB maintains two distinct catalog systems:
 
-- **Service Catalog** (`Catalog`): PostgreSQL or SQLite-backed registry for service discovery, tenant management, API keys, and datasets. Used by `ServiceBootstrap` for heartbeat-based registration.
+- **Service Catalog** (`Catalog`): PostgreSQL or SQLite-backed registry for service discovery, tenant management, API keys, and datasets. Used by `ServiceBootstrap` for heartbeat-based registration. At monolith startup, config tenants are synced into it; if no tenants exist at all, a `default` tenant is auto-provisioned and its API key printed once (`common::bootstrap`).
 - **Iceberg Catalog** (`CatalogManager`): SQL catalog named `"signaldb"` for Iceberg table metadata (schemas, snapshots, manifests). Only SQLite URIs are accepted (file-backed or in-memory; PostgreSQL is rejected -- see `create_sql_catalog_with_builder` in `src/common/src/iceberg/mod.rs`). Shared across all services via `Arc<dyn IcebergCatalog>`.
 
 ### 4. Apache Iceberg Table Format

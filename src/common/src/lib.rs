@@ -1,5 +1,6 @@
 pub mod attr_demand;
 pub mod auth;
+pub mod bootstrap;
 pub mod catalog;
 pub mod catalog_manager;
 pub mod cli;
