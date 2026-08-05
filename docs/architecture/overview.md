@@ -454,7 +454,7 @@ For full details on table schemas, partitioning, and the object store layout, se
 cargo run --bin signaldb
 ```
 
-Starts Acceptor, Router, Writer, and Querier in a single process:
+Starts Acceptor, Router, Writer, Querier, and Compactor in a single process:
 
 - Acceptor: `0.0.0.0:4317` (gRPC), `0.0.0.0:4318` (HTTP)
 - Router: `0.0.0.0:3000` (HTTP), `0.0.0.0:50053` (Flight)

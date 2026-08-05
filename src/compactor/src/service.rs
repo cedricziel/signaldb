@@ -237,13 +237,24 @@ impl CompactorService {
     ///
     /// Callers `tokio::spawn` this and abort the handle on shutdown.
     pub async fn run_lifecycle_loop(mut self) {
-        use tokio::time::interval;
+        use tokio::time::{MissedTickBehavior, interval};
 
         let mut compaction_ticker = interval(self.compaction_interval);
         let mut retention_ticker = interval(self.retention_config.retention_check_interval);
         let mut orphan_cleanup_ticker = interval(self.orphan_cleanup_config.cleanup_interval());
         // Clean up stale leases from crashed instances every 30 seconds
         let mut lease_expiry_ticker = interval(Duration::from_secs(30));
+        // Cycles run serially in this task, so a long compaction cycle can
+        // make other tickers miss; resume on cadence instead of bursting
+        // through every missed tick.
+        for ticker in [
+            &mut compaction_ticker,
+            &mut retention_ticker,
+            &mut orphan_cleanup_ticker,
+            &mut lease_expiry_ticker,
+        ] {
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        }
 
         loop {
             tokio::select! {
@@ -494,17 +505,22 @@ impl CompactorService {
                                 .instrument(job_span.clone())
                                 .await
                             {
-                                Ok(result) => tracing::info!(
-                                    "Orphan cleanup {}/{}/{}: deleted={}, \
-                                     would_delete={}, bytes_freed={}, failed={}",
-                                    tid,
-                                    did,
-                                    table_name,
-                                    result.deleted_count,
-                                    result.would_delete_count,
-                                    result.total_bytes_freed,
-                                    result.failed_count,
-                                ),
+                                Ok(result) => {
+                                    self.orphan_detector
+                                        .metrics()
+                                        .record_deletion_failures(result.failed_count);
+                                    tracing::info!(
+                                        "Orphan cleanup {}/{}/{}: deleted={}, \
+                                         would_delete={}, bytes_freed={}, failed={}",
+                                        tid,
+                                        did,
+                                        table_name,
+                                        result.deleted_count,
+                                        result.would_delete_count,
+                                        result.total_bytes_freed,
+                                        result.failed_count,
+                                    )
+                                }
                                 Err(e) => tracing::error!(
                                     "Orphan cleanup failed for {}/{}/{}: {e:?}",
                                     tid,
@@ -515,8 +531,7 @@ impl CompactorService {
                         }
                         Ok(_) => {} // no orphans
                         Err(e) => tracing::warn!(
-                            "Orphan detection skipped for {}/{}/{} \
-                             (table may not exist): {e:#}",
+                            "Orphan detection failed for {}/{}/{}: {e:#}",
                             tid,
                             did,
                             table_name

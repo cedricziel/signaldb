@@ -308,6 +308,9 @@ async fn main() -> Result<()> {
             .internal_service_key
             .clone()
             .map(common::flight::auth::FlightAuthInterceptor::internal_only);
+        // The blanket "Flight ports are UNAUTHENTICATED" startup warning
+        // below covers this port too ([auth].internal_service_key gates all
+        // in-process Flight servers identically).
         let compactor_flight_handle = tokio::spawn(async move {
             tracing::info!("Starting Compactor Flight service on {compactor_flight_addr}");
             let serve = match compactor_flight_auth {
