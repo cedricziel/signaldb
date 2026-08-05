@@ -1,8 +1,13 @@
-//! Compaction planning module for Phase 1 (dry-run planning only)
+//! Compaction planning
 //!
-//! This module analyzes Iceberg tables and identifies partitions that need compaction
-//! based on file count and size thresholds. In Phase 1, it only logs what would be
-//! compacted without executing the actual compaction.
+//! Analyzes Iceberg tables and identifies the `timestamp_hour` partitions that
+//! need compaction, based on the small-file count and average size of the live
+//! data files recorded in the current snapshot's manifests.
+//!
+//! Planning is partition-scoped and only ever selects *closed* partitions —
+//! those whose hour has ended and whose lateness allowance has elapsed. The
+//! executor rewrites and commits exactly one partition per job, so the unit
+//! planned here is the unit mutated there (issue #933).
 
 use anyhow::{Context, Result};
 use common::catalog_manager::CatalogManager;
@@ -30,7 +35,10 @@ pub struct CompactionCandidate {
     pub dataset_id: String,
     /// Table name (e.g., "traces", "logs", "metrics")
     pub table_name: String,
-    /// Partition identifier (currently placeholder, will be real partition in Phase 2)
+    /// The `timestamp_hour` partition to compact, as hours since the Unix
+    /// epoch rendered in decimal. This is both the unit the executor rewrites
+    /// and commits, and the lease key — so two jobs on different partitions of
+    /// the same table do not serialize against each other.
     pub partition_id: String,
     /// Statistics about files in this partition
     pub stats: PartitionStats,
@@ -67,6 +75,9 @@ pub struct PlannerConfig {
     pub max_input_file_size_bytes: u64,
     /// Target file size in bytes after compaction
     pub target_file_size_bytes: u64,
+    /// How long after an hour partition ends it stays "open" — i.e. still
+    /// accepting late-arriving writes — and is therefore not compacted.
+    pub partition_lateness: std::time::Duration,
 }
 
 impl From<&CompactorConfig> for PlannerConfig {
@@ -75,8 +86,30 @@ impl From<&CompactorConfig> for PlannerConfig {
             file_count_threshold: config.file_count_threshold,
             max_input_file_size_bytes: config.max_input_file_size_kb * 1024,
             target_file_size_bytes: config.target_file_size_mb * 1024 * 1024,
+            partition_lateness: config.partition_lateness,
         }
     }
+}
+
+/// Seconds in an hour partition (the `timestamp_hour` Iceberg transform).
+const PARTITION_SECONDS: i64 = 3600;
+
+/// Whether an hour partition is *closed*: its hour has ended and the
+/// configured lateness allowance has elapsed, so no further writes are
+/// expected into it.
+///
+/// Compacting an open partition is what made the old whole-table design lose
+/// its commit race: the partition being actively appended to is exactly the
+/// one whose manifests keep changing underneath the rewrite. Restricting
+/// compaction to closed partitions means a compaction job and live ingest
+/// never contend for the same files.
+pub(crate) fn is_partition_closed(
+    partition_hours: i64,
+    now_secs: i64,
+    lateness: std::time::Duration,
+) -> bool {
+    let partition_end = (partition_hours + 1) * PARTITION_SECONDS;
+    partition_end.saturating_add(lateness.as_secs() as i64) <= now_secs
 }
 
 /// Compaction planner that identifies tables and partitions needing compaction
@@ -94,12 +127,10 @@ impl CompactionPlanner {
         }
     }
 
-    /// Run a planning cycle and return candidates
-    ///
-    /// Phase 1: Returns empty list as this is dry-run only
-    /// Phase 2: Will implement actual table scanning and analysis
+    /// Run a planning cycle and return the closed partitions that need
+    /// compaction, across every active tenant and dataset.
     pub async fn plan(&self) -> Result<Vec<CompactionCandidate>> {
-        tracing::debug!("Starting compaction planning cycle (Phase 1: dry-run)");
+        tracing::debug!("Starting compaction planning cycle");
 
         let mut candidates = vec![];
 
@@ -141,9 +172,6 @@ impl CompactionPlanner {
     }
 
     /// Analyze a single dataset and return compaction candidates
-    ///
-    /// Phase 1: Attempts to list tables from Iceberg catalog
-    /// Phase 2: Will add manifest reading and file-level analysis
     async fn analyze_dataset(
         &self,
         tenant_id: &str,
@@ -192,9 +220,6 @@ impl CompactionPlanner {
     }
 
     /// Analyze a single table and return compaction candidates
-    ///
-    /// Phase 1: Loads table and uses placeholder for manifest reading
-    /// Phase 2: Will implement actual manifest reading and partition analysis
     async fn analyze_table(
         &self,
         tenant_id: &str,
@@ -214,8 +239,6 @@ impl CompactionPlanner {
                 format!("Failed to load table {tenant_id}/{dataset_id}/{table_name}")
             })?;
 
-        // Phase 1: Placeholder for reading Iceberg manifests
-        // In Phase 2, we'll read actual manifest files and group by partitions
         let partitions = self.group_files_by_partition(&table).await?;
 
         let mut candidates = vec![];
@@ -238,19 +261,25 @@ impl CompactionPlanner {
         Ok(candidates)
     }
 
-    /// Group the table's live data files for planning.
+    /// Group the table's live data files by `timestamp_hour` partition.
     ///
     /// Reads the REAL data file set from the current snapshot's manifests
     /// so the planning thresholds operate on actual file counts and sizes
     /// (issue #559 — this used to fabricate synthetic files, which made
     /// every table with a snapshot a candidate on every cycle).
     ///
-    /// All files are grouped under the single `"all"` key: the executor
-    /// rewrites and commits the WHOLE table (a `replace` snapshot), so the
-    /// candidate's `partition_id = "all"` deliberately keys the lease at
-    /// table granularity — the unit the executor actually mutates.
-    /// Partition-scoped planning must not be introduced without also
-    /// scoping the rewrite/commit (see issue #559's latent-race note).
+    /// Files are grouped by the partition value recorded in their manifest
+    /// entry, and only *closed* partitions are returned (issue #933). The
+    /// executor rewrites and commits exactly one partition per job via a
+    /// scoped delta commit, so the candidate's `partition_id` is the
+    /// partition the executor actually mutates — which is also the lease
+    /// key, so two jobs on different partitions of the same table no longer
+    /// serialize against each other.
+    ///
+    /// Files with no usable partition value are unclassifiable and are
+    /// excluded: they are left untouched rather than swept into some other
+    /// partition's rewrite, where the delta commit would remove them without
+    /// their rows being present in the output.
     async fn group_files_by_partition(
         &self,
         table: &iceberg_rust::catalog::tabular::Tabular,
@@ -275,17 +304,10 @@ impl CompactionPlanner {
             snapshot_id
         );
 
-        let files: Vec<FileInfo> = crate::iceberg::ManifestReader::new()
+        let files = crate::iceberg::ManifestReader::new()
             .get_snapshot_files(table)
             .await
-            .context("Failed to read data files from manifests")?
-            .into_iter()
-            .map(|file| FileInfo {
-                path: file.file_path,
-                size_bytes: file.file_size_bytes,
-                record_count: file.record_count,
-            })
-            .collect();
+            .context("Failed to read data files from manifests")?;
 
         tracing::debug!(
             "Read {} live data files from manifests for table {}",
@@ -293,9 +315,45 @@ impl CompactionPlanner {
             table.identifier()
         );
 
+        let now_secs = chrono::Utc::now().timestamp();
         let mut partitions: HashMap<String, Vec<FileInfo>> = HashMap::new();
-        if !files.is_empty() {
-            partitions.insert("all".to_string(), files);
+        let mut unclassifiable = 0usize;
+        let mut deferred_open = 0usize;
+
+        for file in files {
+            let Some(partition_hours) = file.partition_hours else {
+                unclassifiable += 1;
+                continue;
+            };
+
+            if !is_partition_closed(partition_hours, now_secs, self.config.partition_lateness) {
+                deferred_open += 1;
+                continue;
+            }
+
+            partitions
+                .entry(partition_hours.to_string())
+                .or_default()
+                .push(FileInfo {
+                    path: file.file_path,
+                    size_bytes: file.file_size_bytes,
+                    record_count: file.record_count,
+                });
+        }
+
+        if unclassifiable > 0 {
+            tracing::warn!(
+                table = %table.identifier(),
+                unclassifiable_files = unclassifiable,
+                "Data files have no usable timestamp_hour partition value; excluding them from compaction"
+            );
+        }
+        if deferred_open > 0 {
+            tracing::debug!(
+                table = %table.identifier(),
+                deferred_files = deferred_open,
+                "Deferred data files in still-open partitions"
+            );
         }
 
         Ok(partitions)
@@ -367,6 +425,50 @@ pub struct FileInfo {
 mod tests {
     use super::*;
 
+    /// The partition currently being written to must never be selected: it is
+    /// the one whose manifests change under a running rewrite, which is what
+    /// made the old whole-table design lose its commit race (issue #933).
+    #[test]
+    fn open_partition_is_not_closed() {
+        let lateness = std::time::Duration::from_secs(600);
+
+        // Partition 100 spans [360000, 363600). Now is inside it.
+        assert!(
+            !is_partition_closed(100, 361_800, lateness),
+            "a partition whose hour is still in progress must not be compacted"
+        );
+
+        // The hour has ended but the lateness allowance has not elapsed.
+        assert!(
+            !is_partition_closed(100, 363_601, lateness),
+            "a just-ended partition must stay open for the lateness allowance"
+        );
+    }
+
+    #[test]
+    fn partition_closes_once_lateness_has_elapsed() {
+        let lateness = std::time::Duration::from_secs(600);
+
+        // Exactly at the boundary: hour end (363600) + lateness (600).
+        assert!(
+            is_partition_closed(100, 364_200, lateness),
+            "a partition must close exactly at hour end plus lateness"
+        );
+        assert!(
+            is_partition_closed(100, 999_999, lateness),
+            "an old partition must be compactable"
+        );
+    }
+
+    /// With no lateness allowance a partition closes the instant its hour
+    /// ends — the setting integration tests rely on.
+    #[test]
+    fn zero_lateness_closes_partition_at_hour_end() {
+        let zero = std::time::Duration::ZERO;
+        assert!(!is_partition_closed(100, 363_599, zero));
+        assert!(is_partition_closed(100, 363_600, zero));
+    }
+
     #[test]
     fn test_planner_config_from_compactor_config() {
         let compactor_config = CompactorConfig {
@@ -375,6 +477,8 @@ mod tests {
             target_file_size_mb: 128,
             file_count_threshold: 10,
             max_input_file_size_kb: 65536,
+            partition_lateness: std::time::Duration::from_secs(600),
+            memory_limit_mb: 512,
             retention: Default::default(),
             orphan_cleanup: Default::default(),
             attr_promotion: Default::default(),
@@ -428,6 +532,7 @@ mod tests {
             file_count_threshold: 10,
             max_input_file_size_bytes: 64 * 1024 * 1024, // 64MB
             target_file_size_bytes: 128 * 1024 * 1024,   // 128MB
+            partition_lateness: std::time::Duration::from_secs(600),
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -453,6 +558,7 @@ mod tests {
             file_count_threshold: 10,
             max_input_file_size_bytes: 64 * 1024 * 1024, // 64MB
             target_file_size_bytes: 128 * 1024 * 1024,   // 128MB
+            partition_lateness: std::time::Duration::from_secs(600),
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -483,6 +589,7 @@ mod tests {
             file_count_threshold: 10,
             max_input_file_size_bytes: 64 * 1024 * 1024, // 64MB maximum
             target_file_size_bytes: 128 * 1024 * 1024,   // 128MB
+            partition_lateness: std::time::Duration::from_secs(600),
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -517,6 +624,7 @@ mod tests {
             file_count_threshold: 10,
             max_input_file_size_bytes: 64 * 1024 * 1024, // 64MB maximum
             target_file_size_bytes: 128 * 1024 * 1024,   // 128MB
+            partition_lateness: std::time::Duration::from_secs(600),
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -557,6 +665,7 @@ mod tests {
             // the average-size tolerance check is exercised
             max_input_file_size_bytes: 256 * 1024 * 1024, // 256MB
             target_file_size_bytes: 128 * 1024 * 1024,    // 128MB target
+            partition_lateness: std::time::Duration::from_secs(600),
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -582,6 +691,7 @@ mod tests {
             file_count_threshold: 10,
             max_input_file_size_bytes: 256 * 1024 * 1024, // 256MB
             target_file_size_bytes: 128 * 1024 * 1024,    // 128MB target
+            partition_lateness: std::time::Duration::from_secs(600),
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -620,6 +730,7 @@ mod tests {
             file_count_threshold: 10,
             max_input_file_size_bytes: 64 * 1024 * 1024,
             target_file_size_bytes: 128 * 1024 * 1024,
+            partition_lateness: std::time::Duration::from_secs(600),
         };
 
         // A tenant that exists only in the database (admin-API created), with

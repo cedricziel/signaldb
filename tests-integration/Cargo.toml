@@ -136,6 +136,10 @@ name = "concurrent_writes"
 path = "tests/compactor/concurrent_writes.rs"
 
 [[test]]
+name = "partition_scoped_compaction"
+path = "tests/compactor/partition_scoped_compaction.rs"
+
+[[test]]
 name = "logs_compaction"
 path = "tests/compactor/logs_compaction.rs"
 

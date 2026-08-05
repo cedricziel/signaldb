@@ -71,6 +71,9 @@ async fn seed_and_plan() -> (CompactionExecutor, CompactionCandidate) {
         file_count_threshold: 3,
         max_input_file_size_bytes: 64 * 1024 * 1024,
         target_file_size_bytes: 128 * 1024 * 1024,
+        // Tests seed data into recent hours and compact it immediately;
+        // a production lateness allowance would defer every such partition.
+        partition_lateness: std::time::Duration::ZERO,
     };
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());
     let candidate = planner

@@ -48,12 +48,19 @@ async fn test_basic_compaction() -> Result<()> {
     .expect("Failed to create Iceberg writer");
 
     // 5 separate writes -> 5 small live files: the table genuinely needs
-    // compaction.
+    // compaction. The base timestamp is aligned to the start of a past hour
+    // so every row lands in ONE closed `timestamp_hour` partition: compaction
+    // is partition-scoped (issue #933), so an unaligned range would split the
+    // writes across two partitions and leave the still-open current hour out
+    // of the candidate set.
+    const MILLIS_PER_HOUR: i64 = 60 * 60 * 1000;
+    let base_timestamp =
+        (chrono::Utc::now().timestamp_millis() / MILLIS_PER_HOUR - 2) * MILLIS_PER_HOUR;
     let config = DataGeneratorConfig {
         partition_count: 1,
         files_per_partition: 1,
         rows_per_file: 100,
-        base_timestamp: chrono::Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        base_timestamp,
         partition_granularity: PartitionGranularity::Hour,
     };
     for _ in 0..5 {
@@ -91,20 +98,30 @@ async fn test_basic_compaction() -> Result<()> {
         file_count_threshold: 3, // Low threshold for testing (above post-compaction steady state)
         max_input_file_size_bytes: 64 * 1024 * 1024,
         target_file_size_bytes: 128 * 1024 * 1024,
+        // Tests seed data into recent hours and compact it immediately;
+        // a production lateness allowance would defer every such partition.
+        partition_lateness: std::time::Duration::ZERO,
     };
 
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());
 
-    // Planning must be based on the REAL file set (issue #559): the table
+    // Planning must be based on the REAL file set (issue #559): the partition
     // has multiple small files, so it is a candidate with real stats.
     let candidates = planner.plan().await?;
     assert_eq!(
         candidates.len(),
         1,
-        "expected exactly one whole-table candidate, got {candidates:?}"
+        "expected exactly one partition candidate, got {candidates:?}"
     );
     let candidate = &candidates[0];
-    assert_eq!(candidate.partition_id, "all");
+    // The candidate names the hour partition the data was written into
+    // (hours since the Unix epoch), not a whole-table placeholder.
+    let expected_partition = base_timestamp / MILLIS_PER_HOUR;
+    assert_eq!(
+        candidate.partition_id,
+        expected_partition.to_string(),
+        "candidate must name the real timestamp_hour partition"
+    );
     assert_eq!(
         candidate.stats.file_count,
         files_before.len(),
@@ -167,6 +184,9 @@ async fn test_compaction_empty_table() -> Result<()> {
         file_count_threshold: 10,
         max_input_file_size_bytes: 64 * 1024 * 1024,
         target_file_size_bytes: 128 * 1024 * 1024,
+        // Tests seed data into recent hours and compact it immediately;
+        // a production lateness allowance would defer every such partition.
+        partition_lateness: std::time::Duration::ZERO,
     };
 
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config);

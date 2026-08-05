@@ -183,8 +183,8 @@ catalog_uri = "sqlite::memory:"  # or sqlite:///path/to/catalog.db
 The Compactor Service manages the complete data lifecycle. It provides three
 capabilities:
 
-- **Compaction planning**: dry-run planning and validation of compaction candidates
-- **Compaction**: active Parquet file compaction for storage efficiency
+- **Compaction planning**: identifies closed `timestamp_hour` partitions whose small-file count qualifies them for compaction
+- **Compaction**: active Parquet file compaction for storage efficiency. Scoped to one closed partition per job and committed as an Iceberg delta (remove inputs / add outputs), so cost is proportional to the partition rather than the table and concurrent ingest does not invalidate the commit. Tunable via `partition_lateness` (late-data allowance before a partition is eligible) and `memory_limit_mb` (rewrites spill past this instead of growing the heap).
 - **Retention & lifecycle**: retention enforcement, snapshot expiration, and orphan-file cleanup
 
 ### Running the Compactor

@@ -53,12 +53,21 @@ Controls compaction planning: which files are merged into larger ones and when a
 | `target_file_size_mb`      | integer (MB)    | `128`            | Target output file size after compaction                                                                                           |
 | `file_count_threshold`     | integer         | `10`             | Minimum number of _small_ files (see below) required to trigger compaction                                                         |
 | `max_input_file_size_kb`   | integer (KB)    | `65536` (64 MB)  | Maximum input file size considered for compaction. Files at or above this size are treated as already compacted and are left alone |
+| `partition_lateness`       | duration string | `"10m"`          | How long an hour partition stays open for late-arriving data after its hour ends; only closed partitions are compacted            |
+| `memory_limit_mb`          | integer (MB)    | `512`            | Memory budget for a single rewrite; larger partitions spill to disk rather than growing the process heap                          |
 | `max_candidates_per_cycle` | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                |
 | `max_per_tenant`           | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                          |
 | `lease_ttl_seconds`        | integer         | `300`            | How long a compaction lease stays valid without renewal                                                                            |
 | `metrics_addr`             | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled)                                                                                      |
 
 **How file selection works:** compaction exists to merge many small ingest files into few large ones. Only files **smaller than** `max_input_file_size_kb` count as compaction inputs; when at least `file_count_threshold` such files exist, the table becomes a candidate and its small files are rewritten toward `target_file_size_mb`. Files at or above the maximum are considered "already big" — re-reading and rewriting them buys nothing, so they never trigger compaction on their own. The default of 64 MB is half the default 128 MB target output size, which keeps freshly ingested files (typically tens to hundreds of KB) always eligible.
+
+**How compaction is scoped:** a compaction job operates on exactly one `timestamp_hour` partition and commits a **delta** — the input files are removed and the compacted outputs added in a single snapshot, leaving every other partition referenced as it was. Two consequences matter operationally:
+
+- Write amplification is proportional to the partition being compacted, not to the table. Compacting a new hour no longer rewrites months of history.
+- Concurrent ingest does not invalidate the commit. Only a change to the job's own input files (retention dropping the partition, or a second compactor) is a conflict.
+
+Jobs are restricted to **closed** partitions: an hour partition becomes eligible once its hour has ended and `partition_lateness` has elapsed. The partition still receiving writes is exactly the one whose files would change under a running rewrite, so leaving it alone is what lets compaction and ingest coexist. Raise `partition_lateness` if your sources deliver data well after the fact; it is a late-data allowance, not a commit-cadence knob.
 
 **Example:**
 
@@ -69,12 +78,14 @@ tick_interval = "5m"
 target_file_size_mb = 128
 file_count_threshold = 10
 max_input_file_size_kb = 65536  # 64 MB; files >= this are left alone
+partition_lateness = "10m"      # only compact hours that closed 10m ago
+memory_limit_mb = 512           # rewrites spill past this instead of growing the heap
 ```
 
 > **Removed settings (breaking change, issue #934):**
 >
 > - `min_input_file_size_kb` was replaced by `max_input_file_size_kb` with **inverted semantics**. The old minimum-size filter excluded exactly the small ingest files compaction exists to merge, so a default deployment never compacted anything. There is no backward-compat alias; deployments setting the old key must switch to the new one.
-> - `max_files_per_job` was removed. It was never enforced: the executor rewrites a whole table per job and commits a full-replace snapshot, so a per-job file cap cannot be honored under the current execution model.
+> - `max_files_per_job` was removed. It was never enforced under the whole-table execution model that preceded partition-scoped compaction (issue #933); per-partition input caps are tracked separately.
 
 ## Retention Configuration
 

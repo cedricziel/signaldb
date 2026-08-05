@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use common::CatalogManager;
 use iceberg_rust::table::Table;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Typed error for commit failures that SignalDB itself detects.
@@ -156,6 +157,124 @@ impl IcebergCommitter {
             table_name,
             snapshot_id = verified_snapshot_id,
             "Compaction commit verified"
+        );
+
+        Ok(verified_snapshot_id)
+    }
+
+    /// Commit a partition-scoped compaction as a *delta*: remove exactly the
+    /// input files, add the newly written ones, leave the rest of the table
+    /// untouched.
+    ///
+    /// This is what makes compaction survive live ingest (issue #933). The
+    /// whole-table `replace` path guards on table-wide snapshot equality, so
+    /// any concurrent append — to any partition — invalidates it; against a
+    /// 5-second ingest commit cadence that race is unwinnable, and every lost
+    /// attempt has already written a full duplicate copy of the table.
+    ///
+    /// A delta commit narrows the conflict domain to the files it actually
+    /// touches:
+    /// 1. Reload fresh metadata and re-derive each input file's *current*
+    ///    manifest. An input file that is no longer live means another actor
+    ///    (retention, a second compactor) mutated our inputs — a real
+    ///    conflict, so abort before writing anything.
+    /// 2. Commit an `overwrite` naming only our input files. Files that
+    ///    arrived in the same partition meanwhile are not in the map and stay
+    ///    live; appends to other partitions are irrelevant by construction.
+    /// 3. Verify post-commit, as the `replace` path does — the SQL catalog's
+    ///    compare-and-swap does not surface a lost race as an error.
+    ///
+    /// Returns the snapshot ID created by the commit.
+    pub async fn commit_delta(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+        partition_hours: i64,
+        input_file_paths: &HashSet<String>,
+        new_files: Vec<iceberg_rust::spec::manifest::DataFile>,
+    ) -> Result<i64> {
+        tracing::info!(
+            tenant_id,
+            dataset_id,
+            table_name,
+            partition_hours,
+            input_file_count = input_file_paths.len(),
+            new_file_count = new_files.len(),
+            "Committing compaction (partition-scoped delta)"
+        );
+
+        let table = self
+            .load_fresh(tenant_id, dataset_id, table_name)
+            .await
+            .context("Failed to load table for commit")?;
+
+        // Re-derive the input files' current manifests. Iceberg's overwrite is
+        // keyed by manifest path because it rewrites manifests, and a manifest
+        // path read from the pinned snapshot may already be stale.
+        let live = crate::iceberg::ManifestReader::new()
+            .get_snapshot_files(&table)
+            .await
+            .context("Failed to re-read manifests for delta commit")?;
+
+        let mut files_to_overwrite: HashMap<String, Vec<String>> = HashMap::new();
+        let mut still_live = HashSet::new();
+        for file in live {
+            if input_file_paths.contains(&file.file_path) {
+                still_live.insert(file.file_path.clone());
+                files_to_overwrite
+                    .entry(file.manifest_path)
+                    .or_default()
+                    .push(file.file_path);
+            }
+        }
+
+        // Any input file that vanished means our input set was mutated under
+        // us. Committing now would remove files whose rows we did read while
+        // leaving rows we did not — abort and let the caller retry against
+        // fresh metadata.
+        if still_live.len() != input_file_paths.len() {
+            let missing = input_file_paths.len() - still_live.len();
+            return Err(CommitError::SnapshotConflict(format!(
+                "Delta commit conflict for {tenant_id}/{dataset_id}/{table_name} partition \
+                 {partition_hours}: {missing} of {} input files are no longer live; another \
+                 compaction or retention pass mutated them during the rewrite",
+                input_file_paths.len()
+            ))
+            .into());
+        }
+
+        let mut table = table;
+        table
+            .new_transaction(None)
+            .overwrite(new_files, files_to_overwrite)
+            .commit()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to commit compaction delta snapshot: {e}"))?;
+
+        let committed_snapshot_id = Self::get_current_snapshot_id(&table)?;
+
+        let verified = self
+            .load_fresh(tenant_id, dataset_id, table_name)
+            .await
+            .context("Failed to reload table for post-commit verification")?;
+        let verified_snapshot_id = Self::get_current_snapshot_id(&verified)?;
+        if verified_snapshot_id != committed_snapshot_id {
+            return Err(CommitError::SnapshotConflict(format!(
+                "Snapshot conflict: compaction delta commit did not take effect (expected \
+                 snapshot {committed_snapshot_id}, catalog has {verified_snapshot_id}); a \
+                 concurrent commit likely won the race"
+            ))
+            .into());
+        }
+
+        tracing::info!(
+            tenant_id,
+            dataset_id,
+            table_name,
+            partition_hours,
+            snapshot_id = verified_snapshot_id,
+            "Compaction delta commit verified"
         );
 
         Ok(verified_snapshot_id)

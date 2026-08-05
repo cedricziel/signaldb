@@ -23,11 +23,14 @@ use iceberg_rust::arrow::write::write_parquet_partitioned;
 use iceberg_rust::catalog::create::CreateTableBuilder;
 use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
-use iceberg_rust::spec::partition::PartitionSpec;
+use iceberg_rust::spec::partition::{
+    PartitionField, PartitionSpec, PartitionSpecBuilder, Transform,
+};
 use iceberg_rust::spec::schema::Schema as IcebergSchema;
 use iceberg_rust::spec::types::{MapType, PrimitiveType, StructField, StructType, Type};
 use iceberg_rust::table::Table;
 use std::sync::Arc;
+use tests_integration::compaction_helpers::busiest_partition;
 
 const TENANT: &str = "t1";
 const DATASET: &str = "d1";
@@ -49,6 +52,25 @@ fn string_field(id: i32, name: &str) -> StructField {
 /// service_name, severity_text) plus a map-typed `log_attributes` column
 /// whose nested key/value ids (6, 7) are allocated after the top-level
 /// ids, as the production schema parser does.
+/// Hour-partition spec on `timestamp`, matching what every production signal
+/// table uses (`common::iceberg::schemas`). Compaction is partition-scoped
+/// (issue #933), so a test table must be partitioned the way real tables are —
+/// an unpartitioned table has no `timestamp_hour` value for the planner or
+/// executor to scope a job to.
+fn hour_partition_spec() -> PartitionSpec {
+    PartitionSpecBuilder::default()
+        .with_spec_id(0)
+        // Iceberg convention: partition field_id = 1000 + source field id.
+        .with_partition_field(PartitionField::new(
+            1,
+            1001,
+            "timestamp_hour",
+            Transform::Hour,
+        ))
+        .build()
+        .expect("hour partition spec should build")
+}
+
 fn table_schema() -> IcebergSchema {
     let timestamp = StructField {
         id: 1,
@@ -216,7 +238,7 @@ async fn setup(
     let create = CreateTableBuilder::default()
         .with_name(TABLE.to_string())
         .with_schema(table_schema())
-        .with_partition_spec(PartitionSpec::default())
+        .with_partition_spec(hour_partition_spec())
         .with_location(catalog_manager.build_table_location(TENANT, DATASET, TABLE))
         .create()
         .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
@@ -269,6 +291,7 @@ async fn run_compaction(
     catalog_manager: Arc<CatalogManager>,
     service_catalog: Arc<common::catalog::Catalog>,
 ) -> Result<()> {
+    let partition = busiest_partition(&catalog_manager, TENANT, DATASET, TABLE).await?;
     let executor = CompactionExecutor::new(
         catalog_manager,
         ExecutorConfig::default(),
@@ -279,7 +302,7 @@ async fn run_compaction(
         tenant_id: TENANT.to_string(),
         dataset_id: DATASET.to_string(),
         table_name: TABLE.to_string(),
-        partition_id: "all".to_string(),
+        partition_id: partition.to_string(),
         stats: PartitionStats {
             file_count: 2,
             total_size_bytes: 4096,
