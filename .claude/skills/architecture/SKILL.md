@@ -102,7 +102,7 @@ Each rewrite also runs a read-only attribute-stats pass logging per-key presence
 
 ## Dual Catalog System
 
-1. **Service Catalog** (`Catalog`): PostgreSQL/SQLite for service discovery, tenant management, API keys, datasets
+1. **Service Catalog** (`Catalog`): PostgreSQL/SQLite for service discovery, tenant management, API keys, datasets. Monolith startup syncs config tenants into it; on a truly-empty first boot (no tenants in config or catalog) it auto-provisions a `default` tenant and prints the generated API key once (`common::bootstrap::bootstrap_default_tenant`)
 2. **Iceberg Catalog** (`CatalogManager`): SQLite-only SQL catalog named `"signaldb"` for Iceberg table metadata
 
 The Iceberg catalog only supports SQLite (not PostgreSQL). This is distinct from the service catalog.
