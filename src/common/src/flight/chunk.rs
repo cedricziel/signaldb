@@ -10,7 +10,7 @@
 //! sender guarantees any batch (under the per-row size assumption) can
 //! transit.
 
-use datafusion::arrow::compute::concat_batches;
+use datafusion::arrow::array::{MutableArrayData, make_array};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
 
@@ -84,14 +84,31 @@ fn push_verified(
 }
 
 /// Copy a (possibly sliced) batch into buffers that hold exactly its rows.
+///
+/// `concat_batches` cannot be used here: arrow's `concat` short-circuits a
+/// single input into a zero-copy slice, which keeps the parent's full
+/// buffers alive — `get_array_memory_size` would still report them and the
+/// IPC encoder could still write them. `MutableArrayData` copies exactly
+/// the referenced range into fresh, tight buffers.
 fn compact(batch: &RecordBatch) -> Result<RecordBatch, ArrowError> {
-    concat_batches(&batch.schema(), [batch])
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|column| {
+            let data = column.to_data();
+            let mut mutable = MutableArrayData::new(vec![&data], false, data.len());
+            mutable.extend(0, 0, data.len());
+            make_array(mutable.freeze())
+        })
+        .collect();
+    RecordBatch::try_new(batch.schema(), columns)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use datafusion::arrow::array::{ArrayRef, Int64Array, StringArray};
+    use datafusion::arrow::compute::concat_batches;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
