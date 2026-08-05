@@ -33,7 +33,9 @@ use common::query_ir::{
     Aggregate, ComparisonOp, Document, Extract, FieldResolver, Leaf, Literal, Parser, Predicate,
     Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType, coerce, validate,
 };
-use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+use datafusion::arrow::array::{
+    Array, LargeStringArray, StringArray, StringBuilder, StringViewArray,
+};
 use datafusion::arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
 use datafusion::functions::core::expr_fn::{coalesce, get_field};
 use datafusion::functions::datetime::expr_fn::date_bin;
@@ -41,8 +43,8 @@ use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::functions_aggregate::expr_fn::{approx_percentile_cont, avg, count, max, min, sum};
 use datafusion::logical_expr::{
-    ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility, cast,
-    col, lit, not,
+    ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature,
+    Volatility, cast, col, lit, not,
 };
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
@@ -832,9 +834,11 @@ fn arrow_type_for(vt: &ValueType) -> DataType {
 }
 
 /// A scalar UDF that extracts a field from a log body string, `ir_extract(body,
-/// parser, key) -> Utf8`. `extract` v1 supports the `json` and `logfmt`
-/// parsers. Extraction is bounded per row (no backtracking); a missing field
-/// yields NULL, which the IR's absent-value semantics then handle.
+/// parser, key) -> Utf8`. `body` accepts any of `Utf8`, `LargeUtf8`, or
+/// `Utf8View` (DataFusion's string-view optimization). `extract` v1 supports
+/// the `json` and `logfmt` parsers. Extraction is bounded per row (no
+/// backtracking); a missing field yields NULL, which the IR's absent-value
+/// semantics then handle.
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct ExtractUdf {
     signature: Signature,
@@ -843,8 +847,17 @@ struct ExtractUdf {
 impl ExtractUdf {
     fn new() -> Self {
         ExtractUdf {
-            signature: Signature::exact(
-                vec![DataType::Utf8, DataType::Utf8, DataType::Utf8],
+            // `body` may arrive as any of the three UTF-8 encodings DataFusion
+            // uses (plain, large-offset, or the German-string-style `Utf8View`
+            // introduced for zero-copy string scans); `parser`/`key` are
+            // always literal `Utf8` in practice (see `lower_extract`), so a
+            // single type suffices there.
+            signature: Signature::one_of(
+                vec![
+                    TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8, DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8, DataType::Utf8, DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8View, DataType::Utf8, DataType::Utf8]),
+                ],
                 Volatility::Immutable,
             ),
         }
@@ -865,35 +878,138 @@ impl ScalarUDFImpl for ExtractUdf {
         &self,
         args: ScalarFunctionArgs,
     ) -> datafusion::error::Result<ColumnarValue> {
-        let arrays = ColumnarValue::values_to_arrays(&args.args)?;
-        let bodies = arrays[0]
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| {
-                datafusion::error::DataFusionError::Internal("ir_extract: body not Utf8".into())
-            })?;
-        let parser = string_scalar(&arrays[1], 0);
-        let key = string_scalar(&arrays[2], 0);
-        let out: StringArray = (0..bodies.len())
-            .map(|i| {
-                if bodies.is_null(i) {
-                    None
-                } else {
-                    extract_field(bodies.value(i), &parser, &key)
-                }
-            })
-            .collect();
-        Ok(ColumnarValue::Array(Arc::new(out)))
+        let num_rows = args.number_rows;
+        let body = BodyArg::try_from(&args.args[0])?;
+        let parser = StrArg::try_from(&args.args[1])?;
+        let key = StrArg::try_from(&args.args[2])?;
+
+        // Bodies average well under 1KiB in practice; 16 bytes/row is a cheap
+        // starting estimate that avoids most reallocation without over-committing.
+        let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 16);
+        for i in 0..num_rows {
+            let value = match (body.value_at(i), parser.value_at(i), key.value_at(i)) {
+                (Some(b), Some(p), Some(k)) => extract_field(b, p, k),
+                _ => None,
+            };
+            builder.append_option(value.as_deref());
+        }
+        Ok(ColumnarValue::Array(Arc::new(builder.finish())))
     }
 }
 
-fn string_scalar(array: &ArrayRef, row: usize) -> String {
-    array
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .filter(|a| !a.is_null(row))
-        .map(|a| a.value(row).to_string())
-        .unwrap_or_default()
+/// A per-row accessor over `ir_extract`'s log-body argument, which DataFusion
+/// may hand us as a scalar (constant-folded) or as any of the three UTF-8
+/// array encodings its `signature()` accepts. Resolving the variant once
+/// up front — instead of per row — keeps the extraction loop a single match.
+enum BodyArg<'a> {
+    Scalar(Option<&'a str>),
+    Utf8(&'a StringArray),
+    LargeUtf8(&'a LargeStringArray),
+    Utf8View(&'a StringViewArray),
+}
+
+impl<'a> BodyArg<'a> {
+    fn value_at(&self, i: usize) -> Option<&'a str> {
+        match self {
+            BodyArg::Scalar(s) => *s,
+            BodyArg::Utf8(a) => (!a.is_null(i)).then(|| a.value(i)),
+            BodyArg::LargeUtf8(a) => (!a.is_null(i)).then(|| a.value(i)),
+            BodyArg::Utf8View(a) => (!a.is_null(i)).then(|| a.value(i)),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a ColumnarValue> for BodyArg<'a> {
+    type Error = datafusion::error::DataFusionError;
+
+    fn try_from(cv: &'a ColumnarValue) -> Result<Self, Self::Error> {
+        match cv {
+            ColumnarValue::Scalar(
+                ScalarValue::Utf8(s) | ScalarValue::LargeUtf8(s) | ScalarValue::Utf8View(s),
+            ) => Ok(BodyArg::Scalar(s.as_deref())),
+            ColumnarValue::Scalar(other) => {
+                Err(datafusion::error::DataFusionError::Internal(format!(
+                    "ir_extract: unsupported body scalar type {:?}",
+                    other.data_type()
+                )))
+            }
+            ColumnarValue::Array(arr) => match arr.data_type() {
+                DataType::Utf8 => Ok(BodyArg::Utf8(
+                    arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                        datafusion::error::DataFusionError::Internal(
+                            "ir_extract: body array not Utf8".into(),
+                        )
+                    })?,
+                )),
+                DataType::LargeUtf8 => Ok(BodyArg::LargeUtf8(
+                    arr.as_any()
+                        .downcast_ref::<LargeStringArray>()
+                        .ok_or_else(|| {
+                            datafusion::error::DataFusionError::Internal(
+                                "ir_extract: body array not LargeUtf8".into(),
+                            )
+                        })?,
+                )),
+                DataType::Utf8View => Ok(BodyArg::Utf8View(
+                    arr.as_any()
+                        .downcast_ref::<StringViewArray>()
+                        .ok_or_else(|| {
+                            datafusion::error::DataFusionError::Internal(
+                                "ir_extract: body array not Utf8View".into(),
+                            )
+                        })?,
+                )),
+                other => Err(datafusion::error::DataFusionError::Internal(format!(
+                    "ir_extract: unsupported body array type {other:?}"
+                ))),
+            },
+        }
+    }
+}
+
+/// A per-row accessor over `ir_extract`'s `parser`/`key` arguments. These are
+/// always `Utf8` literals in the one call site (`lower_extract`), so the
+/// scalar branch is the hot path — extracted once, with no per-row or
+/// full-array allocation. The array branch exists for correctness (a
+/// hypothetical column-valued parser/key) and DataFusion's `signature()`
+/// coercion guarantees it arrives as plain `Utf8`.
+enum StrArg<'a> {
+    Scalar(Option<&'a str>),
+    Array(&'a StringArray),
+}
+
+impl<'a> StrArg<'a> {
+    fn value_at(&self, i: usize) -> Option<&'a str> {
+        match self {
+            StrArg::Scalar(s) => *s,
+            StrArg::Array(a) => (!a.is_null(i)).then(|| a.value(i)),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a ColumnarValue> for StrArg<'a> {
+    type Error = datafusion::error::DataFusionError;
+
+    fn try_from(cv: &'a ColumnarValue) -> Result<Self, Self::Error> {
+        match cv {
+            ColumnarValue::Scalar(
+                ScalarValue::Utf8(s) | ScalarValue::LargeUtf8(s) | ScalarValue::Utf8View(s),
+            ) => Ok(StrArg::Scalar(s.as_deref())),
+            ColumnarValue::Scalar(other) => {
+                Err(datafusion::error::DataFusionError::Internal(format!(
+                    "ir_extract: expected Utf8 scalar, got {:?}",
+                    other.data_type()
+                )))
+            }
+            ColumnarValue::Array(arr) => Ok(StrArg::Array(
+                arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                    datafusion::error::DataFusionError::Internal(
+                        "ir_extract: parser/key array not Utf8".into(),
+                    )
+                })?,
+            )),
+        }
+    }
 }
 
 /// Extract a single field from a log body by `parser`. Bounded, allocation-light.
@@ -1509,6 +1625,145 @@ mod tests {
             Some("5ms".to_string())
         );
         assert_eq!(extract_field("no match here", "logfmt", "level"), None);
+    }
+
+    /// Build a minimal `ScalarFunctionArgs` for direct `ExtractUdf` unit
+    /// tests, bypassing the planner/DataFrame machinery.
+    fn extract_args(args: Vec<ColumnarValue>, number_rows: usize) -> ScalarFunctionArgs {
+        let arg_fields = args
+            .iter()
+            .map(|a| Arc::new(Field::new("arg", a.data_type(), true)))
+            .collect();
+        ScalarFunctionArgs {
+            args,
+            arg_fields,
+            number_rows,
+            return_field: Arc::new(Field::new("ir_extract", DataType::Utf8, true)),
+            config_options: Arc::new(datafusion::config::ConfigOptions::default()),
+        }
+    }
+
+    fn extract_output_values(cv: ColumnarValue, len: usize) -> Vec<Option<String>> {
+        let arrays = ColumnarValue::values_to_arrays(&[cv]).unwrap();
+        let out = arrays[0].as_any().downcast_ref::<StringArray>().unwrap();
+        (0..len)
+            .map(|i| (!out.is_null(i)).then(|| out.value(i).to_string()))
+            .collect()
+    }
+
+    // ir_extract must not materialize the (always-scalar-in-practice) parser
+    // and key arguments into full-length arrays — this exercises the
+    // ColumnarValue::Scalar branch directly.
+    #[test]
+    fn ir_extract_udf_handles_scalar_parser_and_key_args() {
+        let udf = ExtractUdf::new();
+        let bodies: ArrayRef = Arc::new(StringArray::from(vec![
+            Some(r#"{"level":"error"}"#),
+            None,
+            Some(r#"{"level":"info"}"#),
+        ]));
+        let args = extract_args(
+            vec![
+                ColumnarValue::Array(bodies),
+                ColumnarValue::Scalar(ScalarValue::Utf8(Some("json".to_string()))),
+                ColumnarValue::Scalar(ScalarValue::Utf8(Some("level".to_string()))),
+            ],
+            3,
+        );
+        let out = udf.invoke_with_args(args).unwrap();
+        assert_eq!(
+            extract_output_values(out, 3),
+            vec![Some("error".to_string()), None, Some("info".to_string())]
+        );
+    }
+
+    // The signature must accept a Utf8View body (e.g. after DataFusion's
+    // string-view optimizations), not just plain Utf8.
+    #[test]
+    fn ir_extract_udf_handles_utf8view_body() {
+        let udf = ExtractUdf::new();
+        let bodies: ArrayRef = Arc::new(datafusion::arrow::array::StringViewArray::from(vec![
+            Some(r#"{"level":"warn"}"#),
+            Some(r#"{"other":"field"}"#),
+        ]));
+        let args = extract_args(
+            vec![
+                ColumnarValue::Array(bodies),
+                ColumnarValue::Scalar(ScalarValue::Utf8(Some("json".to_string()))),
+                ColumnarValue::Scalar(ScalarValue::Utf8(Some("level".to_string()))),
+            ],
+            2,
+        );
+        let out = udf.invoke_with_args(args).unwrap();
+        assert_eq!(
+            extract_output_values(out, 2),
+            vec![Some("warn".to_string()), None]
+        );
+    }
+
+    // LargeUtf8 body is accepted too, rounding out the three UTF-8 encodings
+    // the signature declares.
+    #[test]
+    fn ir_extract_udf_handles_large_utf8_body() {
+        let udf = ExtractUdf::new();
+        let bodies: ArrayRef = Arc::new(datafusion::arrow::array::LargeStringArray::from(vec![
+            Some("level=error dur=5ms"),
+        ]));
+        let args = extract_args(
+            vec![
+                ColumnarValue::Array(bodies),
+                ColumnarValue::Scalar(ScalarValue::Utf8(Some("logfmt".to_string()))),
+                ColumnarValue::Scalar(ScalarValue::Utf8(Some("dur".to_string()))),
+            ],
+            1,
+        );
+        let out = udf.invoke_with_args(args).unwrap();
+        assert_eq!(extract_output_values(out, 1), vec![Some("5ms".to_string())]);
+    }
+
+    // A genuine Utf8View `body` column, run through the exact call shape
+    // `lower_extract` builds (`ir_extract(col("body"), lit(parser),
+    // lit(key))`), end to end through DataFusion's real expression
+    // evaluation (not just a hand-built `ScalarFunctionArgs`) — this proves
+    // the signature's coercion/dispatch, not just the invoke body.
+    #[tokio::test]
+    async fn ir_extract_expr_runs_against_utf8view_column_via_dataframe() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "body",
+            DataType::Utf8View,
+            true,
+        )]));
+        let bodies: ArrayRef = Arc::new(datafusion::arrow::array::StringViewArray::from(vec![
+            Some(r#"{"level":"error"}"#),
+            Some(r#"{"level":"info"}"#),
+            None,
+        ]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![bodies]).unwrap();
+        let ctx = SessionContext::new();
+        ctx.register_batch("logs_view", batch).unwrap();
+        let df = ctx.table("logs_view").await.unwrap();
+
+        let udf = ScalarUDF::from(ExtractUdf::new());
+        let df = df
+            .with_column(
+                "level",
+                udf.call(vec![col("body"), lit("json"), lit("level")]),
+            )
+            .unwrap()
+            .select(vec![col("level")])
+            .unwrap();
+        let batches = df.collect().await.unwrap();
+        let mut values: Vec<Option<String>> = Vec::new();
+        for b in &batches {
+            let arr = b.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+            for i in 0..b.num_rows() {
+                values.push((!arr.is_null(i)).then(|| arr.value(i).to_string()));
+            }
+        }
+        assert_eq!(
+            values,
+            vec![Some("error".to_string()), Some("info".to_string()), None]
+        );
     }
 
     // Task 4.4 — absent-value semantics in the lowered plan.
