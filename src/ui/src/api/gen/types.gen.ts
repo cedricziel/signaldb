@@ -1753,11 +1753,24 @@ export type SearchTagValuesData = {
          */
         tag_name: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Window start (unix seconds)
+         */
+        start?: number;
+        /**
+         * Window end (unix seconds)
+         */
+        end?: number;
+    };
     url: '/tempo/api/search/tag/{tag_name}/values';
 };
 
 export type SearchTagValuesErrors = {
+    /**
+     * start/end are not unix-second timestamps
+     */
+    400: unknown;
     /**
      * Tag not queryable yet
      */

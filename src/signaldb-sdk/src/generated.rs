@@ -5933,9 +5933,13 @@ impl Client {
 
     Arguments:
     - `tag_name`: Tag name to fetch values for
+    - `end`: Window end (unix seconds)
+    - `start`: Window start (unix seconds)
     ```ignore
     let response = client.search_tag_values()
         .tag_name(tag_name)
+        .end(end)
+        .start(start)
         .send()
         .await;
     ```*/
@@ -8761,12 +8765,16 @@ pub mod builder {
     pub struct SearchTagValues<'a> {
         client: &'a super::Client,
         tag_name: Result<::std::string::String, String>,
+        end: Result<Option<i64>, String>,
+        start: Result<Option<i64>, String>,
     }
     impl<'a> SearchTagValues<'a> {
         pub fn new(client: &'a super::Client) -> Self {
             Self {
                 client: client,
                 tag_name: Err("tag_name was not initialized".to_string()),
+                end: Ok(None),
+                start: Ok(None),
             }
         }
         pub fn tag_name<V>(mut self, value: V) -> Self
@@ -8778,10 +8786,37 @@ pub mod builder {
             });
             self
         }
+        pub fn end<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i64>,
+        {
+            self.end = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i64` for end failed".to_string());
+            self
+        }
+        pub fn start<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i64>,
+        {
+            self.start = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `i64` for start failed".to_string());
+            self
+        }
         ///Sends a `GET` request to `/tempo/api/search/tag/{tag_name}/values`
         pub async fn send(self) -> Result<ResponseValue<types::TagValuesResponse>, Error<()>> {
-            let Self { client, tag_name } = self;
+            let Self {
+                client,
+                tag_name,
+                end,
+                start,
+            } = self;
             let tag_name = tag_name.map_err(Error::InvalidRequest)?;
+            let end = end.map_err(Error::InvalidRequest)?;
+            let start = start.map_err(Error::InvalidRequest)?;
             let url = format!(
                 "{}/tempo/api/search/tag/{}/values",
                 client.baseurl,
@@ -8800,6 +8835,8 @@ pub mod builder {
                     ::reqwest::header::ACCEPT,
                     ::reqwest::header::HeaderValue::from_static("application/json"),
                 )
+                .query(&progenitor_client::QueryParam::new("end", &end))
+                .query(&progenitor_client::QueryParam::new("start", &start))
                 .headers(header_map)
                 .build()?;
             let info = OperationInfo {
@@ -8811,6 +8848,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 501u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }

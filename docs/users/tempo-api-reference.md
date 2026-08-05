@@ -15,18 +15,34 @@ authentication headers described in [Authentication](authentication.md)
 
 ## Endpoints
 
-| Method | Path (under `/tempo`)             | Status      | Notes                                                                                                                                                           |
-| ------ | --------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/echo`                       | implemented | Returns `echo`; still requires auth headers                                                                                                                     |
-| GET    | `/api/traces/{trace_id}`          | implemented | Trace by ID; optional `start`/`end` (unix seconds) prune the scanned time range — pass a window bracketing the whole trace                                      |
-| GET    | `/api/v2/traces/{trace_id}`       | implemented | Same handler as v1                                                                                                                                              |
-| GET    | `/api/search`                     | implemented | Trace search, executed by the querier; `spss` caps spans per span set (`matched` still reports the full count; omitted = all spans)                             |
-| GET    | `/api/search/tags`                | implemented | Static list of searchable tags: `service.name`, `name`, `status`                                                                                                |
-| GET    | `/api/v2/search/tags`             | implemented | Same tags, grouped into `resource` and `intrinsic` scopes                                                                                                       |
-| GET    | `/api/search/tag/{tag}/values`    | partial     | Real distinct values for `service.name` and `name` (also `resource.`/`span.`-scoped forms); static `ok`/`error`/`unset` for `status`; **501** for any other tag |
-| GET    | `/api/v2/search/tag/{tag}/values` | partial     | Same behavior as v1, v2 response shape                                                                                                                          |
-| GET    | `/api/metrics/query`              | **501**     | TraceQL metrics not implemented                                                                                                                                 |
-| GET    | `/api/metrics/query_range`        | **501**     | TraceQL metrics not implemented                                                                                                                                 |
+| Method | Path (under `/tempo`)             | Status      | Notes                                                                                                                                                                                                                                                      |
+| ------ | --------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/echo`                       | implemented | Returns `echo`; still requires auth headers                                                                                                                                                                                                                |
+| GET    | `/api/traces/{trace_id}`          | implemented | Trace by ID; optional `start`/`end` (unix seconds) prune the scanned time range — pass a window bracketing the whole trace                                                                                                                                 |
+| GET    | `/api/v2/traces/{trace_id}`       | implemented | Same handler as v1                                                                                                                                                                                                                                         |
+| GET    | `/api/search`                     | implemented | Trace search, executed by the querier; `spss` caps spans per span set (`matched` still reports the full count; omitted = all spans)                                                                                                                        |
+| GET    | `/api/search/tags`                | implemented | Static list of searchable tags: `service.name`, `name`, `status`                                                                                                                                                                                           |
+| GET    | `/api/v2/search/tags`             | implemented | Same tags, grouped into `resource` and `intrinsic` scopes                                                                                                                                                                                                  |
+| GET    | `/api/search/tag/{tag}/values`    | partial     | Real distinct values for `service.name` and `name` (also `resource.`/`span.`-scoped forms); static `ok`/`error`/`unset` for `status`; **501** for any other tag. Honors `start`/`end` (unix seconds) — see [Tag value time window](#tag-value-time-window) |
+| GET    | `/api/v2/search/tag/{tag}/values` | partial     | Same behavior as v1 (including `start`/`end`), v2 response shape                                                                                                                                                                                           |
+| GET    | `/api/metrics/query`              | **501**     | TraceQL metrics not implemented                                                                                                                                                                                                                            |
+| GET    | `/api/metrics/query_range`        | **501**     | TraceQL metrics not implemented                                                                                                                                                                                                                            |
+
+## Tag value time window
+
+Tag-value endpoints (`/api/search/tag/{tag}/values` and the v2 variant)
+scan only a bounded time window of the traces table:
+
+- `start` and `end` query parameters are unix **seconds**, matching
+  Tempo's API. Grafana sends them automatically for tag dropdowns.
+- When `end` is absent it defaults to now; when `start` is absent it
+  defaults to 24 hours before `end`. A request without either parameter
+  therefore returns values seen in the last 24 hours — never a scan of
+  all stored data.
+- Values that are too large to be unix seconds (typically milliseconds
+  from a client that guessed the wrong unit) are rejected with **400**.
+
+Values are deduplicated, sorted, and capped at 1000 per tag.
 
 ## Span fields beyond Tempo's
 
@@ -50,15 +66,15 @@ timings (`Server-Timing` with `traceparent`, `querier`/`convert`/`total`
 
 ## Error mapping
 
-| HTTP status | Meaning                                                                      |
-| ----------- | ---------------------------------------------------------------------------- |
-| 400         | Invalid search parameters (missing/invalid headers also yield 400 from auth) |
-| 401 / 403   | Authentication or authorization failure                                      |
-| 404         | Trace not found                                                              |
-| 429         | Per-tenant query rate limit exceeded                                         |
-| 501         | Feature not implemented (TraceQL metrics, unindexed tag values)              |
-| 503         | No querier service available                                                 |
-| 504         | Query deadline exceeded (server-side budget, or the caller's own deadline)   |
+| HTTP status | Meaning                                                                                                                                |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 400         | Invalid search parameters, including `start`/`end` values that are not unix seconds (missing/invalid headers also yield 400 from auth) |
+| 401 / 403   | Authentication or authorization failure                                                                                                |
+| 404         | Trace not found                                                                                                                        |
+| 429         | Per-tenant query rate limit exceeded                                                                                                   |
+| 501         | Feature not implemented (TraceQL metrics, unindexed tag values)                                                                        |
+| 503         | No querier service available                                                                                                           |
+| 504         | Query deadline exceeded (server-side budget, or the caller's own deadline)                                                             |
 
 A query that runs out of time is always a 504, never a 500 — whether the
 querier's `query_timeout` fired or the router's Flight channel deadline did.
