@@ -383,8 +383,17 @@ async fn test_acceptor_writer_flow() {
         acceptor_unprocessed.len()
     );
 
-    // Verify WAL entries were processed on the writer side too
-    let unprocessed = writer_wal.get_unprocessed_entries().await.unwrap();
+    // Verify WAL entries get marked processed on the writer side too. The
+    // mark happens asynchronously after the Iceberg commit (object-store
+    // visibility precedes it), so poll rather than assert instantly.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let unprocessed = loop {
+        let unprocessed = writer_wal.get_unprocessed_entries().await.unwrap();
+        if unprocessed.is_empty() || Instant::now() >= deadline {
+            break unprocessed;
+        }
+        sleep(Duration::from_millis(100)).await;
+    };
     assert_eq!(
         unprocessed.len(),
         0,
