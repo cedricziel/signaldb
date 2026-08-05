@@ -28,7 +28,7 @@ pub mod rewriter;
 pub mod scheduler;
 
 // Re-export commonly used types
-pub use commit::{DataFileChange, IcebergCommitter, is_conflict_error};
+pub use commit::{CommitError, DataFileChange, IcebergCommitter, is_conflict_error};
 pub use executor::{
     CompactionExecutor, CompactionJob, CompactionResult, CompactionStatus, DataFileInfo,
     ExecutorConfig,

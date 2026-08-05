@@ -238,49 +238,17 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
             );
         }
         CompactionStatus::Failed => {
-            // KNOWN-ISSUE: with the Barrier-synchronized tight overlap this
-            // test now exercises, this branch is hit deterministically on
-            // this machine -- and it is masking a real compactor bug, not
-            // an acceptable outcome, so we pin it precisely rather than
-            // accepting any `Failed` status.
-            //
-            // `compactor::commit::is_conflict_error` (src/compactor/src/commit.rs)
-            // classifies retryable OCC conflicts by keyword-matching
-            // `anyhow::Error::to_string()`. But the only call site
-            // (executor.rs `execute_job`) wraps `commit_compaction()`'s
-            // result in `.context("Failed to commit compaction")` before
-            // that check ever sees it. `anyhow::Error`'s `Display` (what
-            // `.to_string()` uses) renders *only* the outermost context
-            // message, not the chain -- so the nested cause actually
-            // produced by a losing race, e.g. "Snapshot conflict: table
-            // snapshot changed from X to Y during compaction" (or the
-            // post-commit-verification variant), never reaches
-            // `is_conflict_error`. Every commit-time conflict is therefore
-            // misrouted to `CompactionStatus::Failed` and never retried --
-            // the conflict-retry path this test was written to exercise is
-            // effectively dead code. Confirmed by temporarily switching the
-            // `tracing::error!` in executor.rs to `{e:?}` and observing the
-            // full chain.
-            //
-            // Fixing `is_conflict_error` is a compactor behavior change,
-            // out of scope for this test-determinism cleanup -- reported
-            // instead so it can be fixed and this pin removed.
-            let is_pinned_known_issue =
-                result.error.as_deref() == Some("Failed to commit compaction");
-            assert!(
-                is_pinned_known_issue,
-                "Compaction failed with an unexpected non-conflict error -- concurrent OCC \
-                 writes should only ever produce Success, a recognized Conflict, or the pinned \
-                 known-issue commit failure, so this is a real bug: {:?}",
+            // Self-authored OCC losses are now typed
+            // (`compactor::commit::CommitError::SnapshotConflict`) and
+            // `is_conflict_error` matches on the type through any
+            // `.context(...)` wrapping (plus scanning the full cause chain
+            // for stringly-typed iceberg-rust errors), so a lost race must
+            // surface as `Conflict` (or `Success` after a retry). A `Failed`
+            // status under concurrent OCC writes is a real bug again.
+            panic!(
+                "Compaction reported Failed under concurrent OCC writes; commit-time conflicts \
+                 must be classified as Conflict and retried: {:?}",
                 result.error
-            );
-            log::warn!(
-                "KNOWN-ISSUE: compaction lost the OCC race and was misclassified as Failed \
-                 instead of Conflict (see comment above) -- accepting this pinned outcome."
-            );
-            assert_eq!(
-                summary.jobs_failed, 1,
-                "Failed status must be reflected in the failed-jobs metric"
             );
         }
     }
