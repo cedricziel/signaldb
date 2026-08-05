@@ -449,7 +449,7 @@ impl WalProcessor {
             signaldb.tenant.id = %tenant_id,
             signaldb.dataset.id = %dataset_id,
             signaldb.table = %table_name,
-            signaldb.wal.entry_count = entries.len()
+            signaldb.wal.entry_count = entries.len() as i64
         )
     )]
     async fn process_batch_for_table(

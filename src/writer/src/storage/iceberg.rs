@@ -262,7 +262,7 @@ impl IcebergTableWriter {
         fields(
             signaldb.tenant.id = %self.tenant_id,
             signaldb.dataset.id = %self.dataset_id,
-            signaldb.wal.entry_count = entries.len()
+            signaldb.wal.entry_count = entries.len() as i64
         )
     )]
     pub async fn append_batches_with_marker(

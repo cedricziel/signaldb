@@ -186,3 +186,91 @@ groups:
         BTreeSet::from(["signaldb.tenant.id", "signaldb.dataset.id"])
     );
 }
+
+/// Map each `- id: signaldb.*` registry entry to its declared `type:`.
+fn declared_registry_types(registry_yaml: &str) -> std::collections::BTreeMap<String, String> {
+    let mut types = std::collections::BTreeMap::new();
+    let mut current: Option<String> = None;
+    for line in registry_yaml.lines() {
+        let trimmed = line.trim();
+        if let Some(id) = trimmed.strip_prefix("- id: ") {
+            current = id.starts_with("signaldb.").then(|| id.to_string());
+        } else if let Some(ty) = trimmed.strip_prefix("type: ")
+            && let Some(id) = current.take()
+        {
+            types.insert(id, ty.to_string());
+        }
+    }
+    types
+}
+
+/// Extract `(attribute, rhs)` pairs for every `signaldb.*` macro field
+/// assignment and `record("signaldb...", value)` call in `content`. The rhs
+/// is the expression text up to the closing delimiter of the field.
+fn signaldb_field_assignments(content: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (i, _) in content.match_indices("signaldb.") {
+        let tail = &content[i..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_'))
+            .unwrap_or(tail.len());
+        let attr = tail[..end].trim_end_matches('.').to_string();
+        if attr.matches('.').count() < 1 {
+            continue;
+        }
+        let rest = tail[end..].trim_start();
+        let rhs = if let Some(rhs) = rest.strip_prefix('=').filter(|r| !r.starts_with('=')) {
+            rhs
+        } else if content[..i].ends_with("record(\"") {
+            rest.strip_prefix("\",").unwrap_or(rest)
+        } else {
+            continue;
+        };
+        let rhs_end = rhs.find([',', ';', '\n']).unwrap_or(rhs.len());
+        out.push((attr, rhs[..rhs_end].trim().to_string()));
+    }
+    out
+}
+
+/// The tracing→OTel bridge visitors implement `record_i64` but not
+/// `record_u64`, so `u64`/`usize` field values fall through to
+/// `record_debug` and export as *strings* — silently violating the
+/// registry's `type: int` declarations under `weaver registry live-check`.
+/// Pin every int-typed registry attribute emission to an explicit `as i64`
+/// cast (a deferred `Empty` field is fine: its later `record()` call is
+/// scanned too).
+#[test]
+fn int_registry_attributes_are_emitted_as_i64() {
+    let registry = registry_yaml();
+    let int_attrs: BTreeSet<String> = declared_registry_types(&registry)
+        .into_iter()
+        .filter(|(_, ty)| ty == "int")
+        .map(|(id, _)| id)
+        .collect();
+    assert!(
+        !int_attrs.is_empty(),
+        "registry declares no int attributes?"
+    );
+
+    let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src");
+    let mut offending = Vec::new();
+    for path in rust_files_under(&src_root) {
+        if path.ends_with("common/tests/registry_pins.rs") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        for (attr, rhs) in signaldb_field_assignments(&content) {
+            if int_attrs.contains(&attr)
+                && !(rhs.contains("as i64") || rhs.contains("Empty") || rhs.ends_with(")]"))
+            {
+                offending.push(format!("{}: {attr} = {rhs}", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        offending.is_empty(),
+        "int-typed registry attributes emitted without an `as i64` cast \
+         (u64/usize bridge as strings): {offending:#?}"
+    );
+}
