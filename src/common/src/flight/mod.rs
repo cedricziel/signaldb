@@ -27,6 +27,7 @@ use tonic::service::interceptor::InterceptedService;
 pub mod auth;
 pub mod chunk;
 pub mod conversion;
+pub mod decode;
 pub mod schema;
 pub mod trace_context;
 pub mod transport;
