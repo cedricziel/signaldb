@@ -80,18 +80,6 @@ pub struct OrphanCleanupConfig {
     #[serde(default = "default_revalidate_before_delete")]
     pub revalidate_before_delete: bool,
 
-    /// Maximum age in hours for snapshots to include in orphan detection.
-    ///
-    /// The detector only scans snapshots within this age window. Files
-    /// referenced exclusively by snapshots older than this age will NOT
-    /// be included in the live file set and may be considered orphaned.
-    ///
-    /// Default: 720 hours (30 days)
-    ///
-    /// Env: SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__MAX_SNAPSHOT_AGE_HOURS
-    #[serde(default = "default_max_snapshot_age_hours")]
-    pub max_snapshot_age_hours: u64,
-
     /// Maximum estimated live file count before orphan cleanup is skipped.
     ///
     /// Before reading all manifest files, the detector sums the file counts
@@ -130,10 +118,6 @@ fn default_revalidate_before_delete() -> bool {
     true // Extra safety by default
 }
 
-fn default_max_snapshot_age_hours() -> u64 {
-    720 // 30 days
-}
-
 fn default_max_live_files_threshold() -> usize {
     500_000
 }
@@ -147,7 +131,6 @@ impl Default for OrphanCleanupConfig {
             batch_size: default_batch_size(),
             dry_run: default_dry_run(),
             revalidate_before_delete: default_revalidate_before_delete(),
-            max_snapshot_age_hours: default_max_snapshot_age_hours(),
             max_live_files_threshold: default_max_live_files_threshold(),
         }
     }
@@ -162,7 +145,6 @@ impl From<common::config::OrphanCleanupConfig> for OrphanCleanupConfig {
             batch_size: config.batch_size,
             dry_run: config.dry_run,
             revalidate_before_delete: config.revalidate_before_delete,
-            max_snapshot_age_hours: config.max_snapshot_age_hours,
             max_live_files_threshold: config.max_live_files_threshold,
         }
     }
@@ -175,7 +157,6 @@ impl OrphanCleanupConfig {
     /// - Grace period is positive
     /// - Cleanup interval is positive
     /// - Batch size is positive
-    /// - Max snapshot age is positive
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.grace_period_hours == 0 {
             anyhow::bail!(
@@ -195,13 +176,6 @@ impl OrphanCleanupConfig {
             anyhow::bail!("batch_size must be positive, got {}", self.batch_size);
         }
 
-        if self.max_snapshot_age_hours == 0 {
-            anyhow::bail!(
-                "max_snapshot_age_hours must be positive, got {}",
-                self.max_snapshot_age_hours
-            );
-        }
-
         Ok(())
     }
 
@@ -213,11 +187,6 @@ impl OrphanCleanupConfig {
     /// Get the cleanup interval as a Duration.
     pub fn cleanup_interval(&self) -> Duration {
         Duration::from_secs(self.cleanup_interval_hours * 3600)
-    }
-
-    /// Get the max snapshot age as a Duration.
-    pub fn max_snapshot_age(&self) -> Duration {
-        Duration::from_secs(self.max_snapshot_age_hours * 3600)
     }
 }
 
@@ -243,7 +212,6 @@ mod tests {
         assert_eq!(config.grace_period_hours, 24);
         assert_eq!(config.cleanup_interval_hours, 24);
         assert_eq!(config.batch_size, 1000);
-        assert_eq!(config.max_snapshot_age_hours, 720);
     }
 
     #[test]
@@ -278,7 +246,6 @@ mod tests {
         let config = OrphanCleanupConfig {
             grace_period_hours: 24,
             cleanup_interval_hours: 48,
-            max_snapshot_age_hours: 720,
             ..Default::default()
         };
 
@@ -291,11 +258,6 @@ mod tests {
             config.cleanup_interval(),
             Duration::from_secs(48 * 3600),
             "Cleanup interval conversion"
-        );
-        assert_eq!(
-            config.max_snapshot_age(),
-            Duration::from_secs(720 * 3600),
-            "Max snapshot age conversion"
         );
     }
 }

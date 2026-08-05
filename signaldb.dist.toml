@@ -395,8 +395,6 @@ grace_period_hours = 24               # Don't delete files younger than this (de
                                       # Protects against in-flight writes and race conditions
 revalidate_before_delete = true       # Re-check file status before deletion (recommended: true)
                                       # Adds ~10% overhead but prevents accidental deletion
-max_snapshot_age_hours = 720          # Consider snapshots within last N hours (default: 720 = 30 days)
-                                      # Files referenced by older snapshots may be incorrectly flagged
 
 # Performance Settings
 batch_size = 1000                     # Process N files per batch (default: 1000)
@@ -410,12 +408,13 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # Orphan Cleanup Safety Explained:
 # 1. Grace Period: Files younger than grace_period_hours are NEVER deleted
 # 2. Revalidation: Before deletion, re-check if file is still orphaned (catches races)
-# 3. Snapshot Window: Only scan recent snapshots to reduce memory usage
+# 3. Retained-Snapshot Live Set: files referenced by ANY retained snapshot are never candidates;
+#    snapshot expiration ([compactor.retention].snapshots_to_keep) makes files eligible
 # 4. Batch Processing: Process in batches with progress tracking for resumability
 #
 # Tuning Guidance:
 # - High-volume systems: increase batch_size (2000-5000), add rate_limit_delay_ms
-# - Low-memory systems: decrease batch_size (250-500), reduce max_snapshot_age_hours
+# - Low-memory systems: decrease batch_size (250-500), reduce [compactor.retention] snapshots_to_keep
 # - Aggressive cleanup: reduce grace_period_hours (12h), reduce cleanup_interval_hours (12h for more frequent runs)
 
 # Self-monitoring: SignalDB observes itself (dogfooding).

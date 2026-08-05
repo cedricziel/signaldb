@@ -653,11 +653,12 @@ snapshots_to_keep = 3
 # Reduce batch size (less memory, more checkpoints)
 batch_size = 500
 
-# Reduce snapshot window (less history to scan)
-max_snapshot_age_hours = 168  # 7 days instead of 30
-
 # Run less frequently (lower peak load)
 cleanup_interval_hours = 48  # Every 2 days
+
+# Keep fewer snapshots retained (less history to scan)
+[compactor.retention]
+snapshots_to_keep = 5
 
 # Bound memory by skipping tables with too many estimated live files
 # (skips are counted in compactor_orphan_cleanup_skipped_total)
