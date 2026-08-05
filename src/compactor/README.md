@@ -53,8 +53,8 @@ traces = "30d"
 traces = "90d"
 
 [compactor.orphan_cleanup]
-enabled = true
-dry_run = true                    # Start with dry-run; set false to delete
+enabled = true                    # default: true
+dry_run = false                   # default: false; set true to observe first
 cleanup_interval_hours = 24
 grace_period_hours = 24
 batch_size = 1000

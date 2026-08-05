@@ -208,8 +208,8 @@ Scores persisted attribute stats (compactor scan stats + querier demand counters
 
 ```toml
 [compactor.orphan_cleanup]
-enabled = false                       # Enable orphan cleanup (opt-in)
-dry_run = true                        # Log orphans without deleting (safe default)
+enabled = true                        # Enable orphan cleanup (default: true)
+dry_run = false                       # Set true to log orphans without deleting
 cleanup_interval_hours = 24           # Run cleanup every N hours
 grace_period_hours = 24               # Don't delete files younger than this
 revalidate_before_delete = true       # Re-check file status before deletion

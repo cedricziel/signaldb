@@ -984,3 +984,87 @@ async fn revalidation_skips_live_files_and_deletes_orphans() -> Result<()> {
     );
     Ok(())
 }
+
+/// Metadata reclamation (#935/#959): unreferenced metadata files — old
+/// metadata.json versions that fell out of the metadata-log and
+/// manifest/manifest-list avro of expired snapshots — must be flagged,
+/// while everything the table still references (current metadata.json,
+/// metadata-log entries, retained snapshots' manifest lists, manifests,
+/// version-hint.text) must never be.
+#[tokio::test]
+async fn metadata_orphans_are_reclaimed_but_live_metadata_is_protected() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+
+    let ctx = RetentionTestContext::new_in_memory().await?;
+
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let table_name = "traces";
+    let mut writer = ctx.create_table(tenant_id, dataset_id, table_name).await?;
+
+    // A few commits so the metadata directory has real, referenced files.
+    let config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 1,
+        rows_per_file: 20,
+        base_timestamp: Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    for _ in 0..3 {
+        generators::generate_traces(&mut writer, &config).await?;
+    }
+
+    let table_identifier = ctx
+        .catalog_manager()
+        .build_table_identifier(tenant_id, dataset_id, table_name);
+    let table_store = match ctx
+        .catalog_manager()
+        .catalog()
+        .load_tabular(&table_identifier)
+        .await?
+    {
+        Tabular::Table(t) => t.object_store(),
+        _ => anyhow::bail!("expected a table"),
+    };
+
+    // Inject unreferenced metadata files: a metadata.json version that fell
+    // out of the metadata-log and an expired snapshot's manifest list.
+    let metadata_dir = format!("{tenant_id}/{dataset_id}/{table_name}/metadata");
+    let orphan_metadata =
+        format!("{metadata_dir}/00000-dead0000-dead-dead-dead-deaddead0000.metadata.json");
+    let orphan_avro = format!("{metadata_dir}/snap-4242424242424242424-0-dead0000.avro");
+    let junk = bytes::Bytes::from(vec![0u8; 256]);
+    for path in [&orphan_metadata, &orphan_avro] {
+        table_store
+            .put(&ObjectPath::from(path.as_str()), junk.clone().into())
+            .await?;
+    }
+
+    let detector_config = OrphanCleanupConfig {
+        enabled: true,
+        grace_period_hours: 0,
+        batch_size: 100,
+        dry_run: false,
+        revalidate_before_delete: false,
+        cleanup_interval_hours: 24,
+        max_live_files_threshold: 500_000,
+    };
+    let detector = OrphanDetector::new(detector_config, ctx.catalog_manager().clone(), table_store);
+
+    let orphans = detector
+        .identify_orphan_metadata_candidates(tenant_id, dataset_id, table_name)
+        .await?;
+
+    let found: std::collections::HashSet<_> = orphans.iter().map(|o| o.path.as_str()).collect();
+    assert_eq!(
+        found,
+        [orphan_metadata.as_str(), orphan_avro.as_str()]
+            .into_iter()
+            .collect(),
+        "exactly the injected unreferenced metadata files must be flagged"
+    );
+    Ok(())
+}

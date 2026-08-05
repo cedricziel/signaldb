@@ -1,0 +1,9 @@
+language: en-US
+reviews:
+  # CodeRabbit submits "Request changes" and flips to "Approve" once all of
+  # its review comments are resolved — making its approval a real merge
+  # signal instead of advisory comments.
+  request_changes_workflow: true
+  auto_review:
+    enabled: true
+    drafts: false

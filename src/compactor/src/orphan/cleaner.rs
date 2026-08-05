@@ -257,21 +257,30 @@ impl OrphanCleaner {
             .as_ref()
             .context("Detector required for revalidation but not provided")?;
 
-        // One freshly-loaded live set per table in this batch. `None` marks
-        // a table whose set could not be built (bad identifier or load
+        // One freshly-loaded live set per (table, candidate kind) in this
+        // batch: metadata candidates check the metadata reference set, data
+        // candidates the data-file set across all retained snapshots. `None`
+        // marks a set that could not be built (bad identifier or load
         // failure): its candidates are skipped, never deleted blind.
-        let mut live_sets: HashMap<&str, Option<HashSet<String>>> = HashMap::new();
+        let mut live_sets: HashMap<(&str, bool), Option<HashSet<String>>> = HashMap::new();
         for candidate in batch {
             let identifier = candidate.table_identifier.as_str();
-            if live_sets.contains_key(identifier) {
+            let is_metadata = candidate.path.contains("/metadata/");
+            if live_sets.contains_key(&(identifier, is_metadata)) {
                 continue;
             }
             let parts: Vec<&str> = identifier.split('/').collect();
             let set = if let [tenant_id, dataset_id, table_name] = parts[..] {
-                match detector
-                    .live_file_set_for_table(tenant_id, dataset_id, table_name)
-                    .await
-                {
+                let built = if is_metadata {
+                    detector
+                        .live_metadata_set_for_table(tenant_id, dataset_id, table_name)
+                        .await
+                } else {
+                    detector
+                        .live_file_set_for_table(tenant_id, dataset_id, table_name)
+                        .await
+                };
+                match built {
                     Ok(set) => Some(set),
                     Err(e) => {
                         tracing::error!(
@@ -289,15 +298,16 @@ impl OrphanCleaner {
                 );
                 None
             };
-            live_sets.insert(identifier, set);
+            live_sets.insert((identifier, is_metadata), set);
         }
 
         let mut validated = vec![];
         for candidate in batch {
-            match live_sets
-                .get(candidate.table_identifier.as_str())
-                .and_then(|set| set.as_ref())
-            {
+            let key = (
+                candidate.table_identifier.as_str(),
+                candidate.path.contains("/metadata/"),
+            );
+            match live_sets.get(&key).and_then(|set| set.as_ref()) {
                 None => {} // set unavailable: skipped for safety (logged above)
                 Some(live) if live.contains(&candidate.path) => {
                     // File is now referenced, skip deletion

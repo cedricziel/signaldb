@@ -386,8 +386,8 @@ metrics = "30d"                       # Metric data retention (default: 30 days)
 # max_promotions_per_cycle = 4  # Promotion cap per rewrite cycle
 
 [compactor.orphan_cleanup]
-enabled = false                       # Enable orphan cleanup (opt-in, default: false)
-dry_run = true                        # Log orphans without deleting (safe default: true)
+enabled = true                        # Enable orphan cleanup (default: true)
+dry_run = false                       # Set true to log orphans without deleting (default: false)
 cleanup_interval_hours = 24           # Run cleanup every N hours (default: 24, once per day)
 
 # Safety Settings (conservative defaults)
