@@ -439,13 +439,13 @@ mod tests {
         palette.input.set_text("t");
         palette.compute_and_update_completions();
 
-        // Tab should fill with first completion
+        // completions for "t" are ["tenant", "time"]; Tab increments
+        // selected_completion (0 -> 1) before indexing, so it lands on "time".
         let action = palette.handle_key(press(KeyCode::Tab));
         assert_eq!(action, PaletteAction::None);
 
-        // Input should now contain the first completion
         let text = palette.input.text();
-        assert!(text == "tenant" || text == "time");
+        assert_eq!(text, "time");
     }
 
     #[test]

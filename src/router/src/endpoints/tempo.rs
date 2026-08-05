@@ -1306,20 +1306,6 @@ pub async fn metrics_query_range() -> Result<axum::Json<MetricsResponse>, ApiErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::extract::State;
-    use common::catalog::Catalog;
-
-    async fn create_test_catalog() -> Catalog {
-        // For testing, we'll need to use a real PostgreSQL connection or mock
-        // Since we don't want to require a DB for unit tests, let's skip the catalog tests for now
-        // and focus on testing the service registry logic separately
-
-        // This is a placeholder - in a real test we'd either:
-        // 1. Use a test database
-        // 2. Create a mock catalog implementation
-        // 3. Use dependency injection for testability
-        panic!("Catalog tests require database setup - skipping for now")
-    }
 
     fn make_span(span_id: &str, start: u64) -> common::model::span::Span {
         common::model::span::Span {
@@ -1681,45 +1667,128 @@ mod tests {
         assert_eq!(uncapped.span_sets[0].matched, 5);
     }
 
-    #[tokio::test]
-    #[ignore = "Requires database setup"]
-    async fn test_search_result() {
-        // This test is disabled because it requires a real database connection
-        // To enable this test, set up a test database and update the catalog creation logic
+    // ---- Router-level tests: the routed handlers, not just the helpers ----
+    //
+    // No real database/catalog setup is needed: `Catalog::new("sqlite::memory:")`
+    // is sufficient, matching the pattern used in admin.rs/session.rs/logql.rs.
 
-        // Create a mock state
-        let catalog = create_test_catalog().await;
-        let state = crate::RouterAppState::new(catalog, common::config::Configuration::default());
+    mod handlers {
+        use crate::{RouterAppState, create_router};
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use common::catalog::Catalog;
+        use common::config::{ApiKeyConfig, Configuration, TenantConfig};
+        use tower::ServiceExt;
 
-        let query = tempo_api::SearchQueryParams {
-            start: None,
-            end: None,
-            limit: None,
-            tags: None,
-            min_duration: None,
-            max_duration: None,
-            q: None,
-            spss: None,
-        };
+        fn test_config() -> Configuration {
+            let mut config = Configuration::default();
+            config.auth = common::config::AuthConfig {
+                tenants: vec![TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme".to_string(),
+                    default_dataset: Some("default".to_string()),
+                    datasets: vec![],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "sk-test-key".to_string(),
+                        name: Some("test".to_string()),
+                    }],
+                    schema_config: None,
+                    limits: None,
+                }],
+                ..Default::default()
+            };
+            config
+        }
 
-        // Create a test tenant context
-        let tenant_ctx = common::auth::TenantContext::new(
-            "test-tenant".to_string(),
-            "test-dataset".to_string(),
-            "test-tenant".to_string(),
-            "test-dataset".to_string(),
-            None,
-            common::auth::TenantSource::Config,
-        );
+        async fn test_app() -> axum::Router {
+            let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+            create_router(RouterAppState::new(catalog, test_config()))
+        }
 
-        let result = search(
-            State(state),
-            common::auth::TenantContextExtractor(tenant_ctx),
-            Query(query),
-        )
-        .await
-        .unwrap();
-        assert_eq!(result.0.traces.len(), 0);
-        assert_eq!(result.0.metrics.len(), 0);
+        async fn authed_get(app: &axum::Router, uri: &str) -> StatusCode {
+            let request = Request::builder()
+                .uri(uri)
+                .header("authorization", "Bearer sk-test-key")
+                .header("x-tenant-id", "acme")
+                .body(Body::empty())
+                .unwrap();
+            app.clone().oneshot(request).await.unwrap().status()
+        }
+
+        #[tokio::test]
+        async fn search_without_a_querier_is_service_unavailable() {
+            // A valid search with no discovered querier surfaces 503, not a
+            // panic or a fabricated empty 200.
+            let app = test_app().await;
+            assert_eq!(
+                authed_get(&app, "/tempo/api/search").await,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+
+        #[tokio::test]
+        async fn query_single_trace_without_a_querier_is_service_unavailable() {
+            let app = test_app().await;
+            assert_eq!(
+                authed_get(&app, "/tempo/api/traces/abc123").await,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+
+        #[tokio::test]
+        async fn search_tag_values_for_unsupported_tag_is_not_implemented() {
+            // "duration" has no queryable column and isn't the synthetic
+            // "status" tag, so it must 501 without ever reaching a querier.
+            let app = test_app().await;
+            assert_eq!(
+                authed_get(&app, "/tempo/api/search/tag/duration/values").await,
+                StatusCode::NOT_IMPLEMENTED
+            );
+        }
+
+        #[tokio::test]
+        async fn search_tag_values_for_supported_tag_without_a_querier_is_service_unavailable() {
+            // "service.name" maps to a real column and requires a querier
+            // round-trip, unlike the unsupported-tag case above.
+            let app = test_app().await;
+            assert_eq!(
+                authed_get(&app, "/tempo/api/search/tag/service.name/values").await,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+
+        #[tokio::test]
+        async fn metrics_query_range_is_not_implemented() {
+            let app = test_app().await;
+            // `q` is a required param: without it the Query extractor answers
+            // 400 before the handler runs. A well-formed request must get the
+            // handler's 501 (TraceQL metrics unimplemented, #552).
+            assert_eq!(
+                authed_get(&app, "/tempo/api/metrics/query_range?q=%7B%7D").await,
+                StatusCode::NOT_IMPLEMENTED
+            );
+        }
+
+        #[tokio::test]
+        async fn tempo_endpoints_require_authentication() {
+            let app = test_app().await;
+
+            let request = Request::builder()
+                .uri("/tempo/api/search")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+            let request = Request::builder()
+                .uri("/tempo/api/search")
+                .header("authorization", "Bearer sk-wrong-key")
+                .header("x-tenant-id", "acme")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
     }
 }

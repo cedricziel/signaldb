@@ -224,9 +224,59 @@ async fn setup_prometheus_test_with_wal() -> (axum::Router, Arc<WalManager>, Tem
     (app, wal_manager, temp_dir)
 }
 
+/// Finds the WAL entry whose metadata targets `target_table`, decodes its
+/// record batch, and returns the `metric_name` and `value` of row 0.
+async fn decoded_metric_row(wal_manager: &Arc<WalManager>, target_table: &str) -> (String, f64) {
+    let wal = wal_manager
+        .get_wal("test-tenant", "metrics", "metrics")
+        .await
+        .expect("WAL for tenant");
+    let entries = wal.get_entries().await.expect("WAL entries");
+    assert!(!entries.is_empty(), "expected WAL entries for ingestion");
+
+    let entry = entries
+        .iter()
+        .find(|e| {
+            e.metadata
+                .as_deref()
+                .map(|m| m.contains(&format!("\"target_table\":\"{target_table}\"")))
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| panic!("WAL entry targeting {target_table}"));
+
+    let data = wal.read_entry_data(entry).await.expect("WAL entry data");
+    let batch = common::wal::bytes_to_record_batch(&data).expect("record batch");
+    assert!(
+        batch.num_rows() > 0,
+        "expected rows in {target_table} batch"
+    );
+
+    let schema = batch.schema();
+    let name_idx = schema.index_of("name").expect("name column");
+    let data_idx = schema.index_of("data_json").expect("data_json column");
+    let names = batch
+        .column(name_idx)
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::StringArray>()
+        .expect("string name column");
+    let data_json = batch
+        .column(data_idx)
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::StringArray>()
+        .expect("string data_json column");
+
+    let data: serde_json::Value =
+        serde_json::from_str(data_json.value(0)).expect("data_json parses as JSON");
+    let value = data[0]["value"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("numeric [0].value in data_json: {data}"));
+
+    (names.value(0).to_string(), value)
+}
+
 #[tokio::test]
 async fn test_prometheus_remote_write_gauge() {
-    let (app, _temp_dir) = setup_prometheus_test().await;
+    let (app, wal_manager, _temp_dir) = setup_prometheus_test_with_wal().await;
 
     // Create a simple gauge metric
     let request = PrometheusWriteRequest {
@@ -274,11 +324,20 @@ async fn test_prometheus_remote_write_gauge() {
         StatusCode::NO_CONTENT,
         "Expected 204 No Content for successful remote_write"
     );
+
+    // The gauge must actually land in the gauge table with the right name
+    // and value, not just be accepted and dropped.
+    let (name, value) = decoded_metric_row(&wal_manager, "metrics_gauge").await;
+    assert_eq!(name, "temperature_celsius");
+    assert!(
+        (value - 23.5).abs() < 1e-9,
+        "expected value 23.5, got {value}"
+    );
 }
 
 #[tokio::test]
 async fn test_prometheus_remote_write_counter() {
-    let (app, _temp_dir) = setup_prometheus_test().await;
+    let (app, wal_manager, _temp_dir) = setup_prometheus_test_with_wal().await;
 
     // Create a counter metric with _total suffix
     let request = PrometheusWriteRequest {
@@ -326,6 +385,19 @@ async fn test_prometheus_remote_write_counter() {
     let response = app.oneshot(http_request).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // The counter must actually land in the sum table (counters are stored
+    // as monotonic sums) with the right name and value, not just be
+    // accepted and dropped.
+    let (name, value) = decoded_metric_row(&wal_manager, "metrics_sum").await;
+    // Per the OTel<->Prometheus compatibility spec the _total suffix is
+    // stripped on ingest (stored OTel-native) and re-added by from_otel on
+    // the Prometheus read surface.
+    assert_eq!(name, "http_requests");
+    assert!(
+        (value - 1234.0).abs() < 1e-9,
+        "expected value 1234.0, got {value}"
+    );
 }
 
 #[tokio::test]

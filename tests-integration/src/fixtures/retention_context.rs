@@ -144,7 +144,22 @@ mod tests {
     #[tokio::test]
     async fn test_create_retention_context() -> Result<()> {
         let ctx = RetentionTestContext::new_in_memory().await?;
-        assert!(Arc::strong_count(ctx.catalog_manager()) >= 1);
+
+        // Exercise the context end-to-end by creating a real Iceberg table
+        // through it, proving the catalog and storage components are wired
+        // together correctly rather than merely constructed.
+        let writer = ctx
+            .create_table("test_tenant", "test_dataset", "traces")
+            .await?;
+
+        assert_eq!(writer.table_identifier().name(), "traces");
+        // The writer's table identity must preserve the tenant/dataset
+        // namespace, not just the terminal name.
+        assert_eq!(
+            writer.table_identifier().namespace().to_string(),
+            "test_tenant.test_dataset",
+            "writer table identity must carry the tenant/dataset namespace"
+        );
         Ok(())
     }
 

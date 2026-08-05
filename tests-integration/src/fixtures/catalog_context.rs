@@ -49,7 +49,31 @@ mod tests {
     #[tokio::test]
     async fn test_create_in_memory_catalog() -> Result<()> {
         let ctx = CatalogTestContext::new_in_memory().await?;
-        assert!(Arc::strong_count(&ctx.catalog_manager) >= 1);
+
+        // The catalog manager should be able to create and load a table,
+        // proving the in-memory catalog is actually wired up and usable
+        // rather than merely constructed.
+        let table = ctx
+            .catalog_manager
+            .ensure_table("test_tenant", "test_dataset", "traces")
+            .await?;
+
+        assert_eq!(table.identifier().name(), "traces");
+
+        // Same table name under a different tenant/dataset must yield a
+        // DISTINCT table identity — a regression that drops or swaps the
+        // tenant/dataset namespace would route both to one table while every
+        // terminal-name assertion still passes.
+        let other = ctx
+            .catalog_manager
+            .ensure_table("other_tenant", "other_dataset", "traces")
+            .await?;
+        assert_eq!(other.identifier().name(), "traces");
+        assert_ne!(
+            table.identifier().namespace(),
+            other.identifier().namespace(),
+            "same table name under different tenant/dataset must not share a namespace"
+        );
         Ok(())
     }
 }

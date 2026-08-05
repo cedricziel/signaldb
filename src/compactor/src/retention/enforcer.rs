@@ -780,16 +780,42 @@ mod tests {
         assert!(enforcer.is_ok());
     }
 
+    /// Full drop-vs-dry-run coverage against real *expired* partitions lives
+    /// in `tests-integration/compactor/retention_cutoff.rs`, which seeds
+    /// tables with real partitioned data via the data generators. This test
+    /// drives the same public `enforce_retention` entry point with
+    /// `dry_run = true` against a real (if empty) catalog table, guarding
+    /// that a dry run completes cleanly end to end and reports zero drops
+    /// rather than reaching into the enforcer's private config field.
     #[tokio::test]
-    async fn test_dry_run_mode() {
+    async fn dry_run_enforcement_reports_no_drops_on_a_real_empty_table() {
         let mut config = create_test_config();
         config.dry_run = true;
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        catalog_manager
+            .ensure_table("test_tenant", "test_dataset", "traces")
+            .await
+            .unwrap();
         let metrics = RetentionMetrics::new_mock();
 
         let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics).unwrap();
-        assert!(enforcer.config.dry_run);
+
+        let result = enforcer
+            .enforce_retention("test_tenant", "test_dataset")
+            .await
+            .unwrap();
+
+        assert_eq!(result.table_results.len(), 1);
+        let table_result = &result.table_results[0];
+        assert_eq!(table_result.table_name, "traces");
+        assert_eq!(table_result.partitions_dropped, 0);
+        assert_eq!(table_result.snapshots_expired, 0);
+        assert!(
+            table_result.errors.is_empty(),
+            "expected no errors, got {:?}",
+            table_result.errors
+        );
     }
 
     #[tokio::test]

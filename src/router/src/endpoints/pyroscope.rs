@@ -129,6 +129,13 @@ fn parse_query(query: &str) -> ParsedQuery {
 /// Parse a Pyroscope time parameter: unix seconds, unix milliseconds, or
 /// relative `now[-<N><s|m|h|d>]`. Returns unix seconds.
 fn parse_time(value: &str) -> Option<i64> {
+    parse_time_at(value, chrono::Utc::now().timestamp())
+}
+
+/// [`parse_time`] with the `now` anchor for the relative case injected,
+/// so the relative-time parsing logic can be asserted exactly instead of
+/// against the wall clock.
+fn parse_time_at(value: &str, now: i64) -> Option<i64> {
     let value = value.trim();
     if value.is_empty() {
         return None;
@@ -142,11 +149,16 @@ fn parse_time(value: &str) -> Option<i64> {
         });
     }
     if let Some(rest) = value.strip_prefix("now") {
-        let now = chrono::Utc::now().timestamp();
         if rest.is_empty() {
             return Some(now);
         }
         let rest = rest.strip_prefix('-')?;
+        // split_at takes a byte index; a trailing multi-byte character (e.g.
+        // "now-1é") would land mid-character and panic in a handler that
+        // receives client-controlled input. Relative units are ASCII-only.
+        if !rest.is_ascii() {
+            return None;
+        }
         let (digits, unit) = rest.split_at(rest.len().saturating_sub(1));
         let amount: i64 = digits.parse().ok()?;
         let seconds = match unit {
@@ -577,14 +589,136 @@ mod tests {
     }
 
     #[test]
-    fn parses_absolute_and_relative_times() {
+    fn parses_absolute_unix_seconds() {
         assert_eq!(parse_time("1700000000"), Some(1_700_000_000));
-        // Milliseconds are detected and converted.
+    }
+
+    #[test]
+    fn parses_absolute_unix_milliseconds() {
         assert_eq!(parse_time("1700000000000"), Some(1_700_000_000));
-        let now = chrono::Utc::now().timestamp();
-        let one_hour_ago = parse_time("now-1h").expect("relative time");
-        assert!((now - 3600 - one_hour_ago).abs() <= 2);
-        assert!(parse_time("later").is_none());
+    }
+
+    #[test]
+    fn parses_relative_time_against_a_fixed_anchor() {
+        // Anchored to a fixed `now` so the expected value is exact rather
+        // than a wall-clock tolerance window.
+        let now = 1_700_100_000;
+        assert_eq!(parse_time_at("now", now), Some(now));
+        assert_eq!(parse_time_at("now-1h", now), Some(now - 3600));
+        assert_eq!(parse_time_at("now-30m", now), Some(now - 1800));
+        assert_eq!(parse_time_at("now-45s", now), Some(now - 45));
+        assert_eq!(parse_time_at("now-2d", now), Some(now - 172_800));
+    }
+
+    #[test]
+    fn rejects_unparseable_time_values() {
+        assert_eq!(parse_time("later"), None);
+        assert_eq!(parse_time_at("now-1x", 1_700_100_000), None);
+    }
+
+    #[test]
+    fn rejects_non_ascii_relative_time_without_panicking() {
+        // Regression: split_at on a byte index panicked on a trailing
+        // multi-byte character in this client-controlled parameter (DoS).
+        assert_eq!(parse_time_at("now-1é", 1_700_100_000), None);
+        assert_eq!(parse_time_at("now-é", 1_700_100_000), None);
+    }
+
+    // ---- Router-level tests: the routed handlers, not just the helpers ----
+
+    mod handlers {
+        use crate::{RouterAppState, create_router};
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use common::catalog::Catalog;
+        use common::config::{ApiKeyConfig, Configuration, TenantConfig};
+        use tower::ServiceExt;
+
+        fn test_config() -> Configuration {
+            let mut config = Configuration::default();
+            config.auth = common::config::AuthConfig {
+                tenants: vec![TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme".to_string(),
+                    default_dataset: Some("default".to_string()),
+                    datasets: vec![],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "sk-test-key".to_string(),
+                        name: Some("test".to_string()),
+                    }],
+                    schema_config: None,
+                    limits: None,
+                }],
+                ..Default::default()
+            };
+            config
+        }
+
+        async fn test_app() -> axum::Router {
+            let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+            create_router(RouterAppState::new(catalog, test_config()))
+        }
+
+        async fn authed_get(app: &axum::Router, uri: &str) -> StatusCode {
+            let request = Request::builder()
+                .uri(uri)
+                .header("authorization", "Bearer sk-test-key")
+                .header("x-tenant-id", "acme")
+                .body(Body::empty())
+                .unwrap();
+            app.clone().oneshot(request).await.unwrap().status()
+        }
+
+        #[tokio::test]
+        async fn label_values_without_label_param_is_bad_request() {
+            let app = test_app().await;
+            assert_eq!(
+                authed_get(&app, "/pyroscope/label-values").await,
+                StatusCode::BAD_REQUEST
+            );
+        }
+
+        #[tokio::test]
+        async fn render_without_a_querier_is_service_unavailable() {
+            // A valid render request with no discovered querier surfaces
+            // 503, not a panic or a 200 with empty data.
+            let app = test_app().await;
+            assert_eq!(
+                authed_get(&app, "/pyroscope/render?query=cpu").await,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+
+        #[tokio::test]
+        async fn profile_types_without_a_querier_is_service_unavailable() {
+            let app = test_app().await;
+            assert_eq!(
+                authed_get(&app, "/pyroscope/profile-types").await,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+
+        #[tokio::test]
+        async fn pyroscope_endpoints_require_authentication() {
+            let app = test_app().await;
+
+            let request = Request::builder()
+                .uri("/pyroscope/profile-types")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+            let request = Request::builder()
+                .uri("/pyroscope/profile-types")
+                .header("authorization", "Bearer sk-wrong-key")
+                .header("x-tenant-id", "acme")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
     }
 
     /// The querier's Flight message must survive into the HTTP error so

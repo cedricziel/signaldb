@@ -100,29 +100,53 @@ async fn ops_compact_requires_admin_auth() {
 #[tokio::test]
 async fn ops_compact_without_compactor_is_unavailable() {
     let (base, _tmp) = serve_router().await;
-    for path in [
-        "/api/v1/ops/compact",
-        "/api/v1/ops/compact/dry-run",
-        "/api/v1/ops/compact/status",
-    ] {
-        let is_status = path.ends_with("/status");
-        let client = reqwest::Client::new();
-        let req = if is_status {
-            client.get(format!("{base}{path}"))
-        } else {
-            client.post(format!("{base}{path}"))
-        };
-        let resp = req
-            .bearer_auth(ADMIN_KEY)
-            .send()
-            .await
-            .expect("request sent");
-        // Authorized, but no compactor is registered → 503.
-        assert_eq!(
-            resp.status().as_u16(),
-            503,
-            "{path} should be 503 with no compactor, got {}",
-            resp.status()
-        );
-    }
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/api/v1/ops/compact"))
+        .bearer_auth(ADMIN_KEY)
+        .send()
+        .await
+        .expect("request sent");
+    // Authorized, but no compactor is registered → 503.
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "/api/v1/ops/compact should be 503 with no compactor, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn ops_compact_dry_run_without_compactor_is_unavailable() {
+    let (base, _tmp) = serve_router().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/api/v1/ops/compact/dry-run"))
+        .bearer_auth(ADMIN_KEY)
+        .send()
+        .await
+        .expect("request sent");
+    // Authorized, but no compactor is registered → 503.
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "/api/v1/ops/compact/dry-run should be 503 with no compactor, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn ops_compact_status_without_compactor_is_unavailable() {
+    let (base, _tmp) = serve_router().await;
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/api/v1/ops/compact/status"))
+        .bearer_auth(ADMIN_KEY)
+        .send()
+        .await
+        .expect("request sent");
+    // Authorized, but no compactor is registered → 503.
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "/api/v1/ops/compact/status should be 503 with no compactor, got {}",
+        resp.status()
+    );
 }

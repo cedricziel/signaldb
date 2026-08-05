@@ -79,17 +79,32 @@ async fn database_tenant_is_queryable_without_restart() {
     let ticket = Ticket::new("query_logs_labels:matter-survey:production:0:100000000000");
     let result = service.do_get(Request::new(ticket)).await;
 
-    // With on-demand registration the catalog resolves; the query returns the
-    // known logs labels (empty dataset otherwise). The key invariant is that it
-    // MUST NOT fail with catalog resolution — the exact defect this change
-    // fixes.
-    if let Err(status) = &result {
-        let msg = status.message();
-        assert!(
-            !msg.contains("resolve catalog"),
-            "database tenant query still failed catalog resolution: {msg}"
-        );
-    }
+    // The #853 invariant: resolution MUST NOT fail with `resolve catalog` —
+    // on-demand registration finds the tenant.
+    //
+    // KNOWN-ISSUE(#972): registration resolves the catalog but does not
+    // create the dataset's default tables, so the labels query for a fresh
+    // (never-written) dataset currently fails with "No table named 'logs'"
+    // instead of returning an empty result. Pin that behavior narrowly so
+    // this test goes red — and gets upgraded to assert an empty label batch —
+    // when #972 is fixed.
+    let status = match result {
+        Ok(_) => panic!(
+            "KNOWN-ISSUE(#972): fresh-dataset label query currently errors; \
+             if this now succeeds, #972 is fixed — assert an empty label batch instead"
+        ),
+        Err(status) => status,
+    };
+    assert!(
+        !status.message().contains("resolve catalog"),
+        "database tenant query must not fail catalog resolution: {}",
+        status.message()
+    );
+    assert!(
+        status.message().contains("No table named"),
+        "expected the #972 missing-table failure, got: {}",
+        status.message()
+    );
 
     // Negative control: a tenant that was never created must still fail catalog
     // resolution. This proves the ticket format genuinely exercises catalog

@@ -166,24 +166,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_error_display_connection() {
-        let err = FlightClientError::Connection("test error".to_string());
-        assert!(err.to_string().contains("Connection failed"));
-        assert!(err.to_string().contains("test error"));
-    }
-
-    #[test]
-    fn test_error_display_query() {
-        let err = FlightClientError::Query("query failed".to_string());
-        assert!(err.to_string().contains("Query failed"));
-        assert!(err.to_string().contains("query failed"));
-    }
-
-    #[test]
-    fn test_error_display_decode() {
-        let err = FlightClientError::Decode("decode error".to_string());
-        assert!(err.to_string().contains("Data decode failed"));
-        assert!(err.to_string().contains("decode error"));
+    fn test_error_display_includes_variant_prefix_and_inner_message() {
+        assert_eq!(
+            FlightClientError::Connection("test error".to_string()).to_string(),
+            "Connection failed: test error"
+        );
+        assert_eq!(
+            FlightClientError::Query("query failed".to_string()).to_string(),
+            "Query failed: query failed"
+        );
+        assert_eq!(
+            FlightClientError::Decode("decode error".to_string()).to_string(),
+            "Data decode failed: decode error"
+        );
     }
 
     #[test]

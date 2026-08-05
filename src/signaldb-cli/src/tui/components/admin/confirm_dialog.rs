@@ -198,7 +198,9 @@ mod tests {
         terminal
             .draw(|frame| dialog.render(frame, frame.area()))
             .unwrap();
-        // Should render empty space (no dialog visible)
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(!content.contains("Confirm Deletion"));
     }
 
     #[test]

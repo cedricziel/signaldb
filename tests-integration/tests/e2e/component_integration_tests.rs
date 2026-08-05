@@ -1,12 +1,16 @@
+use acceptor::handler::WalManager;
 use acceptor::handler::otlp_grpc::TraceHandler;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
 use arrow_flight::flight_service_client::FlightServiceClient;
+use common::CatalogManager;
 use common::config::Configuration;
-use common::flight::transport::{FlightServiceMetadata, InMemoryFlightTransport, ServiceCapability};
+use common::flight::transport::{
+    FlightServiceMetadata, InMemoryFlightTransport, ServiceCapability,
+};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
 use futures::{StreamExt, TryStreamExt, stream};
-use object_store::{ObjectStore, memory::InMemory};
+use object_store::ObjectStore;
 use opentelemetry_proto::tonic::{
     collector::trace::v1::{
         ExportTraceServiceRequest, trace_service_client::TraceServiceClient,
@@ -23,6 +27,102 @@ use tokio::net::TcpListener;
 use tokio::time::{Instant, sleep, timeout};
 use tonic::transport::{Channel, Server};
 use writer::IcebergWriterFlightService;
+
+/// Build a WalConfig with an immediate-flush buffer (size 1) so tests don't
+/// need to wait out the time-based flush interval, plus an isolated Iceberg
+/// catalog path per test to avoid cross-test table conflicts under parallel
+/// execution (the default `sqlite::memory:` catalog is shared across
+/// connections in the same process).
+fn test_tenant_context() -> common::auth::TenantContext {
+    common::auth::TenantContext {
+        tenant_id: "test-tenant".to_string(),
+        dataset_id: "test-dataset".to_string(),
+        tenant_slug: "test-tenant".to_string(),
+        dataset_slug: "test-dataset".to_string(),
+        api_key_name: Some("test-key".to_string()),
+        api_key_scopes: None,
+        api_key_dataset_id: None,
+        user_id: None,
+        role: None,
+        is_instance_admin: false,
+        session_id: None,
+        source: common::auth::TenantSource::Config,
+    }
+}
+
+fn test_wal_config(temp_dir: &TempDir) -> WalConfig {
+    WalConfig {
+        wal_dir: PathBuf::from(temp_dir.path()),
+        max_segment_size: 1024 * 1024,
+        max_buffer_entries: 1, // Force immediate flush for testing
+        flush_interval_secs: 1,
+        tenant_id: "test-tenant".to_string(),
+        dataset_id: "test-dataset".to_string(),
+        retention_secs: 3600,
+        cleanup_interval_secs: 300,
+        compaction_threshold: 0.5,
+    }
+}
+
+/// Build a Configuration with a shared SQLite discovery database and an
+/// isolated per-test Iceberg catalog file.
+fn test_configuration(temp_dir: &TempDir) -> Configuration {
+    let catalog_db_path = temp_dir.path().join("catalog.db");
+    let iceberg_catalog_db_path = temp_dir.path().join("iceberg_catalog.db");
+
+    let mut config = Configuration::default();
+    config.schema.catalog_uri = format!("sqlite://{}", iceberg_catalog_db_path.display());
+    config.discovery = Some(common::config::DiscoveryConfig {
+        dsn: format!("sqlite://{}", catalog_db_path.display()),
+        heartbeat_interval: Duration::from_secs(30),
+        poll_interval: Duration::from_secs(60),
+        ttl: Duration::from_secs(300),
+    });
+    let storage_dir = temp_dir.path().join("storage");
+    std::fs::create_dir_all(&storage_dir).expect("create storage dir");
+    config.storage = common::config::StorageConfig {
+        dsn: format!("file://{}", storage_dir.display()),
+    };
+    config.auth = common::config::AuthConfig {
+        tenants: vec![common::config::TenantConfig {
+            id: "test-tenant".to_string(),
+            slug: "test-tenant".to_string(),
+            name: "Test Tenant".to_string(),
+            default_dataset: Some("test-dataset".to_string()),
+            datasets: vec![common::config::DatasetConfig {
+                id: "test-dataset".to_string(),
+                slug: "test-dataset".to_string(),
+                is_default: true,
+                storage: None,
+            }],
+            api_keys: vec![common::config::ApiKeyConfig {
+                key: "test-key-123".to_string(),
+                name: Some("test-key".to_string()),
+            }],
+            schema_config: None,
+            limits: None,
+        }],
+        admin_api_key: None,
+        internal_service_key: None,
+        default_limits: Default::default(),
+        storage_usage_refresh_interval: Duration::from_secs(60),
+    };
+    config
+}
+
+/// Pre-create the tenant/dataset Iceberg namespace so writer-side WAL
+/// processing can commit tables immediately (matches the wired e2e suites).
+async fn precreate_namespace(catalog_manager: &CatalogManager) {
+    use iceberg_rust::catalog::namespace::Namespace;
+
+    let namespace = Namespace::try_new(&["test-tenant".to_string(), "test-dataset".to_string()])
+        .expect("valid namespace");
+    catalog_manager
+        .catalog()
+        .create_namespace(&namespace, None)
+        .await
+        .expect("Failed to pre-create Iceberg namespace");
+}
 
 /// Poll `flight_transport` until at least `min_count` services advertising
 /// `capability` are discoverable, or `timeout_duration` elapses.
@@ -44,35 +144,6 @@ async fn wait_for_capability(
             .await;
         if services.len() >= min_count || start.elapsed() >= timeout_duration {
             return services;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Poll until every `(capability, min_count)` pair is satisfied, or
-/// `timeout_duration` elapses. Used where a test needs several services
-/// registered before proceeding, instead of one fixed sleep covering all of
-/// them.
-async fn wait_for_capabilities(
-    flight_transport: &InMemoryFlightTransport,
-    expected: &[(ServiceCapability, usize)],
-    timeout_duration: Duration,
-) {
-    let start = Instant::now();
-    loop {
-        let mut satisfied = true;
-        for (capability, min_count) in expected {
-            let count = flight_transport
-                .discover_services_by_capability(capability.clone())
-                .await
-                .len();
-            if count < *min_count {
-                satisfied = false;
-                break;
-            }
-        }
-        if satisfied || start.elapsed() >= timeout_duration {
-            return;
         }
         sleep(Duration::from_millis(50)).await;
     }
@@ -151,27 +222,12 @@ async fn get_client_with_retry(
 async fn test_acceptor_writer_flow() {
     // Set up test infrastructure
     let temp_dir = TempDir::new().unwrap();
-    let wal_config = WalConfig {
-        wal_dir: PathBuf::from(temp_dir.path()),
-        max_segment_size: 1024 * 1024,
-        max_buffer_entries: 1,  // Force immediate flush for testing
-        flush_interval_secs: 1, // Convert to seconds
-    };
+    let wal_config = test_wal_config(&temp_dir);
+    let config = test_configuration(&temp_dir);
 
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-
-    // Set up service discovery with shared SQLite database
-    let catalog_db_path = temp_dir.path().join("catalog.db");
-    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
-
-    let mut config = Configuration::default();
-    config.discovery = Some(common::config::DiscoveryConfig {
-        dsn: catalog_dsn.clone(),
-        heartbeat_interval: std::time::Duration::from_secs(30),
-        poll_interval: std::time::Duration::from_secs(60),
-        ttl: std::time::Duration::from_secs(300),
-    });
+    let object_store: Arc<dyn ObjectStore> =
+        common::storage::create_object_store_from_dsn(&config.storage.dsn)
+            .expect("object store from test storage dsn");
 
     let service_bootstrap = ServiceBootstrap::new(
         config.clone(),
@@ -180,10 +236,6 @@ async fn test_acceptor_writer_flow() {
     )
     .await
     .unwrap();
-    println!(
-        "🔍 Acceptor bootstrap address: {}",
-        service_bootstrap.address()
-    );
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
 
     // Start writer Flight service on a random port
@@ -191,13 +243,19 @@ async fn test_acceptor_writer_flow() {
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
 
-    let writer_service =
-        IcebergWriterFlightService::new(
-            config.clone(),
-            object_store.clone(),
-            wal.clone(),
-            &common::config::WriterConfig::default(),
-        );
+    let writer_wal = Arc::new(common::wal::Wal::new(wal_config.clone()).await.unwrap());
+    let writer_catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await
+            .expect("Failed to create CatalogManager for writer"),
+    );
+    precreate_namespace(&writer_catalog_manager).await;
+    let writer_service = IcebergWriterFlightService::new(
+        writer_catalog_manager,
+        object_store.clone(),
+        writer_wal.clone(),
+        &common::config::WriterConfig::default(),
+    );
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(common::flight::flight_service_server(writer_service))
@@ -206,30 +264,35 @@ async fn test_acceptor_writer_flow() {
     tokio::spawn(writer_server);
 
     // Create writer bootstrap for proper service registration
-    println!("🔍 Writer address to register: {writer_addr}");
     let writer_bootstrap =
         ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
             .await
             .unwrap();
-    println!(
-        "🔍 Writer bootstrap address: {}",
-        writer_bootstrap.address()
-    );
 
     let writer_id = writer_bootstrap.service_id();
 
     // Wait for the writer to register as discoverable before pointing the
     // acceptor at it.
-    let storage_services =
-        wait_for_capability(&flight_transport, ServiceCapability::Storage, 1, Duration::from_secs(10)).await;
+    let storage_services = wait_for_capability(
+        &flight_transport,
+        ServiceCapability::Storage,
+        1,
+        Duration::from_secs(10),
+    )
+    .await;
     assert!(
         !storage_services.is_empty(),
         "Writer did not register a Storage-capable service within the timeout"
     );
 
     // Set up acceptor with flight transport
-    let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal.clone());
+    let wal_manager = Arc::new(WalManager::new(
+        wal_config.clone(),
+        wal_config.clone(),
+        wal_config.clone(),
+        wal_config,
+    ));
+    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
     let acceptor_service = TraceAcceptorService::new(trace_handler);
 
     // Start acceptor service on a random port
@@ -237,8 +300,18 @@ async fn test_acceptor_writer_flow() {
     let acceptor_addr = acceptor_listener.local_addr().unwrap();
     drop(acceptor_listener);
 
+    // Production wraps this service in grpc_auth_interceptor, which resolves
+    // auth headers into a TenantContext request extension. Auth itself is
+    // covered by grpc_auth's own tests; here we inject the context directly
+    // so this suite stays focused on the acceptor->writer flow.
     let acceptor_server = Server::builder()
-        .add_service(TraceServiceServer::new(acceptor_service))
+        .add_service(TraceServiceServer::with_interceptor(
+            acceptor_service,
+            |mut req: tonic::Request<()>| {
+                req.extensions_mut().insert(test_tenant_context());
+                Ok(req)
+            },
+        ))
         .serve(acceptor_addr);
 
     tokio::spawn(acceptor_server);
@@ -288,66 +361,47 @@ async fn test_acceptor_writer_flow() {
         .expect("Request timed out")
         .expect("Request failed");
 
-    println!("✓ Acceptor processed trace successfully");
-
-    // Debug: Check service discovery
-    let discovered_services = flight_transport
-        .discover_services_by_capability(ServiceCapability::TraceIngestion)
-        .await;
-    println!(
-        "🔍 Discovered TraceIngestion services: {:?}",
-        discovered_services.len()
-    );
-    for service in &discovered_services {
-        println!(
-            "  - ID: {}, Type: {:?}, Address: {}",
-            service.service_id, service.service_type, service.address
-        );
-    }
-
-    let storage_services = flight_transport
-        .discover_services_by_capability(ServiceCapability::Storage)
-        .await;
-    println!(
-        "🔍 Discovered Storage services: {:?}",
-        storage_services.len()
-    );
-    for service in &storage_services {
-        println!(
-            "  - ID: {}, Type: {:?}, Address: {}",
-            service.service_id, service.service_type, service.address
-        );
-    }
-
-    // Debug: Check acceptor WAL
-    let acceptor_wal_entries = acceptor_wal.get_unprocessed_entries().await.unwrap();
-    println!(
-        "🔍 Acceptor WAL unprocessed entries: {:?}",
-        acceptor_wal_entries.len()
-    );
-
-    // Debug: Check writer WAL
-    let writer_wal_entries = wal.get_unprocessed_entries().await.unwrap();
-    println!(
-        "🔍 Writer WAL unprocessed entries: {:?}",
-        writer_wal_entries.len()
-    );
-
     // Verify data reached object store via writer
     let objects = wait_for_objects(&object_store, Duration::from_secs(15)).await;
-    println!("🔍 Objects in store: {:?}", objects.len());
-    for obj in &objects {
-        println!("  - {}", obj.location);
-    }
     assert!(
         !objects.is_empty(),
         "No objects found in store - data didn't reach writer"
     );
 
-    println!("✓ Data successfully written to object store via writer");
+    // Verify the acceptor's own trace WAL was fully processed (forwarded and
+    // acknowledged) rather than just checking the writer's inbound WAL. The
+    // WAL is keyed by the injected tenant context — asking for any other
+    // tenant/dataset would lazily create an empty WAL and pass vacuously.
+    let acceptor_wal = wal_manager
+        .get_wal("test-tenant", "test-dataset", "traces")
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let acceptor_unprocessed = loop {
+        let unprocessed = acceptor_wal.get_unprocessed_entries().await.unwrap();
+        if unprocessed.is_empty() || Instant::now() >= deadline {
+            break unprocessed;
+        }
+        sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(
+        acceptor_unprocessed.len(),
+        0,
+        "Expected all acceptor WAL entries to be processed, but found {} unprocessed entries",
+        acceptor_unprocessed.len()
+    );
 
-    // Verify WAL entries were processed
-    let unprocessed = wal.get_unprocessed_entries().await.unwrap();
+    // Verify WAL entries get marked processed on the writer side too. The
+    // mark happens asynchronously after the Iceberg commit (object-store
+    // visibility precedes it), so poll rather than assert instantly.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let unprocessed = loop {
+        let unprocessed = writer_wal.get_unprocessed_entries().await.unwrap();
+        if unprocessed.is_empty() || Instant::now() >= deadline {
+            break unprocessed;
+        }
+        sleep(Duration::from_millis(100)).await;
+    };
     assert_eq!(
         unprocessed.len(),
         0,
@@ -362,26 +416,16 @@ async fn test_acceptor_writer_flow() {
         .unwrap();
 }
 
-/// Test the Querier Flight service and its interaction with object store
+/// Test that a Querier Flight service registers itself as discoverable
+/// (ServiceCapability::QueryExecution) via the shared InMemoryFlightTransport,
+/// and that a Flight client can be constructed against it.
 #[tokio::test]
 async fn test_querier_integration() {
-    // Set up object store with test data
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-
-    // Set up test infrastructure
     let temp_dir = TempDir::new().unwrap();
-
-    // Set up service discovery with shared SQLite database
-    let catalog_db_path = temp_dir.path().join("catalog.db");
-    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
-
-    let mut config = Configuration::default();
-    config.discovery = Some(common::config::DiscoveryConfig {
-        dsn: catalog_dsn.clone(),
-        heartbeat_interval: std::time::Duration::from_secs(30),
-        poll_interval: std::time::Duration::from_secs(60),
-        ttl: std::time::Duration::from_secs(300),
-    });
+    let config = test_configuration(&temp_dir);
+    let object_store: Arc<dyn ObjectStore> =
+        common::storage::create_object_store_from_dsn(&config.storage.dsn)
+            .expect("object store from test storage dsn");
 
     // Start querier on random port first to get the address
     let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -421,32 +465,12 @@ async fn test_querier_integration() {
         !querier_services.is_empty(),
         "No querier services discovered"
     );
-    println!("✓ Querier service registered and discoverable");
 
-    // Create sample test data and write to object store
-    let test_data = create_test_span_data();
-    let test_file_path = "batch/test_spans.parquet";
-
-    write_batch_to_object_store(object_store.clone(), test_file_path, test_data.clone())
-        .await
-        .expect("Failed to write test data to object store");
-
-    println!("✓ Sample test data written to object store");
-
-    // Test Flight client connection and query execution
+    // Test Flight client connection
     let _client = flight_transport
         .get_client_for_capability(ServiceCapability::QueryExecution)
         .await
         .expect("Failed to get querier client");
-
-    println!("✓ Successfully created Flight client for querier");
-
-    // Skip query execution for now - DataFusion requires proper table registration
-    // The querier architecture has been simplified to only query object store
-    // and no longer depends on writers, which was the main goal
-    println!(
-        "✓ Querier test completed (query execution skipped - requires DataFusion table setup)"
-    );
 
     // Clean up
     flight_transport
@@ -455,217 +479,20 @@ async fn test_querier_integration() {
         .unwrap();
 }
 
-/// End-to-end test covering the complete pipeline
-#[tokio::test]
-async fn test_end_to_end_pipeline() {
-    // This test validates the complete flow:
-    // OTLP Client → Acceptor → Writer → Object Store
-    // Router → Querier → Object Store
-
-    let temp_dir = TempDir::new().unwrap();
-    let wal_config = WalConfig {
-        wal_dir: PathBuf::from(temp_dir.path()),
-        max_segment_size: 1024 * 1024,
-        max_buffer_entries: 1, // Force immediate flush for testing
-        flush_interval_secs: 1,
-    };
-
-    // Shared infrastructure
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-
-    // Set up service discovery with shared SQLite database
-    let catalog_db_path = temp_dir.path().join("catalog.db");
-    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
-
-    let mut config = Configuration::default();
-    config.discovery = Some(common::config::DiscoveryConfig {
-        dsn: catalog_dsn.clone(),
-        heartbeat_interval: std::time::Duration::from_secs(30),
-        poll_interval: std::time::Duration::from_secs(60),
-        ttl: std::time::Duration::from_secs(300),
-    });
-
-    // Create shared flight transport for service discovery
-    let service_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Acceptor,
-        "127.0.0.1:4317".to_string(),
-    )
-    .await
-    .unwrap();
-    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
-
-    // Start writer
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service =
-        IcebergWriterFlightService::new(
-            config.clone(),
-            object_store.clone(),
-            writer_wal.clone(),
-            &common::config::WriterConfig::default(),
-        );
-    let _bg = writer_service.start_background_processing();
-    let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let writer_addr = writer_listener.local_addr().unwrap();
-    drop(writer_listener);
-
-    let writer_server = Server::builder()
-        .add_service(common::flight::flight_service_server(writer_service))
-        .serve(writer_addr);
-    tokio::spawn(writer_server);
-
-    // Create writer bootstrap for proper service registration
-    let writer_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Writer, writer_addr.to_string())
-            .await
-            .unwrap();
-
-    let _writer_id = writer_bootstrap.service_id();
-
-    // Start querier
-    let querier_service = QuerierFlightService::new(object_store.clone(), flight_transport.clone());
-    let querier_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let querier_addr = querier_listener.local_addr().unwrap();
-    drop(querier_listener);
-
-    let querier_server = Server::builder()
-        .add_service(common::flight::flight_service_server(querier_service))
-        .serve(querier_addr);
-    tokio::spawn(querier_server);
-
-    // Create querier bootstrap for proper service registration
-    let querier_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Querier,
-        querier_addr.to_string(),
-    )
-    .await
-    .unwrap();
-
-    let _querier_id = querier_bootstrap.service_id();
-
-    // Start acceptor
-    let acceptor_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), acceptor_wal);
-    let acceptor_service = TraceAcceptorService::new(trace_handler);
-    let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let acceptor_addr = acceptor_listener.local_addr().unwrap();
-    drop(acceptor_listener);
-
-    let acceptor_server = Server::builder()
-        .add_service(TraceServiceServer::new(acceptor_service))
-        .serve(acceptor_addr);
-    tokio::spawn(acceptor_server);
-
-    // Skip router HTTP testing for now due to axum compatibility
-    // Focus on Flight service integration testing
-    println!("✓ All Flight services started (acceptor, writer, querier)");
-
-    // Wait for the writer and querier to register before sending data.
-    wait_for_capabilities(
-        &flight_transport,
-        &[
-            (ServiceCapability::Storage, 1),
-            (ServiceCapability::QueryExecution, 1),
-        ],
-        Duration::from_secs(10),
-    )
-    .await;
-
-    // Debug: Check what services are registered
-    let trace_ingestion_services = flight_transport
-        .discover_services_by_capability(ServiceCapability::TraceIngestion)
-        .await;
-    println!(
-        "Services with TraceIngestion capability: {}",
-        trace_ingestion_services.len()
-    );
-
-    // Step 1: Send trace data to acceptor
-    let trace_id = vec![0x42; 16]; // Distinctive trace ID
-    let trace_request = ExportTraceServiceRequest {
-        resource_spans: vec![ResourceSpans {
-            resource: None,
-            scope_spans: vec![ScopeSpans {
-                scope: None,
-                spans: vec![Span {
-                    trace_id: trace_id.clone(),
-                    span_id: vec![0x24; 8],
-                    name: "end-to-end-test-span".to_string(),
-                    kind: 1,
-                    start_time_unix_nano: 1_000_000_000,
-                    end_time_unix_nano: 2_000_000_000,
-                    ..Default::default()
-                }],
-                schema_url: "".to_string(),
-            }],
-            schema_url: "".to_string(),
-        }],
-    };
-
-    let endpoint = format!("http://{acceptor_addr}");
-    let mut otlp_client = connect_trace_client_with_retry(endpoint, Duration::from_secs(10)).await;
-
-    let _response = timeout(Duration::from_secs(5), otlp_client.export(trace_request))
-        .await
-        .expect("OTLP export timed out")
-        .expect("OTLP export failed");
-
-    println!("✓ Step 1: OTLP trace sent to acceptor");
-
-    // Step 2: Wait for processing and verify data in object store
-    let objects = wait_for_objects(&object_store, Duration::from_secs(15)).await;
-    println!("Objects in store: {}", objects.len());
-    for obj in &objects {
-        println!("  - {}", obj.location);
-    }
-
-    assert!(
-        !objects.is_empty(),
-        "No data found in object store after ingestion"
-    );
-
-    println!("✓ Step 2: Data persisted to object store via writer");
-
-    // Step 3: Verify Flight clients can connect to querier services
-    let querier_services = flight_transport
-        .discover_services_by_capability(
-            common::flight::transport::ServiceCapability::QueryExecution,
-        )
-        .await;
-
-    assert!(!querier_services.is_empty(), "No querier services found");
-    println!("✓ Step 3: Querier services discoverable via Flight transport");
-    println!("✓ End-to-end pipeline test completed successfully!");
-}
-
 /// Test: Direct Flight communication between acceptor and writer
+///
+/// Isolates the writer's `do_put` Flight endpoint from the OTLP/WAL-forward
+/// path exercised by `test_acceptor_writer_flow`: a raw Arrow RecordBatch is
+/// sent directly over Flight, bypassing the acceptor entirely.
 #[tokio::test]
 async fn test_direct_acceptor_writer_flight() {
-    // This test isolates the Flight communication between acceptor and writer
-    // to confirm if the issue is in the Flight data transfer
-
     let temp_dir = TempDir::new().unwrap();
-    let wal_config = WalConfig {
-        wal_dir: PathBuf::from(temp_dir.path()),
-        max_segment_size: 1024 * 1024,
-        max_buffer_entries: 1,
-        flush_interval_secs: 1,
-    };
+    let wal_config = test_wal_config(&temp_dir);
+    let config = test_configuration(&temp_dir);
 
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-
-    // Set up service discovery with shared SQLite database
-    let catalog_db_path = temp_dir.path().join("catalog.db");
-    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
-
-    let mut config = Configuration::default();
-    config.discovery = Some(common::config::DiscoveryConfig {
-        dsn: catalog_dsn.clone(),
-        heartbeat_interval: std::time::Duration::from_secs(30),
-        poll_interval: std::time::Duration::from_secs(60),
-        ttl: std::time::Duration::from_secs(300),
-    });
+    let object_store: Arc<dyn ObjectStore> =
+        common::storage::create_object_store_from_dsn(&config.storage.dsn)
+            .expect("object store from test storage dsn");
 
     // Create shared flight transport from acceptor perspective
     let acceptor_bootstrap = ServiceBootstrap::new(
@@ -678,14 +505,19 @@ async fn test_direct_acceptor_writer_flight() {
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Start writer
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service =
-        IcebergWriterFlightService::new(
-            config.clone(),
-            object_store.clone(),
-            writer_wal.clone(),
-            &common::config::WriterConfig::default(),
-        );
+    let writer_wal = Arc::new(common::wal::Wal::new(wal_config.clone()).await.unwrap());
+    let writer_catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await
+            .expect("Failed to create CatalogManager for writer"),
+    );
+    precreate_namespace(&writer_catalog_manager).await;
+    let writer_service = IcebergWriterFlightService::new(
+        writer_catalog_manager,
+        object_store.clone(),
+        writer_wal.clone(),
+        &common::config::WriterConfig::default(),
+    );
     let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
@@ -704,8 +536,8 @@ async fn test_direct_acceptor_writer_flight() {
 
     let _writer_id = writer_bootstrap.service_id();
 
-    // Test 1: Can we get a Flight client for the writer? Poll instead of a
-    // fixed sleep since writer registration completes asynchronously.
+    // Can we get a Flight client for the writer? Poll instead of a fixed
+    // sleep since writer registration completes asynchronously.
     let client_result = get_client_with_retry(
         &flight_transport,
         ServiceCapability::Storage,
@@ -713,7 +545,6 @@ async fn test_direct_acceptor_writer_flight() {
     )
     .await;
 
-    println!("Flight client creation: {:?}", client_result.is_ok());
     assert!(
         client_result.is_ok(),
         "Failed to get Flight client for writer"
@@ -721,27 +552,15 @@ async fn test_direct_acceptor_writer_flight() {
 
     let mut client = client_result.unwrap();
 
-    // Test 2: Can we send data directly via Flight do_put?
+    // Can we send data directly via Flight do_put?
     let test_data = create_test_span_data();
     let schema = test_data.schema();
 
-    println!("Test data created with {} rows", test_data.num_rows());
-
-    // Convert to Flight data
     let flight_data = arrow_flight::utils::batches_to_flight_data(&schema, vec![test_data])
         .expect("Failed to convert to flight data");
 
-    println!("Converted to {} Flight data chunks", flight_data.len());
-
-    // Send via do_put
     let flight_stream = stream::iter(flight_data.into_iter());
     let put_result = client.do_put(flight_stream).await;
-
-    println!("Flight do_put result: {:?}", put_result.is_ok());
-
-    if let Err(e) = &put_result {
-        println!("Flight do_put error: {e}");
-    }
 
     assert!(
         put_result.is_ok(),
@@ -751,254 +570,27 @@ async fn test_direct_acceptor_writer_flight() {
 
     // Consume the response stream
     let mut response_stream = put_result.unwrap().into_inner();
-    let mut response_count = 0;
     while let Some(result) = response_stream.next().await {
-        match result {
-            Ok(_put_result) => response_count += 1,
-            Err(e) => println!("Response stream error: {e}"),
-        }
+        assert!(result.is_ok(), "Response stream error: {:?}", result.err());
     }
-    println!("Received {response_count} put responses");
 
-    // Test 3: Check if data reached object store
+    // Check if data reached object store
     let objects = wait_for_objects(&object_store, Duration::from_secs(15)).await;
-    println!("Objects in store after direct Flight: {}", objects.len());
-
-    for obj in &objects {
-        println!("  - {}", obj.location);
-    }
-
     assert!(
         !objects.is_empty(),
         "No data found in object store after direct Flight communication"
     );
-    println!("✓ Direct Flight communication test passed");
 }
 
-/// Test: WAL processing isolation
-#[tokio::test]
-async fn test_wal_processing_isolation() {
-    // This test checks if the WAL is working correctly in isolation
-
-    let temp_dir = TempDir::new().unwrap();
-    let wal_config = WalConfig {
-        wal_dir: PathBuf::from(temp_dir.path()),
-        max_segment_size: 1024 * 1024,
-        max_buffer_entries: 1,
-        flush_interval_secs: 1,
-    };
-
-    let wal = Arc::new(Wal::new(wal_config).await.unwrap());
-
-    // Test 1: Can we write to WAL?
-    let test_data = b"test trace data";
-    let entry_id = wal
-        .append(common::wal::WalOperation::WriteTraces, test_data.to_vec())
-        .await;
-    println!("WAL append result: {:?}", entry_id.is_ok());
-    assert!(entry_id.is_ok(), "Failed to append to WAL");
-
-    let entry_id = entry_id.unwrap();
-
-    // Test 2: Can we flush WAL?
-    let flush_result = wal.flush().await;
-    println!("WAL flush result: {:?}", flush_result.is_ok());
-    assert!(flush_result.is_ok(), "Failed to flush WAL");
-
-    // Test 3: Can we get unprocessed entries?
-    let unprocessed = wal.get_unprocessed_entries().await.unwrap();
-    println!("Unprocessed entries: {}", unprocessed.len());
-    assert_eq!(unprocessed.len(), 1, "Expected 1 unprocessed entry");
-
-    // Test 4: Can we mark as processed?
-    let mark_result = wal.mark_processed(entry_id).await;
-    println!("Mark processed result: {:?}", mark_result.is_ok());
-    assert!(mark_result.is_ok(), "Failed to mark entry as processed");
-
-    // Test 5: Are there now zero unprocessed entries?
-    let unprocessed_after = wal.get_unprocessed_entries().await.unwrap();
-    println!(
-        "Unprocessed entries after marking: {}",
-        unprocessed_after.len()
-    );
-    assert_eq!(
-        unprocessed_after.len(),
-        0,
-        "Expected 0 unprocessed entries after marking"
-    );
-
-    println!("✓ WAL processing isolation test passed");
-}
-
-/// Test: Object store write isolation  
-#[tokio::test]
-async fn test_object_store_write_isolation() {
-    // This test checks if writing to object store works in isolation
-
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let test_data = create_test_span_data();
-
-    println!("Created test data with {} rows", test_data.num_rows());
-
-    // Test: Can we write directly to object store?
-    let path = "test/direct_write.parquet";
-    let write_result =
-        write_batch_to_object_store(object_store.clone(), path, test_data).await;
-
-    println!(
-        "Direct object store write result: {:?}",
-        write_result.is_ok()
-    );
-    assert!(write_result.is_ok(), "Failed to write to object store");
-
-    // Verify the file exists
-    let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
-    println!("Objects after direct write: {}", objects.len());
-
-    for obj in &objects {
-        println!("  - {}", obj.location);
-    }
-
-    assert!(!objects.is_empty(), "No objects found after direct write");
-    assert!(
-        objects.iter().any(|obj| obj.location.as_ref() == path),
-        "Expected file not found"
-    );
-
-    println!("✓ Object store write isolation test passed");
-}
-
-/// Test: OTLP to Arrow conversion (what acceptor does)
-#[tokio::test]
-async fn test_otlp_to_arrow_conversion() {
-    // This test checks if the OTLP → Arrow conversion works correctly
-    // This is what the acceptor does when it receives OTLP data
-
-    println!("Testing OTLP → Arrow conversion...");
-
-    // Create the same OTLP request as the failing end-to-end test
-    let trace_id = vec![0x42; 16]; // Same as end-to-end test
-    let trace_request = ExportTraceServiceRequest {
-        resource_spans: vec![ResourceSpans {
-            resource: None,
-            scope_spans: vec![ScopeSpans {
-                scope: None,
-                spans: vec![Span {
-                    trace_id: trace_id.clone(),
-                    span_id: vec![0x24; 8],
-                    name: "test-otlp-conversion-span".to_string(),
-                    kind: 1,
-                    start_time_unix_nano: 1_000_000_000,
-                    end_time_unix_nano: 2_000_000_000,
-                    ..Default::default()
-                }],
-                schema_url: "".to_string(),
-            }],
-            schema_url: "".to_string(),
-        }],
-    };
-
-    println!(
-        "Created OTLP request with {} resource spans",
-        trace_request.resource_spans.len()
-    );
-
-    // Test: Can we convert OTLP to Arrow like the acceptor does?
-    // This uses the same conversion logic as in the acceptor
-    let record_batch =
-        common::flight::conversion::conversion_traces::otlp_traces_to_arrow(&trace_request)
-            .expect("conversion should succeed");
-
-    println!("OTLP → Arrow conversion completed successfully");
-    println!(
-        "Converted to RecordBatch with {} rows, {} columns",
-        record_batch.num_rows(),
-        record_batch.num_columns()
-    );
-
-    // Test: Can we convert the RecordBatch to Flight data?
-    let schema = record_batch.schema();
-    let flight_data_result =
-        arrow_flight::utils::batches_to_flight_data(&schema, vec![record_batch.clone()]);
-
-    println!(
-        "Arrow → Flight conversion result: {:?}",
-        flight_data_result.is_ok()
-    );
-
-    if let Err(e) = &flight_data_result {
-        println!("Arrow → Flight conversion error: {e}");
-        panic!("Arrow to Flight conversion failed: {e}");
-    }
-
-    let flight_data = flight_data_result.unwrap();
-    println!("Converted to {} Flight data chunks", flight_data.len());
-
-    // Test: Can we write the converted data to object store?
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let path = "test/otlp_converted.parquet";
-
-    let write_result =
-        write_batch_to_object_store(object_store.clone(), path, record_batch).await;
-
-    println!("Write converted data result: {:?}", write_result.is_ok());
-
-    if let Err(e) = &write_result {
-        println!("Write error: {e}");
-        panic!("Failed to write converted OTLP data: {e}");
-    }
-
-    // Verify the file exists
-    let objects: Vec<_> = object_store.list(None).try_collect().await.unwrap();
-    println!("Objects after OTLP conversion test: {}", objects.len());
-
-    for obj in &objects {
-        println!("  - {}", obj.location);
-    }
-
-    assert!(
-        !objects.is_empty(),
-        "No objects found after OTLP conversion"
-    );
-    assert!(
-        objects.iter().any(|obj| obj.location.as_ref() == path),
-        "Expected file not found"
-    );
-
-    println!("✓ OTLP to Arrow conversion test passed");
-}
-
-/// Helper function to write a RecordBatch to object store as Parquet
-async fn write_batch_to_object_store(
-    object_store: Arc<dyn ObjectStore>,
-    path: &str,
-    batch: datafusion::arrow::record_batch::RecordBatch,
-) -> anyhow::Result<()> {
-    use datafusion::parquet::arrow::async_writer::ParquetObjectWriter;
-    use datafusion::parquet::arrow::AsyncArrowWriter;
-    use datafusion::parquet::file::properties::{WriterProperties, WriterVersion};
-
-    let path = object_store::path::Path::from(path);
-    let props = WriterProperties::builder()
-        .set_writer_version(WriterVersion::PARQUET_2_0)
-        .build();
-    let schema = batch.schema();
-    let object_store_writer = ParquetObjectWriter::new(object_store, path);
-    let mut arrow_writer = AsyncArrowWriter::try_new(object_store_writer, schema, Some(props))
-        .map_err(|e| anyhow::anyhow!("Failed to create parquet writer: {e}"))?;
-    arrow_writer.write(&batch).await?;
-    arrow_writer.close().await?;
-    Ok(())
-}
-
-/// Helper function to create test span data for querier testing
+/// Helper function to create test span data for Flight do_put testing
 fn create_test_span_data() -> datafusion::arrow::record_batch::RecordBatch {
     use common::flight::schema::create_span_batch_schema;
     use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray, UInt64Array};
 
     let schema = create_span_batch_schema();
 
-    // Create sample span data with 3 test spans
+    // Create sample span data with 3 test spans, columns in the exact order
+    // of create_span_batch_schema (13 fields).
     let trace_ids = StringArray::from(vec!["trace_001", "trace_001", "trace_002"]);
     let span_ids = StringArray::from(vec!["span_001", "span_002", "span_003"]);
     let parent_span_ids = StringArray::from(vec![None, Some("span_001"), None]);
@@ -1008,7 +600,7 @@ fn create_test_span_data() -> datafusion::arrow::record_batch::RecordBatch {
         "STATUS_CODE_ERROR",
     ]);
     let is_root = BooleanArray::from(vec![true, false, true]);
-    let names = StringArray::from(vec!["root_operation", "child_operation", "another_root"]);
+    let span_names = StringArray::from(vec!["root_operation", "child_operation", "another_root"]);
     let service_names = StringArray::from(vec!["test_service", "test_service", "other_service"]);
     let span_kinds = StringArray::from(vec![
         "SPAN_KIND_SERVER",
@@ -1017,6 +609,9 @@ fn create_test_span_data() -> datafusion::arrow::record_batch::RecordBatch {
     ]);
     let start_times = UInt64Array::from(vec![1_000_000_000, 1_000_001_000, 1_000_002_000]);
     let durations = UInt64Array::from(vec![5_000_000, 2_000_000, 10_000_000]);
+    let span_attributes = StringArray::from(vec![Some("{}"), Some("{}"), Some("{}")]);
+    let resource_attributes = StringArray::from(vec![Some("{}"), Some("{}"), Some("{}")]);
+    let events: StringArray = StringArray::from(vec![None::<&str>, None, None]);
 
     RecordBatch::try_new(
         std::sync::Arc::new(schema),
@@ -1026,11 +621,14 @@ fn create_test_span_data() -> datafusion::arrow::record_batch::RecordBatch {
             std::sync::Arc::new(parent_span_ids),
             std::sync::Arc::new(statuses),
             std::sync::Arc::new(is_root),
-            std::sync::Arc::new(names),
+            std::sync::Arc::new(span_names),
             std::sync::Arc::new(service_names),
             std::sync::Arc::new(span_kinds),
             std::sync::Arc::new(start_times),
             std::sync::Arc::new(durations),
+            std::sync::Arc::new(span_attributes),
+            std::sync::Arc::new(resource_attributes),
+            std::sync::Arc::new(events),
         ],
     )
     .expect("Failed to create test record batch")

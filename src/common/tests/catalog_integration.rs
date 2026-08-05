@@ -6,6 +6,31 @@ use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use tokio::time::{Duration, sleep};
 use uuid::Uuid;
 
+/// Testcontainers' Postgres wait strategy already blocks `start()` until the
+/// container reports itself ready, but the mapped port can still refuse the
+/// very first connection for a few milliseconds afterward. Retry the actual
+/// connection attempt with a short, bounded backoff instead of guessing at a
+/// fixed startup delay.
+async fn connect_catalog_with_retry(dsn: &str) -> Catalog {
+    const MAX_ATTEMPTS: u32 = 20;
+    const RETRY_DELAY: Duration = Duration::from_millis(100);
+
+    let mut last_err = None;
+    for _ in 0..MAX_ATTEMPTS {
+        match Catalog::new(dsn).await {
+            Ok(catalog) => return catalog,
+            Err(err) => {
+                last_err = Some(err);
+                sleep(RETRY_DELAY).await;
+            }
+        }
+    }
+    panic!(
+        "Failed to create Catalog after {MAX_ATTEMPTS} attempts: {}",
+        last_err.expect("at least one connection attempt was made")
+    );
+}
+
 #[tokio::test]
 async fn test_ingester_operations() {
     let container = Postgres::default()
@@ -16,9 +41,7 @@ async fn test_ingester_operations() {
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
-    // Give the database some time to initialize
-    sleep(Duration::from_secs(1)).await;
-    let catalog = Catalog::new(&dsn).await.expect("Failed to create Catalog");
+    let catalog = connect_catalog_with_retry(&dsn).await;
 
     let id = Uuid::new_v4();
     catalog
@@ -68,8 +91,7 @@ async fn test_shard_operations() {
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
-    sleep(Duration::from_secs(1)).await;
-    let catalog = Catalog::new(&dsn).await.expect("Failed to create Catalog");
+    let catalog = connect_catalog_with_retry(&dsn).await;
 
     // Initially no shards
     let shards = catalog.list_shards().await.expect("Failed to list shards");

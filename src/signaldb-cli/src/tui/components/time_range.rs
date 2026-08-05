@@ -275,6 +275,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::tui::test_helpers::assert_buffer_contains;
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -428,6 +429,20 @@ mod tests {
     }
 
     #[test]
+    fn render_preset_mode_shows_preset_labels() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let selector = TimeRangeSelector::new();
+
+        terminal
+            .draw(|frame| selector.render(frame, frame.area()))
+            .unwrap();
+        assert_buffer_contains(&terminal, "Time Range");
+        assert_buffer_contains(&terminal, "Last 15m");
+        assert_buffer_contains(&terminal, "Last 1h");
+        assert_buffer_contains(&terminal, "Custom...");
+    }
+
+    #[test]
     fn snapshot_time_range_selector() {
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let selector = TimeRangeSelector::new();
@@ -438,6 +453,24 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
         insta::assert_snapshot!("time_range_selector", content);
+    }
+
+    #[test]
+    fn render_custom_mode_shows_iso8601_input_box() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut selector = TimeRangeSelector::new();
+
+        // Navigate to "Custom..." and enter custom mode
+        while selector.list_state.selected() != Some(selector.presets.len() - 1) {
+            selector.handle_key(press(KeyCode::Down));
+        }
+        selector.handle_key(press(KeyCode::Enter));
+
+        terminal
+            .draw(|frame| selector.render(frame, frame.area()))
+            .unwrap();
+        assert_buffer_contains(&terminal, "ISO 8601 Interval");
+        assert_buffer_contains(&terminal, "Custom...");
     }
 
     #[test]
