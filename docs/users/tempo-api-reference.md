@@ -98,6 +98,12 @@ error popup):
 or `internal` (500). Note this is a JSON envelope where upstream Tempo
 returns `text/plain` bodies; the message content is equivalent.
 
+Decoding the querier's Flight response is dictionary-safe: it goes through
+`common::flight::decode::flight_data_vec_to_batches` rather than
+`arrow_flight::utils::flight_data_to_batches`, so a response containing
+dictionary-encoded columns (none of SignalDB's own schemas use one yet)
+decodes correctly instead of surfacing as an internal 500.
+
 ## Tempo gRPC querier protocol
 
 A standalone querier also serves Tempo's internal `tempopb.Querier` gRPC

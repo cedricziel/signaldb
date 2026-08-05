@@ -245,7 +245,9 @@ async fn execute_ticket<S: RouterState>(
                 common::self_monitoring::spans::RpcBoundary::Client,
                 tonic::Code::Ok,
             );
-            super::flight_decode::decode_flight_batches(&data, "query_ir").map_err(ApiError::from)
+            super::flight_decode::decode_flight_batches(data, "query_ir")
+                .await
+                .map_err(ApiError::from)
         }
         .instrument(rpc_span),
     )

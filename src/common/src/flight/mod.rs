@@ -12,7 +12,6 @@
 //! layers stay wire-compatible with older peers' payloads.
 
 use arrow_flight::FlightData;
-use arrow_flight::SchemaAsIpc;
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::error::ArrowError;
@@ -27,6 +26,7 @@ use tonic::service::interceptor::InterceptedService;
 pub mod auth;
 pub mod chunk;
 pub mod conversion;
+pub mod decode;
 pub mod schema;
 pub mod trace_context;
 pub mod transport;
@@ -70,6 +70,18 @@ pub fn flight_ipc_write_options() -> IpcWriteOptions {
 /// Drop-in replacement for [`arrow_flight::utils::batches_to_flight_data`]
 /// that compresses record-batch buffers. The first message carries the
 /// schema; dictionary batches (if any) precede each data batch.
+///
+/// The schema message is built through [`IpcDataGenerator::schema_to_bytes_with_dictionary_tracker`]
+/// against the *same* [`DictionaryTracker`] used to encode the batches below
+/// — not `arrow_flight::SchemaAsIpc`'s `Into<FlightData>`, which builds and
+/// discards its own internal tracker. `IpcDataGenerator::encode` assigns each dictionary
+/// column's IPC `dict_id` from `dictionary_tracker.dict_ids`, a sequence
+/// populated only while walking the schema; encoding the schema through a
+/// throwaway tracker leaves that sequence empty, so the first dictionary
+/// column in any batch fails to encode ("no dict id for field ...") rather
+/// than silently dropping data. This has no effect on schemas without a
+/// dictionary-typed column (SignalDB's own schemas, today): the emitted
+/// schema bytes are identical either way.
 pub fn batches_to_compressed_flight_data(
     schema: &Schema,
     batches: Vec<RecordBatch>,
@@ -79,7 +91,14 @@ pub fn batches_to_compressed_flight_data(
     let mut dictionary_tracker = DictionaryTracker::new(false);
     let mut compression_context = CompressionContext::default();
 
-    let schema_flight_data: FlightData = SchemaAsIpc::new(schema, &options).into();
+    let schema_bytes =
+        data_gen.schema_to_bytes_with_dictionary_tracker(schema, &mut dictionary_tracker, &options);
+    let schema_flight_data = FlightData {
+        data_header: schema_bytes.ipc_message.into(),
+        data_body: vec![].into(),
+        app_metadata: vec![].into(),
+        flight_descriptor: None,
+    };
     let mut flight_data = vec![schema_flight_data];
     for batch in batches {
         let (encoded_dictionaries, encoded_batch) = data_gen.encode(

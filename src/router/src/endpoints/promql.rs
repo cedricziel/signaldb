@@ -349,7 +349,9 @@ async fn execute_ticket<S: RouterState>(
         data.push(flight_data.map_err(|e| ApiError::from_flight(&e, "promql"))?);
     }
 
-    super::flight_decode::decode_flight_batches(&data, "promql").map_err(ApiError::from)
+    super::flight_decode::decode_flight_batches(data, "promql")
+        .await
+        .map_err(ApiError::from)
 }
 
 /// Group matrix rows (`bucket`, `metric_name`, label columns, `value`)

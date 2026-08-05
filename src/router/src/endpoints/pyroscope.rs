@@ -222,7 +222,9 @@ async fn execute_ticket<S: RouterState>(
         data.push(flight_data.map_err(|e| flight_status_to_http(&e))?);
     }
 
-    super::flight_decode::decode_flight_batches(&data, "profiles").map_err(ApiError::from)
+    super::flight_decode::decode_flight_batches(data, "profiles")
+        .await
+        .map_err(ApiError::from)
 }
 
 /// Map the querier's Flight status onto an HTTP error carrying the
