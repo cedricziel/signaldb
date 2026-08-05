@@ -6,7 +6,6 @@
 //!
 //! Issue: #278 - Implement remaining flight rpc methods
 
-use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::{FlightDescriptor, FlightInfo, SchemaResult};
 use common::catalog::Catalog;
 use common::config::Configuration;
@@ -32,7 +31,7 @@ async fn setup_router_flight_service() -> Channel {
     drop(listener);
 
     let server = Server::builder()
-        .add_service(FlightServiceServer::new(flight_service))
+        .add_service(common::flight::flight_service_server(flight_service))
         .serve(addr);
     tokio::spawn(server);
 

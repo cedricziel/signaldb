@@ -363,7 +363,13 @@ impl InMemoryFlightTransport {
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout);
         let channel = endpoint.connect().await?;
-        let client = FlightServiceClient::new(channel);
+        // Internal service-to-service hop: compress requests with zstd and
+        // advertise zstd for responses. Every in-tree Flight server accepts
+        // zstd (see `crate::flight::flight_service_server`); mixed-version
+        // deployments must upgrade servers before clients.
+        let client = FlightServiceClient::new(channel)
+            .send_compressed(tonic::codec::CompressionEncoding::Zstd)
+            .accept_compressed(tonic::codec::CompressionEncoding::Zstd);
 
         // Add to connection pool
         {

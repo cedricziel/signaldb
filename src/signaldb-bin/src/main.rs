@@ -426,28 +426,23 @@ async fn main() -> Result<()> {
             router_flight_shutdown_rx.await.ok();
             log::info!("Router Flight service shutting down gracefully");
         };
-        let serve =
-            match router_flight_auth {
-                Some(interceptor) => Server::builder()
-                    .add_service(
-                        arrow_flight::flight_service_server::FlightServiceServer::with_interceptor(
-                            flight_service,
-                            move |req| interceptor.intercept(req),
-                        ),
-                    )
+        let serve = match router_flight_auth {
+            Some(interceptor) => {
+                Server::builder()
+                    .add_service(common::flight::flight_service_server_with_interceptor(
+                        flight_service,
+                        move |req| interceptor.intercept(req),
+                    ))
                     .serve_with_shutdown(flight_addr, shutdown)
-                    .await,
-                None => {
-                    Server::builder()
-                        .add_service(
-                            arrow_flight::flight_service_server::FlightServiceServer::new(
-                                flight_service,
-                            ),
-                        )
-                        .serve_with_shutdown(flight_addr, shutdown)
-                        .await
-                }
-            };
+                    .await
+            }
+            None => {
+                Server::builder()
+                    .add_service(common::flight::flight_service_server(flight_service))
+                    .serve_with_shutdown(flight_addr, shutdown)
+                    .await
+            }
+        };
         match serve {
             Ok(_) => log::info!("Router Flight service stopped"),
             Err(e) => log::error!("Router Flight service error: {e}"),
@@ -462,28 +457,23 @@ async fn main() -> Result<()> {
             writer_flight_shutdown_rx.await.ok();
             log::info!("Writer Flight service shutting down gracefully");
         };
-        let serve =
-            match internal_flight_auth {
-                Some(interceptor) => Server::builder()
-                    .add_service(
-                        arrow_flight::flight_service_server::FlightServiceServer::with_interceptor(
-                            writer_flight_service,
-                            move |req| interceptor.intercept(req),
-                        ),
-                    )
+        let serve = match internal_flight_auth {
+            Some(interceptor) => {
+                Server::builder()
+                    .add_service(common::flight::flight_service_server_with_interceptor(
+                        writer_flight_service,
+                        move |req| interceptor.intercept(req),
+                    ))
                     .serve_with_shutdown(writer_flight_addr, shutdown)
-                    .await,
-                None => {
-                    Server::builder()
-                        .add_service(
-                            arrow_flight::flight_service_server::FlightServiceServer::new(
-                                writer_flight_service,
-                            ),
-                        )
-                        .serve_with_shutdown(writer_flight_addr, shutdown)
-                        .await
-                }
-            };
+                    .await
+            }
+            None => {
+                Server::builder()
+                    .add_service(common::flight::flight_service_server(writer_flight_service))
+                    .serve_with_shutdown(writer_flight_addr, shutdown)
+                    .await
+            }
+        };
         match serve {
             Ok(_) => log::info!("Writer Flight service stopped"),
             Err(e) => log::error!("Writer Flight service error: {e}"),
@@ -498,28 +488,25 @@ async fn main() -> Result<()> {
             querier_flight_shutdown_rx.await.ok();
             log::info!("Querier Flight service shutting down gracefully");
         };
-        let serve =
-            match tenant_flight_auth {
-                Some(interceptor) => Server::builder()
-                    .add_service(
-                        arrow_flight::flight_service_server::FlightServiceServer::with_interceptor(
-                            querier_flight_service,
-                            move |req| interceptor.intercept(req),
-                        ),
-                    )
+        let serve = match tenant_flight_auth {
+            Some(interceptor) => {
+                Server::builder()
+                    .add_service(common::flight::flight_service_server_with_interceptor(
+                        querier_flight_service,
+                        move |req| interceptor.intercept(req),
+                    ))
                     .serve_with_shutdown(querier_flight_addr, shutdown)
-                    .await,
-                None => {
-                    Server::builder()
-                        .add_service(
-                            arrow_flight::flight_service_server::FlightServiceServer::new(
-                                querier_flight_service,
-                            ),
-                        )
-                        .serve_with_shutdown(querier_flight_addr, shutdown)
-                        .await
-                }
-            };
+                    .await
+            }
+            None => {
+                Server::builder()
+                    .add_service(common::flight::flight_service_server(
+                        querier_flight_service,
+                    ))
+                    .serve_with_shutdown(querier_flight_addr, shutdown)
+                    .await
+            }
+        };
         match serve {
             Ok(_) => log::info!("Querier Flight service stopped"),
             Err(e) => log::error!("Querier Flight service error: {e}"),

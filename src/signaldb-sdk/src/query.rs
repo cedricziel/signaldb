@@ -132,7 +132,11 @@ impl QueryClient {
                 url: self.flight_url.clone(),
                 source,
             })?;
-        let mut client = FlightServiceClient::new(channel);
+        // Advertise zstd support so servers compress responses; requests
+        // stay uncompressed (tickets are tiny, and this keeps the SDK
+        // compatible with servers that predate compression support).
+        let mut client = FlightServiceClient::new(channel)
+            .accept_compressed(tonic::codec::CompressionEncoding::Zstd);
 
         let ticket = Ticket {
             ticket: sql.as_bytes().to_vec().into(),

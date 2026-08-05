@@ -15,7 +15,6 @@
 
 use acceptor::handler::WalManager;
 use acceptor::handler::otlp_metrics_handler::MetricsHandler;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource};
 use common::catalog::Catalog;
@@ -226,7 +225,7 @@ async fn setup() -> TestServices {
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
-            .add_service(FlightServiceServer::new(writer_service))
+            .add_service(common::flight::flight_service_server(writer_service))
             .serve(writer_addr),
     );
     let _writer_bootstrap =
@@ -258,7 +257,7 @@ async fn setup() -> TestServices {
     drop(querier_listener);
     tokio::spawn(
         Server::builder()
-            .add_service(FlightServiceServer::new(querier_service))
+            .add_service(common::flight::flight_service_server(querier_service))
             .serve(querier_addr),
     );
     let _querier_bootstrap = ServiceBootstrap::new(
@@ -338,7 +337,7 @@ async fn serve_router(services: &TestServices) -> (String, String) {
     let flight_service = create_flight_service(state);
     tokio::spawn(
         Server::builder()
-            .add_service(FlightServiceServer::new(flight_service))
+            .add_service(common::flight::flight_service_server(flight_service))
             .serve(flight_addr),
     );
 

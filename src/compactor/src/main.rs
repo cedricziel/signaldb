@@ -7,7 +7,6 @@
 //! observability endpoints (Prometheus metrics, status, health).
 
 use anyhow::{Context, Result};
-use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use common::catalog_manager::CatalogManager;
 use common::config::Configuration;
@@ -268,7 +267,7 @@ async fn main() -> Result<()> {
             let serve = match flight_auth {
                 Some(interceptor) => {
                     Server::builder()
-                        .add_service(FlightServiceServer::with_interceptor(
+                        .add_service(common::flight::flight_service_server_with_interceptor(
                             flight_service,
                             move |req| interceptor.intercept(req),
                         ))
@@ -277,7 +276,7 @@ async fn main() -> Result<()> {
                 }
                 None => {
                     Server::builder()
-                        .add_service(FlightServiceServer::new(flight_service))
+                        .add_service(common::flight::flight_service_server(flight_service))
                         .serve(flight_addr)
                         .await
                 }
