@@ -309,6 +309,13 @@ pub struct QuerierFlightService {
     /// tenant register exactly once, while different tenants register
     /// concurrently (no single global lock on the query path).
     tenant_reg_locks: dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// Cache of per-request `SessionContext`s keyed by `(tenant_slug,
+    /// dataset_slug)`, populated lazily by `session_for_request`. Avoids
+    /// rebuilding the DataFusion function/UDF registry (via
+    /// `SessionStateBuilder::new_from_existing`) on every single request —
+    /// see the safety comment on `session_for_request` for why sharing one
+    /// context per tenant+dataset is sound.
+    session_cache: dashmap::DashMap<(String, String), Arc<SessionContext>>,
 }
 
 /// Build the querier's SessionConfig with DataFusion scan/pushdown options
@@ -452,6 +459,7 @@ impl QuerierFlightService {
             catalog_manager: None,
             registered_tenants: dashmap::DashSet::new(),
             tenant_reg_locks: dashmap::DashMap::new(),
+            session_cache: dashmap::DashMap::new(),
         }
     }
 
@@ -540,6 +548,7 @@ impl QuerierFlightService {
             catalog_manager: Some(catalog_manager),
             registered_tenants,
             tenant_reg_locks: dashmap::DashMap::new(),
+            session_cache: dashmap::DashMap::new(),
         })
     }
 
@@ -1154,25 +1163,55 @@ impl QuerierFlightService {
         Ok(vec![batch])
     }
 
-    /// Build a per-request SessionContext with tenant/dataset defaults.
+    /// Build (or reuse) a per-tenant/dataset SessionContext with tenant/dataset
+    /// defaults.
     ///
-    /// The shared context's session state is cloned per request so that
-    /// concurrent queries can never observe each other's default
-    /// catalog/schema — mutating the shared context (the previous `SET
+    /// Per-request session state used to be rebuilt from scratch on every
+    /// call via `SessionStateBuilder::new_from_existing`, which clones the
+    /// full function registry (scalar/aggregate/window UDFs, table
+    /// functions, file formats) — expensive to do on every single request.
+    /// Instead, the derived `SessionContext` is built once per distinct
+    /// `(tenant_slug, dataset_slug)` pair and cached; subsequent calls for
+    /// the same pair return a cheap `Arc::clone` of the cached context.
+    ///
+    /// This is safe to share across *concurrent* requests for the *same*
+    /// tenant+dataset because they have identical defaults — the original
+    /// bug this design avoids (see below) was only about *different*
+    /// tenants observing each other's defaults, which per-tenant caching
+    /// still fully prevents. Registered catalogs and the runtime
+    /// environment are shared through Arcs inside the DataFusion
+    /// `SessionState` (`catalog_list` is `Arc<dyn CatalogProviderList>`
+    /// backed by an internally-mutable `DashMap`), so a cached context still
+    /// observes catalogs/tables registered on the shared `session_ctx`
+    /// *after* the cache entry was created (e.g. tenants registered lazily
+    /// by `ensure_tenant_registered`).
+    ///
+    /// Mutating the shared context directly (the previous `SET
     /// datafusion.catalog.default_catalog` approach) let two concurrent
     /// queries for different tenants execute against the wrong tenant's
-    /// catalog. Registered catalogs and the runtime environment remain
-    /// shared through Arcs inside the cloned state.
+    /// catalog; per-(tenant, dataset) cached contexts keep that isolation
+    /// while avoiding a full state rebuild per request.
     fn session_for_request(
         &self,
         tenant_slug: Option<&str>,
         dataset_slug: Option<&str>,
-    ) -> SessionContext {
-        let state = self.session_ctx.state();
-
+    ) -> Arc<SessionContext> {
         let Some(tenant) = tenant_slug else {
-            return SessionContext::new_with_state(state);
+            // No tenant to scope defaults to: return a fresh context sharing
+            // the shared state's Arcs. Not cached since there is no stable
+            // cache key and this path carries no per-tenant defaults to
+            // amortize.
+            return Arc::new(SessionContext::new_with_state(self.session_ctx.state()));
         };
+
+        let dataset = dataset_slug.unwrap_or("default");
+        let cache_key = (tenant.to_string(), dataset.to_string());
+
+        if let Some(cached) = self.session_cache.get(&cache_key) {
+            return Arc::clone(cached.value());
+        }
+
+        let state = self.session_ctx.state();
 
         // create_default_catalog_and_schema must be off: with it on,
         // SessionStateBuilder::build() would register a fresh EMPTY catalog
@@ -1184,12 +1223,18 @@ impl QuerierFlightService {
             .with_create_default_catalog_and_schema(false);
         let options = config.options_mut();
         options.catalog.default_catalog = tenant.to_string();
-        options.catalog.default_schema = dataset_slug.unwrap_or("default").to_string();
+        options.catalog.default_schema = dataset.to_string();
 
         let state = SessionStateBuilder::new_from_existing(state)
             .with_config(config)
             .build();
-        SessionContext::new_with_state(state)
+        let ctx = Arc::new(SessionContext::new_with_state(state));
+
+        // On a race, both racers build a context and one insert wins; the
+        // loser's Arc is simply dropped. Both are behaviorally identical, so
+        // returning whichever ended up in the cache (not necessarily the
+        // one this call just built) is correct.
+        self.session_cache.entry(cache_key).or_insert(ctx).clone()
     }
 
     /// Execute a SQL query and return results as RecordBatches
@@ -2868,6 +2913,82 @@ mod tests {
         assert_eq!(
             state.config().options().catalog.default_catalog,
             "datafusion"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_for_request_caches_per_tenant_dataset() {
+        let service = make_service().await;
+        register_tenant_catalog(&service, "tenant_a", "prod");
+        register_tenant_catalog(&service, "tenant_b", "prod");
+
+        // Two sequential calls for the same (tenant, dataset) must return the
+        // *same* cached context (not merely an equivalent one), proving the
+        // expensive SessionStateBuilder rebuild only happens once.
+        let first = service.session_for_request(Some("tenant_a"), Some("prod"));
+        let second = service.session_for_request(Some("tenant_a"), Some("prod"));
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "second call for the same (tenant, dataset) must reuse the cached context"
+        );
+
+        // A different dataset for the same tenant is a distinct cache entry.
+        let other_dataset = service.session_for_request(Some("tenant_a"), Some("staging"));
+        assert!(
+            !Arc::ptr_eq(&first, &other_dataset),
+            "different dataset must get its own cached context"
+        );
+
+        // A different tenant must get a distinct cached context with its own
+        // defaults, never the other tenant's.
+        let other_tenant = service.session_for_request(Some("tenant_b"), Some("prod"));
+        assert!(
+            !Arc::ptr_eq(&first, &other_tenant),
+            "different tenant must get its own cached context"
+        );
+        assert_eq!(
+            first.state().config().options().catalog.default_catalog,
+            "tenant_a"
+        );
+        assert_eq!(
+            other_tenant
+                .state()
+                .config()
+                .options()
+                .catalog
+                .default_catalog,
+            "tenant_b"
+        );
+
+        // Exactly the three distinct (tenant, dataset) pairs requested above
+        // are cached — proves the cache doesn't grow per-request.
+        assert_eq!(service.session_cache.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn session_for_request_cache_sees_catalogs_registered_after_caching() {
+        // A tenant's catalog registered on the shared session_ctx *after* a
+        // request already cached that tenant's derived context must still
+        // be visible through the cached context — catalog_list is an
+        // Arc<dyn CatalogProviderList> shared (not deep-cloned) across
+        // derived SessionStates.
+        let service = make_service().await;
+        register_tenant_catalog(&service, "tenant_c", "prod");
+
+        // Populate the cache before the second catalog exists.
+        let cached = service.session_for_request(Some("tenant_c"), Some("prod"));
+        assert!(cached.catalog("tenant_c").is_some());
+
+        // Register a brand-new tenant catalog on the shared context after
+        // caching.
+        register_tenant_catalog(&service, "tenant_d", "prod");
+
+        // The cached context for tenant_c (built before tenant_d existed)
+        // must still resolve the newly-registered tenant_d catalog, because
+        // both share the same underlying catalog list.
+        assert!(
+            cached.catalog("tenant_d").is_some(),
+            "cached context must observe catalogs registered on the shared session_ctx later"
         );
     }
 
