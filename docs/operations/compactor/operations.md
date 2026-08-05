@@ -92,9 +92,12 @@ tail -f .data/logs/monolithic.log | grep -E "DRY.RUN"
 Look for log entries like:
 
 ```text
-INFO compactor::retention::enforcer: [DRY RUN] Would drop expired partitions tenant_id=acme dataset_id=prod table_name=traces partitions_to_drop=48 bytes_to_reclaim=1073741824
-INFO compactor::retention::enforcer: [DRY RUN] Would drop partition tenant_id=acme dataset_id=prod table_name=traces partition_hour=Some("492245") file_count=12 size_bytes=Some(10485760)
+INFO compactor::retention::enforcer: [DRY RUN] Would drop expired partitions signaldb.tenant.id=acme signaldb.dataset.id=prod signaldb.table=traces signaldb.job.dry_run=true signaldb.job.partitions_dropped=48 signaldb.job.bytes_reclaimed=1073741824
+DEBUG compactor::retention::enforcer: [DRY RUN] Would drop partition tenant_id=acme dataset_id=prod table_name=traces partition_hour=Some("492245") file_count=12 size_bytes=Some(10485760)
 ```
+
+The per-partition breakdown is debug-level; run with
+`RUST_LOG=info,compactor::retention=debug` to see it.
 
 **Validate:**
 
@@ -452,11 +455,12 @@ systemctl restart signaldb
 
 ```bash
 # Wait for next retention check (check interval)
-# Monitor logs for new cutoff (stdout, or monolithic.log with run-dev.sh)
+# Monitor logs for new cutoff (stdout, or monolithic.log with run-dev.sh).
+# The cutoff line is debug-level: run with RUST_LOG=info,compactor::retention=debug
 tail -f .data/logs/monolithic.log | grep "Retention cutoff computed"
 
 # Expected log:
-# INFO compactor::retention::enforcer: Retention cutoff computed tenant_id=production dataset_id=default table_name=traces cutoff_timestamp=2026-01-26 10:00:00 UTC retention_period=14d source=Tenant
+# DEBUG compactor::retention::enforcer: Retention cutoff computed tenant_id=production dataset_id=default table_name=traces cutoff_timestamp=2026-01-26 10:00:00 UTC retention_period=14d source=Tenant
 ```
 
 ### Force Immediate Retention Check
@@ -498,7 +502,7 @@ RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor 2>&
   grep "Retention cutoff computed"
 
 # Example output:
-# INFO compactor::retention::enforcer: Retention cutoff computed tenant_id=acme dataset_id=prod table_name=traces cutoff_timestamp=2026-01-25 09:00:00 UTC retention_period=7d source=Global
+# DEBUG compactor::retention::enforcer: Retention cutoff computed tenant_id=acme dataset_id=prod table_name=traces cutoff_timestamp=2026-01-25 09:00:00 UTC retention_period=7d source=Global
 ```
 
 ### Inspect Orphan Candidates

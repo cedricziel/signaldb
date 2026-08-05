@@ -11,11 +11,13 @@
 # The tracing-opentelemetry bridge fields (busy_ns, idle_ns, target,
 # code.*) that used to fail every run are disabled at the source:
 # common::self_monitoring::otel_span_layer configures the bridge, pinned
-# by the otel_bridge_attrs test in the common crate. Remaining noise from
-# the initial smoke run (log-bridge records, per-callsite event names) is
-# information-level only. Real violations the smoke run caught (fixed
-# since): string-typed http.response.status_code and server.port.
-# Flip-to-blocking tracked in #912.
+# by the otel_bridge_attrs test in the common crate. The bridge attributes
+# that CANNOT be disabled (thread.* on spans; level/target on span events)
+# are whitelisted via finding filters in .weaver.toml (--config below).
+# Real violations the smoke run caught (fixed since): string-typed
+# http.response.status_code and server.port; bare (un-namespaced)
+# retention-run span-event fields, now emitted as registered signaldb.job.*
+# attributes. Flip-to-blocking tracked in #912.
 name: Weaver Live Check
 
 on:
@@ -64,8 +66,10 @@ jobs:
           docker run -d --name weaver \
             -p 14317:4317 -p 14320:4320 \
             -v "$PWD/otel/registry:/registry" \
+            -v "$PWD/.weaver.toml:/weaver-config/.weaver.toml:ro" \
             otel/weaver:${WEAVER_VERSION} registry live-check \
             -r /registry \
+            --config /weaver-config/.weaver.toml \
             --include-unreferenced \
             --otlp-grpc-address 0.0.0.0 --otlp-grpc-port 4317 \
             --admin-port 4320 \

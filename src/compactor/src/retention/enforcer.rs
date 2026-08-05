@@ -137,14 +137,15 @@ impl RetentionEnforcer {
         tenant_id: &str,
         dataset_id: &str,
     ) -> Result<RetentionRunResult> {
-        let run_id = format!("retention_{}", Utc::now().timestamp_millis());
+        let run_id = format!("retention_{}", uuid::Uuid::new_v4());
         let started_at = Utc::now();
+        let run_clock = std::time::Instant::now();
 
         info!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            run_id = %run_id,
-            dry_run = self.config.dry_run,
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.job.run_id = %run_id,
+            signaldb.job.dry_run = self.config.dry_run,
             "Starting retention enforcement run"
         );
 
@@ -164,11 +165,11 @@ impl RetentionEnforcer {
             {
                 Ok(result) => {
                     info!(
-                        tenant_id = %tenant_id,
-                        dataset_id = %dataset_id,
-                        table_name = %table_name,
-                        partitions_dropped = result.partitions_dropped,
-                        snapshots_expired = result.snapshots_expired,
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table_name,
+                        signaldb.job.partitions_dropped = result.partitions_dropped,
+                        signaldb.job.snapshots_expired = result.snapshots_expired,
                         "Table retention enforcement completed"
                     );
                     table_results.push(result);
@@ -177,9 +178,9 @@ impl RetentionEnforcer {
                     let error_msg =
                         format!("Failed to enforce retention on table {}: {}", table_name, e);
                     warn!(
-                        tenant_id = %tenant_id,
-                        dataset_id = %dataset_id,
-                        table_name = %table_name,
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table_name,
                         error = %e,
                         "Table retention enforcement failed"
                     );
@@ -196,14 +197,14 @@ impl RetentionEnforcer {
         let total_bytes_reclaimed: u64 = table_results.iter().map(|r| r.bytes_reclaimed).sum();
 
         info!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            run_id = %run_id,
-            tables_processed = table_results.len(),
-            total_partitions_dropped,
-            total_snapshots_expired,
-            total_bytes_reclaimed,
-            duration_ms = (completed_at - started_at).num_milliseconds(),
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.job.run_id = %run_id,
+            signaldb.job.tables_processed = table_results.len(),
+            signaldb.job.partitions_dropped = total_partitions_dropped,
+            signaldb.job.snapshots_expired = total_snapshots_expired,
+            signaldb.job.bytes_reclaimed = total_bytes_reclaimed,
+            signaldb.job.duration_ms = run_clock.elapsed().as_millis() as u64,
             "Retention enforcement run completed"
         );
 
@@ -228,9 +229,9 @@ impl RetentionEnforcer {
         table_name: &str,
         signal_type: SignalType,
     ) -> Result<TableRetentionResult> {
-        let started_at = Utc::now();
+        let table_clock = std::time::Instant::now();
 
-        info!(
+        debug!(
             tenant_id = %tenant_id,
             dataset_id = %dataset_id,
             table_name = %table_name,
@@ -244,7 +245,7 @@ impl RetentionEnforcer {
             .compute_cutoff(tenant_id, dataset_id, signal_type)
             .context("Failed to compute retention cutoff")?;
 
-        info!(
+        debug!(
             tenant_id = %tenant_id,
             dataset_id = %dataset_id,
             table_name = %table_name,
@@ -288,8 +289,7 @@ impl RetentionEnforcer {
             .await
             .context("Failed to expire old snapshots")?;
 
-        let completed_at = Utc::now();
-        let duration_ms = (completed_at - started_at).num_milliseconds() as u64;
+        let duration_ms = table_clock.elapsed().as_millis() as u64;
 
         // Update metrics
         self.metrics.record_duration_ms(duration_ms);
@@ -322,7 +322,7 @@ impl RetentionEnforcer {
         table: &iceberg_rust::table::Table,
         cutoff: &super::policy::RetentionCutoff,
     ) -> Result<(usize, usize, u64)> {
-        info!(
+        debug!(
             tenant_id = %tenant_id,
             dataset_id = %dataset_id,
             table_name = %table_name,
@@ -339,7 +339,7 @@ impl RetentionEnforcer {
 
         let total_partitions = all_partitions.len();
 
-        info!(
+        debug!(
             tenant_id = %tenant_id,
             dataset_id = %dataset_id,
             table_name = %table_name,
@@ -355,7 +355,7 @@ impl RetentionEnforcer {
             .filter_partitions_older_than(all_partitions.clone(), &cutoff.cutoff_timestamp);
 
         if expired_partitions.is_empty() {
-            info!(
+            debug!(
                 tenant_id = %tenant_id,
                 dataset_id = %dataset_id,
                 table_name = %table_name,
@@ -364,7 +364,7 @@ impl RetentionEnforcer {
             return Ok((total_partitions, 0, 0));
         }
 
-        info!(
+        debug!(
             tenant_id = %tenant_id,
             dataset_id = %dataset_id,
             table_name = %table_name,
@@ -381,16 +381,17 @@ impl RetentionEnforcer {
                 .sum();
 
             info!(
-                tenant_id = %tenant_id,
-                dataset_id = %dataset_id,
-                table_name = %table_name,
-                partitions_to_drop = expired_partitions.len(),
-                bytes_to_reclaim,
+                signaldb.tenant.id = %tenant_id,
+                signaldb.dataset.id = %dataset_id,
+                signaldb.table = %table_name,
+                signaldb.job.dry_run = true,
+                signaldb.job.partitions_dropped = expired_partitions.len(),
+                signaldb.job.bytes_reclaimed = bytes_to_reclaim,
                 "[DRY RUN] Would drop expired partitions"
             );
 
             for partition in &expired_partitions {
-                info!(
+                debug!(
                     tenant_id = %tenant_id,
                     dataset_id = %dataset_id,
                     table_name = %table_name,
@@ -428,9 +429,9 @@ impl RetentionEnforcer {
                 Ok(result) => break result,
                 Err(e) if is_conflict_error(&e) && attempt < MAX_ATTEMPTS => {
                     warn!(
-                        tenant_id = %tenant_id,
-                        dataset_id = %dataset_id,
-                        table_name = %table_name,
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table_name,
                         attempt,
                         error = %e,
                         "Partition drop hit a snapshot conflict; retrying against fresh metadata"
@@ -444,12 +445,12 @@ impl RetentionEnforcer {
 
         if dropped_partitions > 0 {
             info!(
-                tenant_id = %tenant_id,
-                dataset_id = %dataset_id,
-                table_name = %table_name,
-                dropped_partitions,
-                dropped_files,
-                bytes_reclaimed,
+                signaldb.tenant.id = %tenant_id,
+                signaldb.dataset.id = %dataset_id,
+                signaldb.table = %table_name,
+                signaldb.job.partitions_dropped = dropped_partitions,
+                signaldb.job.files_deleted = dropped_files,
+                signaldb.job.bytes_reclaimed = bytes_reclaimed,
                 "Dropped expired partitions"
             );
             self.metrics.record_partitions_dropped(dropped_partitions);
@@ -531,10 +532,10 @@ impl RetentionEnforcer {
                 FileDisposition::KeepUnclassifiable => {
                     unclassifiable_files += 1;
                     warn!(
-                        tenant_id = %tenant_id,
-                        dataset_id = %dataset_id,
-                        table_name = %table_name,
-                        file_path = %data_file.file_path(),
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table_name,
+                        file.path = %data_file.file_path(),
                         "Data file has no recoverable timestamp_hour partition value; \
                          keeping it and excluding it from retention"
                     );
@@ -599,7 +600,7 @@ impl RetentionEnforcer {
             _ => anyhow::bail!("Expected table but got view for {table_name}"),
         };
 
-        info!(
+        debug!(
             tenant_id = %tenant_id,
             dataset_id = %dataset_id,
             table_name = %table_name,
@@ -613,7 +614,7 @@ impl RetentionEnforcer {
             .context("Failed to get snapshots to expire")?;
 
         if snapshots_to_expire.is_empty() {
-            info!(
+            debug!(
                 tenant_id = %tenant_id,
                 dataset_id = %dataset_id,
                 table_name = %table_name,
@@ -622,7 +623,7 @@ impl RetentionEnforcer {
             return Ok(0);
         }
 
-        info!(
+        debug!(
             tenant_id = %tenant_id,
             dataset_id = %dataset_id,
             table_name = %table_name,
@@ -632,15 +633,16 @@ impl RetentionEnforcer {
 
         if self.config.dry_run {
             info!(
-                tenant_id = %tenant_id,
-                dataset_id = %dataset_id,
-                table_name = %table_name,
-                snapshots_to_expire_count = snapshots_to_expire.len(),
+                signaldb.tenant.id = %tenant_id,
+                signaldb.dataset.id = %dataset_id,
+                signaldb.table = %table_name,
+                signaldb.job.dry_run = true,
+                signaldb.job.snapshots_expired = snapshots_to_expire.len(),
                 "[DRY RUN] Would expire old snapshots"
             );
 
             for snapshot in &snapshots_to_expire {
-                info!(
+                debug!(
                     tenant_id = %tenant_id,
                     dataset_id = %dataset_id,
                     table_name = %table_name,
@@ -670,11 +672,10 @@ impl RetentionEnforcer {
             .map_err(|e| anyhow::anyhow!("Failed to commit snapshot expiration: {e}"))?;
 
         info!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
-            snapshots_expired = expired_count,
-            snapshots_to_keep,
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.table = %table_name,
+            signaldb.job.snapshots_expired = expired_count,
             "Expired old snapshots"
         );
         self.metrics.record_snapshots_expired(expired_count);
@@ -942,5 +943,67 @@ mod tests {
             Some("0")
         );
         assert_eq!(attr("signaldb.job.snapshots_expired").as_deref(), Some("0"));
+    }
+
+    /// Log events inside the retention job span become OTel span events, and
+    /// `weaver registry live-check` validates their attribute keys against
+    /// the resolved registry (otel/registry/ + upstream semconv). At the
+    /// default `info` level every event field must be a registered
+    /// `signaldb.*` attribute, an upstream semconv attribute (`file.path`),
+    /// or one of the keys whitelisted in .weaver.toml: `level`/`target`
+    /// (stamped unconditionally by tracing-opentelemetry's event bridge) and
+    /// `error` (the workspace-wide failure-event idiom).
+    #[tokio::test]
+    async fn retention_run_span_events_use_registry_attribute_keys() {
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        use opentelemetry::trace::TracerProvider as _;
+        let tracer = provider.tracer("test");
+        // The production bridge layer (disables the code.* location
+        // attributes), filtered to the production default level
+        // (RUST_LOG=info): debug-level detail events are filtered out and
+        // never become span events.
+        let subscriber = tracing_subscriber::registry().with(
+            common::self_monitoring::otel_span_layer(tracer)
+                .with_filter(tracing_subscriber::filter::LevelFilter::INFO),
+        );
+
+        async {
+            let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+            let metrics = RetentionMetrics::new_mock();
+            let enforcer =
+                RetentionEnforcer::new(catalog_manager, create_test_config(), metrics).unwrap();
+            let _ = enforcer.enforce_retention("acme", "prod").await.unwrap();
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = spans
+            .iter()
+            .find(|s| s.name == "retention_enforcement")
+            .expect("no retention job span");
+
+        assert!(!span.events.is_empty(), "expected in-span log events");
+        let offending: Vec<String> = span
+            .events
+            .iter()
+            .flat_map(|e| e.attributes.iter())
+            .map(|kv| kv.key.as_str().to_string())
+            .filter(|k| {
+                !k.starts_with("signaldb.")
+                    && !matches!(k.as_str(), "level" | "target" | "error" | "file.path")
+            })
+            .collect();
+        assert!(
+            offending.is_empty(),
+            "span-event attribute keys missing from the signaldb registry namespace: {offending:?}"
+        );
     }
 }
