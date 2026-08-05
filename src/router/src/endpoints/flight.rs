@@ -7,7 +7,7 @@ use bytes::Bytes;
 use common::flight::schema::FlightSchemas;
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::datatypes::Schema;
-use datafusion::arrow::ipc::writer::{CompressionContext, IpcWriteOptions};
+use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::{ipc, record_batch::RecordBatch};
 use futures::stream::BoxStream;
 use futures::{StreamExt, stream};
@@ -223,42 +223,8 @@ impl<S: RouterState> SignalDBFlightService<S> {
         batches: Vec<RecordBatch>,
         schema: Schema,
     ) -> Result<BoxStream<'static, Result<FlightData, Status>>, Status> {
-        let options = IpcWriteOptions::default();
-        let mut flight_data = Vec::new();
-        let data_gen = ipc::writer::IpcDataGenerator::default();
-
-        // First, send the schema
-        let mut dict_tracker = ipc::writer::DictionaryTracker::new(false);
-        let schema_bytes = data_gen
-            .schema_to_bytes_with_dictionary_tracker(&schema, &mut dict_tracker, &options)
-            .ipc_message;
-        flight_data.push(FlightData {
-            data_header: schema_bytes.into(),
-            data_body: vec![].into(),
-            app_metadata: vec![].into(),
-            flight_descriptor: None,
-        });
-
-        // Then send each batch
-        for batch in batches {
-            let mut batch_dict_tracker = ipc::writer::DictionaryTracker::new(false);
-            let mut compression_context = CompressionContext::default();
-            let (_, batch_data) = data_gen
-                .encode(
-                    &batch,
-                    &mut batch_dict_tracker,
-                    &options,
-                    &mut compression_context,
-                )
-                .map_err(|e| Status::internal(format!("Failed to encode batch: {e}")))?;
-
-            flight_data.push(FlightData {
-                data_header: vec![].into(),
-                data_body: batch_data.ipc_message.into(),
-                app_metadata: vec![].into(),
-                flight_descriptor: None,
-            });
-        }
+        let flight_data = common::flight::batches_to_compressed_flight_data(&schema, batches)
+            .map_err(|e| Status::internal(format!("Failed to encode batch: {e}")))?;
 
         let stream = stream::iter(flight_data.into_iter().map(Ok)).boxed();
         Ok(stream)
