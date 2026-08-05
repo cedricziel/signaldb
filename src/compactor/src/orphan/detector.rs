@@ -19,8 +19,8 @@ use crate::orphan::metrics::{OrphanMetrics, SkipReason};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use common::catalog_manager::CatalogManager;
-use object_store::ObjectStore;
 use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, ObjectStoreExt};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
@@ -312,6 +312,131 @@ impl OrphanDetector {
         Ok(all_files)
     }
 
+    /// Identify unreferenced metadata files for a specific table.
+    ///
+    /// Metadata orphans are files in the table's `metadata/` directory that
+    /// nothing references anymore: metadata.json versions that fell out of
+    /// the metadata-log, and manifest-list/manifest avro files whose
+    /// snapshots have been expired. Iceberg's delete-after-commit pruning
+    /// only removes files it still tracks, so a backlog predating pruning
+    /// (or left by expired snapshots) is reclaimable only here (#935, #959).
+    ///
+    /// Protected regardless of age: every metadata-log entry, the current
+    /// metadata.json (via version-hint plus the newest scanned version as a
+    /// fallback), every retained snapshot's manifest list, every retained
+    /// manifest, and `version-hint.text` itself (never scanned).
+    pub async fn identify_orphan_metadata_candidates(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> Result<Vec<OrphanCandidate>> {
+        let table_identifier = self
+            .catalog_manager
+            .build_table_identifier(tenant_id, dataset_id, table_name);
+        let tabular = self
+            .catalog_manager
+            .catalog()
+            .load_tabular(&table_identifier)
+            .await
+            .with_context(|| {
+                format!("Failed to load table {tenant_id}/{dataset_id}/{table_name}")
+            })?;
+        let table = match tabular {
+            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
+            _ => anyhow::bail!("Expected table but found different tabular type"),
+        };
+
+        let mut live = self
+            .build_live_metadata_set(&table)
+            .await
+            .context("Failed to build live metadata set")?;
+
+        let metadata_dir = format!("{tenant_id}/{dataset_id}/{table_name}/metadata");
+
+        // The current metadata.json is not part of the metadata-log; protect
+        // the file the version hint points at.
+        let hint_path = ObjectPath::from(format!("{metadata_dir}/version-hint.text").as_str());
+        if let Ok(hint) = self.object_store.get(&hint_path).await
+            && let Ok(bytes) = hint.bytes().await
+        {
+            let hint = String::from_utf8_lossy(&bytes).trim().to_string();
+            if !hint.is_empty() {
+                live.insert(format!("{metadata_dir}/{hint}.metadata.json"));
+            }
+        }
+
+        // Scan the metadata directory for reclaimable file types.
+        let mut all_files = vec![];
+        let path = ObjectPath::from(format!("{metadata_dir}/").as_str());
+        let mut list_stream = self.object_store.list(Some(&path));
+        while let Some(meta_result) = list_stream.next().await {
+            let meta = meta_result.with_context(|| {
+                format!("Failed to read object metadata at path: {metadata_dir}/")
+            })?;
+            let location = meta.location.as_ref();
+            if location.ends_with(".metadata.json") || location.ends_with(".avro") {
+                all_files.push(ObjectStoreFile {
+                    path: meta.location.to_string(),
+                    size_bytes: meta.size as usize,
+                    last_modified: meta.last_modified,
+                });
+            }
+        }
+
+        // Belt and braces against a stale or missing version hint: never
+        // flag the newest metadata.json version we can see. Version stems
+        // are zero-padded, so lexicographic max is the newest.
+        if let Some(newest) = all_files
+            .iter()
+            .filter(|f| f.path.ends_with(".metadata.json"))
+            .map(|f| f.path.clone())
+            .max()
+        {
+            live.insert(newest);
+        }
+
+        let candidates =
+            self.identify_candidates(&live, &all_files, tenant_id, dataset_id, table_name)?;
+
+        tracing::info!(
+            tenant_id = %tenant_id,
+            dataset_id = %dataset_id,
+            table_name = %table_name,
+            scanned_metadata_files = all_files.len(),
+            orphan_candidates = candidates.len(),
+            grace_period_hours = self.config.grace_period_hours,
+            "Identified orphan metadata candidates"
+        );
+
+        Ok(candidates)
+    }
+
+    /// Build the set of metadata files still referenced by the table:
+    /// metadata-log entries, retained snapshots' manifest lists, and every
+    /// retained manifest.
+    async fn build_live_metadata_set(
+        &self,
+        table: &iceberg_rust::table::Table,
+    ) -> Result<HashSet<String>> {
+        let metadata = table.metadata();
+        let mut live = HashSet::new();
+        for entry in &metadata.metadata_log {
+            live.insert(entry.metadata_file.clone());
+        }
+        for snapshot in metadata.snapshots.values() {
+            live.insert(snapshot.manifest_list().clone());
+        }
+        for manifest in self
+            .manifest_reader
+            .collect_retained_manifests(table)
+            .await?
+        {
+            live.insert(manifest.manifest_path);
+        }
+        Ok(live)
+    }
+
     /// Identify orphan candidates from file comparison.
     ///
     /// Applies safety checks:
@@ -408,6 +533,41 @@ impl OrphanDetector {
             .build_live_file_set(&table)
             .await
             .context("Failed to build live file set for revalidation")
+    }
+
+    /// Build the current live metadata-file set for a table from a fresh
+    /// metadata load: metadata-log entries, retained snapshots' manifest
+    /// lists, and every retained manifest.
+    ///
+    /// Used by pre-deletion revalidation of metadata orphan candidates;
+    /// like [`Self::live_file_set_for_table`], the caller builds this once
+    /// per table per batch.
+    pub async fn live_metadata_set_for_table(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> Result<HashSet<String>> {
+        let table_identifier = self
+            .catalog_manager
+            .build_table_identifier(tenant_id, dataset_id, table_name);
+        let tabular = self
+            .catalog_manager
+            .catalog()
+            .load_tabular(&table_identifier)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to load table for revalidation: {tenant_id}/{dataset_id}/{table_name}"
+                )
+            })?;
+        let table = match tabular {
+            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
+            _ => anyhow::bail!("Expected table but found different tabular type"),
+        };
+        self.build_live_metadata_set(&table)
+            .await
+            .context("Failed to build live metadata set for revalidation")
     }
 }
 

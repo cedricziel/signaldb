@@ -537,6 +537,51 @@ impl CompactorService {
                             table_name
                         ),
                     }
+
+                    // Reclaim unreferenced metadata files (old metadata.json
+                    // versions, expired snapshots' manifest lists/manifests)
+                    // that delete-after-commit pruning no longer tracks
+                    // (#935, #959).
+                    match self
+                        .orphan_detector
+                        .identify_orphan_metadata_candidates(tid, did, table_name)
+                        .instrument(job_span.clone())
+                        .await
+                    {
+                        Ok(candidates) if !candidates.is_empty() => {
+                            match self
+                                .orphan_cleaner
+                                .delete_orphans_batch(candidates)
+                                .instrument(job_span.clone())
+                                .await
+                            {
+                                Ok(result) => tracing::info!(
+                                    "Metadata orphan cleanup {}/{}/{}: deleted={}, \
+                                     would_delete={}, bytes_freed={}, failed={}",
+                                    tid,
+                                    did,
+                                    table_name,
+                                    result.deleted_count,
+                                    result.would_delete_count,
+                                    result.total_bytes_freed,
+                                    result.failed_count,
+                                ),
+                                Err(e) => tracing::error!(
+                                    "Metadata orphan cleanup failed for {}/{}/{}: {e:?}",
+                                    tid,
+                                    did,
+                                    table_name
+                                ),
+                            }
+                        }
+                        Ok(_) => {} // no orphaned metadata
+                        Err(e) => tracing::warn!(
+                            "Metadata orphan detection skipped for {}/{}/{}: {e:#}",
+                            tid,
+                            did,
+                            table_name
+                        ),
+                    }
                 }
             }
         }
