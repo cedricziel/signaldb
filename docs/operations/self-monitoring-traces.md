@@ -108,3 +108,14 @@ Spans carry only registry-declared attributes. The tracing→OTel bridge's
 convenience attributes (`busy_ns`, `idle_ns`, `target`, `code.*`) are
 disabled at construction (`common::self_monitoring::otel_span_layer`,
 pinned by the `otel_bridge_attrs` test) — don't build dashboards on them.
+
+Three bridge-emitted attribute families cannot be disabled and are instead
+whitelisted for live-check via finding filters in the repo-root
+`.weaver.toml`: `thread.id`/`thread.name` on spans (upstream semconv at
+`development` stability — kept deliberately), `level`/`target` on span
+events (stamped unconditionally by tracing-opentelemetry's event bridge),
+and the `not_stable` advice for our own `signaldb.*` attributes (the
+SignalDB registry is `development` by design). `info!`/`warn!` events
+inside instrumented spans become span events, so their fields must be
+registry-declared `signaldb.*` attributes too — per-item developer detail
+belongs at `debug!`, which the default `info` level keeps out of telemetry.

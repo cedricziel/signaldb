@@ -1,0 +1,32 @@
+# OTel Weaver project configuration.
+#
+# Currently only used by `weaver registry live-check`
+# (.github/workflows/weaver-live-check.yml), which validates SignalDB's own
+# telemetry against otel/registry/ + upstream semconv. The filters below
+# whitelist findings for attributes we deliberately emit but cannot (or
+# choose not to) change:
+
+# thread.id / thread.name: emitted on every span by the tracing-opentelemetry
+# bridge (`with_threads`, on by default). They ARE upstream semconv, just at
+# `development` stability, which trips the `not_stable` advice. We keep them —
+# accept the stability level, drop the advice for exactly these keys.
+[[live-check.finding_filters]]
+exclude = ["not_stable"]
+sample_names = ["thread.id", "thread.name"]
+
+# signaldb.*: our own conventions (otel/registry/signaldb.yaml) are declared
+# `development` on purpose — SignalDB's registry has no stable tier yet, so
+# the stability advice on every one of them is unactionable noise.
+[[live-check.finding_filters]]
+exclude = ["not_stable"]
+sample_names = ["signaldb.*"]
+
+# level / target: tracing-opentelemetry 0.33 stamps these two attributes on
+# every span *event* unconditionally (`on_event` has no config toggle, unlike
+# the span-attribute `with_level`/`with_target` switches that
+# common::self_monitoring::otel_span_layer already disables). Neither exists
+# in any registry, so every in-span log line would be a `missing_attribute`
+# violation. Suppress all findings for these two keys on spans.
+[[live-check.finding_filters]]
+signal_type = "span"
+exclude_samples = ["level", "target"]
