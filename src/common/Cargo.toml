@@ -19,7 +19,6 @@ jemalloc-profiling = [
 ]
 
 [dependencies]
-log.workspace = true
 anyhow.workspace = true
 tempo-api = { path = "../tempo-api" }
 

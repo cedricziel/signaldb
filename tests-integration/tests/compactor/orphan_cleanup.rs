@@ -24,7 +24,10 @@ use tests_integration::generators;
 /// not flagging live files.
 #[tokio::test]
 async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -42,7 +45,7 @@ async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
         partition_granularity: PartitionGranularity::Day,
     };
 
-    log::info!("Creating table with 10 legitimate data files");
+    tracing::info!("Creating table with 10 legitimate data files");
     generators::generate_traces(&mut writer, &config).await?;
 
     // Manually add 3 orphan files to storage (simulate deleted snapshots)
@@ -53,7 +56,7 @@ async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
         format!("{}/data/orphan-3.parquet", table_path),
     ];
 
-    log::info!("Adding 3 orphan files to storage");
+    tracing::info!("Adding 3 orphan files to storage");
     let orphan_data = bytes::Bytes::from(vec![0u8; 1024]); // 1KB dummy data
     for path in &orphan_paths {
         ctx.object_store()
@@ -83,13 +86,13 @@ async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
     );
 
     // Run orphan detection
-    log::info!("Running orphan detection");
+    tracing::info!("Running orphan detection");
     let orphans = detector
         .identify_orphan_candidates(tenant_id, dataset_id, table_name)
         .await
         .context("Orphan detection failed")?;
 
-    log::info!("Found {} orphan candidates", orphans.len());
+    tracing::info!("Found {} orphan candidates", orphans.len());
 
     // Verify we found the 3 orphans we added
     assert_eq!(orphans.len(), 3, "Expected to find exactly 3 orphan files");
@@ -117,7 +120,10 @@ async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
 /// For time-based validation, see unit tests in src/compactor/src/orphan/detector.rs
 #[tokio::test]
 async fn test_orphan_cleanup_grace_period_configuration() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -135,7 +141,7 @@ async fn test_orphan_cleanup_grace_period_configuration() -> Result<()> {
         partition_granularity: PartitionGranularity::Day,
     };
 
-    log::info!("Creating base table");
+    tracing::info!("Creating base table");
     generators::generate_logs(&mut writer, &config).await?;
 
     // Add orphan files to storage
@@ -184,12 +190,12 @@ async fn test_orphan_cleanup_grace_period_configuration() -> Result<()> {
         ctx.object_store().clone(),
     );
 
-    log::info!("Running orphan detection with 24h grace period");
+    tracing::info!("Running orphan detection with 24h grace period");
     let orphans = detector
         .identify_orphan_candidates(tenant_id, dataset_id, table_name)
         .await?;
 
-    log::info!(
+    tracing::info!(
         "Found {} orphan candidates with 24h grace period",
         orphans.len()
     );
@@ -214,7 +220,7 @@ async fn test_orphan_cleanup_grace_period_configuration() -> Result<()> {
         .identify_orphan_candidates(tenant_id, dataset_id, table_name)
         .await?;
 
-    log::info!(
+    tracing::info!(
         "Found {} orphan candidates with 0h grace period",
         orphans_no_grace.len()
     );
@@ -234,7 +240,10 @@ async fn test_orphan_cleanup_grace_period_configuration() -> Result<()> {
 /// with correct metrics tracking.
 #[tokio::test]
 async fn test_orphan_cleanup_batch_deletion() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -258,7 +267,7 @@ async fn test_orphan_cleanup_batch_deletion() -> Result<()> {
     let table_path = format!("{}/{}/{}", tenant_id, dataset_id, table_name);
     let orphan_data = bytes::Bytes::from(vec![0u8; 2048]); // 2KB per file
 
-    log::info!("Creating 100 orphan files");
+    tracing::info!("Creating 100 orphan files");
     for i in 0..100 {
         let path = format!("{}/data/orphan-{}.parquet", table_path, i);
         ctx.object_store()
@@ -289,18 +298,18 @@ async fn test_orphan_cleanup_batch_deletion() -> Result<()> {
         .identify_orphan_candidates(tenant_id, dataset_id, table_name)
         .await?;
 
-    log::info!("Detected {} orphan files", orphans.len());
+    tracing::info!("Detected {} orphan files", orphans.len());
     assert_eq!(orphans.len(), 100, "Should detect all 100 orphan files");
 
     // Create cleaner and delete in batches
     let cleaner =
         OrphanCleaner::with_detector(cleanup_config.clone(), ctx.object_store().clone(), detector);
 
-    log::info!("Deleting orphans in batches of 10");
+    tracing::info!("Deleting orphans in batches of 10");
     let result = cleaner.delete_orphans_batch(orphans).await?;
 
     // Verify results
-    log::info!(
+    tracing::info!(
         "Deletion result: deleted={}, failed={}, bytes_freed={}",
         result.deleted_count,
         result.failed_count,
@@ -334,7 +343,10 @@ async fn test_orphan_cleanup_batch_deletion() -> Result<()> {
 /// delete them, while still reporting metrics.
 #[tokio::test]
 async fn test_orphan_cleanup_dry_run_mode() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -392,7 +404,7 @@ async fn test_orphan_cleanup_dry_run_mode() -> Result<()> {
         .identify_orphan_candidates(tenant_id, dataset_id, table_name)
         .await?;
 
-    log::info!("[DRY-RUN] Found {} orphan files", orphans.len());
+    tracing::info!("[DRY-RUN] Found {} orphan files", orphans.len());
     assert_eq!(orphans.len(), 3, "Should detect 3 orphan files");
 
     // Run cleanup in dry-run mode
@@ -401,7 +413,7 @@ async fn test_orphan_cleanup_dry_run_mode() -> Result<()> {
 
     let result = cleaner.delete_orphans_batch(orphans).await?;
 
-    log::info!(
+    tracing::info!(
         "[DRY-RUN] Result: deleted={}, bytes_freed={}",
         result.deleted_count,
         result.total_bytes_freed
@@ -451,7 +463,10 @@ async fn test_orphan_cleanup_dry_run_mode() -> Result<()> {
 /// does not flag or delete any live files, and the table remains queryable.
 #[tokio::test]
 async fn test_orphan_cleanup_preserves_live_files() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -469,10 +484,10 @@ async fn test_orphan_cleanup_preserves_live_files() -> Result<()> {
         partition_granularity: PartitionGranularity::Day,
     };
 
-    log::info!("Creating table with live data (2 partitions, 5 files each)");
+    tracing::info!("Creating table with live data (2 partitions, 5 files each)");
     let partitions = generators::generate_logs(&mut writer, &config).await?;
 
-    log::info!(
+    tracing::info!(
         "Created {} partitions with total {} files",
         partitions.len(),
         partitions.iter().map(|p| p.file_count).sum::<usize>()
@@ -496,12 +511,12 @@ async fn test_orphan_cleanup_preserves_live_files() -> Result<()> {
         ctx.object_store().clone(),
     );
 
-    log::info!("Running orphan detection on table with only live files");
+    tracing::info!("Running orphan detection on table with only live files");
     let orphans = detector
         .identify_orphan_candidates(tenant_id, dataset_id, table_name)
         .await?;
 
-    log::info!("Orphan detection found {} candidates", orphans.len());
+    tracing::info!("Orphan detection found {} candidates", orphans.len());
 
     // Should find NO orphans (all files are live)
     assert_eq!(
@@ -534,7 +549,7 @@ async fn test_orphan_cleanup_preserves_live_files() -> Result<()> {
         "Table should still have a current snapshot"
     );
 
-    log::info!(
+    tracing::info!(
         "Table verified: current_snapshot_id={:?}",
         metadata.current_snapshot_id
     );
@@ -563,7 +578,10 @@ async fn test_orphan_cleanup_preserves_live_files() -> Result<()> {
 /// (incorrectly) treating all files as orphans.
 #[tokio::test]
 async fn test_orphan_cleanup_threshold_skips_cleanup() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
     let tenant_id = "threshold-tenant";

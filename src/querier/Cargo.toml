@@ -19,7 +19,6 @@ hex.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
-log.workspace = true
 datafusion.workspace = true
 tracing.workspace = true
 opentelemetry.workspace = true

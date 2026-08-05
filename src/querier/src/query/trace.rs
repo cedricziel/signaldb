@@ -69,7 +69,7 @@ impl TraceService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Option<model::trace::Trace>, QuerierError> {
-        log::info!(
+        tracing::info!(
             "Querying for trace_id={} in tenant_slug={}, dataset_slug={}",
             params.trace_id,
             tenant_slug,
@@ -86,7 +86,7 @@ impl TraceService {
             .table(table_ref)
             .await
             .map_err(|e| {
-                log::error!(
+                tracing::error!(
                     "Failed to access table for tenant_slug={}, dataset_slug={}: {}",
                     tenant_slug,
                     dataset_slug,
@@ -96,7 +96,7 @@ impl TraceService {
             })?
             .filter(col("trace_id").eq(lit(&params.trace_id)))
             .map_err(|e| {
-                log::error!(
+                tracing::error!(
                     "Failed to apply filter for trace_id={}: {}",
                     params.trace_id,
                     e
@@ -125,7 +125,7 @@ impl TraceService {
             df = df
                 .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
                 .map_err(|e| {
-                    log::error!(
+                    tracing::error!(
                         "Failed to apply start hint for trace_id={}: {e}",
                         params.trace_id
                     );
@@ -135,7 +135,7 @@ impl TraceService {
                 df = df
                     .filter(timestamp_bound_expr(start_nanos, ts_type, false)?)
                     .map_err(|e| {
-                        log::error!(
+                        tracing::error!(
                             "Failed to apply start partition bound for trace_id={}: {e}",
                             params.trace_id
                         );
@@ -148,7 +148,7 @@ impl TraceService {
             df = df
                 .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
                 .map_err(|e| {
-                    log::error!(
+                    tracing::error!(
                         "Failed to apply end hint for trace_id={}: {e}",
                         params.trace_id
                     );
@@ -158,7 +158,7 @@ impl TraceService {
                 df = df
                     .filter(timestamp_bound_expr(end_nanos, ts_type, true)?)
                     .map_err(|e| {
-                        log::error!(
+                        tracing::error!(
                             "Failed to apply end partition bound for trace_id={}: {e}",
                             params.trace_id
                         );
@@ -171,7 +171,7 @@ impl TraceService {
         // trace, so the scan skips the fat `events` / `links` / `scope_*`
         // columns entirely.
         df = df.select_columns(&TRACE_LOOKUP_COLUMNS).map_err(|e| {
-            log::error!(
+            tracing::error!(
                 "Failed to project trace lookup columns for trace_id={}: {e}",
                 params.trace_id
             );
@@ -179,7 +179,7 @@ impl TraceService {
         })?;
 
         let results = df.collect().await.map_err(|e| {
-            log::error!(
+            tracing::error!(
                 "Failed to collect query results for trace_id={}, tenant_slug={}, dataset_slug={}: {}",
                 params.trace_id,
                 tenant_slug,
@@ -189,7 +189,7 @@ impl TraceService {
             QuerierError::QueryFailed(e)
         })?;
 
-        log::info!(
+        tracing::info!(
             "Query returned {} rows for trace_id={}, tenant_slug={}, dataset_slug={}",
             results.len(),
             params.trace_id,
@@ -276,7 +276,7 @@ impl TraceService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<model::trace::Trace>, QuerierError> {
-        log::info!(
+        tracing::info!(
             "Searching traces in tenant_slug={}, dataset_slug={}",
             tenant_slug,
             dataset_slug
@@ -287,7 +287,7 @@ impl TraceService {
             .await?;
 
         let results = df.collect().await.map_err(|e| {
-            log::error!(
+            tracing::error!(
                 "Failed to collect query results for tenant_slug={}, dataset_slug={}: {}",
                 tenant_slug,
                 dataset_slug,
@@ -296,7 +296,7 @@ impl TraceService {
             QuerierError::QueryFailed(e)
         })?;
 
-        log::info!(
+        tracing::info!(
             "Query returned {} batches for tenant_slug={}, dataset_slug={}",
             results.len(),
             tenant_slug,
@@ -395,7 +395,7 @@ impl TraceService {
 
         // Use DataFrame API (prevents SQL injection)
         let mut df = self.session_context.table(table_ref).await.map_err(|e| {
-            log::error!(
+            tracing::error!(
                 "Failed to access table for tenant_slug={}, dataset_slug={}: {}",
                 tenant_slug,
                 dataset_slug,
@@ -420,14 +420,14 @@ impl TraceService {
             df = df
                 .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
                 .map_err(|e| {
-                    log::error!("Failed to apply start time filter: {e}");
+                    tracing::error!("Failed to apply start time filter: {e}");
                     QuerierError::QueryFailed(e)
                 })?;
             if let Some(ts_type) = &timestamp_type {
                 df = df
                     .filter(timestamp_bound_expr(start_nanos, ts_type, false)?)
                     .map_err(|e| {
-                        log::error!("Failed to apply start partition bound: {e}");
+                        tracing::error!("Failed to apply start partition bound: {e}");
                         QuerierError::QueryFailed(e)
                     })?;
             }
@@ -437,14 +437,14 @@ impl TraceService {
             df = df
                 .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
                 .map_err(|e| {
-                    log::error!("Failed to apply end time filter: {e}");
+                    tracing::error!("Failed to apply end time filter: {e}");
                     QuerierError::QueryFailed(e)
                 })?;
             if let Some(ts_type) = &timestamp_type {
                 df = df
                     .filter(timestamp_bound_expr(end_nanos, ts_type, true)?)
                     .map_err(|e| {
-                        log::error!("Failed to apply end partition bound: {e}");
+                        tracing::error!("Failed to apply end partition bound: {e}");
                         QuerierError::QueryFailed(e)
                     })?;
             }
@@ -455,7 +455,7 @@ impl TraceService {
             df = df
                 .filter(col("duration_nanos").gt_eq(lit(min_dur)))
                 .map_err(|e| {
-                    log::error!("Failed to apply min duration filter: {e}");
+                    tracing::error!("Failed to apply min duration filter: {e}");
                     QuerierError::QueryFailed(e)
                 })?;
         }
@@ -463,7 +463,7 @@ impl TraceService {
             df = df
                 .filter(col("duration_nanos").lt_eq(lit(max_dur)))
                 .map_err(|e| {
-                    log::error!("Failed to apply max duration filter: {e}");
+                    tracing::error!("Failed to apply max duration filter: {e}");
                     QuerierError::QueryFailed(e)
                 })?;
         }
@@ -508,7 +508,7 @@ impl TraceService {
         }
         for condition in &conditions {
             df = df.filter(condition.to_expr(&attr_ctx)?).map_err(|e| {
-                log::error!("Failed to apply search filter {condition:?}: {e}");
+                tracing::error!("Failed to apply search filter {condition:?}: {e}");
                 QuerierError::QueryFailed(e)
             })?;
         }
@@ -518,7 +518,7 @@ impl TraceService {
         // columns entirely. Applied after the filters, which may reference
         // columns outside the projection (e.g. `label_*`).
         df = df.select_columns(&TRACE_SEARCH_COLUMNS).map_err(|e| {
-            log::error!("Failed to project trace search columns: {e}");
+            tracing::error!("Failed to project trace search columns: {e}");
             QuerierError::QueryFailed(e)
         })?;
 
@@ -528,7 +528,7 @@ impl TraceService {
         df = df
             .sort(vec![col("start_time_unix_nano").sort(false, false)])
             .map_err(|e| {
-                log::error!("Failed to apply search ordering: {e}");
+                tracing::error!("Failed to apply search ordering: {e}");
                 QuerierError::QueryFailed(e)
             })?;
 
@@ -536,7 +536,7 @@ impl TraceService {
         // each trace typically contains many spans. This estimate avoids truncating traces.
         let (limit, span_limit) = clamped_limits(query.limit, self.max_search_limit)?;
         df = df.limit(0, Some(span_limit)).map_err(|e| {
-            log::error!("Failed to apply limit: {e}");
+            tracing::error!("Failed to apply limit: {e}");
             QuerierError::QueryFailed(e)
         })?;
 
@@ -720,7 +720,7 @@ fn clamped_limits(
         ))
     })?;
     let limit = if limit > max_search_limit {
-        log::warn!(
+        tracing::warn!(
             "Clamping client-supplied search limit {limit} to the configured maximum {max_search_limit}"
         );
         max_search_limit

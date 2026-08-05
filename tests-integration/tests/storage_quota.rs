@@ -97,7 +97,10 @@ async fn manifest_live_bytes(
 /// each test gets its own `CatalogManager` so writes in one don't leak into
 /// another.
 async fn setup_quota_tenant() -> Result<(common::config::Configuration, Arc<CatalogManager>)> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let mut config = common::testing::TestConfigBuilder::new()
         .in_memory()

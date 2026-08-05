@@ -24,7 +24,10 @@ use tests_integration::generators;
 /// only the 3 most recent snapshots are retained and 7 are expired.
 #[tokio::test]
 async fn test_snapshot_expiration_keeps_minimum_snapshots() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Create test context
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -44,7 +47,7 @@ async fn test_snapshot_expiration_keeps_minimum_snapshots() -> Result<()> {
         partition_granularity: PartitionGranularity::Day,
     };
 
-    log::info!("Creating 10 snapshots by writing 10 batches");
+    tracing::info!("Creating 10 snapshots by writing 10 batches");
     for i in 0..10 {
         let config_with_offset = DataGeneratorConfig {
             base_timestamp: config.base_timestamp + (i * 60 * 60 * 1000), // Offset each batch by 1 hour
@@ -73,7 +76,7 @@ async fn test_snapshot_expiration_keeps_minimum_snapshots() -> Result<()> {
     // Verify we have 10 snapshots
     let snapshot_manager = SnapshotManager::new();
     let snapshots_before = snapshot_manager.list_snapshots(&table)?;
-    log::info!("Snapshots before expiration: {}", snapshots_before.len());
+    tracing::info!("Snapshots before expiration: {}", snapshots_before.len());
     assert_eq!(
         snapshots_before.len(),
         10,
@@ -82,7 +85,7 @@ async fn test_snapshot_expiration_keeps_minimum_snapshots() -> Result<()> {
 
     // Get snapshots to expire (keep 3, expire 7)
     let to_expire = snapshot_manager.get_snapshots_to_expire(&table, 3)?;
-    log::info!("Snapshots to expire: {}", to_expire.len());
+    tracing::info!("Snapshots to expire: {}", to_expire.len());
 
     // Verify 7 snapshots are marked for expiration
     assert_eq!(
@@ -115,7 +118,10 @@ async fn test_snapshot_expiration_keeps_minimum_snapshots() -> Result<()> {
 /// This test adds delays between snapshot creation to ensure distinct timestamps.
 #[tokio::test]
 async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -129,7 +135,7 @@ async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> 
 
     // Create 10 snapshots with small delays to ensure distinct timestamps
     // (snapshot timestamp = wall-clock commit time, not data time)
-    log::info!("Creating 10 snapshots with delays for distinct timestamps");
+    tracing::info!("Creating 10 snapshots with delays for distinct timestamps");
     for i in 0..10 {
         let config = DataGeneratorConfig {
             partition_count: 1,
@@ -165,7 +171,7 @@ async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> 
 
     let snapshot_manager = SnapshotManager::new();
     let all_snapshots = snapshot_manager.list_snapshots(&table)?;
-    log::info!("Total snapshots: {}", all_snapshots.len());
+    tracing::info!("Total snapshots: {}", all_snapshots.len());
 
     // Use milliseconds for the midpoint cutoff to avoid second-truncation issues
     // (snapshots created 100ms apart may all round to the same second value)
@@ -181,7 +187,7 @@ async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> 
         .filter(|s| s.timestamp_ms < cutoff_ms)
         .collect();
 
-    log::info!(
+    tracing::info!(
         "Cutoff ms: {} | Old snapshots: {} | All snapshots: {}",
         cutoff_ms,
         old_snapshots.len(),
@@ -217,7 +223,10 @@ async fn test_snapshot_expiration_respects_time_based_retention() -> Result<()> 
 /// (with no snapshots) does not produce errors.
 #[tokio::test]
 async fn test_snapshot_expiration_handles_no_snapshots() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -249,7 +258,7 @@ async fn test_snapshot_expiration_handles_no_snapshots() -> Result<()> {
     let snapshot_manager = SnapshotManager::new();
 
     let snapshots = snapshot_manager.list_snapshots(&table)?;
-    log::info!("Snapshots in empty table: {}", snapshots.len());
+    tracing::info!("Snapshots in empty table: {}", snapshots.len());
     assert_eq!(snapshots.len(), 0, "Empty table should have no snapshots");
 
     // Get snapshots to expire - should be empty, not error
@@ -284,7 +293,10 @@ async fn test_snapshot_expiration_handles_no_snapshots() -> Result<()> {
 /// normally be expired by the retention policy.
 #[tokio::test]
 async fn test_snapshot_expiration_preserves_current_snapshot() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
 
@@ -302,7 +314,7 @@ async fn test_snapshot_expiration_preserves_current_snapshot() -> Result<()> {
         partition_granularity: PartitionGranularity::Hour,
     };
 
-    log::info!("Creating 5 snapshots");
+    tracing::info!("Creating 5 snapshots");
     for i in 0..5 {
         let config_with_offset = DataGeneratorConfig {
             base_timestamp: config.base_timestamp + (i * 60 * 60 * 1000),
@@ -334,11 +346,11 @@ async fn test_snapshot_expiration_preserves_current_snapshot() -> Result<()> {
         .get_current_snapshot_id(&table)?
         .context("Table should have a current snapshot")?;
 
-    log::info!("Current snapshot ID: {}", current_snapshot_id);
+    tracing::info!("Current snapshot ID: {}", current_snapshot_id);
 
     // Get snapshots to expire (keep only 1)
     let to_expire = snapshot_manager.get_snapshots_to_expire(&table, 1)?;
-    log::info!(
+    tracing::info!(
         "Snapshots to expire (keep=1): {} snapshots",
         to_expire.len()
     );
@@ -386,7 +398,10 @@ async fn test_enforce_retention_expires_snapshots_for_real() -> Result<()> {
     use compactor::retention::metrics::RetentionMetrics;
     use std::collections::HashMap;
 
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let ctx = RetentionTestContext::new_in_memory().await?;
     let tenant_id = "test-tenant";

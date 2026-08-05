@@ -180,12 +180,14 @@ jobs:
 
       # Span-construction guard (otel-compliant-self-tracing): boundary spans
       # must come from the factories in common::self_monitoring::spans — the
-      # single place that knows the semconv names/kinds. Two greppable
+      # single place that knows the semconv names/kinds. Three greppable
       # invariants, precise enough to avoid false positives:
       #  1. no bare #[tracing::instrument] — always skip_all/skip + explicit
       #     bounded fields (auto-recorded args are a cardinality/PII leak)
       #  2. otel.kind never appears outside the factory module — setting a
       #     span kind IS boundary-span construction
+      #  3. no log:: macros — first-party code emits tracing:: events directly
+      #     (the log facade is not a workspace dependency)
       - name: Span construction guard
         run: |
           set -e
@@ -195,6 +197,10 @@ jobs:
           fi
           if grep -rn --include='*.rs' 'otel\.kind' src/ tests-integration/ | grep -v 'src/common/src/self_monitoring/'; then
             echo "::error::otel.kind outside common::self_monitoring — open boundary spans via the span factories" >&2
+            exit 1
+          fi
+          if grep -rn --include='*.rs' -E '\blog::(trace|debug|info|warn|error|log)!' src/ tests-integration/; then
+            echo "::error::log:: macros are forbidden — use the equivalent tracing:: macro (structured fields preferred)" >&2
             exit 1
           fi
 

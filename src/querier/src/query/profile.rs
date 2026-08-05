@@ -118,7 +118,7 @@ impl ProfileService {
         let table_ref = build_table_reference(tenant_slug, dataset_slug, "profiles")
             .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
         self.session_context.table(table_ref).await.map_err(|e| {
-            log::error!(
+            tracing::error!(
                 "Failed to access profiles table for tenant_slug={tenant_slug}, dataset_slug={dataset_slug}: {e}"
             );
             QuerierError::QueryFailed(e)
@@ -569,7 +569,7 @@ fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
             match opt_str(stacktraces_col, i).map(|s| serde_json::from_str(&s)) {
                 Some(Ok(stacktraces)) => stacktraces,
                 Some(Err(e)) => {
-                    log::warn!("Skipping profile row with invalid stacktraces_json: {e}");
+                    tracing::warn!("Skipping profile row with invalid stacktraces_json: {e}");
                     continue;
                 }
                 None => Vec::new(),
@@ -577,7 +577,7 @@ fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
         let samples: Vec<Sample> = match opt_str(samples_col, i).map(|s| serde_json::from_str(&s)) {
             Some(Ok(samples)) => samples,
             Some(Err(e)) => {
-                log::warn!("Skipping profile row with invalid samples_json: {e}");
+                tracing::warn!("Skipping profile row with invalid samples_json: {e}");
                 continue;
             }
             None => Vec::new(),

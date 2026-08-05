@@ -79,15 +79,15 @@ impl IcebergTableWriter {
             .await?;
         let catalog = catalog_manager.catalog();
 
-        log::info!(
+        tracing::info!(
             "Successfully created/loaded Iceberg table: {} for tenant '{tenant_id}' dataset '{dataset_id}'",
             table.identifier()
         );
 
         let table_metadata = table.metadata();
         let current_schema = table.current_schema()?;
-        log::debug!("Table location: {}", table_metadata.location);
-        log::debug!("Schema has {} fields", current_schema.fields().len());
+        tracing::debug!("Table location: {}", table_metadata.location);
+        tracing::debug!("Schema has {} fields", current_schema.fields().len());
 
         let materialized = catalog_manager
             .config()
@@ -129,13 +129,13 @@ impl IcebergTableWriter {
                 // v1 schema uses "name" (renamed to "span_name" in v2) and lacks
                 // computed fields; v2 uses "span_name" plus "timestamp"/"date_day"/"hour".
                 if has_field("name") && !has_field("span_name") {
-                    log::debug!("Detected v1 traces batch, applying v1->v2 transformation");
+                    tracing::debug!("Detected v1 traces batch, applying v1->v2 transformation");
                     transform_trace_v1_to_v2(batch, &self.materialized.traces)
                 } else if has_field("span_name") {
-                    log::debug!("Detected v2 traces batch, no transformation needed");
+                    tracing::debug!("Detected v2 traces batch, no transformation needed");
                     Ok(batch)
                 } else {
-                    log::warn!(
+                    tracing::warn!(
                         "Unknown traces schema: {num_columns} columns with fields: {field_names:?}. Assuming no transformation needed."
                     );
                     Ok(batch)
@@ -144,7 +144,7 @@ impl IcebergTableWriter {
             // Wire-format logs carry raw OTLP "time_unix_nano"; the storage
             // schema uses computed "timestamp"/"date_day"/"hour" columns.
             "logs" if has_field("time_unix_nano") => {
-                log::debug!("Detected v1 logs batch, applying logs->iceberg transformation");
+                tracing::debug!("Detected v1 logs batch, applying logs->iceberg transformation");
                 transform_logs_v1_to_iceberg(batch, &self.materialized.logs)
             }
             // Wire-format metrics carry the raw "data_json" payload column.
@@ -169,7 +169,7 @@ impl IcebergTableWriter {
             // Wire-format profiles carry raw OTLP "time_unix_nano"; the
             // storage schema uses computed "timestamp"/"date_day"/"hour".
             "profiles" if has_field("time_unix_nano") => {
-                log::debug!(
+                tracing::debug!(
                     "Detected v1 profiles batch, applying profiles->iceberg transformation"
                 );
                 transform_profiles_v1_to_iceberg(batch, &self.materialized.profiles)
@@ -337,12 +337,12 @@ impl IcebergTableWriter {
             self.reload_table().await?;
             if self.read_marker(wal_writer_id) == id_set {
                 if let Err(e) = commit_result {
-                    log::warn!(
+                    tracing::warn!(
                         "Iceberg commit reported an error but the marker landed \
                          (treating as success): {e}"
                     );
                 }
-                log::info!(
+                tracing::info!(
                     "Committed {} rows in {} data files to Iceberg table {} (attempt {attempt})",
                     total_rows,
                     files.len(),
@@ -365,7 +365,7 @@ impl IcebergTableWriter {
                     self.table.identifier()
                 )));
             }
-            log::warn!(
+            tracing::warn!(
                 "Commit attempt {attempt} for Iceberg table {} did not land: {error}. \
                  Retrying in {delay:?}",
                 self.table.identifier()

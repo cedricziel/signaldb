@@ -119,7 +119,7 @@ impl<S: RouterState> SignalDBFlightService<S> {
     async fn execute_query(&self, query: &str) -> Result<QueryResult, Status> {
         let parsed = self.parse_query(query)?;
 
-        log::info!("Executing parsed query: {parsed:?}");
+        tracing::info!("Executing parsed query: {parsed:?}");
 
         match parsed.query_type.as_str() {
             "traces" => {
@@ -131,7 +131,7 @@ impl<S: RouterState> SignalDBFlightService<S> {
                     .await;
 
                 if querier_services.is_empty() {
-                    log::warn!("No querier services available");
+                    tracing::warn!("No querier services available");
                     return Ok(QueryResult::Empty(self.schemas.trace_schema.clone()));
                 }
 
@@ -141,7 +141,7 @@ impl<S: RouterState> SignalDBFlightService<S> {
             }
             "trace_by_id" => {
                 if let Some(trace_id) = parsed.parameters.get("id") {
-                    log::info!("Querying for trace ID: {trace_id}");
+                    tracing::info!("Querying for trace ID: {trace_id}");
                     // Route to querier services with specific trace ID
                     Ok(QueryResult::Empty(self.schemas.trace_schema.clone()))
                 } else {
@@ -170,7 +170,7 @@ impl<S: RouterState> SignalDBFlightService<S> {
             .get_flight_client_for_capability(ServiceCapability::QueryExecution)
             .await
             .map_err(|e| {
-                log::error!("No querier service available: {e}");
+                tracing::error!("No querier service available: {e}");
                 Status::unavailable("No query execution service available")
             })?;
 
@@ -202,7 +202,7 @@ impl<S: RouterState> SignalDBFlightService<S> {
                     common::self_monitoring::spans::RpcBoundary::Client,
                     e.code(),
                 );
-                log::error!("Querier query failed: {}", e.message());
+                tracing::error!("Querier query failed: {}", e.message());
                 Status::new(e.code(), e.message())
             })?;
 
@@ -210,7 +210,7 @@ impl<S: RouterState> SignalDBFlightService<S> {
         let proxied: BoxStream<'static, Result<FlightData, Status>> = upstream
             .map(|result| {
                 result.map_err(|e| {
-                    log::error!("Querier stream error: {}", e.message());
+                    tracing::error!("Querier stream error: {}", e.message());
                     Status::new(e.code(), e.message())
                 })
             })
@@ -354,7 +354,7 @@ impl<S: RouterState> FlightService for SignalDBFlightService<S> {
         let query = String::from_utf8(ticket.ticket.to_vec())
             .map_err(|e| Status::invalid_argument(format!("Invalid ticket: {e}")))?;
 
-        log::info!("Executing Flight query: {query}");
+        tracing::info!("Executing Flight query: {query}");
 
         match self.execute_query(&query).await {
             Ok(query_result) => match query_result {

@@ -75,7 +75,7 @@ fn create_s3_object_store_builder(url: &Url) -> ObjectStoreBuilder {
     if !host.contains("amazonaws.com") {
         let port = url.port().unwrap_or(9000);
         let endpoint = format!("http://{host}:{port}");
-        log::info!("Using S3-compatible endpoint from storage DSN: {endpoint}");
+        tracing::info!("Using S3-compatible endpoint from storage DSN: {endpoint}");
         builder = builder
             .with_endpoint(endpoint)
             .with_allow_http(true)
@@ -119,7 +119,7 @@ pub async fn create_catalog_with_object_store(
 ) -> Result<Arc<dyn IcebergCatalog>> {
     // TODO: Find a way to inject a custom object store into the catalog
     // For now, we create a memory object store builder
-    log::warn!(
+    tracing::warn!(
         "create_catalog_with_object_store: Cannot inject provided object store into catalog, using memory store"
     );
 

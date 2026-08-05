@@ -22,7 +22,7 @@ use writer::IcebergTableWriter;
 /// test-local hand-rolled `RecordBatch`: an earlier, narrower hand-rolled
 /// schema here was missing columns the writer's schema requires (e.g.
 /// `service_name`), and every write site was wrapped in a
-/// `log::warn!`-and-`return Ok(())` guard that silently turned that write
+/// `tracing::warn!`-and-`return Ok(())` guard that silently turned that write
 /// failure into a passing test. Now that those guards are gone (writes are
 /// hard errors), reusing the already-correct generator both fixes the
 /// schema mismatch and avoids reintroducing a second, divergent copy of the
@@ -50,13 +50,13 @@ async fn write_trace_files(
 /// 4. Verify both operations complete without corruption
 #[tokio::test]
 async fn test_compaction_with_concurrent_writes() -> Result<()> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
-        .is_test(true)
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer()
         .try_init()
         .ok();
 
-    log::info!("=== Starting concurrent writes test ===");
+    tracing::info!("=== Starting concurrent writes test ===");
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
@@ -67,7 +67,7 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     let table_name = "traces";
 
     // Phase 1: Create initial small files via Writer
-    log::info!("Phase 1: Creating initial small files via Writer");
+    tracing::info!("Phase 1: Creating initial small files via Writer");
 
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
@@ -84,10 +84,10 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
         .await
         .context("Failed to write initial batches")?;
 
-    log::info!("Initial writes complete: 10 small batches created");
+    tracing::info!("Initial writes complete: 10 small batches created");
 
     // Phase 2: Setup compaction executor
-    log::info!("Phase 2: Setting up compaction executor");
+    tracing::info!("Phase 2: Setting up compaction executor");
 
     let executor_config = ExecutorConfig::default();
     let max_retries = executor_config.max_retries;
@@ -113,7 +113,7 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     };
 
     // Phase 3: Start compaction in background task
-    log::info!("Phase 3: Starting compaction job in background");
+    tracing::info!("Phase 3: Starting compaction job in background");
 
     let executor_clone = executor.clone();
     let candidate_clone = candidate.clone();
@@ -133,16 +133,16 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
 
     let compaction_handle = tokio::spawn(async move {
         compaction_barrier.wait().await;
-        log::info!("Compaction task started");
+        tracing::info!("Compaction task started");
         let result = executor_clone.execute_candidate(candidate_clone).await;
-        log::info!("Compaction task completed: {result:?}");
+        tracing::info!("Compaction task completed: {result:?}");
         result
     });
 
     start_barrier.wait().await;
 
     // Phase 4: Simulate concurrent write from Writer service
-    log::info!("Phase 4: Writing concurrent data via Writer");
+    tracing::info!("Phase 4: Writing concurrent data via Writer");
 
     let mut concurrent_writer = IcebergTableWriter::new(
         &catalog_manager,
@@ -163,14 +163,14 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     write_trace_files(&mut concurrent_writer, 5, 100)
         .await
         .context("Failed to write concurrent batches")?;
-    log::info!("Concurrent writes complete: 5 new batches created");
+    tracing::info!("Concurrent writes complete: 5 new batches created");
 
     // Phase 5: Wait for compaction to complete. A hard error here (task
     // panic, or a non-conflict failure surfacing out of execute_candidate)
     // must fail the test, not be logged and swallowed -- silently accepting
     // it would let the test "pass" having asserted nothing about the one
     // thing it exists to check.
-    log::info!("Phase 5: Waiting for compaction to complete");
+    tracing::info!("Phase 5: Waiting for compaction to complete");
     let result = compaction_handle
         .await
         .context("Compaction task panicked")?
@@ -180,24 +180,24 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     // unconditionally on the authoritative `result.status` -- no branch is
     // skipped, and no branch is "the incidental timing didn't hit it, so
     // nothing was checked".
-    log::info!("Phase 6: Verifying results");
-    log::info!("Compaction completed with status: {:?}", result.status);
-    log::info!("Duration: {:?}", result.duration);
-    log::info!(
+    tracing::info!("Phase 6: Verifying results");
+    tracing::info!("Compaction completed with status: {:?}", result.status);
+    tracing::info!("Duration: {:?}", result.duration);
+    tracing::info!(
         "Input files: {}, Output files: {}",
         result.input_files_count,
         result.output_files_count
     );
 
     let summary = metrics.summary();
-    log::info!("=== Compaction Metrics ===");
-    log::info!("Jobs started: {}", summary.jobs_started);
-    log::info!("Jobs succeeded: {}", summary.jobs_succeeded);
-    log::info!("Jobs failed: {}", summary.jobs_failed);
-    log::info!("Conflicts detected: {}", summary.conflicts_detected);
-    log::info!("Retries attempted: {}", summary.retries_attempted);
-    log::info!("Total input files: {}", summary.total_input_files);
-    log::info!("Total output files: {}", summary.total_output_files);
+    tracing::info!("=== Compaction Metrics ===");
+    tracing::info!("Jobs started: {}", summary.jobs_started);
+    tracing::info!("Jobs succeeded: {}", summary.jobs_succeeded);
+    tracing::info!("Jobs failed: {}", summary.jobs_failed);
+    tracing::info!("Conflicts detected: {}", summary.conflicts_detected);
+    tracing::info!("Retries attempted: {}", summary.retries_attempted);
+    tracing::info!("Total input files: {}", summary.total_input_files);
+    tracing::info!("Total output files: {}", summary.total_output_files);
 
     assert_eq!(
         summary.jobs_started, 1,
@@ -253,20 +253,20 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
         }
     }
 
-    log::info!("=== Test completed successfully ===");
+    tracing::info!("=== Test completed successfully ===");
     Ok(())
 }
 
 /// Test that multiple concurrent compaction jobs on different partitions can run safely
 #[tokio::test]
 async fn test_concurrent_compactions_different_partitions() -> Result<()> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
-        .is_test(true)
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
         .try_init()
         .ok();
 
-    log::info!("=== Starting concurrent compactions test ===");
+    tracing::info!("=== Starting concurrent compactions test ===");
 
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
     let object_store = Arc::new(InMemory::new());
@@ -291,7 +291,7 @@ async fn test_concurrent_compactions_different_partitions() -> Result<()> {
         .await
         .context("Failed to write test data")?;
 
-    log::info!("Created test data");
+    tracing::info!("Created test data");
 
     // Setup executor
     let executor_config = ExecutorConfig::default();
@@ -332,32 +332,32 @@ async fn test_concurrent_compactions_different_partitions() -> Result<()> {
     let executor2 = executor.clone();
 
     let handle1 = tokio::spawn(async move {
-        log::info!("Starting compaction for partition 1");
+        tracing::info!("Starting compaction for partition 1");
         executor1.execute_candidate(candidate1).await
     });
 
     let handle2 = tokio::spawn(async move {
-        log::info!("Starting compaction for partition 2");
+        tracing::info!("Starting compaction for partition 2");
         executor2.execute_candidate(candidate2).await
     });
 
     // Wait for both to complete
     let (result1, result2) = tokio::try_join!(handle1, handle2)?;
 
-    log::info!("Partition 1 result: {result1:?}");
-    log::info!("Partition 2 result: {result2:?}");
+    tracing::info!("Partition 1 result: {result1:?}");
+    tracing::info!("Partition 2 result: {result2:?}");
 
     // Check metrics
     let summary = metrics.summary();
-    log::info!("Final metrics:");
-    log::info!("  Jobs started: {}", summary.jobs_started);
-    log::info!("  Jobs succeeded: {}", summary.jobs_succeeded);
-    log::info!("  Jobs failed: {}", summary.jobs_failed);
-    log::info!("  Conflicts: {}", summary.conflicts_detected);
+    tracing::info!("Final metrics:");
+    tracing::info!("  Jobs started: {}", summary.jobs_started);
+    tracing::info!("  Jobs succeeded: {}", summary.jobs_succeeded);
+    tracing::info!("  Jobs failed: {}", summary.jobs_failed);
+    tracing::info!("  Conflicts: {}", summary.conflicts_detected);
 
     // Should have started 2 jobs (one per partition)
     assert_eq!(summary.jobs_started, 2, "Should have started 2 jobs");
 
-    log::info!("=== Test completed successfully ===");
+    tracing::info!("=== Test completed successfully ===");
     Ok(())
 }

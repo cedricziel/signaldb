@@ -20,7 +20,10 @@ use writer::IcebergTableWriter;
 #[tokio::test]
 async fn test_basic_compaction() -> Result<()> {
     // Initialize logging for the test
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Setup: the planner discovers work by iterating configured tenants,
     // so the test tenant must exist in auth config.
@@ -145,7 +148,7 @@ async fn test_basic_compaction() -> Result<()> {
         "compacted table must not be re-flagged: {candidates:?}"
     );
 
-    log::info!("Basic compaction test completed successfully");
+    tracing::info!("Basic compaction test completed successfully");
 
     Ok(())
 }
@@ -153,7 +156,10 @@ async fn test_basic_compaction() -> Result<()> {
 /// Test that compaction handles empty tables gracefully
 #[tokio::test]
 async fn test_compaction_empty_table() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
 
@@ -171,7 +177,7 @@ async fn test_compaction_empty_table() -> Result<()> {
     // Should find no candidates (no tables exist)
     assert_eq!(candidates.len(), 0);
 
-    log::info!("Empty table compaction test passed");
+    tracing::info!("Empty table compaction test passed");
 
     Ok(())
 }

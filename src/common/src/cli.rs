@@ -64,8 +64,11 @@ pub mod utils {
     ///   records), both guarded by [`OtelExportFilter`] so `_system`-tenant
     ///   processing and the exporter's own transport stack are never exported.
     ///
-    /// `log::` macro calls flow into all layers via tracing-subscriber's
-    /// built-in `tracing-log` compatibility (enabled by `.init()`).
+    /// `log` records from third-party crates flow into all layers via
+    /// tracing-subscriber's built-in `tracing-log` compatibility (enabled by
+    /// `.init()`); first-party code emits `tracing::` events directly — the
+    /// `log` facade is not a workspace dependency and CI rejects `log::`
+    /// macro calls.
     pub fn init_logging(args: &CommonArgs, telemetry: Option<&SelfTelemetry>) {
         use opentelemetry::trace::TracerProvider as _;
         use tracing_subscriber::layer::SubscriberExt;

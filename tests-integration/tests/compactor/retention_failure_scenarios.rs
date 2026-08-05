@@ -27,7 +27,10 @@ use tests_integration::generators;
 #[tokio::test]
 #[ignore = "Requires implementation of catalog unavailability simulation"]
 async fn test_retention_handles_catalog_unavailable() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Arrange: Create test context with data
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -83,7 +86,7 @@ async fn test_retention_handles_catalog_unavailable() -> Result<()> {
     // Assert: Error should be returned but no panic
     // In a real implementation with simulated catalog failure, this would be Err
     // For now, we just verify the enforcer can be created and called
-    log::info!(
+    tracing::info!(
         "Retention enforcement result with catalog: {:?}",
         result.is_ok()
     );
@@ -103,7 +106,10 @@ async fn test_retention_handles_catalog_unavailable() -> Result<()> {
 /// Verifies it handles gracefully without panicking.
 #[tokio::test]
 async fn test_retention_handles_empty_table() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Arrange: Create empty table (no data written)
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -112,7 +118,7 @@ async fn test_retention_handles_empty_table() -> Result<()> {
         .create_table("test-tenant", "test-dataset", "traces")
         .await?;
 
-    log::info!("Created empty table for retention testing");
+    tracing::info!("Created empty table for retention testing");
 
     // Configure retention
     let retention_config = RetentionConfig {
@@ -141,7 +147,7 @@ async fn test_retention_handles_empty_table() -> Result<()> {
         .await?;
 
     // Assert: Should succeed without errors
-    log::info!(
+    tracing::info!(
         "Empty table retention result: {} tables processed, {} errors",
         result.tables_processed,
         result.errors.len()
@@ -161,7 +167,7 @@ async fn test_retention_handles_empty_table() -> Result<()> {
 
     // The key assertion is that the process doesn't panic
     // Errors for missing tables are acceptable
-    log::info!(
+    tracing::info!(
         "Retention enforcement handled empty tables gracefully with {} reported errors",
         result.errors.len()
     );
@@ -176,7 +182,10 @@ async fn test_retention_handles_empty_table() -> Result<()> {
 #[tokio::test]
 #[ignore = "Requires compaction implementation to run concurrently"]
 async fn test_retention_concurrent_with_compaction() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Arrange: Create table with sufficient data for both operations
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -197,7 +206,7 @@ async fn test_retention_concurrent_with_compaction() -> Result<()> {
     };
 
     let partitions_before = generators::generate_traces(&mut writer, &config).await?;
-    log::info!(
+    tracing::info!(
         "Generated {} partitions with multiple files for concurrent test",
         partitions_before.len()
     );
@@ -242,7 +251,7 @@ async fn test_retention_concurrent_with_compaction() -> Result<()> {
     // Wait for both operations
     let retention_result = retention_handle.await??;
 
-    log::info!(
+    tracing::info!(
         "Concurrent operations completed - Retention: {} partitions dropped",
         retention_result.total_partitions_dropped
     );
@@ -265,7 +274,10 @@ async fn test_retention_concurrent_with_compaction() -> Result<()> {
 /// while metrics show what WOULD be dropped.
 #[tokio::test]
 async fn test_retention_respects_dry_run_mode() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Arrange: Create table with old data
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -286,7 +298,7 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
     };
 
     let partitions_before = generators::generate_traces(&mut writer, &config).await?;
-    log::info!(
+    tracing::info!(
         "Generated {} partitions for dry-run test",
         partitions_before.len()
     );
@@ -317,7 +329,7 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
         .enforce_retention("test-tenant", "test-dataset")
         .await?;
 
-    log::info!(
+    tracing::info!(
         "Dry-run retention result: {} partitions would be dropped",
         result.total_partitions_dropped
     );
@@ -336,7 +348,7 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
         .filter(|p| p.timestamp_range.1 < cutoff_timestamp)
         .collect();
 
-    log::info!(
+    tracing::info!(
         "Expected {} partitions to be SIMULATED as dropped (not actually dropped)",
         expected_drops.len()
     );
@@ -354,7 +366,7 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
     // Note: The current implementation may have errors when trying to load
     // non-existent tables (logs, metrics_*) but this is expected behavior.
     // The key is that dry-run mode doesn't crash and handles errors gracefully.
-    log::info!(
+    tracing::info!(
         "Dry-run completed with {} errors (missing tables are expected)",
         result.errors.len()
     );
@@ -388,7 +400,7 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
         "Dry-run should preserve table snapshots"
     );
 
-    log::info!(
+    tracing::info!(
         "Dry-run verification: table still has snapshot {:?}, original partition count: {}",
         snapshot_after.map(|s| s.snapshot_id()),
         partitions_before.len()
@@ -404,7 +416,10 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
 #[tokio::test]
 #[ignore = "Requires implementation of invalid metadata injection"]
 async fn test_retention_handles_invalid_partition_metadata() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     // Arrange: Create table with valid data
     let ctx = RetentionTestContext::new_in_memory().await?;
@@ -425,7 +440,7 @@ async fn test_retention_handles_invalid_partition_metadata() -> Result<()> {
     };
 
     let partitions = generators::generate_traces(&mut writer, &config).await?;
-    log::info!("Generated {} partitions", partitions.len());
+    tracing::info!("Generated {} partitions", partitions.len());
 
     // TODO: Inject invalid partition metadata
     // This requires extending the test infrastructure to corrupt metadata
@@ -461,7 +476,7 @@ async fn test_retention_handles_invalid_partition_metadata() -> Result<()> {
         .await?;
 
     // Assert: Should handle gracefully
-    log::info!(
+    tracing::info!(
         "Retention with invalid metadata: {} tables processed, {} errors",
         result.tables_processed,
         result.errors.len()

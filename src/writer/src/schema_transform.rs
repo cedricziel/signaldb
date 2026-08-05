@@ -105,7 +105,7 @@ pub fn determine_wal_operation(signal_type: Option<&str>) -> common::wal::WalOpe
         Some("metrics") => common::wal::WalOperation::WriteMetrics,
         Some("profiles") => common::wal::WalOperation::WriteProfiles,
         _ => {
-            log::warn!("Unknown signal_type: {signal_type:?}, defaulting to WriteTraces");
+            tracing::warn!("Unknown signal_type: {signal_type:?}, defaulting to WriteTraces");
             common::wal::WalOperation::WriteTraces // Default fallback
         }
     }
@@ -117,12 +117,12 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result
     let arrow_schema = create_arrow_schema_from_resolved(&v2_schema)?;
 
     // Debug logging to understand the schema mismatch
-    log::debug!(
+    tracing::debug!(
         "Transforming v1 batch with {} columns to v2 with {} expected fields",
         batch.num_columns(),
         v2_schema.fields.len()
     );
-    log::debug!(
+    tracing::debug!(
         "v1 columns: {:?}",
         batch
             .schema()
@@ -131,7 +131,7 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result
             .map(|f| f.name())
             .collect::<Vec<_>>()
     );
-    log::debug!(
+    tracing::debug!(
         "v2 expected fields: {:?}",
         v2_schema.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
     );
@@ -291,7 +291,7 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result
     let result = RecordBatch::try_new(out_schema, new_columns)
         .map_err(|e| anyhow!("Failed to create transformed RecordBatch: {}", e))?;
 
-    log::debug!(
+    tracing::debug!(
         "Transformation complete: created v2 batch with {} columns",
         result.num_columns()
     );
@@ -913,7 +913,7 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Re
     let result = RecordBatch::try_new(out_schema, new_columns)
         .map_err(|e| anyhow!("Failed to create transformed log RecordBatch: {}", e))?;
 
-    log::debug!(
+    tracing::debug!(
         "Log transformation complete: {} input rows -> {} output columns",
         num_rows,
         result.num_columns()
@@ -2153,7 +2153,7 @@ pub fn transform_for_signal(
             transform_metrics_summary_v1_to_iceberg(batch, &m.metrics)
         }
         (Some("metrics"), Some(other)) => {
-            log::warn!("No transform for metrics target_table={other}, passing through");
+            tracing::warn!("No transform for metrics target_table={other}, passing through");
             Ok(batch)
         }
         _ => Ok(batch),

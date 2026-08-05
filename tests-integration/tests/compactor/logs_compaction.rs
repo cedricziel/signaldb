@@ -25,9 +25,9 @@ use writer::IcebergTableWriter;
 
 /// Initialize test logging
 fn init_test_logging() {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
-        .is_test(true)
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer()
         .try_init()
         .ok();
 }
@@ -135,7 +135,7 @@ fn create_logs_batch(batch_num: usize, rows: usize) -> RecordBatch {
 async fn test_logs_table_compaction() -> Result<()> {
     init_test_logging();
 
-    log::info!("=== Starting logs compaction test ===");
+    tracing::info!("=== Starting logs compaction test ===");
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
@@ -146,7 +146,7 @@ async fn test_logs_table_compaction() -> Result<()> {
     let table_name = "logs";
 
     // Phase 1: Create initial small files via Writer
-    log::info!("Phase 1: Creating small log files");
+    tracing::info!("Phase 1: Creating small log files");
 
     let writer_result = IcebergTableWriter::new(
         &catalog_manager,
@@ -167,13 +167,13 @@ async fn test_logs_table_compaction() -> Result<()> {
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
             .await
             .with_context(|| format!("Failed to write log batch {i}"))?;
-        log::debug!("Wrote log batch {i}");
+        tracing::debug!("Wrote log batch {i}");
     }
 
-    log::info!("Initial writes complete: 10 small batches created");
+    tracing::info!("Initial writes complete: 10 small batches created");
 
     // Phase 2: Setup and execute compaction
-    log::info!("Phase 2: Setting up compaction executor");
+    tracing::info!("Phase 2: Setting up compaction executor");
 
     let executor_config = ExecutorConfig::default();
     let metrics = CompactionMetrics::new();
@@ -194,16 +194,16 @@ async fn test_logs_table_compaction() -> Result<()> {
         },
     };
 
-    log::info!("Phase 3: Executing compaction");
+    tracing::info!("Phase 3: Executing compaction");
     let result = executor.execute_candidate(candidate).await;
 
     // Phase 4: Verify results
-    log::info!("Phase 4: Verifying results");
+    tracing::info!("Phase 4: Verifying results");
 
     let result = result.context("Compaction execution failed")?;
-    log::info!("Compaction completed with status: {:?}", result.status);
-    log::info!("Duration: {:?}", result.duration);
-    log::info!(
+    tracing::info!("Compaction completed with status: {:?}", result.status);
+    tracing::info!("Duration: {:?}", result.duration);
+    tracing::info!(
         "Files: {} input -> {} output",
         result.input_files_count,
         result.output_files_count
@@ -229,17 +229,17 @@ async fn test_logs_table_compaction() -> Result<()> {
             result.input_files_count,
             result.output_files_count
         );
-        log::info!("✓ File consolidation verified");
+        tracing::info!("✓ File consolidation verified");
     }
 
     // Check metrics
     let summary = metrics.summary();
-    log::info!("=== Compaction Metrics ===");
-    log::info!("Jobs started: {}", summary.jobs_started);
-    log::info!("Jobs succeeded: {}", summary.jobs_succeeded);
-    log::info!("Jobs failed: {}", summary.jobs_failed);
-    log::info!("Total input files: {}", summary.total_input_files);
-    log::info!("Total output files: {}", summary.total_output_files);
+    tracing::info!("=== Compaction Metrics ===");
+    tracing::info!("Jobs started: {}", summary.jobs_started);
+    tracing::info!("Jobs succeeded: {}", summary.jobs_succeeded);
+    tracing::info!("Jobs failed: {}", summary.jobs_failed);
+    tracing::info!("Total input files: {}", summary.total_input_files);
+    tracing::info!("Total output files: {}", summary.total_output_files);
 
     // Verify at least one job succeeded
     assert_eq!(
@@ -247,7 +247,7 @@ async fn test_logs_table_compaction() -> Result<()> {
         "Should have succeeded 1 compaction job"
     );
 
-    log::info!("=== Logs compaction test completed successfully ===");
+    tracing::info!("=== Logs compaction test completed successfully ===");
     Ok(())
 }
 
@@ -261,7 +261,7 @@ async fn test_logs_table_compaction() -> Result<()> {
 async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
     init_test_logging();
 
-    log::info!("=== Starting logs sorting verification test ===");
+    tracing::info!("=== Starting logs sorting verification test ===");
 
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
     let object_store = Arc::new(InMemory::new());
@@ -296,7 +296,7 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
             .with_context(|| format!("Failed to write log batch {i}"))?;
     }
 
-    log::info!("Wrote 10 batches (out of timestamp order) with mixed severities");
+    tracing::info!("Wrote 10 batches (out of timestamp order) with mixed severities");
 
     // Execute compaction
     let executor_config = ExecutorConfig::default();
@@ -321,7 +321,7 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
         .await
         .context("Compaction execution failed")?;
 
-    log::info!("Compaction result: {:?}", result.status);
+    tracing::info!("Compaction result: {:?}", result.status);
     assert_eq!(
         result.status,
         CompactionStatus::Success,
@@ -411,7 +411,7 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
         "expected all 1000 rows to survive compaction"
     );
 
-    log::info!("✓ Sorting verification test completed");
+    tracing::info!("✓ Sorting verification test completed");
 
     Ok(())
 }

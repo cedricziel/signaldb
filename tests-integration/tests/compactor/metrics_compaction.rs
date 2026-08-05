@@ -148,9 +148,9 @@ fn create_histogram_batch(
 
 /// Initialize test logging
 fn init_test_logging() {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
-        .is_test(true)
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer()
         .try_init()
         .ok();
 }
@@ -159,7 +159,7 @@ fn init_test_logging() {
 #[tokio::test]
 async fn test_metrics_gauge_compaction() -> Result<()> {
     init_test_logging();
-    log::info!("=== Starting gauge metrics compaction test ===");
+    tracing::info!("=== Starting gauge metrics compaction test ===");
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
@@ -170,7 +170,7 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
     let table_name = "metrics_gauge";
 
     // Phase 1: Write 10 small batches via Writer
-    log::info!("Phase 1: Writing 10 small gauge metric batches");
+    tracing::info!("Phase 1: Writing 10 small gauge metric batches");
 
     let writer_result = IcebergTableWriter::new(
         &catalog_manager,
@@ -193,13 +193,13 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
             .await
             .with_context(|| format!("Failed to write gauge batch {i}"))?;
-        log::debug!("Wrote gauge batch {i}");
+        tracing::debug!("Wrote gauge batch {i}");
     }
 
-    log::info!("Initial gauge writes complete: 10 small batches created");
+    tracing::info!("Initial gauge writes complete: 10 small batches created");
 
     // Phase 2: Setup and execute compaction
-    log::info!("Phase 2: Setting up compaction for gauge metrics");
+    tracing::info!("Phase 2: Setting up compaction for gauge metrics");
 
     let executor_config = ExecutorConfig::default();
     let metrics = CompactionMetrics::new();
@@ -219,14 +219,14 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
         },
     };
 
-    log::info!("Phase 3: Executing compaction");
+    tracing::info!("Phase 3: Executing compaction");
     let result = executor.execute_candidate(candidate).await?;
 
     // Phase 4: Verify results
-    log::info!("Phase 4: Verifying compaction results");
-    log::info!("Compaction status: {:?}", result.status);
-    log::info!("Duration: {:?}", result.duration);
-    log::info!(
+    tracing::info!("Phase 4: Verifying compaction results");
+    tracing::info!("Compaction status: {:?}", result.status);
+    tracing::info!("Duration: {:?}", result.duration);
+    tracing::info!(
         "Files: {} input -> {} output",
         result.input_files_count,
         result.output_files_count
@@ -244,17 +244,17 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
 
     // Check metrics
     let summary = metrics.summary();
-    log::info!("=== Compaction Metrics ===");
-    log::info!("Jobs started: {}", summary.jobs_started);
-    log::info!("Jobs succeeded: {}", summary.jobs_succeeded);
-    log::info!("Jobs failed: {}", summary.jobs_failed);
-    log::info!("Total input files: {}", summary.total_input_files);
-    log::info!("Total output files: {}", summary.total_output_files);
+    tracing::info!("=== Compaction Metrics ===");
+    tracing::info!("Jobs started: {}", summary.jobs_started);
+    tracing::info!("Jobs succeeded: {}", summary.jobs_succeeded);
+    tracing::info!("Jobs failed: {}", summary.jobs_failed);
+    tracing::info!("Total input files: {}", summary.total_input_files);
+    tracing::info!("Total output files: {}", summary.total_output_files);
 
     assert_eq!(summary.jobs_started, 1, "Should have started 1 job");
     assert_eq!(summary.jobs_succeeded, 1, "Job should have succeeded");
 
-    log::info!("=== Gauge metrics compaction test completed successfully ===");
+    tracing::info!("=== Gauge metrics compaction test completed successfully ===");
     Ok(())
 }
 
@@ -262,7 +262,7 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
 #[tokio::test]
 async fn test_metrics_histogram_compaction() -> Result<()> {
     init_test_logging();
-    log::info!("=== Starting histogram metrics compaction test ===");
+    tracing::info!("=== Starting histogram metrics compaction test ===");
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
@@ -273,7 +273,7 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
     let table_name = "metrics_histogram";
 
     // Phase 1: Write 10 small batches via Writer
-    log::info!("Phase 1: Writing 10 small histogram metric batches");
+    tracing::info!("Phase 1: Writing 10 small histogram metric batches");
 
     let writer_result = IcebergTableWriter::new(
         &catalog_manager,
@@ -296,13 +296,13 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
             .await
             .with_context(|| format!("Failed to write histogram batch {i}"))?;
-        log::debug!("Wrote histogram batch {i}");
+        tracing::debug!("Wrote histogram batch {i}");
     }
 
-    log::info!("Initial histogram writes complete: 10 small batches created");
+    tracing::info!("Initial histogram writes complete: 10 small batches created");
 
     // Phase 2: Setup and execute compaction
-    log::info!("Phase 2: Setting up compaction for histogram metrics");
+    tracing::info!("Phase 2: Setting up compaction for histogram metrics");
 
     let executor_config = ExecutorConfig::default();
     let metrics = CompactionMetrics::new();
@@ -322,14 +322,14 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
         },
     };
 
-    log::info!("Phase 3: Executing compaction");
+    tracing::info!("Phase 3: Executing compaction");
     let result = executor.execute_candidate(candidate).await?;
 
     // Phase 4: Verify results
-    log::info!("Phase 4: Verifying compaction results");
-    log::info!("Compaction status: {:?}", result.status);
-    log::info!("Duration: {:?}", result.duration);
-    log::info!(
+    tracing::info!("Phase 4: Verifying compaction results");
+    tracing::info!("Compaction status: {:?}", result.status);
+    tracing::info!("Duration: {:?}", result.duration);
+    tracing::info!(
         "Files: {} input -> {} output",
         result.input_files_count,
         result.output_files_count
@@ -347,16 +347,16 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
 
     // Check metrics
     let summary = metrics.summary();
-    log::info!("=== Compaction Metrics ===");
-    log::info!("Jobs started: {}", summary.jobs_started);
-    log::info!("Jobs succeeded: {}", summary.jobs_succeeded);
-    log::info!("Jobs failed: {}", summary.jobs_failed);
-    log::info!("Total input files: {}", summary.total_input_files);
-    log::info!("Total output files: {}", summary.total_output_files);
+    tracing::info!("=== Compaction Metrics ===");
+    tracing::info!("Jobs started: {}", summary.jobs_started);
+    tracing::info!("Jobs succeeded: {}", summary.jobs_succeeded);
+    tracing::info!("Jobs failed: {}", summary.jobs_failed);
+    tracing::info!("Total input files: {}", summary.total_input_files);
+    tracing::info!("Total output files: {}", summary.total_output_files);
 
     assert_eq!(summary.jobs_started, 1, "Should have started 1 job");
     assert_eq!(summary.jobs_succeeded, 1, "Job should have succeeded");
 
-    log::info!("=== Histogram metrics compaction test completed successfully ===");
+    tracing::info!("=== Histogram metrics compaction test completed successfully ===");
     Ok(())
 }

@@ -73,9 +73,9 @@ async fn main() -> Result<()> {
         };
     utils::init_logging(&cli.common, telemetry.as_ref());
     if let Some(e) = telemetry_error {
-        log::warn!("Self-monitoring init failed, continuing without it: {e}");
+        tracing::warn!("Self-monitoring init failed, continuing without it: {e}");
     } else if let Some(ref t) = telemetry {
-        log::info!(
+        tracing::info!(
             "Self-monitoring telemetry initialized (sampler: {})",
             t.sampler_description()
         );
@@ -90,12 +90,12 @@ async fn main() -> Result<()> {
         }
     };
 
-    log::info!("Loaded configuration:");
-    log::info!("  Database DSN: {}", config.database.dsn);
+    tracing::info!("Loaded configuration:");
+    tracing::info!("  Database DSN: {}", config.database.dsn);
     if let Some(discovery) = &config.discovery {
-        log::info!("  Discovery DSN: {}", discovery.dsn);
+        tracing::info!("  Discovery DSN: {}", discovery.dsn);
     } else {
-        log::info!("  No discovery configuration");
+        tracing::info!("  No discovery configuration");
     }
 
     // Initialize router service bootstrap for catalog-based discovery
@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
         .sync_config_tenants(&config.auth)
         .await
         .context("Failed to sync config tenants to catalog")?;
-    log::info!(
+    tracing::info!(
         "Synced {} config tenant(s) to catalog",
         config.auth.tenants.len()
     );
@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
             .context("Failed to create catalog manager")?
             .with_tenant_source(Arc::new(router_bootstrap.catalog().clone())),
     );
-    log::info!("Created shared catalog manager");
+    tracing::info!("Created shared catalog manager");
 
     // Initialize Writer components
     let object_store = common::storage::create_object_store(&config.storage)
@@ -211,7 +211,7 @@ async fn main() -> Result<()> {
     )
     .await
     .context("Failed to initialize writer service bootstrap")?;
-    log::info!(
+    tracing::info!(
         "Writer service registered with ID: {}",
         writer_bootstrap.service_id()
     );
@@ -244,7 +244,7 @@ async fn main() -> Result<()> {
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to register querier Flight service: {e}"))?;
-    log::info!("Querier Flight service registered with ID: {querier_service_id}");
+    tracing::info!("Querier Flight service registered with ID: {querier_service_id}");
 
     let state = RouterAppState::new_with_flight_transport(
         router_bootstrap.catalog().clone(),
@@ -258,7 +258,9 @@ async fn main() -> Result<()> {
             .service_registry()
             .start_background_polling(poll_interval)
             .await;
-        log::info!("Started service registry background polling with interval: {poll_interval:?}");
+        tracing::info!(
+            "Started service registry background polling with interval: {poll_interval:?}"
+        );
     }
 
     // Create QuerierFlightService with shared CatalogManager for per-tenant catalog support
@@ -272,7 +274,7 @@ async fn main() -> Result<()> {
 
     // Initialize compactor service (optional, controlled by config)
     let compactor_handle = if config.compactor.enabled {
-        log::info!("Compactor enabled, initializing service");
+        tracing::info!("Compactor enabled, initializing service");
 
         // Initialize compactor service bootstrap
         let compactor_bootstrap = ServiceBootstrap::new(
@@ -283,7 +285,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to initialize compactor service bootstrap")?;
 
-        log::info!(
+        tracing::info!(
             "Compactor service registered with ID: {}",
             compactor_bootstrap.service_id()
         );
@@ -295,7 +297,7 @@ async fn main() -> Result<()> {
             planner_config,
         ));
 
-        log::info!(
+        tracing::info!(
             "Compaction planner initialized with tick interval: {:?}",
             config.compactor.tick_interval
         );
@@ -309,21 +311,21 @@ async fn main() -> Result<()> {
             loop {
                 ticker.tick().await;
 
-                log::debug!("Running compaction planning cycle");
+                tracing::debug!("Running compaction planning cycle");
 
                 match planner.plan().await {
                     Ok(candidates) => {
                         if candidates.is_empty() {
-                            log::info!("No compaction candidates found in this cycle");
+                            tracing::info!("No compaction candidates found in this cycle");
                         } else {
-                            log::info!("Found {} compaction candidates:", candidates.len());
+                            tracing::info!("Found {} compaction candidates:", candidates.len());
                             for candidate in candidates {
                                 candidate.log();
                             }
                         }
                     }
                     Err(e) => {
-                        log::error!("Compaction planning cycle failed: {e:?}");
+                        tracing::error!("Compaction planning cycle failed: {e:?}");
                     }
                 }
             }
@@ -332,7 +334,7 @@ async fn main() -> Result<()> {
         // Return handle and bootstrap for cleanup
         Some((planning_handle, compactor_bootstrap))
     } else {
-        log::info!("Compactor disabled in configuration");
+        tracing::info!("Compactor disabled in configuration");
         None
     };
 
@@ -413,14 +415,14 @@ async fn main() -> Result<()> {
     let app = create_router(state.clone());
     let http_router_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     let http_router_handle = tokio::spawn(async move {
-        log::info!("Starting HTTP router on {http_router_addr}");
+        tracing::info!("Starting HTTP router on {http_router_addr}");
         let listener = tokio::net::TcpListener::bind(http_router_addr)
             .await
             .expect("Failed to bind HTTP router");
         axum::serve(listener, app.into_make_service())
             .with_graceful_shutdown(async {
                 http_router_shutdown_rx.await.ok();
-                log::info!("HTTP router shutting down gracefully");
+                tracing::info!("HTTP router shutting down gracefully");
             })
             .await
             .expect("HTTP router error");
@@ -430,7 +432,7 @@ async fn main() -> Result<()> {
     // Flight servers when [auth].internal_service_key is configured)
     let internal_service_key = config.auth.internal_service_key.clone();
     if internal_service_key.is_none() {
-        log::warn!(
+        tracing::warn!(
             "Flight ports are UNAUTHENTICATED ([auth].internal_service_key is not set); \
              they must be restricted to a trusted network"
         );
@@ -449,11 +451,11 @@ async fn main() -> Result<()> {
     let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053));
     let router_flight_auth = tenant_flight_auth.clone();
     let flight_handle = tokio::spawn(async move {
-        log::info!("Starting Router Flight service on {flight_addr}");
+        tracing::info!("Starting Router Flight service on {flight_addr}");
 
         let shutdown = async {
             router_flight_shutdown_rx.await.ok();
-            log::info!("Router Flight service shutting down gracefully");
+            tracing::info!("Router Flight service shutting down gracefully");
         };
         let serve = match router_flight_auth {
             Some(interceptor) => {
@@ -473,18 +475,18 @@ async fn main() -> Result<()> {
             }
         };
         match serve {
-            Ok(_) => log::info!("Router Flight service stopped"),
-            Err(e) => log::error!("Router Flight service error: {e}"),
+            Ok(_) => tracing::info!("Router Flight service stopped"),
+            Err(e) => tracing::error!("Router Flight service error: {e}"),
         }
     });
 
     // Start Writer Flight service (internal callers only)
     let writer_flight_handle = tokio::spawn(async move {
-        log::info!("Starting Writer Flight service on {writer_flight_addr}");
+        tracing::info!("Starting Writer Flight service on {writer_flight_addr}");
 
         let shutdown = async {
             writer_flight_shutdown_rx.await.ok();
-            log::info!("Writer Flight service shutting down gracefully");
+            tracing::info!("Writer Flight service shutting down gracefully");
         };
         let serve = match internal_flight_auth {
             Some(interceptor) => {
@@ -504,18 +506,18 @@ async fn main() -> Result<()> {
             }
         };
         match serve {
-            Ok(_) => log::info!("Writer Flight service stopped"),
-            Err(e) => log::error!("Writer Flight service error: {e}"),
+            Ok(_) => tracing::info!("Writer Flight service stopped"),
+            Err(e) => tracing::error!("Writer Flight service error: {e}"),
         }
     });
 
     // Start Querier Flight service
     let querier_flight_handle = tokio::spawn(async move {
-        log::info!("Starting Querier Flight service on {querier_flight_addr}");
+        tracing::info!("Starting Querier Flight service on {querier_flight_addr}");
 
         let shutdown = async {
             querier_flight_shutdown_rx.await.ok();
-            log::info!("Querier Flight service shutting down gracefully");
+            tracing::info!("Querier Flight service shutting down gracefully");
         };
         let serve = match tenant_flight_auth {
             Some(interceptor) => {
@@ -537,8 +539,8 @@ async fn main() -> Result<()> {
             }
         };
         match serve {
-            Ok(_) => log::info!("Querier Flight service stopped"),
-            Err(e) => log::error!("Querier Flight service error: {e}"),
+            Ok(_) => tracing::info!("Querier Flight service stopped"),
+            Err(e) => tracing::error!("Querier Flight service error: {e}"),
         }
     });
 
@@ -550,31 +552,31 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to receive init signal from OTLP/HTTP server")?;
 
-    log::info!("All services started successfully");
+    tracing::info!("All services started successfully");
 
     // Wait for ctrl+c
     tokio::signal::ctrl_c()
         .await
         .context("Failed to listen for ctrl+c signal")?;
-    log::info!("Shutting down service discovery and other services");
+    tracing::info!("Shutting down service discovery and other services");
 
     // Shutdown compactor first (if it was running)
     if let Some((planning_handle, compactor_bootstrap)) = compactor_handle {
-        log::info!("Stopping compactor planning task");
+        tracing::info!("Stopping compactor planning task");
         planning_handle.abort();
         let _ = planning_handle.await;
 
         if let Err(e) = compactor_bootstrap.shutdown().await {
-            log::error!("Failed to shutdown compactor service bootstrap: {e}");
+            tracing::error!("Failed to shutdown compactor service bootstrap: {e}");
         }
     }
 
     // Graceful deregistration using service bootstrap
     if let Err(e) = router_bootstrap.shutdown().await {
-        log::error!("Failed to shutdown router service bootstrap: {e}");
+        tracing::error!("Failed to shutdown router service bootstrap: {e}");
     }
     if let Err(e) = writer_bootstrap.shutdown().await {
-        log::error!("Failed to shutdown writer service bootstrap: {e}");
+        tracing::error!("Failed to shutdown writer service bootstrap: {e}");
     }
 
     // Unregister querier Flight service and shutdown bootstrap
@@ -582,7 +584,7 @@ async fn main() -> Result<()> {
         .unregister_service(querier_service_id)
         .await
     {
-        log::error!("Failed to unregister querier Flight service: {e}");
+        tracing::error!("Failed to unregister querier Flight service: {e}");
     }
 
     // Signal servers to shutdown gracefully
@@ -600,7 +602,7 @@ async fn main() -> Result<()> {
     let _ = querier_flight_handle.await;
 
     // Stop background WAL processing task to release Arc<Wal> reference
-    log::info!("Stopping background WAL processing task");
+    tracing::info!("Stopping background WAL processing task");
     writer_bg_handle.abort();
     let _ = writer_bg_handle.await;
 
@@ -609,7 +611,7 @@ async fn main() -> Result<()> {
             .await
             .context("Failed to shutdown Writer WAL")?;
     } else {
-        log::warn!("Could not get exclusive access to Writer WAL for shutdown - forcing flush");
+        tracing::warn!("Could not get exclusive access to Writer WAL for shutdown - forcing flush");
     }
 
     if let Some(telemetry) = _telemetry {

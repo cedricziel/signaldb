@@ -41,7 +41,10 @@ const TARGET: &str = "88888888888888888888888888888888";
 
 #[tokio::test]
 async fn single_trace_lookup_prunes_row_groups_via_bloom_filter() -> Result<()> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";

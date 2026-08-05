@@ -204,7 +204,7 @@ impl InMemoryFlightTransport {
         // Return the current service's ID for compatibility
         let service_id = self.bootstrap.service_id();
 
-        log::info!(
+        tracing::info!(
             "Flight service registration requested - using catalog service ID: {service_id}"
         );
 
@@ -284,7 +284,7 @@ impl InMemoryFlightTransport {
                 }
             }
 
-            log::debug!(
+            tracing::debug!(
                 "Discovered {} services with capability {:?} from catalog",
                 services.len(),
                 capability
@@ -292,7 +292,7 @@ impl InMemoryFlightTransport {
 
             services
         } else {
-            log::warn!("Failed to discover services from catalog");
+            tracing::warn!("Failed to discover services from catalog");
             Vec::new()
         }
     }
@@ -355,7 +355,7 @@ impl InMemoryFlightTransport {
         }
 
         // Create new connection
-        log::debug!("Creating new Flight client connection to {endpoint_url}");
+        tracing::debug!("Creating new Flight client connection to {endpoint_url}");
         // `connect_timeout` bounds dialing only; `timeout` is tonic's
         // per-request deadline and must outlast the querier's query_timeout
         // so a slow-but-progressing query is not aborted by the client.
@@ -455,7 +455,7 @@ impl InMemoryFlightTransport {
 
         // The address may have come from a stale cache entry: drop it,
         // re-discover once, and retry before giving up.
-        log::warn!(
+        tracing::warn!(
             "Failed to connect to {} for capability {capability:?}, re-discovering: {first_err}",
             service.endpoint
         );
@@ -515,7 +515,7 @@ impl InMemoryFlightTransport {
             .catalog()
             .deregister_ingester(service_id)
             .await?;
-        log::info!("Unregistered Flight service {service_id} from catalog");
+        tracing::info!("Unregistered Flight service {service_id} from catalog");
         Ok(())
     }
 
@@ -546,7 +546,7 @@ impl InMemoryFlightTransport {
         let after_count = connections.len();
 
         if before_count != after_count {
-            log::debug!(
+            tracing::debug!(
                 "Cleaned up {} expired connections from pool",
                 before_count - after_count
             );
