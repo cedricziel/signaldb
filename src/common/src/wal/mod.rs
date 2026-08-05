@@ -778,7 +778,7 @@ impl Wal {
     #[tracing::instrument(
         level = "debug",
         skip_all,
-        fields(signaldb.wal.operation = ?operation, signaldb.wal.data_size = data.len())
+        fields(signaldb.wal.operation = ?operation, signaldb.wal.data_size = data.len() as i64)
     )]
     pub async fn append(
         &self,
@@ -1013,7 +1013,7 @@ impl Wal {
     #[tracing::instrument(
         level = "debug",
         skip_all,
-        fields(signaldb.wal.entry_count = entry_ids.len())
+        fields(signaldb.wal.entry_count = entry_ids.len() as i64)
     )]
     pub async fn mark_processed_many(&self, entry_ids: &[Uuid]) -> Result<()> {
         if entry_ids.is_empty() {

@@ -168,8 +168,8 @@ impl RetentionEnforcer {
                         signaldb.tenant.id = %tenant_id,
                         signaldb.dataset.id = %dataset_id,
                         signaldb.table = %table_name,
-                        signaldb.job.partitions_dropped = result.partitions_dropped,
-                        signaldb.job.snapshots_expired = result.snapshots_expired,
+                        signaldb.job.partitions_dropped = result.partitions_dropped as i64,
+                        signaldb.job.snapshots_expired = result.snapshots_expired as i64,
                         "Table retention enforcement completed"
                     );
                     table_results.push(result);
@@ -200,11 +200,11 @@ impl RetentionEnforcer {
             signaldb.tenant.id = %tenant_id,
             signaldb.dataset.id = %dataset_id,
             signaldb.job.run_id = %run_id,
-            signaldb.job.tables_processed = table_results.len(),
-            signaldb.job.partitions_dropped = total_partitions_dropped,
-            signaldb.job.snapshots_expired = total_snapshots_expired,
-            signaldb.job.bytes_reclaimed = total_bytes_reclaimed,
-            signaldb.job.duration_ms = run_clock.elapsed().as_millis() as u64,
+            signaldb.job.tables_processed = table_results.len() as i64,
+            signaldb.job.partitions_dropped = total_partitions_dropped as i64,
+            signaldb.job.snapshots_expired = total_snapshots_expired as i64,
+            signaldb.job.bytes_reclaimed = total_bytes_reclaimed as i64,
+            signaldb.job.duration_ms = run_clock.elapsed().as_millis() as i64,
             "Retention enforcement run completed"
         );
 
@@ -385,8 +385,8 @@ impl RetentionEnforcer {
                 signaldb.dataset.id = %dataset_id,
                 signaldb.table = %table_name,
                 signaldb.job.dry_run = true,
-                signaldb.job.partitions_dropped = expired_partitions.len(),
-                signaldb.job.bytes_reclaimed = bytes_to_reclaim,
+                signaldb.job.partitions_dropped = expired_partitions.len() as i64,
+                signaldb.job.bytes_reclaimed = bytes_to_reclaim as i64,
                 "[DRY RUN] Would drop expired partitions"
             );
 
@@ -448,9 +448,9 @@ impl RetentionEnforcer {
                 signaldb.tenant.id = %tenant_id,
                 signaldb.dataset.id = %dataset_id,
                 signaldb.table = %table_name,
-                signaldb.job.partitions_dropped = dropped_partitions,
-                signaldb.job.files_deleted = dropped_files,
-                signaldb.job.bytes_reclaimed = bytes_reclaimed,
+                signaldb.job.partitions_dropped = dropped_partitions as i64,
+                signaldb.job.files_deleted = dropped_files as i64,
+                signaldb.job.bytes_reclaimed = bytes_reclaimed as i64,
                 "Dropped expired partitions"
             );
             self.metrics.record_partitions_dropped(dropped_partitions);
@@ -637,7 +637,7 @@ impl RetentionEnforcer {
                 signaldb.dataset.id = %dataset_id,
                 signaldb.table = %table_name,
                 signaldb.job.dry_run = true,
-                signaldb.job.snapshots_expired = snapshots_to_expire.len(),
+                signaldb.job.snapshots_expired = snapshots_to_expire.len() as i64,
                 "[DRY RUN] Would expire old snapshots"
             );
 
@@ -675,7 +675,7 @@ impl RetentionEnforcer {
             signaldb.tenant.id = %tenant_id,
             signaldb.dataset.id = %dataset_id,
             signaldb.table = %table_name,
-            signaldb.job.snapshots_expired = expired_count,
+            signaldb.job.snapshots_expired = expired_count as i64,
             "Expired old snapshots"
         );
         self.metrics.record_snapshots_expired(expired_count);
