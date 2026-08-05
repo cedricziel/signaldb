@@ -19,13 +19,13 @@ use crate::schema_transform::{
     FlightMetadata, determine_wal_operation, extract_flight_metadata, transform_for_signal,
 };
 use arrow_flight::flight_service_server::FlightService;
-use arrow_flight::utils::flight_data_to_batches;
 use arrow_flight::{
     FlightData, FlightDescriptor, HandshakeRequest, HandshakeResponse, PutResult, SchemaResult,
 };
 use bytes::Bytes;
 use common::CatalogManager;
 use common::config::WriterConfig;
+use common::flight::decode::flight_data_vec_to_batches;
 use common::flight::schema::FlightSchemas;
 use common::wal::{Wal, WalOperation, record_batch_to_bytes};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -277,9 +277,12 @@ impl FlightService for IcebergWriterFlightService {
             );
         }
 
-        // Convert FlightData stream into Arrow RecordBatches
-        let batches =
-            flight_data_to_batches(&data_vec).map_err(|e| Status::internal(e.to_string()))?;
+        // Convert FlightData stream into Arrow RecordBatches. Dictionary-aware
+        // (#951): a hand-rolled decode via `arrow_flight::utils::flight_data_to_batches`
+        // silently assumes no dictionary batches are present.
+        let batches = flight_data_vec_to_batches(data_vec)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
 
         {
             let app_metrics = common::self_monitoring::app_metrics();

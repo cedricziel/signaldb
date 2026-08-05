@@ -1,12 +1,13 @@
 use super::api_error::ApiError;
 use crate::RouterState;
-use arrow_flight::{FlightData, Ticket, utils::flight_data_to_batches};
+use arrow_flight::{FlightData, Ticket};
 use axum::{
     Router,
     extract::{Path, Query, State},
     routing::get,
 };
 use common::auth::TenantContextExtractor;
+use common::flight::decode::flight_data_vec_to_batches;
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::{
     array::{Array, BooleanArray, StringArray, UInt64Array},
@@ -64,7 +65,7 @@ pub fn router<S: RouterState>() -> Router<S> {
 }
 
 /// Convert Arrow FlightData to internal trace model, then to Tempo API format
-fn flight_data_to_tempo_trace(
+async fn flight_data_to_tempo_trace(
     flight_data: Vec<FlightData>,
     trace_id: &str,
 ) -> Result<Option<tempo_api::Trace>, Box<dyn std::error::Error + Send + Sync>> {
@@ -72,8 +73,9 @@ fn flight_data_to_tempo_trace(
         return Ok(None);
     }
 
-    // Convert FlightData to RecordBatches using Arrow Flight utilities
-    let batches = flight_data_to_batches(&flight_data)?;
+    // Convert FlightData to RecordBatches, honoring any dictionary batches
+    // the querier sent (#951).
+    let batches = flight_data_vec_to_batches(flight_data).await?;
 
     if batches.is_empty() {
         return Ok(None);
@@ -437,7 +439,7 @@ fn internal_trace_to_tempo(
 /// ignored. When absent, every matched span is returned (Tempo itself
 /// defaults to 3, but SignalDB preserves its historical full-span
 /// responses unless the client asks for a cap).
-fn flight_data_to_search_results(
+async fn flight_data_to_search_results(
     flight_data: Vec<FlightData>,
     spss: Option<i32>,
 ) -> Result<tempo_api::SearchResult, Box<dyn std::error::Error + Send + Sync>> {
@@ -451,8 +453,9 @@ fn flight_data_to_search_results(
         });
     }
 
-    // Convert FlightData to RecordBatches using Arrow Flight utilities
-    let batches = flight_data_to_batches(&flight_data)?;
+    // Convert FlightData to RecordBatches, honoring any dictionary batches
+    // the querier sent (#951).
+    let batches = flight_data_vec_to_batches(flight_data).await?;
 
     if batches.is_empty() {
         return Ok(tempo_api::SearchResult {
@@ -724,7 +727,7 @@ pub async fn query_single_trace<S: RouterState>(
             let convert_started = std::time::Instant::now();
 
             // Convert flight data to trace format
-            match flight_data_to_tempo_trace(trace_data, &trace_id) {
+            match flight_data_to_tempo_trace(trace_data, &trace_id).await {
                 Ok(Some(mut trace)) => {
                     tracing::info!(trace_id = %trace_id, "Successfully converted trace to Tempo format");
                     // Optionally attach linked profile summaries. A failed
@@ -932,7 +935,7 @@ pub async fn search<S: RouterState>(
             }
 
             // Convert flight data to search results
-            match flight_data_to_search_results(search_results, query.spss) {
+            match flight_data_to_search_results(search_results, query.spss).await {
                 Ok(search_result) => {
                     tracing::info!(
                         trace_count = search_result.traces.len(),
@@ -1124,7 +1127,8 @@ async fn distinct_column_values<S: RouterState>(
         return Ok(vec![]);
     }
 
-    let batches = flight_data_to_batches(&flight_data).map_err(|e| {
+    // Honor any dictionary batches the querier sent (#951).
+    let batches = flight_data_vec_to_batches(flight_data).await.map_err(|e| {
         tracing::error!(error = %e, "Failed to decode tag values flight data");
         ApiError::new(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
