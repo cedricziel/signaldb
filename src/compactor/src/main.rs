@@ -260,10 +260,13 @@ mod tests {
     fn test_orphan_cleanup_config_defaults() {
         let config = OrphanCleanupConfig::default();
         assert!(
-            !config.enabled,
-            "Orphan cleanup should be disabled by default"
+            config.enabled,
+            "Orphan cleanup should be enabled by default so storage is reclaimed (#935)"
         );
-        assert!(config.dry_run, "Dry-run should be enabled by default");
+        assert!(
+            !config.dry_run,
+            "Orphan cleanup should delete (not dry-run) by default, like retention"
+        );
         assert_eq!(
             config.cleanup_interval(),
             Duration::from_secs(24 * 3600),

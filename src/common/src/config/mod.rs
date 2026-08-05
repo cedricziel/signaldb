@@ -168,7 +168,7 @@ fn default_attr_promotion_max_per_cycle() -> usize {
 /// in the compactor crate but lives in common for TOML/env deserialization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OrphanCleanupConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_grace_period_hours")]
     pub grace_period_hours: u64,
@@ -207,7 +207,7 @@ fn default_batch_size() -> usize {
 }
 
 fn default_orphan_dry_run() -> bool {
-    true
+    false
 }
 
 fn default_revalidate_before_delete() -> bool {
@@ -233,7 +233,7 @@ fn default_lease_ttl_seconds() -> u64 {
 impl Default for OrphanCleanupConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             grace_period_hours: default_grace_period_hours(),
             cleanup_interval_hours: default_cleanup_interval_hours(),
             batch_size: default_batch_size(),
@@ -1890,8 +1890,8 @@ mod tests {
         assert_eq!(retention.snapshots_to_keep, Some(10));
 
         // Orphan cleanup stays opt-in
-        assert!(!config.compactor.orphan_cleanup.enabled);
-        assert!(config.compactor.orphan_cleanup.dry_run);
+        assert!(config.compactor.orphan_cleanup.enabled);
+        assert!(!config.compactor.orphan_cleanup.dry_run);
     }
 
     #[test]

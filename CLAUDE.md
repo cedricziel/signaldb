@@ -211,7 +211,7 @@ RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
 - Snapshot expiration
 - Orphan file cleanup
 
-**Defaults:** the compactor and retention enforcement are enabled by default with `dry_run = false` and 30-day retention for traces, logs, and metrics — a default deployment deletes data older than 30 days. Set `[compactor.retention].enabled = false` for infinite retention. Orphan cleanup stays opt-in.
+**Defaults:** the compactor and retention enforcement are enabled by default with `dry_run = false` and 30-day retention for traces, logs, and metrics — a default deployment deletes data older than 30 days. Set `[compactor.retention].enabled = false` for infinite retention. Orphan cleanup is also enabled by default (`dry_run = false`) and physically reclaims files no retained snapshot references — including unreferenced metadata files; set `[compactor.orphan_cleanup].enabled = false` to opt out.
 
 **Configuration Example:**
 
@@ -235,8 +235,8 @@ traces = "30d"
 traces = "90d"
 
 [compactor.orphan_cleanup]
-enabled = true
-dry_run = false  # Start with true for testing
+enabled = true   # default: true
+dry_run = false  # default: false; set true to log without deleting
 cleanup_interval_hours = 24
 grace_period_hours = 24
 revalidate_before_delete = true

@@ -304,14 +304,17 @@ metrics = "3d"
 
 ### `[compactor.orphan_cleanup]`
 
-Controls automatic detection and deletion of orphaned Parquet files.
+Controls automatic detection and deletion of orphaned files: data
+Parquet no retained snapshot references, and unreferenced metadata files
+(metadata.json versions outside the metadata-log, manifest lists and
+manifests of expired snapshots).
 
 #### Basic Settings
 
 | Field                    | Type   | Default | Description                                 |
 | ------------------------ | ------ | ------- | ------------------------------------------- |
-| `enabled`                | `bool` | `false` | Enable orphan cleanup (opt-in)              |
-| `dry_run`                | `bool` | `true`  | Log orphans without deleting (safe default) |
+| `enabled`                | `bool` | `true`  | Enable orphan cleanup (on by default)       |
+| `dry_run`                | `bool` | `false` | When `true`, log orphans without deleting   |
 | `cleanup_interval_hours` | `u64`  | `24`    | Interval between cleanup runs (hours)       |
 
 **Example:**

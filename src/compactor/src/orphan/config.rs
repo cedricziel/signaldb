@@ -9,20 +9,25 @@ use std::time::Duration;
 /// which identifies and removes data files that are no longer referenced by
 /// any live Iceberg snapshot.
 ///
-/// ## Safety Defaults
+/// ## Defaults
 ///
-/// - `enabled`: false (must be explicitly enabled)
-/// - `dry_run`: true (logs actions without executing)
+/// Cleanup is enabled and deleting by default (#935): with the live set
+/// derived from all retained snapshots (#925), a grace period, and
+/// pre-delete revalidation, a default deployment actually reclaims the
+/// storage that retention and compaction free logically.
+///
+/// - `enabled`: true (set false to opt out)
+/// - `dry_run`: false (set true to log without deleting)
 /// - `grace_period_hours`: 24 (prevents deletion of recent files)
 /// - `revalidate_before_delete`: true (extra safety check)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OrphanCleanupConfig {
     /// Enable orphan file cleanup.
     ///
-    /// Default: false (must be explicitly enabled for safety)
+    /// Default: true (#935 — storage is never reclaimed otherwise)
     ///
     /// Env: SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__ENABLED
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// Minimum age in hours for a file to be considered for cleanup.
@@ -62,7 +67,7 @@ pub struct OrphanCleanupConfig {
     /// and log them, but will not actually delete any files. This is useful
     /// for testing and validation.
     ///
-    /// Default: true (safe default for initial deployment)
+    /// Default: false (deletes; set true to observe first)
     ///
     /// Env: SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__DRY_RUN
     #[serde(default = "default_dry_run")]
@@ -110,8 +115,12 @@ fn default_batch_size() -> usize {
     1000 // 1000 files per batch
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_dry_run() -> bool {
-    true // Dry-run enabled by default for safety
+    false // Delete by default; grace period + revalidation are the rails (#935)
 }
 
 fn default_revalidate_before_delete() -> bool {
@@ -125,7 +134,7 @@ fn default_max_live_files_threshold() -> usize {
 impl Default for OrphanCleanupConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             grace_period_hours: default_grace_period_hours(),
             cleanup_interval_hours: default_cleanup_interval_hours(),
             batch_size: default_batch_size(),
@@ -203,8 +212,8 @@ mod tests {
     #[test]
     fn test_default_config_safe_defaults() {
         let config = OrphanCleanupConfig::default();
-        assert!(!config.enabled, "Should be disabled by default");
-        assert!(config.dry_run, "Should have dry_run enabled by default");
+        assert!(config.enabled, "Should be enabled by default (#935)");
+        assert!(!config.dry_run, "Should delete (not dry-run) by default");
         assert!(
             config.revalidate_before_delete,
             "Should revalidate by default"
