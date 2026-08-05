@@ -6939,7 +6939,6 @@ version = "0.1.3"
 dependencies = [
  "acceptor",
  "anyhow",
- "arrow-flight",
  "axum",
  "cargo-husky",
  "clap",

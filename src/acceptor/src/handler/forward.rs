@@ -92,7 +92,18 @@ async fn forward_batch_to_writer_inner(
         .map_err(|e| anyhow::anyhow!("Failed to get Flight client for storage service: {e}"))?;
 
     let schema = record_batch.schema();
-    let mut flight_data = batches_to_compressed_flight_data(&schema, vec![record_batch])
+    // One RecordBatch encodes into one FlightData message; a batch whose
+    // encoded size exceeds the receiver's gRPC limit fails do_put on every
+    // retry and wedges its WAL entry forever (#944). Chunk oversized
+    // batches so each message stays well below the shared limit — the
+    // budget is measured on in-memory size, so lz4 IPC compression (#945)
+    // only adds headroom on top.
+    let batches = common::flight::chunk::split_batch_for_grpc(
+        &record_batch,
+        common::flight::chunk::MAX_ENCODED_BATCH_SIZE,
+    )
+    .context("Failed to split batch for transport")?;
+    let mut flight_data = batches_to_compressed_flight_data(&schema, batches)
         .context("Failed to convert batch to flight data")?;
 
     // Add metadata to the first FlightData message (which contains the
