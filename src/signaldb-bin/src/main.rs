@@ -116,6 +116,35 @@ async fn main() -> Result<()> {
         config.auth.tenants.len()
     );
 
+    // First boot with no tenants at all (none in config, none in the
+    // catalog): auto-provision a default tenant and print its API key once.
+    if let Some(api_key) =
+        common::bootstrap::bootstrap_default_tenant(router_bootstrap.catalog(), &config)
+            .await
+            .context("Failed to bootstrap default tenant")?
+    {
+        tracing::info!(
+            "\n============================================================\n\
+             First boot: no tenants were configured or provisioned, so a\n\
+             default tenant was created automatically.\n\
+             \n\
+               Tenant:  default\n\
+               Dataset: default\n\
+               API key: {api_key}\n\
+             \n\
+             The key is stored hashed and printed only this once - save it.\n\
+             \n\
+             Point any OpenTelemetry SDK or Collector at SignalDB:\n\
+             \n\
+               export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317\n\
+               export OTEL_EXPORTER_OTLP_HEADERS=\"authorization=Bearer {api_key},x-tenant-id=default\"\n\
+             \n\
+             (OTLP/HTTP uses port 4318 instead.)\n\
+             To create a UI user: signaldb-cli user create <email> --tenant default\n\
+             ============================================================"
+        );
+    }
+
     let (otlp_grpc_init_tx, otlp_grpc_init_rx) = oneshot::channel::<()>();
     let (_otlp_grpc_shutdown_tx, otlp_grpc_shutdown_rx) = oneshot::channel::<()>();
     let (otlp_grpc_stopped_tx, _otlp_grpc_stopped_rx) = oneshot::channel::<()>();
