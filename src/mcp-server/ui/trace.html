@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trace</title>
+<style>
+  /*
+   * Tokens. Host-supplied `styles.variables` (MCP Apps theming) are applied to
+   * :root at runtime and win via the `var(--color-…, fallback)` chain below, so
+   * the app inherits the host's surface while keeping its own signal accent —
+   * the one hue the host palette has no equivalent for.
+   */
+  :root {
+    color-scheme: light dark;
+
+    --sig:      #05707E;
+    --sig-2:    #0FA2B4;
+    --hatch:    rgba(255, 255, 255, .62);
+
+    --ground:   var(--color-background-primary,   #FFFFFF);
+    --surface:  var(--color-background-secondary, #F6FAFA);
+    --line:     var(--color-border-primary,       #D2DEE0);
+    --line-2:   var(--color-border-secondary,     #E3EBEC);
+    --ink:      var(--color-text-primary,         #0D1B1F);
+    --ink-2:    var(--color-text-secondary,       #3F565C);
+    --muted:    var(--color-text-tertiary,        #6C8188);
+    --ok:       var(--color-text-success,         #2C7A57);
+    --danger:   var(--color-text-danger,          #B93E37);
+
+    --mono: var(--font-mono, ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace);
+    --sans: var(--font-sans, ui-sans-serif, system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif);
+    --radius: var(--border-radius-sm, 3px);
+  }
+  :root[data-theme="dark"] {
+    --sig:   #3EC4D6;
+    --sig-2: #7BE0EC;
+    --hatch: rgba(10, 19, 21, .55);
+
+    --ground:  var(--color-background-primary,   #101C20);
+    --surface: var(--color-background-secondary, #16252A);
+    --line:    var(--color-border-primary,       #26383E);
+    --line-2:  var(--color-border-secondary,     #1B2C31);
+    --ink:     var(--color-text-primary,         #E6F0F1);
+    --ink-2:   var(--color-text-secondary,       #AFC3C7);
+    --muted:   var(--color-text-tertiary,        #7C949A);
+    --ok:      var(--color-text-success,         #56C08D);
+    --danger:  var(--color-text-danger,          #F0736A);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --sig:   #3EC4D6;
+      --sig-2: #7BE0EC;
+      --hatch: rgba(10, 19, 21, .55);
+
+      --ground:  var(--color-background-primary,   #101C20);
+      --surface: var(--color-background-secondary, #16252A);
+      --line:    var(--color-border-primary,       #26383E);
+      --line-2:  var(--color-border-secondary,     #1B2C31);
+      --ink:     var(--color-text-primary,         #E6F0F1);
+      --ink-2:   var(--color-text-secondary,       #AFC3C7);
+      --muted:   var(--color-text-tertiary,        #7C949A);
+      --ok:      var(--color-text-success,         #56C08D);
+      --danger:  var(--color-text-danger,          #F0736A);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  #root { display: flex; flex-direction: column; gap: 14px; padding: 14px; }
+
+  .lbl {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .15em;
+    text-transform: uppercase; color: var(--muted);
+  }
+
+  /* ---- status states ---- */
+  .status {
+    display: flex; align-items: center; gap: 10px;
+    padding: 22px 16px; color: var(--muted);
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  .status .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--sig); flex: none;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .status .dot { animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+  }
+  .status.error { color: var(--danger); }
+  .status.error .dot { background: var(--danger); animation: none; }
+
+  /* ---- header ---- */
+  header { display: flex; flex-direction: column; gap: 9px; }
+  h1 {
+    font-family: var(--mono); font-size: 20px; font-weight: 600;
+    letter-spacing: -.01em; line-height: 1.2; margin: 0; word-break: break-word;
+  }
+  h1 .verb { color: var(--sig); }
+  .tid {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-2);
+    word-break: break-all; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  }
+  /* Flex, not grid: items on a short final row grow to fill it, so a trace with
+     an odd number of stats never leaves a hole in the strip. */
+  .stats {
+    display: flex; flex-wrap: wrap; gap: 1px; background: var(--line-2);
+    border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  }
+  .stat {
+    flex: 1 1 104px; background: var(--ground); padding: 8px 11px;
+    display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  }
+  .stat dd {
+    margin: 0; font-family: var(--mono); font-size: 13.5px;
+    font-variant-numeric: tabular-nums; word-break: break-word;
+  }
+  .stat dd.ok { color: var(--ok); }
+  .stat dd.bad { color: var(--danger); }
+
+  /* ---- panels ---- */
+  .panel {
+    background: var(--ground); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .panel > h2 {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .15em; text-transform: uppercase;
+    color: var(--muted); font-weight: 500; margin: 0;
+    padding: 10px 12px; border-bottom: 1px solid var(--line-2);
+  }
+  .scroller { overflow-x: auto; }
+  .grid { min-width: 520px; }
+
+  /* ---- waterfall ---- */
+  .ruler { display: grid; grid-template-columns: var(--rail) 1fr; background: var(--surface); border-bottom: 1px solid var(--line-2); }
+  .grid { --rail: minmax(160px, 240px); }
+  .ruler .rail { padding: 5px 12px; }
+  /* `margin-right`, not padding: absolutely positioned ticks resolve their
+     percentages against the padding box, so padding here would stretch the
+     ruler past the lane and make every tick label read the wrong offset. The
+     margin must match `.cell-lane`'s right padding so both spans are equal. */
+  .ticks { position: relative; height: 22px; margin-right: 76px; }
+  .tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--line-2); }
+  .tick b {
+    position: absolute; top: 5px; left: 4px; font-family: var(--mono); font-weight: 400;
+    font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+
+  .row {
+    all: unset; display: grid; grid-template-columns: var(--rail) 1fr;
+    width: 100%; cursor: pointer; border-bottom: 1px solid var(--line-2);
+  }
+  .row:last-child { border-bottom: 0; }
+  .row:hover, .row[aria-selected="true"] { background: var(--surface); }
+  .row:focus-visible { outline: 2px solid var(--sig); outline-offset: -2px; }
+  .cell-name { padding: 8px 10px 8px 12px; display: flex; align-items: center; min-width: 0; }
+  .sname {
+    font-family: var(--mono); font-size: 12.5px; color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .row[aria-selected="true"] .sname { color: var(--sig); }
+  .row .kid::before {
+    content: ""; width: 8px; height: 8px; margin-top: -7px; margin-right: 6px; flex: none;
+    border-left: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    border-bottom-left-radius: 3px;
+  }
+  .cell-lane { position: relative; padding: 8px 76px 8px 0; }
+  /* `display: block` is load-bearing: the lane is a <span>, and an inline box
+     whose only children are absolutely positioned collapses to zero width —
+     which would size every bar against nothing. */
+  .lane { display: block; position: relative; height: 16px; }
+  .bar { position: absolute; top: 3px; height: 11px; min-width: 2px; background: var(--sig); border-radius: 2px; }
+  .row.child .bar { background: var(--sig-2); }
+  .bar .deleg {
+    position: absolute; top: 0; bottom: 0;
+    background-image: repeating-linear-gradient(135deg, var(--hatch) 0 3px, transparent 3px 6px);
+  }
+  .bar.err { background: var(--danger); }
+  /* Sits in the lane's reserved right gutter, so a full-width bar never runs
+     underneath its own duration label. */
+  .dur {
+    position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+
+  /* ---- detail ---- */
+  .dhead { padding: 12px; border-bottom: 1px solid var(--line-2); display: flex; flex-direction: column; gap: 6px; }
+  .dhead .n { font-family: var(--mono); font-size: 15px; word-break: break-all; }
+  .ids { display: flex; flex-wrap: wrap; gap: 4px 16px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .ids b { font-weight: 400; color: var(--ink-2); }
+  .timing {
+    display: flex; flex-wrap: wrap; gap: 1px;
+    background: var(--line-2); border-bottom: 1px solid var(--line-2); margin: 0;
+  }
+  .timing div { flex: 1 1 104px; min-width: 0; background: var(--ground); padding: 8px 12px; }
+  .timing dd { margin: 0; font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+  .ghead { padding: 10px 12px 6px; }
+  details > summary.ghead { cursor: pointer; list-style: none; }
+  details > summary.ghead::-webkit-details-marker { display: none; }
+  details > summary.ghead::before { content: "\25B8 "; color: var(--sig); }
+  details[open] > summary.ghead::before { content: "\25BE "; }
+  summary.ghead:focus-visible { outline: 2px solid var(--sig); outline-offset: -2px; }
+  table.kv { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; }
+  table.kv td { padding: 4px 12px; vertical-align: top; border-top: 1px solid var(--line-2); }
+  table.kv tr:first-child td { border-top: 0; }
+  table.kv td.k { color: var(--ink-2); white-space: nowrap; width: 1%; padding-right: 20px; }
+  table.kv td.k .ns { color: var(--muted); }
+  table.kv td.v { color: var(--ink); word-break: break-word; }
+  .none { padding: 8px 12px; color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+
+  .ev { padding: 8px 12px; display: flex; gap: 10px; align-items: baseline; border-top: 1px solid var(--line-2); }
+  .ev .at { font-family: var(--mono); font-size: 11px; color: var(--sig); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .ev .lvl {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .09em; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 2px; padding: 0 4px; white-space: nowrap;
+  }
+  .ev .msg { font-family: var(--mono); font-size: 11.5px; word-break: break-word; }
+
+  .foot {
+    display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+    font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+  }
+  .foot .key { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 11px; height: 7px; border-radius: 1px; background: var(--sig); flex: none; }
+  .sw.h { background-image: repeating-linear-gradient(135deg, var(--hatch) 0 3px, transparent 3px 6px); }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="status" id="status"><span class="dot"></span><span id="status-text">Connecting to host&hellip;</span></div>
+</div>
+
+<script>
+"use strict";
+(function () {
+  /* ============================================================
+   * MCP Apps bridge — JSON-RPC 2.0 over postMessage to the host.
+   * The View is the client: it opens with `ui/initialize`, announces
+   * `ui/notifications/initialized`, then receives the tool input and
+   * the tool result as notifications.
+   * ============================================================ */
+
+  var UI_PROTOCOL_VERSION = "2026-01-26";
+  var HOST = window.parent;
+  var pending = {};
+  var nextId = 1;
+  var hostContext = {};
+
+  function post(msg) {
+    if (HOST && HOST !== window) HOST.postMessage(msg, "*");
+  }
+  function request(method, params) {
+    var id = nextId++;
+    return new Promise(function (resolve, reject) {
+      pending[id] = { resolve: resolve, reject: reject };
+      post({ jsonrpc: "2.0", id: id, method: method, params: params || {} });
+    });
+  }
+  function notify(method, params) {
+    post({ jsonrpc: "2.0", method: method, params: params || {} });
+  }
+  function respond(id, result) {
+    post({ jsonrpc: "2.0", id: id, result: result });
+  }
+
+  window.addEventListener("message", function (event) {
+    var msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+
+    // A response to one of our requests.
+    if (msg.id !== undefined && msg.method === undefined) {
+      var waiter = pending[msg.id];
+      if (!waiter) return;
+      delete pending[msg.id];
+      if (msg.error) waiter.reject(msg.error); else waiter.resolve(msg.result);
+      return;
+    }
+    if (typeof msg.method !== "string") return;
+
+    switch (msg.method) {
+      case "ui/notifications/tool-input":
+        onToolInput(msg.params || {});
+        break;
+      case "ui/notifications/tool-result":
+        onToolResult(msg.params || {});
+        break;
+      case "ui/notifications/tool-cancelled":
+        setStatus("Trace fetch cancelled" + reasonSuffix(msg.params), true);
+        break;
+      case "ui/notifications/host-context-changed":
+        applyHostContext(msg.params || {});
+        break;
+      case "ui/resource-teardown":
+        if (msg.id !== undefined) respond(msg.id, {});
+        break;
+      case "ping":
+        if (msg.id !== undefined) respond(msg.id, {});
+        break;
+    }
+  });
+
+  function reasonSuffix(params) {
+    return params && params.reason ? ": " + params.reason : "";
+  }
+
+  /* Host context: theme + the host's own CSS variables. */
+  function applyHostContext(patch) {
+    for (var key in patch) hostContext[key] = patch[key];
+    var root = document.documentElement;
+    if (hostContext.theme === "dark" || hostContext.theme === "light") {
+      root.setAttribute("data-theme", hostContext.theme);
+    }
+    var styles = hostContext.styles || {};
+    var vars = styles.variables || {};
+    for (var name in vars) {
+      if (typeof vars[name] === "string" && name.indexOf("--") === 0) {
+        root.style.setProperty(name, vars[name]);
+      }
+    }
+    if (styles.css && typeof styles.css.fonts === "string") {
+      var sheet = document.getElementById("host-fonts") || document.createElement("style");
+      sheet.id = "host-fonts";
+      sheet.textContent = styles.css.fonts;
+      document.head.appendChild(sheet);
+    }
+  }
+
+  /* Report our content height so the host can size the iframe. */
+  function reportSize() {
+    var el = document.getElementById("root");
+    if (!el) return;
+    notify("ui/notifications/size-changed", {
+      width: Math.ceil(el.scrollWidth),
+      height: Math.ceil(el.getBoundingClientRect().height)
+    });
+  }
+  var sizeTimer = null;
+  function scheduleSizeReport() {
+    if (sizeTimer) clearTimeout(sizeTimer);
+    sizeTimer = setTimeout(reportSize, 50);
+  }
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(scheduleSizeReport).observe(document.getElementById("root"));
+  }
+
+  /* ---- lifecycle ---- */
+  request("ui/initialize", {
+    protocolVersion: UI_PROTOCOL_VERSION,
+    appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+    capabilities: {},
+    clientInfo: { name: "signaldb-trace-app", version: "1" }
+  }).then(function (result) {
+    applyHostContext((result && result.hostContext) || {});
+    notify("ui/notifications/initialized", {});
+    setStatus("Waiting for the trace…");
+  }).catch(function (err) {
+    setStatus("Host did not complete the UI handshake" + (err && err.message ? ": " + err.message : ""), true);
+  });
+
+  /* ============================================================
+   * Tool payloads
+   * ============================================================ */
+
+  function onToolInput(params) {
+    var args = params.arguments || {};
+    if (args.trace_id) setStatus("Fetching trace " + args.trace_id + "…");
+  }
+
+  function onToolResult(result) {
+    // `structuredContent` is the intended payload; fall back to parsing the
+    // text block so the app still renders against a text-only tool result.
+    var trace = result.structuredContent;
+    if (!trace) trace = parseTextContent(result.content);
+    if (result.isError) {
+      setStatus(textOf(result.content) || "The trace lookup failed", true);
+      return;
+    }
+    if (!trace || typeof trace !== "object") {
+      setStatus("No trace payload in the tool result", true);
+      return;
+    }
+    if (trace.truncated) {
+      setStatus("Result exceeded the server's size cap — narrow the time range and retry", true);
+      return;
+    }
+    try {
+      render(trace);
+    } catch (err) {
+      setStatus("Could not render this trace: " + (err && err.message ? err.message : String(err)), true);
+    }
+    scheduleSizeReport();
+  }
+
+  function textOf(content) {
+    if (!Array.isArray(content)) return "";
+    for (var i = 0; i < content.length; i++) {
+      if (content[i] && content[i].type === "text") return content[i].text || "";
+    }
+    return "";
+  }
+  function parseTextContent(content) {
+    var text = textOf(content);
+    if (!text) return null;
+    try { return JSON.parse(text); } catch (err) { return null; }
+  }
+
+  function setStatus(message, isError) {
+    var root = document.getElementById("root");
+    root.innerHTML =
+      '<div class="status' + (isError ? " error" : "") + '">' +
+      '<span class="dot"></span><span></span></div>';
+    root.querySelector(".status span:last-child").textContent = message;
+    scheduleSizeReport();
+  }
+
+  /* ============================================================
+   * Trace model
+   * ============================================================ */
+
+  var ROOT_PARENT = "0000000000000000";
+
+  function esc(value) {
+    return String(value).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  // Span timestamps are nanoseconds since the epoch — past Number.MAX_SAFE_INTEGER,
+  // so every absolute time is handled as BigInt and only offsets become Numbers.
+  function nanos(value) {
+    try { return BigInt(value); } catch (err) { return null; }
+  }
+  function fmtDur(ns) {
+    if (ns < 1000) return ns + " ns";
+    if (ns < 1e6) return (ns / 1e3).toFixed(2) + " µs";
+    return (ns / 1e6).toFixed(3) + " ms";
+  }
+
+  /** Flatten a Tempo-shaped trace into depth-ordered spans with offsets. */
+  function buildModel(trace) {
+    var raw = [];
+    var sets = trace.spanSets || (trace.spanSet ? [trace.spanSet] : []);
+    for (var i = 0; i < sets.length; i++) {
+      var spans = (sets[i] && sets[i].spans) || [];
+      for (var j = 0; j < spans.length; j++) raw.push(spans[j]);
+    }
+    if (!raw.length) throw new Error("the trace contains no spans");
+
+    var t0 = null;
+    for (var k = 0; k < raw.length; k++) {
+      var start = nanos(raw[k].startTimeUnixNano);
+      if (start !== null && (t0 === null || start < t0)) t0 = start;
+    }
+    if (t0 === null) throw new Error("no usable span timestamps");
+
+    var byId = {};
+    var all = [];
+    for (var m = 0; m < raw.length; m++) {
+      var s = raw[m];
+      var start2 = nanos(s.startTimeUnixNano);
+      var node = {
+        raw: s,
+        name: s.name || "(unnamed span)",
+        spanID: s.spanID || "",
+        parentSpanID: s.parentSpanID || ROOT_PARENT,
+        serviceName: s.serviceName || trace.rootServiceName || "",
+        status: s.status || "unset",
+        events: s.events || [],
+        attributes: s.attributes || {},
+        startNanos: start2,
+        offset: start2 === null ? 0 : Number(start2 - t0),
+        dur: Number(s.durationNanos || 0),
+        children: []
+      };
+      all.push(node);
+      if (node.spanID) byId[node.spanID] = node;
+    }
+
+    // Parent links; spans whose parent is absent from the payload are roots.
+    var roots = [];
+    for (var n = 0; n < all.length; n++) {
+      var parent = byId[all[n].parentSpanID];
+      if (parent && parent !== all[n]) parent.children.push(all[n]);
+      else roots.push(all[n]);
+    }
+    roots.sort(function (a, b) { return a.offset - b.offset; });
+
+    var ordered = [];
+    function walk(node, depth) {
+      node.depth = depth;
+      node.covered = 0;
+      for (var c = 0; c < node.children.length; c++) node.covered += node.children[c].dur;
+      node.self = Math.max(0, node.dur - node.covered);
+      ordered.push(node);
+      node.children.sort(function (a, b) { return a.offset - b.offset; });
+      for (var d = 0; d < node.children.length; d++) walk(node.children[d], depth + 1);
+    }
+    for (var r = 0; r < roots.length; r++) walk(roots[r], 0);
+
+    var total = 0;
+    for (var t = 0; t < all.length; t++) total = Math.max(total, all[t].offset + all[t].dur);
+
+    return { spans: ordered, byId: byId, roots: roots, total: total || 1, t0: t0 };
+  }
+
+  /** Pull a named attribute off a span, tolerating both OTLP and flat shapes. */
+  function attr(span, key) {
+    var value = span.attributes[key];
+    if (value === undefined || value === null) return null;
+    if (typeof value === "string") return value;
+    if (typeof value === "object") {
+      var inner = value.value !== undefined ? value.value : value;
+      if (inner === null || inner === undefined) return null;
+      if (typeof inner === "object") {
+        var first = inner.stringValue !== undefined ? inner.stringValue
+          : inner.intValue !== undefined ? inner.intValue
+          : inner.doubleValue !== undefined ? inner.doubleValue
+          : inner.boolValue !== undefined ? inner.boolValue
+          : null;
+        return first === null ? null : String(first);
+      }
+      return String(inner);
+    }
+    return String(value);
+  }
+  function findAttr(model, key) {
+    for (var i = 0; i < model.spans.length; i++) {
+      var found = attr(model.spans[i], key);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+
+  /* ============================================================
+   * Render
+   * ============================================================ */
+
+  var model = null;
+
+  function render(trace) {
+    model = buildModel(trace);
+    var root = model.roots[0];
+    var services = {};
+    var errors = 0;
+    for (var i = 0; i < model.spans.length; i++) {
+      if (model.spans[i].serviceName) services[model.spans[i].serviceName] = true;
+      if (String(model.spans[i].status).toLowerCase() === "error") errors++;
+    }
+    var serviceList = Object.keys(services);
+
+    var method = attr(root, "http.request.method");
+    var route = attr(root, "http.route") || attr(root, "url.path");
+    var heading = method && route
+      ? '<span class="verb">' + esc(method) + "</span> " + esc(route)
+      : esc(trace.rootTraceName || root.name);
+
+    var httpStatus = findAttr(model, "http.response.status_code");
+    var tenant = findAttr(model, "signaldb.tenant.id");
+    var dataset = findAttr(model, "signaldb.dataset.id");
+    var started = model.t0 === null ? null
+      : new Date(Number(model.t0 / 1000000n)).toISOString().replace("T", " ").replace("Z", "");
+
+    var stats = [
+      ["Duration", fmtDur(model.total), ""],
+      ["Spans", String(model.spans.length), ""],
+      ["Services", serviceList.join(", ") || "—", ""]
+    ];
+    if (httpStatus) {
+      stats.push(["Status", httpStatus, httpStatus.charAt(0) === "2" ? "ok" : "bad"]);
+    }
+    if (errors) stats.push(["Error spans", String(errors), "bad"]);
+    if (tenant) stats.push(["Tenant", tenant, ""]);
+    if (dataset) stats.push(["Dataset", dataset, ""]);
+    if (started) stats.push(["Started (UTC)", started, ""]);
+
+    var html =
+      "<header>" +
+      "<h1>" + heading + "</h1>" +
+      '<p class="tid"><span class="lbl">Trace ID</span> ' + esc(trace.traceID || "—") + "</p>" +
+      '<dl class="stats">' +
+      stats.map(function (s) {
+        return '<div class="stat"><dt class="lbl">' + esc(s[0]) + "</dt>" +
+          '<dd class="' + s[2] + '">' + esc(s[1]) + "</dd></div>";
+      }).join("") +
+      "</dl></header>" +
+      '<section class="panel"><h2>Waterfall</h2><div class="scroller"><div class="grid">' +
+      '<div class="ruler"><div class="rail"><span class="lbl">Span</span></div>' +
+      '<div class="ticks">' + ticksHtml() + "</div></div>" +
+      '<div id="rows">' + model.spans.map(rowHtml).join("") + "</div>" +
+      "</div></div></section>" +
+      '<section class="panel" id="detail" aria-live="polite"></section>' +
+      '<div class="foot">' +
+      '<span class="key"><i class="sw"></i> self time</span>' +
+      '<span class="key"><i class="sw h"></i> in child spans</span>' +
+      "</div>";
+
+    var container = document.getElementById("root");
+    container.innerHTML = html;
+
+    var rows = container.querySelectorAll(".row");
+    for (var r = 0; r < rows.length; r++) {
+      rows[r].addEventListener("click", function () { select(this.getAttribute("data-id")); });
+    }
+    container.querySelector("#rows").addEventListener("keydown", onRowKeydown);
+    select(root.spanID);
+  }
+
+  function ticksHtml() {
+    // Pick a tick step that keeps the ruler to roughly 4-8 labels.
+    var totalMs = model.total / 1e6;
+    var candidates = [0.1, 0.25, 0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
+    var step = candidates[candidates.length - 1];
+    for (var i = 0; i < candidates.length; i++) {
+      if (totalMs / candidates[i] <= 8) { step = candidates[i]; break; }
+    }
+    var out = "";
+    for (var ms = 0; ms * 1e6 <= model.total; ms += step) {
+      var label = step < 1 ? ms.toFixed(2) : String(Math.round(ms * 100) / 100);
+      out += '<div class="tick" style="left:' + ((ms * 1e6 / model.total) * 100) + '%">' +
+        "<b>" + label + " ms</b></div>";
+    }
+    return out;
+  }
+
+  function rowHtml(span) {
+    var deleg = "";
+    if (span.children.length && span.dur > 0) {
+      var from = Infinity;
+      var to = -Infinity;
+      for (var i = 0; i < span.children.length; i++) {
+        from = Math.min(from, span.children[i].offset - span.offset);
+        to = Math.max(to, span.children[i].offset + span.children[i].dur - span.offset);
+      }
+      from = Math.max(0, from);
+      to = Math.min(span.dur, to);
+      if (to > from) {
+        deleg = '<i class="deleg" style="left:' + ((from / span.dur) * 100) +
+          "%;right:" + (100 - (to / span.dur) * 100) + '%"></i>';
+      }
+    }
+    var isError = String(span.status).toLowerCase() === "error";
+    return '<button type="button" class="row' + (span.depth > 0 ? " child" : "") +
+      '" data-id="' + esc(span.spanID) + '" aria-selected="false">' +
+      '<span class="cell-name" style="padding-left:' + (12 + span.depth * 14) + 'px">' +
+      (span.depth > 0 ? '<span class="kid"></span>' : "") +
+      '<span class="sname">' + esc(span.name) + "</span></span>" +
+      '<span class="cell-lane"><span class="lane">' +
+      '<span class="bar' + (isError ? " err" : "") + '" style="left:' +
+      ((span.offset / model.total) * 100) + "%;width:" +
+      Math.max(0.4, (span.dur / model.total) * 100) + '%">' + deleg + "</span>" +
+      '</span><span class="dur">' + fmtDur(span.dur) + "</span>" +
+      "</span></button>";
+  }
+
+  function onRowKeydown(event) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    var rows = Array.prototype.slice.call(this.children);
+    var index = rows.indexOf(document.activeElement);
+    var next = rows[index + (event.key === "ArrowDown" ? 1 : -1)];
+    if (next) { next.focus(); select(next.getAttribute("data-id")); }
+  }
+
+  function attrTable(entries, stripPrefix) {
+    if (!entries.length) return '<p class="none">none</p>';
+    return '<table class="kv"><tbody>' + entries.map(function (pair) {
+      var key = stripPrefix ? pair[0].slice(stripPrefix.length) : pair[0];
+      var dot = key.indexOf(".");
+      var shown = dot > 0
+        ? '<span class="ns">' + esc(key.slice(0, dot + 1)) + "</span>" + esc(key.slice(dot + 1))
+        : esc(key);
+      return '<tr><td class="k">' + shown + '</td><td class="v">' + esc(pair[1]) + "</td></tr>";
+    }).join("") + "</tbody></table>";
+  }
+
+  function select(spanId) {
+    var span = model.byId[spanId];
+    if (!span) return;
+    var rows = document.querySelectorAll(".row");
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].setAttribute("aria-selected", String(rows[i].getAttribute("data-id") === spanId));
+    }
+
+    var all = [];
+    for (var key in span.attributes) {
+      var value = attr(span, key);
+      if (value !== null) all.push([key, value]);
+    }
+    all.sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; });
+    var own = all.filter(function (p) { return p[0].indexOf("resource.") !== 0; });
+    var resource = all.filter(function (p) { return p[0].indexOf("resource.") === 0; });
+
+    var events = (span.events || []).map(function (event) {
+      var at = "";
+      var eventNanos = nanos(event.timeUnixNano);
+      if (eventNanos !== null && span.startNanos !== null) {
+        at = "+" + fmtDur(Number(eventNanos - span.startNanos));
+      }
+      var level = event.attributes && event.attributes.level
+        ? attr({ attributes: event.attributes }, "level") : null;
+      return '<div class="ev">' +
+        (at ? '<span class="at">' + esc(at) + "</span>" : "") +
+        (level ? '<span class="lvl">' + esc(level) + "</span>" : "") +
+        '<span class="msg">' + esc(event.name || "") + "</span></div>";
+    }).join("");
+
+    document.getElementById("detail").innerHTML =
+      '<div class="dhead"><span class="n">' + esc(span.name) + "</span>" +
+      '<div class="ids">' +
+      "<span>span <b>" + esc(span.spanID || "—") + "</b></span>" +
+      "<span>parent <b>" +
+      (span.parentSpanID === ROOT_PARENT || !model.byId[span.parentSpanID]
+        ? "— (root)" : esc(span.parentSpanID)) + "</b></span>" +
+      (span.serviceName ? "<span>service <b>" + esc(span.serviceName) + "</b></span>" : "") +
+      "<span>status <b>" + esc(span.status) + "</b></span>" +
+      "</div></div>" +
+      '<dl class="timing">' +
+      '<div><dt class="lbl">Duration</dt><dd>' + fmtDur(span.dur) + "</dd></div>" +
+      '<div><dt class="lbl">Self time</dt><dd>' + fmtDur(span.self) + "</dd></div>" +
+      '<div><dt class="lbl">Starts at</dt><dd>+' + fmtDur(span.offset) + "</dd></div>" +
+      '<div><dt class="lbl">Share of trace</dt><dd>' +
+      ((span.dur / model.total) * 100).toFixed(1) + "%</dd></div>" +
+      "</dl>" +
+      '<div><div class="ghead lbl">Span attributes · ' + own.length + "</div>" +
+      attrTable(own, null) + "</div>" +
+      (resource.length
+        ? "<details><summary class=\"ghead lbl\">Resource attributes · " + resource.length +
+          "</summary>" + attrTable(resource, "resource.") + "</details>"
+        : "") +
+      (events ? '<div><div class="ghead lbl">Events · ' + span.events.length + "</div>" + events + "</div>" : "");
+
+    scheduleSizeReport();
+  }
+})();
+</script>
+</body>
+</html>

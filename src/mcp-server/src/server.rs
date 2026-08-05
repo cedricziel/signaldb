@@ -18,19 +18,28 @@
 //! Raw SQL is served over Arrow Flight (gRPC) rather than the router HTTP API;
 //! this server is an HTTP forwarder and holds no Flight client, so SQL stays a
 //! CLI-only capability (see the `client-surface-parity` spec).
+//!
+//! `get_trace` additionally ships an interactive waterfall view via the MCP
+//! Apps extension; see [`crate::apps`].
 
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::schemars::JsonSchema;
+use rmcp::service::RequestContext;
 use rmcp::{
-    ErrorData, ServerHandler,
+    ErrorData, RoleServer, ServerHandler,
     handler::server::tool::Extension,
-    model::{CallToolResult, ContentBlock},
+    model::{
+        CallToolResult, ContentBlock, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+        ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ServerCapabilities,
+        ServerInfo,
+    },
     tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
 
+use crate::apps;
 use crate::sdk_client_for;
 
 /// The SignalDB MCP server handler. One instance is created per session by the
@@ -253,6 +262,7 @@ impl McpServer {
         &self,
         Parameters(p): Parameters<GetTraceParams>,
         Extension(parts): Extension<Parts>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         let mut req = client.query_single_trace().trace_id(p.trace_id);
@@ -263,7 +273,11 @@ impl McpServer {
             req = req.end(v);
         }
         let resp = req.send().await.map_err(|e| map_sdk_err(e, "get_trace"))?;
-        json_result(&resp.into_inner())
+        // The waterfall app renders from `structuredContent`, which the host
+        // forwards to the iframe without adding it to the model's context. It
+        // is attached only for UI-capable clients so a plain client is not sent
+        // the same trace twice.
+        json_result_for_app(&resp.into_inner(), client_supports_ui(&context))
     }
 
     #[tool(
@@ -416,8 +430,82 @@ impl McpServer {
     }
 }
 
+/// Tools that ship a UI app, paired with the resource that renders them.
+const UI_TOOLS: [(&str, &str); 1] = [("get_trace", apps::TRACE_APP_URI)];
+
+/// Whether the client on this request negotiated the MCP Apps extension.
+///
+/// `peer_info` is `None` before `initialize` completes; treat that as no UI,
+/// which is the conservative answer (plain text works everywhere).
+fn client_supports_ui(context: &RequestContext<RoleServer>) -> bool {
+    context
+        .peer
+        .peer_info()
+        .is_some_and(|info| apps::client_supports_ui(&info.capabilities))
+}
+
 #[tool_handler]
-impl ServerHandler for McpServer {}
+impl ServerHandler for McpServer {
+    fn get_info(&self) -> ServerInfo {
+        // `resources` is advertised because the MCP Apps UI documents are
+        // served over `resources/read`; this server exposes no data resources.
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_instructions(
+            "Query SignalDB traces, logs, and metrics for the authenticated tenant. \
+             Call `server_info` first to confirm which tenant your credential resolves to. \
+             Clients that negotiate the MCP Apps extension render `get_trace` results as an \
+             interactive waterfall.",
+        )
+    }
+
+    /// List tools, attaching `_meta.ui.resourceUri` to UI-backed tools when the
+    /// client negotiated the MCP Apps extension. Clients that did not ask for
+    /// apps get exactly the tool surface they got before.
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let mut tools = Self::tool_router().list_all();
+        if client_supports_ui(&context) {
+            for tool in &mut tools {
+                if let Some((_, uri)) = UI_TOOLS.iter().find(|(name, _)| *name == tool.name) {
+                    tool.meta = Some(apps::tool_ui_meta(uri));
+                }
+            }
+        }
+        Ok(ListToolsResult::with_all_items(tools))
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(apps::ui_resources()))
+    }
+
+    /// Serve a UI app document. The only resources this server holds are the
+    /// compiled-in `ui://` apps — anything else is a not-found.
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        match apps::read_ui_resource(&request.uri) {
+            Some(contents) => Ok(ReadResourceResult::new(vec![contents]).into()),
+            None => Err(ErrorData::resource_not_found(
+                format!("no resource at `{}`", request.uri),
+                None,
+            )),
+        }
+    }
+}
 
 /// Byte budget for a single tool result. A tool call must not blow an agent's
 /// context window, so an oversized downstream result is not streamed verbatim.
@@ -428,6 +516,20 @@ const MAX_TOOL_PAYLOAD_BYTES: usize = 256 * 1024;
 /// the tool returns valid JSON marked `truncated` with a narrowing hint instead
 /// of the oversized payload, so clients detect the cap from the flag.
 fn json_result<T: serde::Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
+    json_result_for_app(value, false)
+}
+
+/// [`json_result`], additionally attaching the value as `structuredContent`
+/// when `with_structured` is set.
+///
+/// A UI-capable host forwards `structuredContent` to the app's iframe without
+/// adding it to the model's context, so the app gets typed data while the text
+/// block stays the model's (and every other client's) view of the result. The
+/// same size cap governs both: an oversized result carries neither.
+fn json_result_for_app<T: serde::Serialize>(
+    value: &T,
+    with_structured: bool,
+) -> Result<CallToolResult, ErrorData> {
     let text = serde_json::to_string(value)
         .map_err(|e| ErrorData::internal_error(format!("failed to serialize result: {e}"), None))?;
     if text.len() > MAX_TOOL_PAYLOAD_BYTES {
@@ -441,7 +543,13 @@ fn json_result<T: serde::Serialize>(value: &T) -> Result<CallToolResult, ErrorDa
             notice.to_string(),
         )]));
     }
-    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+    let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
+    if with_structured {
+        result.structured_content = Some(serde_json::to_value(value).map_err(|e| {
+            ErrorData::internal_error(format!("failed to serialize result: {e}"), None)
+        })?);
+    }
+    Ok(result)
 }
 
 /// Map a downstream router/SDK error onto an actionable MCP tool error, so
