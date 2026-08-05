@@ -335,6 +335,19 @@ Flight schemas are defined in `src/common/src/flight/schema.rs` with conversions
 - OTLP metrics → Arrow schema
 - OTLP logs → Arrow schema
 
+#### Dictionary-Safe Encode/Decode
+
+RecordBatch encoding goes through `common::flight::batches_to_compressed_flight_data`,
+which forwards any dictionary batches `IpcDataGenerator::encode` produces
+ahead of each data batch. Decoding on the receiving side goes through
+`common::flight::decode::flight_data_vec_to_batches` — a wrapper around
+`arrow_flight::decode::FlightRecordBatchStream` for call sites that buffer a
+`Vec<FlightData>` before decoding — rather than
+`arrow_flight::utils::flight_data_to_batches`, whose `dictionaries_by_id` map
+is always empty and so cannot decode a stream containing dictionary batches.
+No column in SignalDB's own schemas is dictionary-encoded yet; this only
+removes the transport-level blocker for adopting one in the future.
+
 ### 5.3 Service Discovery Integration ✅ **Implemented**
 
 Components discover each other via:
