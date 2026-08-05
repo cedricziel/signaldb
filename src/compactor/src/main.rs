@@ -11,20 +11,9 @@ use clap::Parser;
 use common::catalog_manager::CatalogManager;
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::storage::create_object_store;
-use compactor::executor::{CompactionExecutor, ExecutorConfig};
-use compactor::flight::CompactorFlightService;
-use compactor::lease::LeaseManager;
-use compactor::metrics::CompactionMetrics;
-use compactor::orphan::{OrphanCleaner, OrphanCleanupConfig, OrphanDetector};
-use compactor::planner::{CompactionPlanner, PlannerConfig};
-use compactor::retention::metrics::RetentionMetrics;
-use compactor::retention::{RetentionConfig, RetentionEnforcer};
-use compactor::scheduler::RoundRobinScheduler;
+use compactor::service::CompactorService;
 use std::sync::Arc;
-use std::time::Duration;
 use tonic::transport::Server;
-use tracing::Instrument;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -32,47 +21,6 @@ struct Args {
     /// Path to configuration file
     #[arg(short, long, default_value = "signaldb.toml")]
     config: String,
-}
-
-/// Enumerate the active tenants through the source-agnostic registry, logging
-/// and returning empty on failure so a lifecycle cycle degrades rather than
-/// aborting. `purpose` names the cycle in the error log.
-async fn active_tenants_or_empty(
-    catalog_manager: &CatalogManager,
-    purpose: &str,
-) -> Vec<common::catalog_manager::ResolvedTenant> {
-    match catalog_manager.list_active_tenants().await {
-        Ok(tenants) => tenants,
-        Err(e) => {
-            tracing::error!("Failed to enumerate tenants for {purpose}: {e:#}");
-            Vec::new()
-        }
-    }
-}
-
-/// List the signal tables that actually exist in a dataset's namespace,
-/// so lifecycle jobs neither chase phantom tables nor skip real ones.
-async fn list_signal_tables(
-    catalog_manager: &CatalogManager,
-    tenant_id: &str,
-    dataset_id: &str,
-) -> Result<Vec<String>> {
-    let namespace = catalog_manager
-        .build_namespace(tenant_id, dataset_id)
-        .context("Failed to build namespace")?;
-    let identifiers = catalog_manager
-        .catalog()
-        .list_tabulars(&namespace)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to list tables in {namespace:?}: {e}"))?;
-
-    let mut tables: Vec<String> = identifiers
-        .iter()
-        .map(|identifier| identifier.name().to_string())
-        .filter(|name| name == "traces" || name == "logs" || name.starts_with("metrics"))
-        .collect();
-    tables.sort();
-    Ok(tables)
 }
 
 /// Waits for a shutdown signal (SIGINT or SIGTERM)
@@ -185,67 +133,20 @@ async fn main() -> Result<()> {
             .with_tenant_source(Arc::new(bootstrap.catalog().clone())),
     );
 
-    // Create compaction planner
-    let planner_config = PlannerConfig::from(&config.compactor);
-    let planner = Arc::new(CompactionPlanner::new(
-        catalog_manager.clone(),
-        planner_config.clone(),
-    ));
-
-    // Create compaction executor
-    let executor_config = ExecutorConfig::from(&planner_config);
-    let compaction_metrics = CompactionMetrics::new();
-    let executor = Arc::new(
-        CompactionExecutor::new(
-            catalog_manager.clone(),
-            executor_config,
-            compaction_metrics.clone(),
-        )
-        // Persist advisory attribute statistics (epic #737, #733).
-        .with_service_catalog(Arc::new(bootstrap.catalog().clone())),
-    );
-
-    tracing::info!(
-        "Compaction planner and executor initialized with tick interval: {:?}",
-        config.compactor.tick_interval
-    );
-
-    // Initialize distributed lease manager (Phase 4)
-    let lease_ttl = Duration::from_secs(config.compactor.lease_ttl_seconds);
-    let lease_manager = LeaseManager::new(
+    // Assemble every compactor component (planner, executor, leases,
+    // retention, orphan cleanup) — shared with monolithic mode.
+    let service = CompactorService::new(
+        &config,
+        catalog_manager,
         Arc::new(bootstrap.catalog().clone()),
         bootstrap.service_id(),
-        lease_ttl,
-    );
+    )
+    .context("Failed to assemble compactor service")?;
 
-    tracing::info!(
-        "Lease manager initialized (instance_id: {}, ttl: {:?})",
-        bootstrap.service_id(),
-        lease_ttl
-    );
-
-    // Initialize round-robin scheduler (Phase 4)
-    let mut scheduler = RoundRobinScheduler::new(
-        planner.clone(),
-        config.compactor.max_candidates_per_cycle,
-        config.compactor.max_per_tenant,
-    );
-
-    tracing::info!(
-        "Round-robin scheduler initialized (max_per_cycle: {}, max_per_tenant: {})",
-        config.compactor.max_candidates_per_cycle,
-        config.compactor.max_per_tenant
-    );
-
-    // Start Flight service (Phase 4d) — CompactorFlightService shares the same
-    // planner/executor/lease_manager via cloning; leases protect against
-    // duplicate work between the background task and on-demand Flight requests.
-    let flight_service = CompactorFlightService::new(
-        planner.clone(),
-        executor.clone(),
-        lease_manager.clone(),
-        compaction_metrics.clone(),
-    );
+    // Start Flight service (Phase 4d) — shares the same planner/executor/
+    // lease_manager; leases protect against duplicate work between the
+    // background task and on-demand Flight requests.
+    let flight_service = service.flight_service();
     // The compactor's Flight surface is operator/service-to-service only
     // (do_action can trigger compaction cycles and exposes tenant lease
     // metadata): when the internal key is configured, tenant API keys are
@@ -288,51 +189,6 @@ async fn main() -> Result<()> {
         })
     };
 
-    // Initialize retention enforcement (Phase 3)
-    let retention_config = RetentionConfig::from(config.compactor.retention.clone());
-    let retention_metrics = RetentionMetrics::new();
-    let retention_enforcer = Arc::new(
-        RetentionEnforcer::new(
-            catalog_manager.clone(),
-            retention_config.clone(),
-            retention_metrics.clone(),
-        )
-        .context("Failed to initialize retention enforcer")?,
-    );
-
-    tracing::info!(
-        "Retention enforcer initialized (enabled: {}, check_interval: {:?}, dry_run: {})",
-        retention_config.enabled,
-        retention_config.retention_check_interval,
-        retention_config.dry_run
-    );
-
-    // Initialize orphan cleanup (Phase 3)
-    let orphan_cleanup_config = OrphanCleanupConfig::from(config.compactor.orphan_cleanup.clone());
-
-    tracing::info!(
-        "Orphan cleanup configured (enabled: {}, cleanup_interval: {:?}, dry_run: {})",
-        orphan_cleanup_config.enabled,
-        orphan_cleanup_config.cleanup_interval(),
-        orphan_cleanup_config.dry_run
-    );
-
-    // Create object store for orphan cleanup
-    let object_store = create_object_store(&config.storage)
-        .context("Failed to create object store for orphan cleanup")?;
-
-    // Create orphan detector and cleaner once — reused across cleanup ticks so
-    // that metrics accumulate over the lifetime of the service.
-    let orphan_detector = Arc::new(OrphanDetector::new(
-        orphan_cleanup_config.clone(),
-        catalog_manager.clone(),
-        object_store.clone(),
-    ));
-    let orphan_cleaner = Arc::new(OrphanCleaner::with_detector(
-        orphan_cleanup_config.clone(),
-        object_store.clone(),
-        orphan_detector.clone(),
-    ));
     // Start observability HTTP endpoint (Phase 6): Prometheus /metrics,
     // JSON /status, and /health. Disabled when metrics_addr is empty.
     let metrics_addr_str = std::env::var("COMPACTOR_METRICS_ADDR")
@@ -344,12 +200,7 @@ async fn main() -> Result<()> {
         let metrics_addr: std::net::SocketAddr = metrics_addr_str
             .parse()
             .with_context(|| format!("Invalid compactor metrics_addr: {metrics_addr_str}"))?;
-        let observability_state = compactor::http::ObservabilityState::new(
-            bootstrap.service_id(),
-            compaction_metrics.clone(),
-            retention_metrics.clone(),
-            orphan_detector.metrics().clone(),
-        );
+        let observability_state = service.observability_state(bootstrap.service_id());
         Some(tokio::spawn(async move {
             if let Err(e) = compactor::http::serve(metrics_addr, observability_state).await {
                 tracing::error!("Compactor observability HTTP endpoint error: {e:#}");
@@ -357,289 +208,8 @@ async fn main() -> Result<()> {
         }))
     };
 
-    // Start planning, execution, and retention enforcement loop
-    let compaction_interval = config.compactor.tick_interval;
-    let planning_task = {
-        let executor = executor.clone();
-        let metrics = compaction_metrics.clone();
-        let retention_enforcer = retention_enforcer.clone();
-        let retention_config = retention_config.clone();
-        let orphan_cleanup_config = orphan_cleanup_config.clone();
-        let catalog_manager = catalog_manager.clone();
-        let orphan_detector = orphan_detector.clone();
-        let orphan_cleaner = orphan_cleaner.clone();
-
-        tokio::spawn(async move {
-            use tokio::time::interval;
-
-            let mut compaction_ticker = interval(compaction_interval);
-            let mut retention_ticker = interval(retention_config.retention_check_interval);
-            let mut orphan_cleanup_ticker = interval(orphan_cleanup_config.cleanup_interval());
-            // Clean up stale leases from crashed instances every 30 seconds
-            let mut lease_expiry_ticker = interval(Duration::from_secs(30));
-
-            loop {
-                tokio::select! {
-                    _ = compaction_ticker.tick() => {
-                        tracing::debug!("Running compaction planning cycle");
-
-                        match scheduler.schedule().await {
-                            Ok(candidates) => {
-                                if candidates.is_empty() {
-                                    tracing::info!("No compaction candidates found in this cycle");
-                                } else {
-                                    tracing::info!("Found {} compaction candidates (scheduler: round-robin):", candidates.len());
-
-                                    // Execute compaction for each candidate, guarded by a distributed lease
-                                    for candidate in candidates {
-                                        candidate.log();
-
-                                        // Attempt to acquire a lease; skip if another instance holds it
-                                        match lease_manager.try_acquire_default(&candidate).await {
-                                            Ok(None) => {
-                                                tracing::debug!(
-                                                    "Skipping {}/{}/{} partition {} — lease held by another instance",
-                                                    candidate.tenant_id,
-                                                    candidate.dataset_id,
-                                                    candidate.table_name,
-                                                    candidate.partition_id
-                                                );
-                                                continue;
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    "Lease acquisition failed for {}/{}/{} partition {}: {e:#}",
-                                                    candidate.tenant_id,
-                                                    candidate.dataset_id,
-                                                    candidate.table_name,
-                                                    candidate.partition_id
-                                                );
-                                                continue;
-                                            }
-                                            Ok(Some(lease)) => {
-                                                tracing::info!(
-                                                    "Executing compaction for {}/{}/{} partition {}",
-                                                    candidate.tenant_id,
-                                                    candidate.dataset_id,
-                                                    candidate.table_name,
-                                                    candidate.partition_id
-                                                );
-
-                                                // Keep the lease alive for jobs longer than the TTL.
-                                                let renewal = lease_manager.spawn_renewal(lease.clone());
-
-                                                match executor.execute_candidate(candidate).await {
-                                                    Ok(result) => {
-                                                        tracing::info!(
-                                                            "Compaction job {} completed with status: {:?}",
-                                                            result.job_id,
-                                                            result.status
-                                                        );
-
-                                                        if let Some(error) = result.error {
-                                                            tracing::error!("Job {} error: {}", result.job_id, error);
-                                                        } else {
-                                                            tracing::info!(
-                                                                "Job {}: {} files → {} files, {} bytes → {} bytes, duration={:?}",
-                                                                result.job_id,
-                                                                result.input_files_count,
-                                                                result.output_files_count,
-                                                                result.bytes_before,
-                                                                result.bytes_after,
-                                                                result.duration
-                                                            );
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::error!("Failed to execute compaction: {e:?}");
-                                                    }
-                                                }
-
-                                                // Release the lease regardless of job outcome
-                                                drop(renewal);
-                                                if let Err(e) = lease_manager.release(&lease).await {
-                                                    tracing::warn!("Failed to release lease: {e:#}");
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Log metrics summary after cycle
-                                    let summary = metrics.summary();
-                                    summary.log();
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!("Compaction scheduling cycle failed: {e:?}");
-                            }
-                        }
-                    }
-
-                    _ = lease_expiry_ticker.tick() => {
-                        match lease_manager.expire_stale().await {
-                            Ok(count) if count > 0 => {
-                                tracing::info!("Expired {count} stale compaction lease(s) from crashed instances");
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                tracing::warn!("Stale lease cleanup failed: {e:#}");
-                            }
-                        }
-                    }
-
-                    _ = retention_ticker.tick() => {
-                        if retention_config.enabled {
-                            tracing::debug!("Running retention enforcement cycle");
-
-                            let active_tenants =
-                                active_tenants_or_empty(&catalog_manager, "retention").await;
-                            for tenant_config in &active_tenants {
-                                for dataset_config in &tenant_config.datasets {
-                                    let tenant_id = &tenant_config.id;
-                                    let dataset_id = &dataset_config.id;
-                                    match retention_enforcer.enforce_retention(tenant_id, dataset_id).await {
-                                        Ok(result) => {
-                                            tracing::info!(
-                                                "Retention enforcement completed for {}/{}: {} tables processed, {} partitions dropped, {} snapshots expired, {} bytes reclaimed",
-                                                tenant_id,
-                                                dataset_id,
-                                                result.tables_processed,
-                                                result.total_partitions_dropped,
-                                                result.total_snapshots_expired,
-                                                result.total_bytes_reclaimed
-                                            );
-
-                                            if !result.errors.is_empty() {
-                                                tracing::warn!(
-                                                    "Retention enforcement had {} errors for {}/{}",
-                                                    result.errors.len(),
-                                                    tenant_id,
-                                                    dataset_id
-                                                );
-                                                for error in &result.errors {
-                                                    tracing::warn!("Retention error: {}", error);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Retention enforcement failed for {}/{}: {e:?}", tenant_id, dataset_id);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    _ = orphan_cleanup_ticker.tick() => {
-                        if orphan_cleanup_config.enabled {
-                            tracing::debug!("Running orphan cleanup cycle");
-
-                            let active_tenants =
-                                active_tenants_or_empty(&catalog_manager, "orphan cleanup").await;
-
-                            // Run retention enforcement first to expire old snapshots,
-                            // which reduces the live file set size before orphan detection.
-                            // This is the ordering fix for issue #475 (P3).
-                            if retention_config.enabled {
-                                tracing::debug!("Running pre-orphan retention enforcement to reduce live file set");
-                                for tenant_config in &active_tenants {
-                                    for dataset_config in &tenant_config.datasets {
-                                        let tid = &tenant_config.id;
-                                        let did = &dataset_config.id;
-                                        if let Err(e) = retention_enforcer.enforce_retention(tid, did).await {
-                                            tracing::warn!(
-                                                "Pre-orphan retention enforcement failed for {tid}/{did}: {e:#}"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            for tenant_config in &active_tenants {
-                                for dataset_config in &tenant_config.datasets {
-                                    // List the tables that actually exist in this
-                                    // dataset's namespace. The previous hardcoded
-                                    // list chased the nonexistent metrics_counter
-                                    // every cycle and silently skipped
-                                    // metrics_sum / metrics_exponential_histogram /
-                                    // metrics_summary forever (issue #561).
-                                    let signal_tables = match list_signal_tables(
-                                        &catalog_manager,
-                                        &tenant_config.id,
-                                        &dataset_config.id,
-                                    )
-                                    .await
-                                    {
-                                        Ok(tables) => tables,
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Failed to list tables for {}/{}: {e:#}",
-                                                tenant_config.id,
-                                                dataset_config.id
-                                            );
-                                            continue;
-                                        }
-                                    };
-                                    for table_name in &signal_tables {
-                                        let tid = &tenant_config.id;
-                                        let did = &dataset_config.id;
-                                        let job_span = common::self_monitoring::spans::job_span(
-                                            "orphan_cleanup",
-                                            tid,
-                                            did,
-                                            Some(table_name),
-                                        );
-                                        match orphan_detector
-                                            .identify_orphan_candidates(tid, did, table_name)
-                                            .instrument(job_span.clone())
-                                            .await
-                                        {
-                                            Ok(candidates) if !candidates.is_empty() => {
-                                                match orphan_cleaner
-                                                    .delete_orphans_batch(candidates)
-                                                    .instrument(job_span.clone())
-                                                    .await
-                                                {
-                                                    Ok(result) => tracing::info!(
-                                                        "Orphan cleanup {}/{}/{}: deleted={}, \
-                                                         would_delete={}, bytes_freed={}, failed={}",
-                                                        tid,
-                                                        did,
-                                                        table_name,
-                                                        result.deleted_count,
-                                                        result.would_delete_count,
-                                                        result.total_bytes_freed,
-                                                        result.failed_count,
-                                                    ),
-                                                    Err(e) => tracing::error!(
-                                                        "Orphan cleanup failed for {}/{}/{}: {e:?}",
-                                                        tid,
-                                                        did,
-                                                        table_name
-                                                    ),
-                                                }
-                                            }
-                                            Ok(_) => {} // no orphans
-                                            Err(e) => tracing::warn!(
-                                                "Orphan detection skipped for {}/{}/{} \
-                                                 (table may not exist): {e:#}",
-                                                tid,
-                                                did,
-                                                table_name
-                                            ),
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Log accumulated metrics periodically
-                            orphan_detector.metrics().log_summary();
-                        }
-                    }
-                }
-            }
-        })
-    };
+    // Start planning, execution, retention enforcement, and orphan cleanup
+    let planning_task = tokio::spawn(service.run_lifecycle_loop());
 
     // Wait for shutdown signal (SIGINT or SIGTERM)
     tracing::info!("Compactor service running, waiting for shutdown signal");
@@ -667,37 +237,8 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn list_signal_tables_reflects_catalog_contents() {
-        let catalog_manager = CatalogManager::new_in_memory().await.unwrap();
-
-        // Empty namespace: no phantom tables to iterate.
-        let tables = list_signal_tables(&catalog_manager, "t", "d")
-            .await
-            .unwrap();
-        assert!(tables.is_empty(), "empty catalog must list no tables");
-
-        // Only the tables that exist come back — including the metrics
-        // subtypes the old hardcoded list skipped.
-        for table in ["traces", "metrics_sum", "metrics_summary"] {
-            catalog_manager.ensure_table("t", "d", table).await.unwrap();
-        }
-        let tables = list_signal_tables(&catalog_manager, "t", "d")
-            .await
-            .unwrap();
-        assert_eq!(tables, vec!["metrics_sum", "metrics_summary", "traces"]);
-
-        // The phantom table from the old list cannot even be created.
-        assert!(
-            catalog_manager
-                .ensure_table("t", "d", "metrics_counter")
-                .await
-                .is_err(),
-            "metrics_counter is not a real signal table"
-        );
-    }
+    use compactor::orphan::OrphanCleanupConfig;
+    use compactor::retention::RetentionConfig;
     use std::time::Duration;
 
     #[test]
@@ -727,19 +268,6 @@ mod tests {
             config.cleanup_interval(),
             Duration::from_secs(24 * 3600),
             "Default cleanup interval should be 24 hours"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_retention_enforcer_initialization() {
-        let config = RetentionConfig::default();
-        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let metrics = RetentionMetrics::new();
-
-        let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics);
-        assert!(
-            enforcer.is_ok(),
-            "Retention enforcer should initialize successfully"
         );
     }
 }

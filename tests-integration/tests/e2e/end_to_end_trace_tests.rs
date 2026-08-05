@@ -408,6 +408,41 @@ async fn wait_for_objects_persisted(
     }
 }
 
+/// Force the writer to commit all pending writes for the test tenant
+/// (read-your-writes drain via `do_action("flush")`), so queries that follow
+/// observe the ingested data deterministically instead of racing the
+/// writer's commit-coalescing interval.
+async fn force_writer_commit(services: &TestServices) {
+    let mut writer_client = services
+        .flight_transport
+        .get_client_for_capability(ServiceCapability::Storage)
+        .await
+        .expect("no Storage-capable Flight client for flush");
+
+    let mut flush_request = tonic::Request::new(arrow_flight::Action {
+        r#type: "flush".to_string(),
+        body: Default::default(),
+    });
+    flush_request
+        .metadata_mut()
+        .insert("x-tenant-id", TEST_TENANT.parse().unwrap());
+    flush_request
+        .metadata_mut()
+        .insert("x-dataset-id", TEST_DATASET.parse().unwrap());
+
+    let mut flush_stream = timeout(
+        Duration::from_secs(30),
+        writer_client.do_action(flush_request),
+    )
+    .await
+    .expect("writer flush timed out")
+    .expect("writer flush failed")
+    .into_inner();
+    while let Some(result) = flush_stream.next().await {
+        result.expect("writer flush stream error");
+    }
+}
+
 /// Validate that queried trace data matches the original trace
 async fn validate_trace_query_data(
     services: &TestServices,
@@ -573,6 +608,13 @@ async fn test_complete_trace_ingestion_and_query_pipeline() {
         !objects.is_empty(),
         "No data found in object store after ingestion"
     );
+
+    // The writer acks `do_put` after its WAL flush and defers the Iceberg
+    // commit to the coalescing background loop, so parquet existing in the
+    // object store does not yet make the trace queryable. Force the
+    // documented read-your-writes drain (`do_action("flush")`) instead of
+    // racing the commit interval — the race loses on slow runners.
+    force_writer_commit(&services).await;
 
     // Primary correctness check: the ingested trace_id/span_name must
     // actually round-trip through a direct Flight query against the querier.

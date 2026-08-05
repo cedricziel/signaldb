@@ -26,6 +26,7 @@ pub mod planner;
 pub mod retention;
 pub mod rewriter;
 pub mod scheduler;
+pub mod service;
 
 // Re-export commonly used types
 pub use commit::{CommitError, DataFileChange, IcebergCommitter, is_conflict_error};
@@ -51,3 +52,4 @@ pub use retention::{
     RetentionPolicySource, SignalType, TenantRetentionConfig,
 };
 pub use rewriter::ParquetRewriter;
+pub use service::CompactorService;

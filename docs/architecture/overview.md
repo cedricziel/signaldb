@@ -454,14 +454,15 @@ For full details on table schemas, partitioning, and the object store layout, se
 cargo run --bin signaldb
 ```
 
-Starts Acceptor, Router, Writer, and Querier in a single process:
+Starts Acceptor, Router, Writer, Querier, and Compactor in a single process:
 
 - Acceptor: `0.0.0.0:4317` (gRPC), `0.0.0.0:4318` (HTTP)
 - Router: `0.0.0.0:3000` (HTTP), `0.0.0.0:50053` (Flight)
 - Writer: `0.0.0.0:50051` (Flight)
 - Querier: `0.0.0.0:50054` (Flight)
+- Compactor: `0.0.0.0:50055` (Flight), observability HTTP on `[compactor].metrics_addr` (default `0.0.0.0:9091`)
 
-When `[compactor].enabled = true` (the default), the monolithic binary also runs the compactor planning loop (no compactor Flight/HTTP endpoints in this mode).
+When `[compactor].enabled = true` (the default), the monolithic binary runs the same compactor lifecycle loop as the standalone service (`compactor::service::CompactorService`): compaction planning and execution, retention enforcement with snapshot expiration, orphan cleanup, and distributed-lease expiry.
 
 Shared SQLite database for both service catalog and Iceberg catalog. Zero-config startup with sensible defaults.
 

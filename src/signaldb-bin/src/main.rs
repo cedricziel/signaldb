@@ -9,7 +9,7 @@ use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
-use compactor::planner::{CompactionPlanner, PlannerConfig};
+use compactor::service::CompactorService;
 use querier::QuerierFlightService;
 use router::{RouterAppState, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
@@ -276,63 +276,95 @@ async fn main() -> Result<()> {
     let compactor_handle = if config.compactor.enabled {
         tracing::info!("Compactor enabled, initializing service");
 
-        // Initialize compactor service bootstrap
+        // Register with the real Flight address so operators can reach the
+        // compactor's do_action control surface through the router ops API.
+        let compactor_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50055));
         let compactor_bootstrap = ServiceBootstrap::new(
             config.clone(),
             ServiceType::Compactor,
-            "compactor:none".to_string(), // Sentinel address (no endpoint)
+            compactor_flight_addr.to_string(),
         )
         .await
         .context("Failed to initialize compactor service bootstrap")?;
 
         tracing::info!(
-            "Compactor service registered with ID: {}",
+            "Compactor service registered with ID: {} (Flight: {compactor_flight_addr})",
             compactor_bootstrap.service_id()
         );
 
-        // Create compaction planner with shared catalog manager
-        let planner_config = PlannerConfig::from(&config.compactor);
-        let planner = Arc::new(CompactionPlanner::new(
+        // Full compactor assembly shared with the standalone binary:
+        // planner, executor, leases, retention enforcement, orphan cleanup.
+        let compactor_service = CompactorService::new(
+            &config,
             catalog_manager.clone(),
-            planner_config,
-        ));
+            Arc::new(compactor_bootstrap.catalog().clone()),
+            compactor_bootstrap.service_id(),
+        )
+        .context("Failed to assemble compactor service")?;
 
-        tracing::info!(
-            "Compaction planner initialized with tick interval: {:?}",
-            config.compactor.tick_interval
-        );
-
-        // Start planning loop in background task
-        let tick_interval = config.compactor.tick_interval;
-        let planning_handle = tokio::spawn(async move {
-            use tokio::time::interval;
-            let mut ticker = interval(tick_interval);
-
-            loop {
-                ticker.tick().await;
-
-                tracing::debug!("Running compaction planning cycle");
-
-                match planner.plan().await {
-                    Ok(candidates) => {
-                        if candidates.is_empty() {
-                            tracing::info!("No compaction candidates found in this cycle");
-                        } else {
-                            tracing::info!("Found {} compaction candidates:", candidates.len());
-                            for candidate in candidates {
-                                candidate.log();
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Compaction planning cycle failed: {e:?}");
-                    }
+        let compactor_flight_service = compactor_service.flight_service();
+        let compactor_flight_auth = config
+            .auth
+            .internal_service_key
+            .clone()
+            .map(common::flight::auth::FlightAuthInterceptor::internal_only);
+        // The blanket "Flight ports are UNAUTHENTICATED" startup warning
+        // below covers this port too ([auth].internal_service_key gates all
+        // in-process Flight servers identically).
+        let compactor_flight_handle = tokio::spawn(async move {
+            tracing::info!("Starting Compactor Flight service on {compactor_flight_addr}");
+            let serve = match compactor_flight_auth {
+                Some(interceptor) => {
+                    Server::builder()
+                        .add_service(common::flight::flight_service_server_with_interceptor(
+                            compactor_flight_service,
+                            move |req| interceptor.intercept(req),
+                        ))
+                        .serve(compactor_flight_addr)
+                        .await
                 }
+                None => {
+                    Server::builder()
+                        .add_service(common::flight::flight_service_server(
+                            compactor_flight_service,
+                        ))
+                        .serve(compactor_flight_addr)
+                        .await
+                }
+            };
+            if let Err(e) = serve {
+                tracing::error!("Compactor Flight service error: {e}");
             }
         });
 
-        // Return handle and bootstrap for cleanup
-        Some((planning_handle, compactor_bootstrap))
+        let mut compactor_tasks = vec![compactor_flight_handle];
+
+        // Observability endpoint (Prometheus /metrics, /status, /health).
+        if !config.compactor.metrics_addr.is_empty() {
+            let metrics_addr: SocketAddr =
+                config.compactor.metrics_addr.parse().with_context(|| {
+                    format!(
+                        "Invalid compactor metrics_addr: {}",
+                        config.compactor.metrics_addr
+                    )
+                })?;
+            let observability_state =
+                compactor_service.observability_state(compactor_bootstrap.service_id());
+            compactor_tasks.push(tokio::spawn(async move {
+                if let Err(e) = compactor::http::serve(metrics_addr, observability_state).await {
+                    tracing::error!("Compactor observability HTTP endpoint error: {e:#}");
+                }
+            }));
+        }
+
+        // The full lifecycle loop: compaction planning AND execution,
+        // stale-lease expiry, retention enforcement (partition drops +
+        // snapshot expiration), and orphan cleanup. The previous wiring ran
+        // only the planner, so monolithic deployments never enforced
+        // retention (issue #959).
+        compactor_tasks.push(tokio::spawn(compactor_service.run_lifecycle_loop()));
+
+        Some((compactor_tasks, compactor_bootstrap))
     } else {
         tracing::info!("Compactor disabled in configuration");
         None
@@ -561,10 +593,12 @@ async fn main() -> Result<()> {
     tracing::info!("Shutting down service discovery and other services");
 
     // Shutdown compactor first (if it was running)
-    if let Some((planning_handle, compactor_bootstrap)) = compactor_handle {
-        tracing::info!("Stopping compactor planning task");
-        planning_handle.abort();
-        let _ = planning_handle.await;
+    if let Some((compactor_tasks, compactor_bootstrap)) = compactor_handle {
+        tracing::info!("Stopping compactor tasks");
+        for task in compactor_tasks {
+            task.abort();
+            let _ = task.await;
+        }
 
         if let Err(e) = compactor_bootstrap.shutdown().await {
             tracing::error!("Failed to shutdown compactor service bootstrap: {e}");
