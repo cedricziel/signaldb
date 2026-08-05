@@ -45,6 +45,7 @@ path = "src/main.rs"
 [dev-dependencies]
 tower.workspace = true
 tempfile.workspace = true
-opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
+opentelemetry_sdk = { workspace = true, features = ["trace", "logs", "testing"] }
+opentelemetry-appender-tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
