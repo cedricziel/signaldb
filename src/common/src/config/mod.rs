@@ -180,8 +180,6 @@ pub struct OrphanCleanupConfig {
     pub dry_run: bool,
     #[serde(default = "default_revalidate_before_delete")]
     pub revalidate_before_delete: bool,
-    #[serde(default = "default_max_snapshot_age_hours")]
-    pub max_snapshot_age_hours: u64,
 
     /// Maximum estimated live file count before orphan cleanup is skipped.
     ///
@@ -216,10 +214,6 @@ fn default_revalidate_before_delete() -> bool {
     true
 }
 
-fn default_max_snapshot_age_hours() -> u64 {
-    720 // 30 days
-}
-
 fn default_max_live_files_threshold() -> usize {
     500_000
 }
@@ -245,7 +239,6 @@ impl Default for OrphanCleanupConfig {
             batch_size: default_batch_size(),
             dry_run: default_orphan_dry_run(),
             revalidate_before_delete: default_revalidate_before_delete(),
-            max_snapshot_age_hours: default_max_snapshot_age_hours(),
             max_live_files_threshold: default_max_live_files_threshold(),
         }
     }

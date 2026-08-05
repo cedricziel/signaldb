@@ -356,8 +356,8 @@ grep "grace_period_hours" signaldb.toml | grep orphan_cleanup
 # 2. Check file ages in orphan logs (stdout/journalctl/monolithic.log)
 journalctl -u signaldb-compactor | grep "DRY-RUN.*Would delete" | tail -10
 
-# 3. Check max_snapshot_age_hours
-grep "max_snapshot_age_hours" signaldb.toml
+# 3. Check how many snapshots are retained (the live set spans all of them)
+grep "snapshots_to_keep" signaldb.toml
 ```
 
 **Common Causes:**
@@ -370,13 +370,14 @@ grace_period_hours = 1  # ← Too short for busy systems
 
 **Solution:** Increase to 24 hours for safety.
 
-2. **Snapshot Window Too Narrow:**
+2. **Snapshots Not Expiring:**
 
-```toml
-max_snapshot_age_hours = 1  # ← Only looking at recent snapshots
-```
+Files stay protected while any retained snapshot references them. If
+snapshot expiration is not running (check retention logs), nothing ever
+becomes an orphan candidate.
 
-**Solution:** Increase to 720 hours (30 days).
+**Solution:** Ensure `[compactor.retention]` is enabled so snapshot
+expiration shrinks the retained set.
 
 3. **Compaction Creating New Files:**
 
@@ -414,10 +415,11 @@ ps aux | grep compactor | awk '{print $4, $6}'
 batch_size = 500  # Down from 1000
 ```
 
-2. **Reduce Snapshot Window:**
+2. **Retain Fewer Snapshots:**
 
 ```toml
-max_snapshot_age_hours = 168  # 7 days instead of 30
+[compactor.retention]
+snapshots_to_keep = 5  # Fewer retained snapshots to scan
 ```
 
 3. **Run Less Frequently:**
@@ -505,10 +507,11 @@ curl -s localhost:9091/metrics | grep compactor_orphan_cleanup_skipped_total
 batch_size = 250  # Smaller batches
 ```
 
-2. **Reduce Snapshot Window:**
+2. **Retain Fewer Snapshots:**
 
 ```toml
-max_snapshot_age_hours = 168  # 7 days
+[compactor.retention]
+snapshots_to_keep = 5
 ```
 
 3. **Increase Container Memory:**

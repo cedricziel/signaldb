@@ -75,7 +75,6 @@ async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
         dry_run: false,
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
-        max_snapshot_age_hours: 720,
         max_live_files_threshold: 500_000,
     };
 
@@ -180,7 +179,6 @@ async fn test_orphan_cleanup_grace_period_configuration() -> Result<()> {
         dry_run: false,
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
-        max_snapshot_age_hours: 720,
         max_live_files_threshold: 500_000,
     };
 
@@ -283,7 +281,6 @@ async fn test_orphan_cleanup_batch_deletion() -> Result<()> {
         dry_run: false,
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
-        max_snapshot_age_hours: 720,
         max_live_files_threshold: 500_000,
     };
 
@@ -389,7 +386,6 @@ async fn test_orphan_cleanup_dry_run_mode() -> Result<()> {
         dry_run: true, // Dry-run mode
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
-        max_snapshot_age_hours: 720,
         max_live_files_threshold: 500_000,
     };
 
@@ -501,7 +497,6 @@ async fn test_orphan_cleanup_preserves_live_files() -> Result<()> {
         dry_run: false,
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
-        max_snapshot_age_hours: 720,
         max_live_files_threshold: 500_000,
     };
 
@@ -608,7 +603,6 @@ async fn test_orphan_cleanup_threshold_skips_cleanup() -> Result<()> {
         dry_run: false,
         revalidate_before_delete: false,
         cleanup_interval_hours: 24,
-        max_snapshot_age_hours: 720,
         max_live_files_threshold: 1, // force threshold exceeded
     };
 
@@ -627,6 +621,194 @@ async fn test_orphan_cleanup_threshold_skips_cleanup() -> Result<()> {
         orphans.is_empty(),
         "Expected no candidates when threshold exceeded, got {}",
         orphans.len()
+    );
+    Ok(())
+}
+
+/// Regression test for #925: a table whose snapshots are all older than the
+/// snapshot-age window ("idle table") must never have its live files flagged
+/// as orphans. Detection must derive liveness from the retained snapshots'
+/// manifests, not from snapshot age.
+#[tokio::test]
+async fn idle_table_live_files_are_never_orphan_candidates() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+
+    let ctx = RetentionTestContext::new_in_memory().await?;
+
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let table_name = "traces";
+    let mut writer = ctx.create_table(tenant_id, dataset_id, table_name).await?;
+
+    // 10 live data files in one partition.
+    let config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 10,
+        rows_per_file: 50,
+        base_timestamp: Utc::now().timestamp_millis() - (48 * 60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Day,
+    };
+    generators::generate_traces(&mut writer, &config).await?;
+
+    // The catalog writes table data through its own object store — inject
+    // the orphans into and scan *that* store, so the detector sees the real
+    // data files alongside the orphans.
+    let table_identifier = ctx
+        .catalog_manager()
+        .build_table_identifier(tenant_id, dataset_id, table_name);
+    let table_store = match ctx
+        .catalog_manager()
+        .catalog()
+        .load_tabular(&table_identifier)
+        .await?
+    {
+        Tabular::Table(t) => t.object_store(),
+        _ => anyhow::bail!("expected a table"),
+    };
+
+    // 3 genuine orphans next to them.
+    let table_path = format!("{}/{}/{}", tenant_id, dataset_id, table_name);
+    let orphan_data = bytes::Bytes::from(vec![0u8; 1024]);
+    for i in 0..3 {
+        let path = format!("{}/data/orphan-{}.parquet", table_path, i);
+        table_store
+            .put(&ObjectPath::from(path.as_str()), orphan_data.clone().into())
+            .await?;
+    }
+
+    // Simulate the idle table: every snapshot is older than the age window.
+    let detector_config = OrphanCleanupConfig {
+        enabled: true,
+        grace_period_hours: 0,
+        batch_size: 100,
+        dry_run: false,
+        revalidate_before_delete: false,
+        cleanup_interval_hours: 24,
+        max_live_files_threshold: 500_000,
+    };
+    let detector = OrphanDetector::new(detector_config, ctx.catalog_manager().clone(), table_store);
+
+    let orphans = detector
+        .identify_orphan_candidates(tenant_id, dataset_id, table_name)
+        .await?;
+
+    // Only the injected orphans may be flagged — never the live files.
+    assert_eq!(
+        orphans.len(),
+        3,
+        "live files of an idle table were flagged as orphans: {:?}",
+        orphans.iter().map(|o| &o.path).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// Regression test for #925 (time-travel safety): data files replaced by
+/// compaction are still referenced by earlier snapshots. Until those
+/// snapshots are expired, the files must not be orphan candidates —
+/// deleting them would break time travel and queries pinned to a
+/// retained snapshot.
+#[tokio::test]
+async fn files_replaced_by_compaction_stay_protected_while_snapshots_retained() -> Result<()> {
+    use compactor::executor::{CompactionExecutor, ExecutorConfig};
+    use compactor::planner::{CompactionPlanner, PlannerConfig};
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+
+    // The planner iterates configured tenants, so the tenant must exist.
+    let config = common::testing::TestConfigBuilder::new()
+        .in_memory()
+        .with_tenant("test-tenant", "test-dataset")
+        .build();
+    let catalog_manager = Arc::new(common::catalog_manager::CatalogManager::new(config).await?);
+    let object_store: Arc<dyn object_store::ObjectStore> =
+        Arc::new(object_store::memory::InMemory::new());
+
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let table_name = "traces";
+    let mut writer = writer::IcebergTableWriter::new(
+        &catalog_manager,
+        object_store.clone(),
+        tenant_id.to_string(),
+        dataset_id.to_string(),
+        table_name.to_string(),
+    )
+    .await?;
+
+    // 5 separate appends -> 5 small files, 5 snapshots.
+    let data_config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 1,
+        rows_per_file: 100,
+        base_timestamp: Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    for _ in 0..5 {
+        generators::generate_traces(&mut writer, &data_config).await?;
+    }
+
+    // Compact: the current snapshot now references one rewritten file,
+    // while the 5 input files remain referenced by the earlier snapshots.
+    let planner_config = PlannerConfig {
+        file_count_threshold: 3,
+        max_input_file_size_bytes: 64 * 1024 * 1024,
+        target_file_size_bytes: 128 * 1024 * 1024,
+    };
+    let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());
+    let candidates = planner.plan().await?;
+    assert!(
+        !candidates.is_empty(),
+        "table must be a compaction candidate"
+    );
+    let executor = CompactionExecutor::new(
+        catalog_manager.clone(),
+        ExecutorConfig::from(&planner_config),
+        compactor::metrics::CompactionMetrics::new(),
+    );
+    executor
+        .execute_candidate(candidates.into_iter().next().unwrap())
+        .await?;
+
+    // Scan the store the catalog actually wrote through, so the old and
+    // new data files are both visible to the detector.
+    let table_identifier =
+        catalog_manager.build_table_identifier(tenant_id, dataset_id, table_name);
+    let table_store = match catalog_manager
+        .catalog()
+        .load_tabular(&table_identifier)
+        .await?
+    {
+        Tabular::Table(t) => t.object_store(),
+        _ => anyhow::bail!("expected a table"),
+    };
+
+    let detector_config = OrphanCleanupConfig {
+        enabled: true,
+        grace_period_hours: 0,
+        batch_size: 100,
+        dry_run: false,
+        revalidate_before_delete: false,
+        cleanup_interval_hours: 24,
+        max_live_files_threshold: 500_000,
+    };
+    let detector = OrphanDetector::new(detector_config, catalog_manager, table_store);
+
+    let orphans = detector
+        .identify_orphan_candidates(tenant_id, dataset_id, table_name)
+        .await?;
+
+    // No snapshot has been expired, so every file on disk is still
+    // referenced by some retained snapshot: nothing may be flagged.
+    assert!(
+        orphans.is_empty(),
+        "files referenced by retained snapshots were flagged as orphans: {:?}",
+        orphans.iter().map(|o| &o.path).collect::<Vec<_>>()
     );
     Ok(())
 }

@@ -329,7 +329,6 @@ cleanup_interval_hours = 24  # Run once per day
 | -------------------------- | ------ | ------- | -------------------------------------------- |
 | `grace_period_hours`       | `u64`  | `24`    | Don't delete files younger than this (hours) |
 | `revalidate_before_delete` | `bool` | `true`  | Re-check file status before deletion         |
-| `max_snapshot_age_hours`   | `u64`  | `720`   | Consider snapshots within this age (hours)   |
 
 **Example:**
 
@@ -337,8 +336,12 @@ cleanup_interval_hours = 24  # Run once per day
 [compactor.orphan_cleanup]
 grace_period_hours = 48          # 2-day grace period
 revalidate_before_delete = true  # Extra safety
-max_snapshot_age_hours = 168     # 7-day snapshot window
 ```
+
+The live-file set is the union of every snapshot still retained in table
+metadata — there is no snapshot-age window. Snapshot expiration (see
+`[compactor.retention].snapshots_to_keep`) is what makes files eligible
+for cleanup.
 
 **Safety Mechanism Explained:**
 
@@ -390,7 +393,6 @@ cleanup_interval_hours = 24
 # Safety (conservative defaults)
 grace_period_hours = 24
 revalidate_before_delete = true
-max_snapshot_age_hours = 720  # 30 days
 
 # Performance
 batch_size = 1000
@@ -400,7 +402,6 @@ max_live_files_threshold = 500000
 # [compactor.orphan_cleanup]
 # grace_period_hours = 1          # 1 hour grace period
 # cleanup_interval_hours = 1      # Run every hour
-# max_snapshot_age_hours = 24     # Only last 24h snapshots
 ```
 
 ## Attribute Promotion Configuration
@@ -576,7 +577,6 @@ dry_run = false
 cleanup_interval_hours = 24  # Once per day
 grace_period_hours = 24
 revalidate_before_delete = true
-max_snapshot_age_hours = 720  # 30 days
 batch_size = 1000
 ```
 
@@ -639,7 +639,6 @@ dry_run = false
 cleanup_interval_hours = 48  # Every 2 days
 grace_period_hours = 24
 revalidate_before_delete = true
-max_snapshot_age_hours = 168  # 7 days
 batch_size = 5000  # Larger batches
 ```
 
@@ -664,7 +663,6 @@ dry_run = false
 cleanup_interval_hours = 168  # Once per week
 grace_period_hours = 168  # 1-week grace period
 revalidate_before_delete = true
-max_snapshot_age_hours = 2160  # 90 days
 batch_size = 500  # Smaller batches for safety
 ```
 
@@ -681,7 +679,7 @@ No other retention fields are validated; there are no enforced value ranges, and
 
 ### Orphan Cleanup Validation
 
-Orphan-cleanup values are currently **not** validated at startup. `OrphanCleanupConfig::validate` exists (it requires `cleanup_interval_hours`, `grace_period_hours`, `batch_size`, and `max_snapshot_age_hours` to all be > 0) but is not wired into the compactor's startup path, so invalid values — for example `grace_period_hours = 0` — are accepted and take effect as written. Review these values carefully before deploying.
+Orphan-cleanup values are currently **not** validated at startup. `OrphanCleanupConfig::validate` exists (it requires `cleanup_interval_hours`, `grace_period_hours`, and `batch_size` to all be > 0) but is not wired into the compactor's startup path, so invalid values — for example `grace_period_hours = 0` — are accepted and take effect as written. Review these values carefully before deploying.
 
 ### Validation Errors
 

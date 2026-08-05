@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use iceberg_rust::spec::manifest::Status;
+use iceberg_rust::spec::manifest_list::ManifestListEntry;
 use iceberg_rust::table::Table;
 use std::collections::HashSet;
 
@@ -29,61 +30,66 @@ impl ManifestReader {
         Self
     }
 
-    /// Build a set of live data file paths from the current table snapshot.
+    /// Collect the deduplicated manifest list entries of every retained
+    /// snapshot.
     ///
-    /// Reads the manifest list for the current snapshot and collects all
-    /// data file paths with ADDED or EXISTING status. Files with DELETED
-    /// status are excluded as they are no longer live.
+    /// Iceberg reuses manifest files across snapshots and a manifest added
+    /// long ago can still carry live EXISTING entries, so liveness must never
+    /// be derived from snapshot or manifest age (issue #925). Any file
+    /// referenced by any retained snapshot is reachable — through the current
+    /// snapshot, time travel, or a query pinned to an older snapshot.
     ///
-    /// # Arguments
-    /// * `table` - The Iceberg table to scan
-    /// * `snapshot_ids` - Optional list of snapshot IDs; when provided, only
-    ///   manifests added by those snapshots are included. When None, all
-    ///   manifests in the current snapshot are used.
-    ///
-    /// # Returns
-    /// A HashSet of absolute file paths that are currently referenced.
-    ///
-    /// # Safety
-    /// Run snapshot expiration before calling this to ensure that files
-    /// referenced only by expired snapshots are not protected from cleanup.
-    pub async fn build_live_file_set(
+    /// Expired snapshots are removed from table metadata, so the retained
+    /// set shrinks as snapshot expiration runs; run expiration first for
+    /// cleanup to reclaim anything.
+    pub async fn collect_retained_manifests(
         &self,
         table: &Table,
-        snapshot_ids: Option<&[i64]>,
-    ) -> Result<HashSet<String>> {
-        // Read all manifests from the current snapshot's manifest list.
-        // table.manifests(None, None) reads the current snapshot and returns
-        // all ManifestListEntry records (one per manifest file).
-        let all_manifests = table
-            .manifests(None, None)
-            .await
-            .context("Failed to read manifest list from current snapshot")?;
-
-        // Optionally filter to only manifests added by specific snapshots.
-        let manifests = if let Some(ids) = snapshot_ids {
-            let ids_set: HashSet<i64> = ids.iter().copied().collect();
-            all_manifests
-                .into_iter()
-                .filter(|m| ids_set.contains(&m.added_snapshot_id))
-                .collect::<Vec<_>>()
-        } else {
-            all_manifests
-        };
+    ) -> Result<Vec<ManifestListEntry>> {
+        let metadata = table.metadata();
+        let mut seen_manifest_paths = HashSet::new();
+        let mut manifests = Vec::new();
+        for snapshot_id in metadata.snapshots.keys() {
+            let snapshot_manifests = table
+                .manifests(None, Some(*snapshot_id))
+                .await
+                .with_context(|| {
+                    format!("Failed to read manifest list of snapshot {snapshot_id}")
+                })?;
+            for manifest in snapshot_manifests {
+                if seen_manifest_paths.insert(manifest.manifest_path.clone()) {
+                    manifests.push(manifest);
+                }
+            }
+        }
 
         tracing::debug!(
+            retained_snapshots = metadata.snapshots.len(),
             manifest_count = manifests.len(),
-            "Reading manifests to build live file set"
+            "Collected manifests across retained snapshots"
         );
 
+        Ok(manifests)
+    }
+
+    /// Read the live data file paths referenced by the given manifests.
+    ///
+    /// A file with a DELETED entry in one manifest may still be live through
+    /// an ADDED or EXISTING entry in another retained manifest, so DELETED
+    /// entries are simply skipped: the union of non-deleted entries across
+    /// all retained manifests is the live set.
+    pub async fn read_live_files(
+        &self,
+        table: &Table,
+        manifests: &[ManifestListEntry],
+    ) -> Result<HashSet<String>> {
         if manifests.is_empty() {
             tracing::debug!("No manifests found, live file set is empty");
             return Ok(HashSet::new());
         }
 
-        // Read all data file entries from the manifests.
         let file_iter = table
-            .datafiles(&manifests, None, (None, None))
+            .datafiles(manifests, None, (None, None))
             .await
             .context("Failed to read data files from manifests")?;
 
@@ -91,7 +97,6 @@ impl ManifestReader {
         let mut file_iter = std::pin::pin!(file_iter);
         while let Some(result) = file_iter.next().await {
             let (_, entry) = result.context("Failed to read manifest entry")?;
-            // Only include ADDED and EXISTING files; DELETED entries are no longer live.
             if *entry.status() != Status::Deleted {
                 live_files.insert(entry.data_file().file_path().to_string());
             }
@@ -103,6 +108,16 @@ impl ManifestReader {
         );
 
         Ok(live_files)
+    }
+
+    /// Build the set of data file paths referenced by any retained snapshot.
+    ///
+    /// # Safety
+    /// Run snapshot expiration before calling this to ensure that files
+    /// referenced only by expired snapshots are not protected from cleanup.
+    pub async fn build_live_file_set(&self, table: &Table) -> Result<HashSet<String>> {
+        let manifests = self.collect_retained_manifests(table).await?;
+        self.read_live_files(table, &manifests).await
     }
 
     /// Extract live data file information from the table's current snapshot.

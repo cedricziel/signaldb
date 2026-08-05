@@ -1,11 +1,14 @@
 //! Orphan file detection logic.
 //!
 //! This module implements the safety-critical orphan detection algorithm
-//! that identifies data files no longer referenced by any live snapshot.
+//! that identifies data files no longer referenced by any retained snapshot.
 //!
 //! ## Detection Algorithm (4 Phases)
 //!
-//! 1. **Build Live Reference Set**: Scan all live snapshots and collect file paths
+//! 1. **Build Live Reference Set**: Union the manifests of every retained
+//!    snapshot and collect their non-deleted file paths. Liveness is never
+//!    derived from snapshot or manifest age (issue #925) — snapshot
+//!    expiration is what shrinks the retained set.
 //! 2. **Scan Object Store**: List all .parquet files in table location
 //! 3. **Identify Candidates**: Files not in reference set AND older than grace period
 //! 4. **Optional Revalidation**: Re-check orphan status before deletion
@@ -166,8 +169,8 @@ impl OrphanDetector {
 
     /// Build live file reference set from table snapshots.
     ///
-    /// Scans all snapshots within the retention window and collects
-    /// all referenced data file paths.
+    /// Unions the manifests of every retained snapshot and collects all
+    /// referenced data file paths.
     ///
     /// Returns `Ok(None)` when the `max_live_files_threshold` guard trips,
     /// signalling that the caller should skip orphan cleanup for this table.
@@ -195,15 +198,23 @@ impl OrphanDetector {
             _ => anyhow::bail!("Expected table but found different tabular type"),
         };
 
-        // Cheap threshold check using manifest list metadata before reading all manifest files.
-        // Sums the file count estimates from ManifestListEntry metadata (no manifest reads needed).
-        // If the estimate exceeds the configured cap, skip cleanup with a warning rather than
-        // risking excessive memory use.
+        // The live set is the union of every retained snapshot's manifests:
+        // Iceberg reuses manifests across snapshots, so a manifest's age says
+        // nothing about whether its files are still referenced (issue #925).
+        // Snapshot expiration — not an age window here — is what makes files
+        // eligible for cleanup.
+        let manifests = self
+            .manifest_reader
+            .collect_retained_manifests(&table)
+            .await
+            .context("Failed to collect retained snapshot manifests")?;
+
+        // Cheap threshold check using manifest list metadata before reading
+        // the manifest files themselves. Sums the file count estimates from
+        // ManifestListEntry metadata (no manifest reads needed). If the
+        // estimate exceeds the configured cap, skip cleanup with a warning
+        // rather than risking excessive memory use.
         if self.config.max_live_files_threshold > 0 {
-            let manifests = table
-                .manifests(None, None)
-                .await
-                .context("Failed to read manifest list for threshold check")?;
             let estimated_live_files: usize = manifests
                 .iter()
                 .map(|m| {
@@ -229,39 +240,9 @@ impl OrphanDetector {
             }
         }
 
-        // Filter snapshots by age
-        let cutoff_time = Utc::now()
-            - chrono::Duration::from_std(self.config.max_snapshot_age())
-                .context("Invalid duration conversion")?;
-        let metadata = table.metadata();
-        let snapshot_ids: Vec<i64> = metadata
-            .snapshots
-            .values()
-            .filter_map(|snapshot| {
-                let snapshot_time =
-                    chrono::DateTime::from_timestamp_millis(*snapshot.timestamp_ms())?;
-                if snapshot_time > cutoff_time {
-                    Some(*snapshot.snapshot_id())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        tracing::debug!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
-            total_snapshots = metadata.snapshots.len(),
-            filtered_snapshots = snapshot_ids.len(),
-            snapshot_window_hours = self.config.max_snapshot_age_hours,
-            "Filtered snapshots by age"
-        );
-
-        // Use ManifestReader to build the live file set
         let live_files = self
             .manifest_reader
-            .build_live_file_set(&table, Some(&snapshot_ids))
+            .read_live_files(&table, &manifests)
             .await
             .context("Failed to build live file set from manifests")?;
 
@@ -450,10 +431,10 @@ impl OrphanDetector {
             _ => anyhow::bail!("Expected table but found different tabular type"),
         };
 
-        // Build live file set from current snapshot only (all snapshots, no time filter)
+        // Build live file set across all retained snapshots
         let live_files = self
             .manifest_reader
-            .build_live_file_set(&table, None)
+            .build_live_file_set(&table)
             .await
             .context("Failed to build live file set for revalidation")?;
 
