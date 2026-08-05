@@ -182,6 +182,29 @@ allow = [
 ]
 # List of crates to deny
 deny = [
+    # FDAP version alignment: the whole workspace must resolve to exactly ONE
+    # version of the arrow/parquet stack (the versions re-exported by
+    # datafusion). Direct `arrow`/`parquet` imports in leaf binaries are only
+    # safe while that holds, so a second version entering the tree after a
+    # dependency bump must fail CI loudly instead of warning. Globs are not
+    # supported in deny entries (verified with cargo-deny 0.19), hence the
+    # explicit enumeration. See issue #951.
+    { crate = "arrow", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-arith", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-array", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-buffer", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-cast", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-csv", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-data", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-flight", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-ipc", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-json", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-ord", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-row", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-schema", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-select", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "arrow-string", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single arrow version" },
+    { crate = "parquet", deny-multiple-versions = true, reason = "FDAP stack must resolve to a single parquet version" },
     #"ansi_term@0.11.0",
     #{ crate = "ansi_term@0.11.0", reason = "you can specify a reason it is banned" },
     # Wrapper crates can optionally be specified to allow the crate when it
