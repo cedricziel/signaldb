@@ -123,7 +123,7 @@ fn build_logs_request_multi_severity(
 fn create_logs_batch(batch_num: usize, rows: usize) -> RecordBatch {
     let severities = ["ERROR", "WARN", "INFO", "DEBUG"];
     let request = build_logs_request_multi_severity(batch_num, rows, &severities);
-    otlp_logs_to_arrow(&request)
+    otlp_logs_to_arrow(&request).expect("conversion should succeed")
 }
 
 /// Test logs table compaction:

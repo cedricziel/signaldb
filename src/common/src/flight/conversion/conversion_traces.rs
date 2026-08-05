@@ -2,6 +2,7 @@ use datafusion::arrow::{
     array::{Array, ArrayRef, BooleanArray, ListArray, StringArray, StructArray, UInt64Array},
     buffer::OffsetBuffer,
     datatypes::{DataType, Field},
+    error::ArrowError,
     record_batch::RecordBatch,
 };
 use hex;
@@ -20,7 +21,15 @@ use crate::flight::conversion::conversion_common::{
 use crate::flight::schema::FlightSchemas;
 
 /// Convert OTLP trace data to Arrow RecordBatch using the Flight trace schema
-pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch {
+///
+/// # Errors
+///
+/// Returns an error if the Arrow arrays cannot be assembled into a
+/// `RecordBatch`. Callers must reject the export instead of acknowledging
+/// it, otherwise the data would be silently lost.
+pub fn otlp_traces_to_arrow(
+    request: &ExportTraceServiceRequest,
+) -> Result<RecordBatch, ArrowError> {
     let schemas = FlightSchemas::new();
     let schema = schemas.trace_schema.clone();
 
@@ -203,10 +212,10 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
     let resource_json_array: ArrayRef = Arc::new(StringArray::from(resource_jsons));
 
     // Create events list array
-    let events_array = create_events_array(&events_data);
+    let events_array = create_events_array(&events_data)?;
 
     // Create links list array
-    let links_array = create_links_array(&links_data);
+    let links_array = create_links_array(&links_data)?;
 
     // Create scope/resource metadata arrays
     let trace_state_array: ArrayRef = Arc::new(StringArray::from(trace_states));
@@ -216,11 +225,10 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
     let scope_schema_url_array: ArrayRef = Arc::new(StringArray::from(scope_schema_urls));
     let scope_attributes_array: ArrayRef = Arc::new(StringArray::from(scope_attributes_jsons));
 
-    // Clone schema for potential error case
-    let schema_clone = schema.clone();
-
-    // Create and return the RecordBatch
-    let result = RecordBatch::try_new(
+    // Create and return the RecordBatch. Assembly failures must propagate:
+    // swallowing them into an empty batch would ACK data that was never
+    // stored (silent data loss, issue #926).
+    RecordBatch::try_new(
         Arc::new(schema),
         vec![
             trace_id_array,
@@ -246,9 +254,7 @@ pub fn otlp_traces_to_arrow(request: &ExportTraceServiceRequest) -> RecordBatch 
             scope_schema_url_array,
             scope_attributes_array,
         ],
-    );
-
-    result.unwrap_or_else(|_| RecordBatch::new_empty(Arc::new(schema_clone)))
+    )
 }
 
 /// Extract status code and message from span
@@ -308,7 +314,7 @@ fn extract_links(span: &OtelSpan) -> Vec<(String, String, String)> {
 }
 
 /// Create Arrow array for events
-fn create_events_array(events_data: &[Vec<(String, u64, String)>]) -> ArrayRef {
+fn create_events_array(events_data: &[Vec<(String, u64, String)>]) -> Result<ArrayRef, ArrowError> {
     // Define the event struct fields
     let event_struct_fields = vec![
         Field::new("name", DataType::Utf8, false),
@@ -377,11 +383,18 @@ fn create_events_array(events_data: &[Vec<(String, u64, String)>]) -> ArrayRef {
 
     // Create the list array
     let offsets_buffer = OffsetBuffer::new(offsets.into());
-    Arc::new(ListArray::try_new(field, offsets_buffer, Arc::new(values), None).unwrap())
+    Ok(Arc::new(ListArray::try_new(
+        field,
+        offsets_buffer,
+        Arc::new(values),
+        None,
+    )?))
 }
 
 /// Create Arrow array for links
-fn create_links_array(links_data: &[Vec<(String, String, String)>]) -> ArrayRef {
+fn create_links_array(
+    links_data: &[Vec<(String, String, String)>],
+) -> Result<ArrayRef, ArrowError> {
     // Define the link struct fields
     let link_struct_fields = vec![
         Field::new("trace_id", DataType::Utf8, false),
@@ -450,7 +463,12 @@ fn create_links_array(links_data: &[Vec<(String, String, String)>]) -> ArrayRef 
 
     // Create the list array
     let offsets_buffer = OffsetBuffer::new(offsets.into());
-    Arc::new(ListArray::try_new(field, offsets_buffer, Arc::new(values), None).unwrap())
+    Ok(Arc::new(ListArray::try_new(
+        field,
+        offsets_buffer,
+        Arc::new(values),
+        None,
+    )?))
 }
 
 /// Parse events from ListArray for a specific row
@@ -922,11 +940,24 @@ mod tests {
             }],
         };
 
-        let result = otlp_traces_to_arrow(&request);
+        let result = otlp_traces_to_arrow(&request).expect("conversion should succeed");
 
         assert_eq!(result.num_rows(), 1);
         let duration_array = get_uint64_column(&result, "duration_nano").unwrap();
         assert_eq!(duration_array.value(0), 0);
+    }
+
+    #[test]
+    fn otlp_traces_to_arrow_propagates_conversion_errors_via_result() {
+        // The conversion is fallible: a RecordBatch assembly failure must
+        // surface as Err so the acceptor rejects the export instead of
+        // ACKing an empty batch (issue #926). Pin the Result contract and
+        // that an empty request converts to an empty batch (the only way a
+        // zero-row batch may legitimately be produced).
+        let request = ExportTraceServiceRequest::default();
+        let result: Result<RecordBatch, ArrowError> = otlp_traces_to_arrow(&request);
+        let batch = result.expect("empty request must convert to an empty batch");
+        assert_eq!(batch.num_rows(), 0);
     }
 
     #[test]
@@ -1070,7 +1101,7 @@ mod tests {
         };
 
         // Convert OTLP to Arrow
-        let result = otlp_traces_to_arrow(&request);
+        let result = otlp_traces_to_arrow(&request).expect("conversion should succeed");
 
         // Verify the result
         assert_eq!(result.num_rows(), 1);
@@ -1447,7 +1478,8 @@ mod tests {
         };
 
         // Convert OTLP to Arrow
-        let arrow_batch = otlp_traces_to_arrow(&original_request);
+        let arrow_batch =
+            otlp_traces_to_arrow(&original_request).expect("conversion should succeed");
 
         // Convert Arrow back to OTLP
         let converted_request = arrow_to_otlp_traces(&arrow_batch);

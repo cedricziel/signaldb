@@ -115,7 +115,8 @@ async fn write_small_log_files(
     };
 
     for i in 0..batches {
-        let batch = otlp_logs_to_arrow(&build_logs_request(i, 100));
+        let batch =
+            otlp_logs_to_arrow(&build_logs_request(i, 100)).expect("conversion should succeed");
         if let Err(e) = writer
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
             .await

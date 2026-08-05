@@ -301,8 +301,25 @@ impl MetricsHandler {
                 "Processing metric type"
             );
 
-            // Convert OTLP metrics to Arrow RecordBatch
-            let record_batch = otlp_metrics_to_arrow(&partitioned_request);
+            // Convert OTLP metrics to Arrow RecordBatch. A conversion
+            // failure must reject this partition (client retries) instead
+            // of ACKing an empty batch — that would be silent data loss
+            // (issue #926).
+            let record_batch = match otlp_metrics_to_arrow(&partitioned_request) {
+                Ok(batch) => batch,
+                Err(error) => {
+                    tracing::error!(
+                        tenant_id = %tenant_context.tenant_id,
+                        dataset_id = %tenant_context.dataset_id,
+                        signal = "metrics",
+                        metric_type = %metric_type,
+                        error = %error,
+                        "OTLP to Arrow conversion failed - rejecting export"
+                    );
+                    undurable.push(metric_type.clone());
+                    continue;
+                }
+            };
 
             let batch_bytes = match record_batch_to_bytes(&record_batch) {
                 Ok(bytes) => bytes,

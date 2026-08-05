@@ -97,8 +97,20 @@ impl LogHandler {
             .await
             .context("Failed to get WAL")?;
 
-        // Convert OTLP logs to Arrow RecordBatch
-        let record_batch = otlp_logs_to_arrow(&request);
+        // Convert OTLP logs to Arrow RecordBatch. A conversion failure
+        // must reject the export (client retries) instead of ACKing an
+        // empty batch — that would be silent data loss (issue #926).
+        let record_batch = otlp_logs_to_arrow(&request)
+            .inspect_err(|error| {
+                tracing::error!(
+                    tenant_id = %tenant_context.tenant_id,
+                    dataset_id = %tenant_context.dataset_id,
+                    signal = "logs",
+                    error = %error,
+                    "OTLP to Arrow conversion failed - rejecting export"
+                );
+            })
+            .context("Failed to convert OTLP logs to Arrow")?;
 
         // Add schema version metadata (v1 for OTLP conversion)
         let mut metadata = serde_json::json!({

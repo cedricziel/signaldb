@@ -205,8 +205,21 @@ impl PrometheusHandler {
                 "Processing metric partition"
             );
 
-            // Convert OTLP metrics to Arrow RecordBatch
-            let record_batch = otlp_metrics_to_arrow(&partitioned_request);
+            // Convert OTLP metrics to Arrow RecordBatch. A conversion
+            // failure must reject the write (client retries) instead of
+            // ACKing an empty batch — that would be silent data loss
+            // (issue #926).
+            let record_batch = otlp_metrics_to_arrow(&partitioned_request).map_err(|error| {
+                tracing::error!(
+                    tenant_id = %tenant_context.tenant_id,
+                    dataset_id = %tenant_context.dataset_id,
+                    signal = "metrics",
+                    metric_type = %metric_type,
+                    error = %error,
+                    "OTLP to Arrow conversion failed - rejecting export"
+                );
+                PrometheusError::ConversionError(error.to_string())
+            })?;
 
             let batch_bytes = record_batch_to_bytes(&record_batch).map_err(|e| {
                 tracing::error!(error = ?e, "Failed to serialize record batch");
@@ -465,6 +478,7 @@ impl PrometheusHandler {
 #[derive(Debug)]
 pub enum PrometheusError {
     DecodeError(String),
+    ConversionError(String),
     SerializationError(String),
     WalError(String),
     InternalError(String),
@@ -476,6 +490,7 @@ impl std::fmt::Display for PrometheusError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DecodeError(msg) => write!(f, "Decode error: {msg}"),
+            Self::ConversionError(msg) => write!(f, "Conversion error: {msg}"),
             Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
             Self::WalError(msg) => write!(f, "WAL error: {msg}"),
             Self::InternalError(msg) => write!(f, "Internal error: {msg}"),
@@ -491,6 +506,7 @@ impl IntoResponse for PrometheusError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match &self {
             Self::DecodeError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            Self::ConversionError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::SerializationError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::WalError(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             Self::InternalError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
@@ -536,6 +552,15 @@ mod tests {
     fn test_prometheus_error_display() {
         let err = PrometheusError::DecodeError("invalid protobuf".to_string());
         assert!(err.to_string().contains("invalid protobuf"));
+    }
+
+    #[test]
+    fn conversion_error_maps_to_http_500() {
+        // A failed OTLP → Arrow conversion must surface as a server error
+        // so the remote-write client retries instead of dropping its copy.
+        let response =
+            PrometheusError::ConversionError("arrow batch assembly failed".into()).into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]
