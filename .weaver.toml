@@ -26,7 +26,10 @@ sample_names = ["signaldb.*"]
 # the span-attribute `with_level`/`with_target` switches that
 # common::self_monitoring::otel_span_layer already disables). Neither exists
 # in any registry, so every in-span log line would be a `missing_attribute`
-# violation. Suppress all findings for these two keys on spans.
+# violation. `error` is the workspace-wide tracing idiom for failure events
+# (`warn!(error = %e, ...)`, prescribed in docs/contributing/rust.md) — until
+# there is a global error-attribute convention, accept it on span events the
+# same way. Suppress all findings for these keys on spans.
 [[live-check.finding_filters]]
 signal_type = "span"
-exclude_samples = ["level", "target"]
+exclude_samples = ["level", "target", "error"]

@@ -47,7 +47,7 @@ groups:
         type: string
         stability: development
         brief: Unique identifier of a background job run.
-        examples: ["retention_1754287200000"]
+        examples: ["retention_550e8400-e29b-41d4-a716-446655440000"]
       - id: signaldb.job.dry_run
         type: boolean
         stability: development
@@ -67,11 +67,18 @@ groups:
       - id: signaldb.job.files_deleted
         type: int
         stability: development
-        brief: Files deleted by a lifecycle job (partition drop or orphan cleanup).
+        brief: >
+          Files removed by a lifecycle job. For partition drops this counts
+          files logically removed from the table snapshot (physical deletion
+          happens later via orphan cleanup); for orphan cleanup it counts
+          physical deletions.
       - id: signaldb.job.bytes_reclaimed
         type: int
         stability: development
-        brief: Bytes reclaimed by a lifecycle job, from dropped or deleted files.
+        brief: >
+          Bytes reclaimed by a lifecycle job. For partition drops this is the
+          size of files logically removed from the table snapshot (physically
+          reclaimed later by orphan cleanup).
       - id: signaldb.job.duration_ms
         type: int
         stability: development

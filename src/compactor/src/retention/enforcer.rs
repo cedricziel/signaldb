@@ -137,8 +137,9 @@ impl RetentionEnforcer {
         tenant_id: &str,
         dataset_id: &str,
     ) -> Result<RetentionRunResult> {
-        let run_id = format!("retention_{}", Utc::now().timestamp_millis());
+        let run_id = format!("retention_{}", uuid::Uuid::new_v4());
         let started_at = Utc::now();
+        let run_clock = std::time::Instant::now();
 
         info!(
             signaldb.tenant.id = %tenant_id,
@@ -203,7 +204,7 @@ impl RetentionEnforcer {
             signaldb.job.partitions_dropped = total_partitions_dropped,
             signaldb.job.snapshots_expired = total_snapshots_expired,
             signaldb.job.bytes_reclaimed = total_bytes_reclaimed,
-            signaldb.job.duration_ms = (completed_at - started_at).num_milliseconds(),
+            signaldb.job.duration_ms = run_clock.elapsed().as_millis() as u64,
             "Retention enforcement run completed"
         );
 
@@ -228,7 +229,7 @@ impl RetentionEnforcer {
         table_name: &str,
         signal_type: SignalType,
     ) -> Result<TableRetentionResult> {
-        let started_at = Utc::now();
+        let table_clock = std::time::Instant::now();
 
         debug!(
             tenant_id = %tenant_id,
@@ -288,8 +289,7 @@ impl RetentionEnforcer {
             .await
             .context("Failed to expire old snapshots")?;
 
-        let completed_at = Utc::now();
-        let duration_ms = (completed_at - started_at).num_milliseconds() as u64;
+        let duration_ms = table_clock.elapsed().as_millis() as u64;
 
         // Update metrics
         self.metrics.record_duration_ms(duration_ms);
@@ -947,10 +947,12 @@ mod tests {
 
     /// Log events inside the retention job span become OTel span events, and
     /// `weaver registry live-check` validates their attribute keys against
-    /// otel/registry/. At the default `info` level every event field must be
-    /// a registered `signaldb.*` attribute; `level`/`target` are stamped
-    /// unconditionally by tracing-opentelemetry's event bridge and are
-    /// whitelisted in .weaver.toml instead.
+    /// the resolved registry (otel/registry/ + upstream semconv). At the
+    /// default `info` level every event field must be a registered
+    /// `signaldb.*` attribute, an upstream semconv attribute (`file.path`),
+    /// or one of the keys whitelisted in .weaver.toml: `level`/`target`
+    /// (stamped unconditionally by tracing-opentelemetry's event bridge) and
+    /// `error` (the workspace-wide failure-event idiom).
     #[tokio::test]
     async fn retention_run_span_events_use_registry_attribute_keys() {
         use tracing::instrument::WithSubscriber;
@@ -994,7 +996,10 @@ mod tests {
             .iter()
             .flat_map(|e| e.attributes.iter())
             .map(|kv| kv.key.as_str().to_string())
-            .filter(|k| !k.starts_with("signaldb.") && k != "level" && k != "target")
+            .filter(|k| {
+                !k.starts_with("signaldb.")
+                    && !matches!(k.as_str(), "level" | "target" | "error" | "file.path")
+            })
             .collect();
         assert!(
             offending.is_empty(),

@@ -117,5 +117,7 @@ events (stamped unconditionally by tracing-opentelemetry's event bridge),
 and the `not_stable` advice for our own `signaldb.*` attributes (the
 SignalDB registry is `development` by design). `info!`/`warn!` events
 inside instrumented spans become span events, so their fields must be
-registry-declared `signaldb.*` attributes too — per-item developer detail
-belongs at `debug!`, which the default `info` level keeps out of telemetry.
+declared in the resolved registry — `signaldb.*` for SignalDB-specific
+fields, or an upstream semconv attribute (e.g. `file.path`) where one
+fits. Per-item developer detail belongs at `debug!`, which the default
+`info` level keeps out of telemetry.
