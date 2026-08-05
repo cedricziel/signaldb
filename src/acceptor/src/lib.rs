@@ -2,17 +2,11 @@ pub mod handler;
 pub mod middleware;
 pub mod services;
 
-use std::{net::SocketAddr, sync::Arc, time::SystemTime};
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Extension, Router,
     routing::{get, post},
-};
-use common::dataset::DataSet;
-use datafusion::arrow::datatypes::Schema;
-use datafusion::parquet::{
-    arrow::AsyncArrowWriter,
-    file::properties::{WriterProperties, WriterVersion},
 };
 use opentelemetry_proto::tonic::collector::{
     logs::v1::logs_service_server::LogsServiceServer,
@@ -21,10 +15,7 @@ use opentelemetry_proto::tonic::collector::{
     trace::v1::trace_service_server::TraceServiceServer,
 };
 use tokio::net::TcpListener;
-use tokio::{
-    fs::{File, create_dir_all},
-    sync::oneshot,
-};
+use tokio::sync::oneshot;
 // Service bootstrap and configuration
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
@@ -46,52 +37,6 @@ use crate::services::{
     otlp_profile_service::ProfileAcceptorService, otlp_trace_service::TraceAcceptorService,
 };
 use common::auth::Authenticator;
-
-pub async fn get_parquet_writer(
-    data_set: DataSet,
-    schema: Schema,
-    config: &Configuration,
-) -> AsyncArrowWriter<File> {
-    tracing::info!("get_parquet_writer");
-
-    let props = WriterProperties::builder()
-        .set_writer_version(WriterVersion::PARQUET_2_0)
-        .build();
-
-    // Get storage path from configuration DSN
-    let storage_dsn = &config.storage.dsn;
-    let base_path = if let Some(path) = storage_dsn.strip_prefix("file://") {
-        path.to_string()
-    } else {
-        // Fallback to .data/ds if not a file:// URL
-        ".data/ds".to_string()
-    };
-
-    let dir_path = format!("{}/{}", base_path, data_set.data_type);
-    create_dir_all(&dir_path)
-        .await
-        .expect("Error creating directory");
-
-    let file_path = format!(
-        "{}/{}.parquet",
-        dir_path,
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    );
-
-    tracing::info!(path = %file_path, "Writing parquet file");
-
-    AsyncArrowWriter::try_new(
-        File::create(file_path)
-            .await
-            .expect("Error creating parquet file"),
-        Arc::new(schema),
-        Some(props),
-    )
-    .expect("Error creating parquet writer")
-}
 
 /// Shared resources for acceptor services (gRPC and HTTP)
 pub struct AcceptorResources {
