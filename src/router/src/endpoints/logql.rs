@@ -594,7 +594,9 @@ async fn execute_ticket<S: RouterState>(
         data.push(flight_data.map_err(|e| ApiError::from_flight(&e, "logs"))?);
     }
 
-    super::flight_decode::decode_flight_batches(&data, "logs").map_err(ApiError::from)
+    super::flight_decode::decode_flight_batches(data, "logs")
+        .await
+        .map_err(ApiError::from)
 }
 
 /// Group the projected log rows into Loki streams by their label set,
