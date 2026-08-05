@@ -8,6 +8,7 @@ use chrono::Utc;
 use compactor::orphan::{
     cleaner::OrphanCleaner, config::OrphanCleanupConfig, detector::OrphanDetector,
 };
+use futures::TryStreamExt;
 use iceberg_rust::catalog::tabular::Tabular;
 use object_store::ObjectStoreExt;
 use object_store::path::Path as ObjectPath;
@@ -625,10 +626,10 @@ async fn test_orphan_cleanup_threshold_skips_cleanup() -> Result<()> {
     Ok(())
 }
 
-/// Regression test for #925: a table whose snapshots are all older than the
-/// snapshot-age window ("idle table") must never have its live files flagged
-/// as orphans. Detection must derive liveness from the retained snapshots'
-/// manifests, not from snapshot age.
+/// Regression test for #925: an idle table — one that has received no
+/// commits for an arbitrarily long time — must never have its live files
+/// flagged as orphans. Liveness derives from the retained snapshots'
+/// manifests, never from snapshot or manifest age.
 #[tokio::test]
 async fn idle_table_live_files_are_never_orphan_candidates() -> Result<()> {
     let _ = tracing_subscriber::fmt()
@@ -679,7 +680,7 @@ async fn idle_table_live_files_are_never_orphan_candidates() -> Result<()> {
             .await?;
     }
 
-    // Simulate the idle table: every snapshot is older than the age window.
+    // The table receives no further commits past this point (idle).
     let detector_config = OrphanCleanupConfig {
         enabled: true,
         grace_period_hours: 0,
@@ -779,14 +780,40 @@ async fn files_replaced_by_compaction_stay_protected_while_snapshots_retained() 
     // new data files are both visible to the detector.
     let table_identifier =
         catalog_manager.build_table_identifier(tenant_id, dataset_id, table_name);
-    let table_store = match catalog_manager
+    let (table_store, pre_compaction_files, mut table) = match catalog_manager
         .catalog()
         .load_tabular(&table_identifier)
         .await?
     {
-        Tabular::Table(t) => t.object_store(),
+        Tabular::Table(t) => {
+            // The manifests of the retained pre-compaction snapshots still
+            // reference the 5 replaced input files.
+            let files: std::collections::HashSet<String> = {
+                let manifests = compactor::iceberg::ManifestReader::new()
+                    .collect_retained_manifests(&t)
+                    .await?;
+                compactor::iceberg::ManifestReader::new()
+                    .read_live_files(&t, &manifests)
+                    .await?
+            };
+            (t.object_store(), files, t)
+        }
         _ => anyhow::bail!("expected a table"),
     };
+
+    // Guard against a vacuous scan: the detector lists
+    // {tenant}/{dataset}/{table}/data/ on this store — the 5 replaced input
+    // files plus the compacted output must actually be there.
+    let data_prefix = ObjectPath::from(format!("{tenant_id}/{dataset_id}/{table_name}/data/"));
+    let scanned: Vec<_> = table_store
+        .list(Some(&data_prefix))
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert!(
+        scanned.len() > 1,
+        "expected the replaced input files and the compacted output under the data prefix, found {}",
+        scanned.len()
+    );
 
     let detector_config = OrphanCleanupConfig {
         enabled: true,
@@ -809,6 +836,151 @@ async fn files_replaced_by_compaction_stay_protected_while_snapshots_retained() 
         orphans.is_empty(),
         "files referenced by retained snapshots were flagged as orphans: {:?}",
         orphans.iter().map(|o| &o.path).collect::<Vec<_>>()
+    );
+
+    // Expire everything but the current snapshot: the replaced input files
+    // lose their last references and MUST become orphan candidates — this
+    // is the reclamation half of the contract, without which cleanup would
+    // silently reclaim nothing forever.
+    table
+        .new_transaction(None)
+        .expire_snapshots(None, Some(1), false, true, false)
+        .commit()
+        .await
+        .map_err(|e| anyhow::anyhow!("snapshot expiration failed: {e}"))?;
+
+    let orphans_after_expiry = detector
+        .identify_orphan_candidates(tenant_id, dataset_id, table_name)
+        .await?;
+    let flagged: std::collections::HashSet<String> = orphans_after_expiry
+        .iter()
+        .map(|o| o.path.clone())
+        .collect();
+
+    let current_live = detector
+        .live_file_set_for_table(tenant_id, dataset_id, table_name)
+        .await?;
+    let expected: std::collections::HashSet<String> = pre_compaction_files
+        .difference(&current_live)
+        .cloned()
+        .collect();
+    assert!(
+        !expected.is_empty(),
+        "compaction must have replaced at least one input file"
+    );
+    assert_eq!(
+        flagged, expected,
+        "after expiration, exactly the replaced input files must be flagged"
+    );
+    Ok(())
+}
+
+/// Pre-deletion revalidation must skip candidates that are (still or again)
+/// referenced by a retained snapshot and delete genuine orphans — fed a
+/// mixed candidate list directly, so the check is exercised independently of
+/// detection.
+#[tokio::test]
+async fn revalidation_skips_live_files_and_deletes_orphans() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+
+    let ctx = RetentionTestContext::new_in_memory().await?;
+
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let table_name = "traces";
+    let mut writer = ctx.create_table(tenant_id, dataset_id, table_name).await?;
+
+    let config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 2,
+        rows_per_file: 20,
+        base_timestamp: Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    generators::generate_traces(&mut writer, &config).await?;
+
+    let table_identifier = ctx
+        .catalog_manager()
+        .build_table_identifier(tenant_id, dataset_id, table_name);
+    let (table_store, live_file) = match ctx
+        .catalog_manager()
+        .catalog()
+        .load_tabular(&table_identifier)
+        .await?
+    {
+        Tabular::Table(t) => {
+            let live = compactor::iceberg::ManifestReader::new()
+                .get_snapshot_files(&t)
+                .await?
+                .first()
+                .map(|f| f.file_path.clone())
+                .expect("table has live files");
+            (t.object_store(), live)
+        }
+        _ => anyhow::bail!("expected a table"),
+    };
+
+    let orphan_path = format!("{tenant_id}/{dataset_id}/{table_name}/data/genuine-orphan.parquet");
+    table_store
+        .put(
+            &ObjectPath::from(orphan_path.as_str()),
+            bytes::Bytes::from(vec![0u8; 256]).into(),
+        )
+        .await?;
+
+    let cleanup_config = OrphanCleanupConfig {
+        enabled: true,
+        grace_period_hours: 0,
+        batch_size: 100,
+        dry_run: false,
+        revalidate_before_delete: true,
+        cleanup_interval_hours: 24,
+        max_live_files_threshold: 500_000,
+    };
+    let detector = Arc::new(OrphanDetector::new(
+        cleanup_config.clone(),
+        ctx.catalog_manager().clone(),
+        table_store.clone(),
+    ));
+    let cleaner =
+        OrphanCleaner::with_detector(cleanup_config, table_store.clone(), detector.clone());
+
+    // Feed a candidate list containing a file that IS referenced by the
+    // current snapshot alongside a genuine orphan: revalidation must sort
+    // them apart.
+    let make_candidate = |path: &str| compactor::orphan::OrphanCandidate {
+        path: path.to_string(),
+        size_bytes: 256,
+        last_modified: Utc::now() - chrono::Duration::hours(48),
+        table_identifier: format!("{tenant_id}/{dataset_id}/{table_name}"),
+    };
+    let result = cleaner
+        .delete_orphans_batch(vec![
+            make_candidate(&live_file),
+            make_candidate(&orphan_path),
+        ])
+        .await?;
+
+    assert_eq!(
+        result.deleted_count, 1,
+        "only the genuine orphan is deleted"
+    );
+    assert!(
+        table_store
+            .get(&ObjectPath::from(live_file.as_str()))
+            .await
+            .is_ok(),
+        "live file must survive revalidation"
+    );
+    assert!(
+        table_store
+            .get(&ObjectPath::from(orphan_path.as_str()))
+            .await
+            .is_err(),
+        "orphan must be deleted"
     );
     Ok(())
 }

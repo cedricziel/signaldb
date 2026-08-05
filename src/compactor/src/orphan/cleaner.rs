@@ -11,6 +11,7 @@ use crate::orphan::detector::{OrphanCandidate, OrphanDetector};
 use anyhow::{Context, Result};
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, ObjectStoreExt};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -240,6 +241,12 @@ impl OrphanCleaner {
     /// Checks each candidate against current table metadata to ensure
     /// it is still an orphan. This catches concurrent writes that may
     /// have referenced the file between detection and deletion.
+    ///
+    /// The live set is built **once per table per batch** — rebuilding it
+    /// per candidate would read one manifest list per retained snapshot for
+    /// every file, scaling object-store reads with candidates × snapshots.
+    /// A table whose live set cannot be built has all of its candidates
+    /// skipped for safety.
     async fn revalidate_batch(&self, batch: &[OrphanCandidate]) -> Result<Vec<OrphanCandidate>> {
         if !self.config.revalidate_before_delete {
             return Ok(batch.to_vec());
@@ -250,31 +257,49 @@ impl OrphanCleaner {
             .as_ref()
             .context("Detector required for revalidation but not provided")?;
 
-        let mut validated = vec![];
-
+        // One freshly-loaded live set per table in this batch. `None` marks
+        // a table whose set could not be built (bad identifier or load
+        // failure): its candidates are skipped, never deleted blind.
+        let mut live_sets: HashMap<&str, Option<HashSet<String>>> = HashMap::new();
         for candidate in batch {
-            // Parse table identifier
-            let parts: Vec<&str> = candidate.table_identifier.split('/').collect();
-            if parts.len() != 3 {
-                tracing::error!(
-                    table_identifier = %candidate.table_identifier,
-                    "Invalid table identifier format, skipping file"
-                );
+            let identifier = candidate.table_identifier.as_str();
+            if live_sets.contains_key(identifier) {
                 continue;
             }
-
-            let (tenant_id, dataset_id, table_name) = (parts[0], parts[1], parts[2]);
-
-            // Revalidate orphan status
-            match detector
-                .validate_orphan_before_deletion(candidate, tenant_id, dataset_id, table_name)
-                .await
-            {
-                Ok(true) => {
-                    // Still an orphan
-                    validated.push(candidate.clone());
+            let parts: Vec<&str> = identifier.split('/').collect();
+            let set = if let [tenant_id, dataset_id, table_name] = parts[..] {
+                match detector
+                    .live_file_set_for_table(tenant_id, dataset_id, table_name)
+                    .await
+                {
+                    Ok(set) => Some(set),
+                    Err(e) => {
+                        tracing::error!(
+                            table = %identifier,
+                            error = %e,
+                            "Revalidation failed, skipping table's candidates for safety"
+                        );
+                        None
+                    }
                 }
-                Ok(false) => {
+            } else {
+                tracing::error!(
+                    table_identifier = %identifier,
+                    "Invalid table identifier format, skipping file"
+                );
+                None
+            };
+            live_sets.insert(identifier, set);
+        }
+
+        let mut validated = vec![];
+        for candidate in batch {
+            match live_sets
+                .get(candidate.table_identifier.as_str())
+                .and_then(|set| set.as_ref())
+            {
+                None => {} // set unavailable: skipped for safety (logged above)
+                Some(live) if live.contains(&candidate.path) => {
                     // File is now referenced, skip deletion
                     tracing::warn!(
                         path = %candidate.path,
@@ -282,15 +307,7 @@ impl OrphanCleaner {
                         "File no longer orphan after revalidation, skipping deletion"
                     );
                 }
-                Err(e) => {
-                    // Revalidation failed, err on the side of caution
-                    tracing::error!(
-                        path = %candidate.path,
-                        error = %e,
-                        table = %candidate.table_identifier,
-                        "Revalidation failed, skipping file for safety"
-                    );
-                }
+                Some(_) => validated.push(candidate.clone()),
             }
         }
 

@@ -373,51 +373,26 @@ impl OrphanDetector {
         Ok(candidates)
     }
 
-    /// Validate that a file is still an orphan immediately before deletion.
+    /// Build the current live data-file set for a table from a fresh
+    /// metadata load.
     ///
-    /// This is an optional safety check (enabled by `revalidate_before_delete`)
-    /// that catches concurrent writes that may have referenced the file between
-    /// detection and deletion.
-    ///
-    /// # Arguments
-    ///
-    /// * `candidate` - The orphan candidate to validate
-    /// * `tenant_id` - Tenant identifier
-    /// * `dataset_id` - Dataset identifier
-    /// * `table_name` - Table name
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(true)` if file is still an orphan (safe to delete)
-    /// - `Ok(false)` if file is now referenced (do not delete)
-    /// - `Err(_)` if validation failed (abort deletion)
-    pub async fn validate_orphan_before_deletion(
+    /// Used by pre-deletion revalidation to catch concurrent writes that
+    /// referenced a detected candidate between detection and deletion. The
+    /// caller builds this once per table per batch — rebuilding it per
+    /// candidate would issue one manifest-list read per retained snapshot
+    /// for every file.
+    pub async fn live_file_set_for_table(
         &self,
-        candidate: &OrphanCandidate,
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
-    ) -> Result<bool> {
-        if !self.config.revalidate_before_delete {
-            // Revalidation disabled, assume still orphan
-            return Ok(true);
-        }
-
-        tracing::debug!(
-            path = %candidate.path,
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
-            "Revalidating orphan status before deletion"
-        );
-
-        // Reload table metadata (get latest snapshot)
+    ) -> Result<HashSet<String>> {
         let table_identifier = self
             .catalog_manager
             .build_table_identifier(tenant_id, dataset_id, table_name);
-
-        let catalog = self.catalog_manager.catalog();
-        let tabular = catalog
+        let tabular = self
+            .catalog_manager
+            .catalog()
             .load_tabular(&table_identifier)
             .await
             .with_context(|| {
@@ -425,37 +400,14 @@ impl OrphanDetector {
                     "Failed to load table for revalidation: {tenant_id}/{dataset_id}/{table_name}"
                 )
             })?;
-
         let table = match tabular {
             iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
             _ => anyhow::bail!("Expected table but found different tabular type"),
         };
-
-        // Build live file set across all retained snapshots
-        let live_files = self
-            .manifest_reader
+        self.manifest_reader
             .build_live_file_set(&table)
             .await
-            .context("Failed to build live file set for revalidation")?;
-
-        // Check if file is now referenced
-        if live_files.contains(&candidate.path) {
-            tracing::warn!(
-                path = %candidate.path,
-                tenant_id = %tenant_id,
-                dataset_id = %dataset_id,
-                table_name = %table_name,
-                "File is NOW referenced by current snapshot! Aborting deletion."
-            );
-            return Ok(false);
-        }
-
-        tracing::debug!(
-            path = %candidate.path,
-            "File still orphan after revalidation"
-        );
-
-        Ok(true)
+            .context("Failed to build live file set for revalidation")
     }
 }
 

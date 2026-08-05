@@ -355,7 +355,7 @@ for cleanup.
    - Adds ~10% overhead but prevents data loss
    - Recommended: always `true`
 
-3. **Snapshot Age Window:** Only scan snapshots within this age for building reference set.
+3. **Retained-Snapshot Live Set:** The reference set is the union of every snapshot still retained in table metadata; snapshot expiration is what makes files eligible for cleanup.
    - Reduces memory usage for tables with many snapshots
    - Files referenced by older snapshots may be incorrectly identified as orphans
    - Should be larger than your longest query duration

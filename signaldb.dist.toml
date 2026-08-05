@@ -408,7 +408,8 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # Orphan Cleanup Safety Explained:
 # 1. Grace Period: Files younger than grace_period_hours are NEVER deleted
 # 2. Revalidation: Before deletion, re-check if file is still orphaned (catches races)
-# 3. Snapshot Window: Only scan recent snapshots to reduce memory usage
+# 3. Retained-Snapshot Live Set: files referenced by ANY retained snapshot are never candidates;
+#    snapshot expiration ([compactor.retention].snapshots_to_keep) makes files eligible
 # 4. Batch Processing: Process in batches with progress tracking for resumability
 #
 # Tuning Guidance:

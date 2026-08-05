@@ -315,13 +315,18 @@ journalctl -u signaldb-compactor | grep -i "revalidation" | tail -10
 
 **Common Causes:**
 
-| Cause                           | Verification                             | Solution                          |
-| ------------------------------- | ---------------------------------------- | --------------------------------- |
-| Dry-run mode enabled            | `dry_run = true`                         | Set `dry_run = false`             |
-| Revalidation finding files live | Check revalidation logs                  | Normal - files no longer orphaned |
-| Permission errors               | Check error logs for "Permission denied" | Fix object store permissions      |
-| Grace period not met            | Check file ages                          | Wait for grace period to elapse   |
-| Object store unavailable        | Check network/S3 connectivity            | Restore object store access       |
+| Cause                           | Verification                             | Solution                                                            |
+| ------------------------------- | ---------------------------------------- | ------------------------------------------------------------------- |
+| Dry-run mode enabled            | `dry_run = true`                         | Set `dry_run = false`                                               |
+| Revalidation finding files live | Check revalidation logs                  | Normal - files no longer orphaned                                   |
+| Permission errors               | Check error logs for "Permission denied" | Fix object store permissions                                        |
+| Grace period not met            | Check file ages                          | Wait for grace period to elapse                                     |
+| Object store unavailable        | Check network/S3 connectivity            | Restore object store access                                         |
+| Snapshots never expiring        | Retention logs show no expiration runs   | Enable `[compactor.retention]`; expiration shrinks the retained set |
+
+Files stay protected while **any retained snapshot** references them, so
+zero candidates on a table whose snapshots never expire is expected
+behavior, not a detection failure.
 
 **Example Fix:**
 
@@ -370,16 +375,7 @@ grace_period_hours = 1  # ← Too short for busy systems
 
 **Solution:** Increase to 24 hours for safety.
 
-2. **Snapshots Not Expiring:**
-
-Files stay protected while any retained snapshot references them. If
-snapshot expiration is not running (check retention logs), nothing ever
-becomes an orphan candidate.
-
-**Solution:** Ensure `[compactor.retention]` is enabled so snapshot
-expiration shrinks the retained set.
-
-3. **Compaction Creating New Files:**
+2. **Compaction Creating New Files:**
 
 Compaction creates new files that reference data from old files. The old files become orphans after compaction completes.
 
