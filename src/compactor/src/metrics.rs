@@ -437,15 +437,6 @@ impl CycleHealth {
     pub fn is_down(&self, cycle: Cycle) -> bool {
         self.status(cycle).down.load(Ordering::Relaxed)
     }
-
-    /// Labels of every cycle currently down, for a liveness probe.
-    pub fn down_cycles(&self) -> Vec<&'static str> {
-        Cycle::all()
-            .into_iter()
-            .filter(|c| self.is_down(*c))
-            .map(Cycle::label)
-            .collect()
-    }
 }
 
 #[cfg(test)]

@@ -6,9 +6,11 @@
 //!   and orphan-cleanup counters
 //! - `GET /status` — JSON snapshot of the same counters plus instance metadata,
 //!   intended for operators and the admin API
-//! - `GET /health` — liveness probe: `503` while a lifecycle cycle is in its
-//!   post-panic backoff window (see [`crate::metrics::CycleHealth`]), `200`
-//!   otherwise
+//! - `GET /health` — liveness probe (always `200 "ok"` once the process is
+//!   serving); degraded cycles are visible on `/status` and the
+//!   `compactor_cycle_panics_total` / `compactor_cycle_down` metrics instead
+//!   (see [`crate::metrics::CycleHealth`]), so a cycle recovering from a
+//!   panic never fails the probe a container orchestrator restarts on
 //!
 //! The endpoint listens on `[compactor] metrics_addr` (default `0.0.0.0:9091`,
 //! overridable via `COMPACTOR_METRICS_ADDR`).
@@ -289,13 +291,6 @@ impl ObservabilityState {
             }).into_iter().collect::<serde_json::Map<_, _>>(),
         })
     }
-
-    /// Cycles currently in their post-panic backoff window, for the `/health`
-    /// liveness endpoint. Empty means every cycle is either healthy or has
-    /// never panicked.
-    fn down_cycles(&self) -> Vec<&'static str> {
-        self.inner.cycle_health.down_cycles()
-    }
 }
 
 /// Build the axum router for the observability endpoints.
@@ -311,27 +306,19 @@ async fn metrics_handler(State(state): State<ObservabilityState>) -> String {
     state.render_prometheus()
 }
 
-/// Liveness probe: `503` while any lifecycle cycle is in its post-panic
-/// backoff window, `200 "ok"` otherwise.
+/// Pure liveness probe: `200 "ok"` whenever the process is serving requests.
 ///
-/// The down state is self-clearing — a cycle re-enters it on every fresh
-/// panic and leaves it as soon as it resumes retrying (see
-/// [`crate::metrics::CycleHealth`]) — so a probe wired to this only flags a
-/// cycle that is failing *right now*, not one that panicked once and
-/// recovered.
-async fn health_handler(State(state): State<ObservabilityState>) -> (StatusCode, String) {
-    let down = state.down_cycles();
-    if down.is_empty() {
-        (StatusCode::OK, "ok".to_string())
-    } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!(
-                "lifecycle cycle(s) in backoff after a panic: {}",
-                down.join(", ")
-            ),
-        )
-    }
+/// A lifecycle cycle recovering from a panic is, by construction, still
+/// making progress on its own retry/backoff schedule (see
+/// [`crate::metrics::CycleHealth`]) — failing this endpoint while that
+/// happens would let a container orchestrator's liveness probe restart the
+/// process mid-recovery, aborting any in-flight job and replacing a bounded
+/// backoff with a crash-restart loop. Degraded cycles stay visible per-cycle
+/// on `/status` and via the `compactor_cycle_panics_total` /
+/// `compactor_cycle_down` metrics, which are the right signal to alert on —
+/// this endpoint is not.
+async fn health_handler(State(_state): State<ObservabilityState>) -> (StatusCode, String) {
+    (StatusCode::OK, "ok".to_string())
 }
 
 async fn status_handler(State(state): State<ObservabilityState>) -> Json<serde_json::Value> {
@@ -435,12 +422,13 @@ mod tests {
         assert!(status["instance_id"].is_string());
     }
 
-    /// `/health` is the one place a recovered panic changes externally
-    /// observable behavior (as opposed to only a counter) — while a cycle is
-    /// in its post-panic backoff it must fail the probe, and it must recover
-    /// as soon as the cycle resumes retrying.
+    /// `/health` must stay a pure liveness signal: a cycle recovering from a
+    /// panic is still making progress on its own backoff schedule, and
+    /// failing this endpoint while that happens would let a container
+    /// orchestrator restart the process mid-recovery instead of letting the
+    /// bounded backoff run its course.
     #[tokio::test]
-    async fn health_handler_reports_unavailable_only_while_a_cycle_is_down() {
+    async fn health_handler_reports_ok_regardless_of_cycle_health() {
         let cycle_health = CycleHealth::new();
         let state = ObservabilityState::new(
             Uuid::nil(),
@@ -455,13 +443,12 @@ mod tests {
         assert_eq!(body, "ok");
 
         cycle_health.record_panic(Cycle::LeaseExpiry);
-        let (status, body) = health_handler(State(state.clone())).await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(body.contains("lease_expiry"), "body was: {body}");
-
-        cycle_health.record_retrying(Cycle::LeaseExpiry);
         let (status, body) = health_handler(State(state)).await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a cycle in backoff must not fail liveness"
+        );
         assert_eq!(body, "ok");
     }
 

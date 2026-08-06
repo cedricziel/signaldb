@@ -101,14 +101,23 @@ else, including the lease expiry that crashed instances depend on for recovery
 Disabled cycles (`enabled = false` for retention or orphan cleanup) get no
 task at all.
 
-**Panic recovery:** every cycle iteration is also guarded against panics. A
-panic is caught, counted (`compactor_cycle_panics_total{cycle="..."}`), and
+**Panic recovery:** every cycle iteration is also guarded with `catch_unwind`.
+A panic is caught, counted (`compactor_cycle_panics_total{cycle="..."}`), and
 the cycle retries on its normal cadence plus a short exponential backoff
 instead of ending permanently — an unhandled panic in one cycle would
 otherwise silently reopen exactly the failure mode this split exists to
 close, just triggered by a bug instead of a slow tick. `compactor_cycle_down`
-and `/health` (`503` while a cycle is mid-backoff) surface it to operators;
-see [docs/operations/compactor/operations.md](../../docs/operations/compactor/operations.md#lifecycle-task-recovery).
+surfaces it to operators (`/health` deliberately does not — see below); see
+[docs/operations/compactor/operations.md](../../docs/operations/compactor/operations.md#lifecycle-task-recovery).
+
+> `catch_unwind` only intercepts a panic under an *unwinding* panic strategy.
+> This workspace's `[profile.release]` sets `panic = "abort"`, so in a release
+> build a lifecycle-cycle panic still takes down the whole compactor process
+> immediately — the guard is exercised in `cargo test` (default `unwind`
+> strategy) but is not yet load-bearing in production. Making it load-bearing
+> requires switching the release profile to `panic = "unwind"`, a
+> workspace-wide tradeoff (binary size, unwind tables) outside this change's
+> scope.
 
 ## Multi-Instance Safety (Phase 4)
 

@@ -630,7 +630,14 @@ mod tests {
 
     #[tokio::test]
     async fn cycles_run_cleanly_on_empty_backends() {
-        let mut service = in_memory_service().await;
+        // The catalog is empty, so retention/orphan cleanup are no-ops
+        // regardless — dry_run is set anyway so this test never depends on
+        // that emptiness to stay non-destructive.
+        let mut config = Configuration::default();
+        config.compactor.retention.dry_run = true;
+        config.compactor.orphan_cleanup.dry_run = true;
+        let service_catalog = Arc::new(Catalog::new_in_memory().await.unwrap());
+        let mut service = service_from(&config, service_catalog).await;
 
         // Every cycle the lifecycle loop drives must degrade gracefully on
         // an empty catalog rather than panic or error the loop away.
