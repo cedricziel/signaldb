@@ -27,6 +27,9 @@ dashmap.workspace = true
 
 [dev-dependencies]
 tower.workspace = true
+# `client` drives an in-memory MCP session against the server in tests, so the
+# MCP Apps surface is asserted over the real protocol rather than in isolation.
+rmcp = { workspace = true, features = ["client"] }
 
 [[bin]]
 name = "signaldb-mcp"

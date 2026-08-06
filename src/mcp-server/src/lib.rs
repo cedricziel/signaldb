@@ -15,6 +15,7 @@
 //!
 //! MCP is served over Streamable HTTP at `/mcp` on this service's own port.
 
+pub mod apps;
 pub mod server;
 
 use std::hash::{Hash, Hasher};
