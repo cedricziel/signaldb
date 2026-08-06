@@ -276,7 +276,74 @@ curl -s localhost:9091/metrics | grep -E "compactor_(orphan_candidates_identifie
 
 ### Key Metrics to Monitor
 
-All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Counters are process-global — there are no per-tenant, per-dataset, or per-table labels. The only labelled metric is `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}`.
+All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Counters are process-global — there are no per-tenant, per-dataset, or per-table labels. The labelled metrics are `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}` and the `cycle="compaction"|"lease_expiry"|"retention"|"orphan_cleanup"` label on `compactor_cycle_panics_total` / `compactor_cycle_down` (see [Lifecycle Task Recovery](#lifecycle-task-recovery) below).
+
+#### Lease Recovery
+
+**Stale Leases Expired:**
+
+A partition whose compactor instance crashed stays unclaimable until its lease
+is expired. The lease-expiry task sweeps every 30s on its own task, so this
+counter keeps advancing even while a long compaction cycle is in flight.
+
+```promql
+# Leases reclaimed from crashed instances (last 24h)
+increase(compactor_stale_leases_expired_total[24h])
+```
+
+The counter says a lease reached its expiry without a successful renewal; it
+does not say why. Before touching `lease_ttl_seconds`, rule out the causes in
+order of likelihood: instances dying mid-compaction (restarts, OOM kills),
+renewal calls failing against the catalog, catalog or network latency
+swallowing the `ttl / 3` renewal window, and process pauses (long GC-like
+stalls, suspended containers). A TTL that is simply too short for your job
+durations is the last of these, not the first.
+
+#### Lifecycle Task Recovery
+
+Each of the four lifecycle tasks (compaction, lease expiry, retention, orphan
+cleanup) guards its own iterations against panics via `catch_unwind`: a panic
+is caught, counted, and the task retries on its normal cadence plus a short
+exponential backoff, rather than the task ending permanently. This closes the
+same class of failure #1011 fixed for slow cycles — a bug in one cycle no
+longer takes that cycle down for good.
+
+> `catch_unwind` requires an unwinding panic strategy. This workspace's
+> `[profile.release]` sets `panic = "abort"`, so **in a release build a
+> lifecycle-cycle panic still aborts the whole compactor process** — the
+> guard is exercised by `cargo test` (default `unwind` strategy) but is not
+> yet load-bearing in a production binary. If you rely on this recovery
+> behavior, build with `panic = "unwind"` instead.
+
+```promql
+# Panics recovered per cycle (last 24h) — should normally be flat at 0
+increase(compactor_cycle_panics_total[24h])
+
+# Is any cycle currently in its post-panic backoff?
+compactor_cycle_down
+```
+
+`compactor_cycle_down{cycle="..."}` is `1` only while that cycle sits in its
+post-panic backoff window; it clears as soon as the backoff ends and the
+cycle resumes retrying, so it does not stay latched after a one-off failure.
+
+`/health` deliberately does **not** reflect this state — it is a pure
+liveness probe (`200 "ok"` whenever the process is serving requests) so that
+a cycle recovering on its own backoff schedule never causes a container
+orchestrator to restart the process mid-recovery, which would abort the
+in-flight retry and turn a bounded backoff into a crash-restart loop. Watch
+`compactor_cycle_down` and `/status` for the actual per-cycle state instead:
+
+```bash
+curl -s localhost:9091/status | jq '.lifecycle'
+```
+
+**Alerting:** any nonzero `increase(compactor_cycle_panics_total[1h])` is
+worth paging on — a healthy compactor should show zero. A cycle that keeps
+reappearing in `compactor_cycle_down` indicates a persistent bug rather than
+a transient failure; check the logs for the cycle's name and panic message
+(`tracing::error!` logs it on every recovery) before assuming a restart will
+fix it.
 
 #### Retention Enforcement
 

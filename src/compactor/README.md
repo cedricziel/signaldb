@@ -76,6 +76,49 @@ cargo run --bin signaldb
 RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
 ```
 
+## Lifecycle Tasks
+
+Each enabled lifecycle cycle runs on its own task, at its own cadence:
+
+| Cycle           | Cadence                                | Work                                                       |
+| --------------- | -------------------------------------- | ---------------------------------------------------------- |
+| Compaction      | `[compactor].tick_interval`            | Plan candidates, then rewrite each under a lease            |
+| Lease expiry    | 30s (fixed)                            | Reclaim leases from crashed instances                       |
+| Retention       | `[compactor.retention].retention_check_interval` | Partition drops and snapshot expiration          |
+| Orphan cleanup  | `[compactor.orphan_cleanup].cleanup_interval_hours` | Pre-expire snapshots, then delete unreferenced files |
+
+They used to share one `select!` loop, so a compaction cycle — every candidate
+is a full partition rewrite with retries and backoff — postponed everything
+else, including the lease expiry that crashed instances depend on for recovery
+(issue #1011). Two consequences of the split:
+
+- Retention and compaction may now commit against the same table concurrently.
+  Both use Iceberg's optimistic concurrency and retry on conflict, so this
+  costs CAS retries, not correctness.
+- Retention never overlaps *itself*: orphan cleanup pre-expires snapshots
+  through the same enforcer, and both paths are serialized behind one gate.
+
+Disabled cycles (`enabled = false` for retention or orphan cleanup) get no
+task at all.
+
+**Panic recovery:** every cycle iteration is also guarded with `catch_unwind`.
+A panic is caught, counted (`compactor_cycle_panics_total{cycle="..."}`), and
+the cycle retries on its normal cadence plus a short exponential backoff
+instead of ending permanently — an unhandled panic in one cycle would
+otherwise silently reopen exactly the failure mode this split exists to
+close, just triggered by a bug instead of a slow tick. `compactor_cycle_down`
+surfaces it to operators (`/health` deliberately does not — see below); see
+[docs/operations/compactor/operations.md](../../docs/operations/compactor/operations.md#lifecycle-task-recovery).
+
+> `catch_unwind` only intercepts a panic under an *unwinding* panic strategy.
+> This workspace's `[profile.release]` sets `panic = "abort"`, so in a release
+> build a lifecycle-cycle panic still takes down the whole compactor process
+> immediately — the guard is exercised in `cargo test` (default `unwind`
+> strategy) but is not yet load-bearing in production. Making it load-bearing
+> requires switching the release profile to `panic = "unwind"`, a
+> workspace-wide tradeoff (binary size, unwind tables) outside this change's
+> scope.
+
 ## Multi-Instance Safety (Phase 4)
 
 Multiple compactor instances can safely share one catalog. Coordination is
@@ -86,7 +129,8 @@ PostgreSQL):
   instance compacts a partition at a time
 - Held leases are renewed in the background every `ttl / 3`; leases from
   crashed instances expire after `lease_ttl_seconds` (default 300s) and are
-  swept every 30 seconds
+  swept every 30 seconds by the lease-expiry task, independent of how long the
+  compaction cycle runs (counted by `compactor_stale_leases_expired_total`)
 - Round-robin scheduling across tenants with `max_candidates_per_cycle` and
   `max_per_tenant` caps
 

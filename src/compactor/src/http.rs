@@ -6,7 +6,11 @@
 //!   and orphan-cleanup counters
 //! - `GET /status` — JSON snapshot of the same counters plus instance metadata,
 //!   intended for operators and the admin API
-//! - `GET /health` — liveness probe
+//! - `GET /health` — liveness probe (always `200 "ok"` once the process is
+//!   serving); degraded cycles are visible on `/status` and the
+//!   `compactor_cycle_panics_total` / `compactor_cycle_down` metrics instead
+//!   (see [`crate::metrics::CycleHealth`]), so a cycle recovering from a
+//!   panic never fails the probe a container orchestrator restarts on
 //!
 //! The endpoint listens on `[compactor] metrics_addr` (default `0.0.0.0:9091`,
 //! overridable via `COMPACTOR_METRICS_ADDR`).
@@ -14,10 +18,11 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::http::StatusCode;
 use axum::{Json, Router, extract::State, routing::get};
 use uuid::Uuid;
 
-use crate::metrics::CompactionMetrics;
+use crate::metrics::{CompactionMetrics, Cycle, CycleHealth};
 use crate::orphan::OrphanMetrics;
 use crate::retention::metrics::RetentionMetrics;
 
@@ -37,6 +42,7 @@ struct StateInner {
     compaction: CompactionMetrics,
     retention: RetentionMetrics,
     orphan: OrphanMetrics,
+    cycle_health: CycleHealth,
 }
 
 impl ObservabilityState {
@@ -45,6 +51,7 @@ impl ObservabilityState {
         compaction: CompactionMetrics,
         retention: RetentionMetrics,
         orphan: OrphanMetrics,
+        cycle_health: CycleHealth,
     ) -> Self {
         Self {
             inner: Arc::new(StateInner {
@@ -53,6 +60,7 @@ impl ObservabilityState {
                 compaction,
                 retention,
                 orphan,
+                cycle_health,
             }),
         }
     }
@@ -93,6 +101,11 @@ impl ObservabilityState {
             "compactor_retries_attempted_total",
             "Compaction retries after commit conflicts",
             s.compaction.retries_attempted() as u64,
+        );
+        counter(
+            "compactor_stale_leases_expired_total",
+            "Compaction leases reclaimed from crashed instances",
+            s.compaction.stale_leases_expired(),
         );
         counter(
             "compactor_input_files_total",
@@ -152,6 +165,11 @@ impl ObservabilityState {
             s.retention.unclassifiable_files() as u64,
         );
         counter(
+            "compactor_retention_failures_total",
+            "Retention enforcement passes that failed (per tenant/dataset or per table)",
+            s.retention.enforcement_failures() as u64,
+        );
+        counter(
             "compactor_retention_duration_ms_total",
             "Cumulative wall-clock milliseconds spent enforcing retention",
             s.retention.total_duration_ms(),
@@ -188,6 +206,35 @@ impl ObservabilityState {
              compactor_orphan_cleanup_skipped_total{{reason=\"live_files_threshold_exceeded\"}} {skipped}\n"
         ));
 
+        // Lifecycle-cycle panics, labelled by cycle: each of the four
+        // background tasks (compaction, lease_expiry, retention,
+        // orphan_cleanup) is guarded against panics and retried with
+        // backoff rather than ending permanently (issue #1011) — this is
+        // the counter that makes a recovered panic visible instead of only
+        // logged.
+        out.push_str(
+            "# HELP compactor_cycle_panics_total Lifecycle cycle iterations that panicked and were recovered\n\
+             # TYPE compactor_cycle_panics_total counter\n",
+        );
+        for cycle in Cycle::all() {
+            let label = cycle.label();
+            let panics = s.cycle_health.panics(cycle);
+            out.push_str(&format!(
+                "compactor_cycle_panics_total{{cycle=\"{label}\"}} {panics}\n"
+            ));
+        }
+        out.push_str(
+            "# HELP compactor_cycle_down Whether a lifecycle cycle is currently in its post-panic backoff (1) or not (0)\n\
+             # TYPE compactor_cycle_down gauge\n",
+        );
+        for cycle in Cycle::all() {
+            let label = cycle.label();
+            let down = u8::from(s.cycle_health.is_down(cycle));
+            out.push_str(&format!(
+                "compactor_cycle_down{{cycle=\"{label}\"}} {down}\n"
+            ));
+        }
+
         // Uptime gauge
         out.push_str(&format!(
             "# HELP compactor_uptime_seconds Seconds since the compactor instance started\n\
@@ -212,6 +259,7 @@ impl ObservabilityState {
                 "jobs_failed": compaction.jobs_failed,
                 "conflicts_detected": compaction.conflicts_detected,
                 "retries_attempted": compaction.retries_attempted,
+                "stale_leases_expired": compaction.stale_leases_expired,
                 "input_files": compaction.total_input_files,
                 "output_files": compaction.total_output_files,
                 "bytes_before": compaction.bytes_before_compaction,
@@ -226,6 +274,7 @@ impl ObservabilityState {
                 "snapshots_expired": s.retention.snapshots_expired(),
                 "unclassifiable_files": s.retention.unclassifiable_files(),
                 "bytes_reclaimed": s.retention.bytes_reclaimed(),
+                "enforcement_failures": s.retention.enforcement_failures(),
             },
             "orphan_cleanup": {
                 "candidates_identified": s.orphan.candidates_identified(),
@@ -234,6 +283,12 @@ impl ObservabilityState {
                 "deletion_failures": s.orphan.deletion_failures(),
                 "skipped_threshold": s.orphan.cleanup_skipped_threshold(),
             },
+            "lifecycle": Cycle::all().map(|cycle| {
+                (cycle.label().to_string(), serde_json::json!({
+                    "panics": s.cycle_health.panics(cycle),
+                    "down": s.cycle_health.is_down(cycle),
+                }))
+            }).into_iter().collect::<serde_json::Map<_, _>>(),
         })
     }
 }
@@ -243,12 +298,27 @@ pub fn router(state: ObservabilityState) -> Router {
     Router::new()
         .route("/metrics", get(metrics_handler))
         .route("/status", get(status_handler))
-        .route("/health", get(|| async { "ok" }))
+        .route("/health", get(health_handler))
         .with_state(state)
 }
 
 async fn metrics_handler(State(state): State<ObservabilityState>) -> String {
     state.render_prometheus()
+}
+
+/// Pure liveness probe: `200 "ok"` whenever the process is serving requests.
+///
+/// A lifecycle cycle recovering from a panic is, by construction, still
+/// making progress on its own retry/backoff schedule (see
+/// [`crate::metrics::CycleHealth`]) — failing this endpoint while that
+/// happens would let a container orchestrator's liveness probe restart the
+/// process mid-recovery, aborting any in-flight job and replacing a bounded
+/// backoff with a crash-restart loop. Degraded cycles stay visible per-cycle
+/// on `/status` and via the `compactor_cycle_panics_total` /
+/// `compactor_cycle_down` metrics, which are the right signal to alert on —
+/// this endpoint is not.
+async fn health_handler(State(_state): State<ObservabilityState>) -> (StatusCode, String) {
+    (StatusCode::OK, "ok".to_string())
 }
 
 async fn status_handler(State(state): State<ObservabilityState>) -> Json<serde_json::Value> {
@@ -282,7 +352,13 @@ mod tests {
         orphan.record_files_deleted(7);
         orphan.record_bytes_freed(8192);
 
-        ObservabilityState::new(Uuid::nil(), compaction, retention, orphan)
+        ObservabilityState::new(
+            Uuid::nil(),
+            compaction,
+            retention,
+            orphan,
+            CycleHealth::new(),
+        )
     }
 
     #[test]
@@ -301,20 +377,37 @@ mod tests {
             "compactor_bytes_reclaimed_total 4096",
             "compactor_unclassifiable_files_total 2",
             "compactor_orphan_cleanup_skipped_total{reason=\"live_files_threshold_exceeded\"} 0",
+            "compactor_cycle_panics_total{cycle=\"compaction\"} 0",
+            "compactor_cycle_down{cycle=\"lease_expiry\"} 0",
         ] {
             assert!(rendered.contains(name), "missing `{name}` in:\n{rendered}");
         }
     }
 
+    /// Every sample line's metric name must have a preceding `# TYPE` (and by
+    /// construction, `# HELP`) declaration. This does NOT require a 1:1 line
+    /// count — `compactor_cycle_panics_total` and `compactor_cycle_down` each
+    /// declare their TYPE once and then emit one sample per [`Cycle`], which
+    /// is standard Prometheus text exposition for a labelled metric.
     #[test]
     fn prometheus_output_has_help_and_type_for_every_sample() {
         let rendered = test_state().render_prometheus();
-        let samples = rendered
+        let declared_types: std::collections::HashSet<&str> = rendered
             .lines()
-            .filter(|l| !l.starts_with('#') && !l.is_empty())
-            .count();
-        let types = rendered.lines().filter(|l| l.starts_with("# TYPE")).count();
-        assert_eq!(samples, types, "every sample needs a # TYPE line");
+            .filter_map(|l| l.strip_prefix("# TYPE "))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .collect();
+
+        for line in rendered.lines() {
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            let name = line.split(['{', ' ']).next().unwrap_or(line);
+            assert!(
+                declared_types.contains(name),
+                "sample `{line}` has no matching `# TYPE {name}` line"
+            );
+        }
     }
 
     #[test]
@@ -324,7 +417,39 @@ mod tests {
         assert_eq!(status["retention"]["partitions_dropped"], 3);
         assert_eq!(status["retention"]["unclassifiable_files"], 2);
         assert_eq!(status["orphan_cleanup"]["files_deleted"], 7);
+        assert_eq!(status["lifecycle"]["compaction"]["panics"], 0);
+        assert_eq!(status["lifecycle"]["compaction"]["down"], false);
         assert!(status["instance_id"].is_string());
+    }
+
+    /// `/health` must stay a pure liveness signal: a cycle recovering from a
+    /// panic is still making progress on its own backoff schedule, and
+    /// failing this endpoint while that happens would let a container
+    /// orchestrator restart the process mid-recovery instead of letting the
+    /// bounded backoff run its course.
+    #[tokio::test]
+    async fn health_handler_reports_ok_regardless_of_cycle_health() {
+        let cycle_health = CycleHealth::new();
+        let state = ObservabilityState::new(
+            Uuid::nil(),
+            CompactionMetrics::new(),
+            RetentionMetrics::new(),
+            OrphanMetrics::new(),
+            cycle_health.clone(),
+        );
+
+        let (status, body) = health_handler(State(state.clone())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "ok");
+
+        cycle_health.record_panic(Cycle::LeaseExpiry);
+        let (status, body) = health_handler(State(state)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a cycle in backoff must not fail liveness"
+        );
+        assert_eq!(body, "ok");
     }
 
     #[tokio::test]

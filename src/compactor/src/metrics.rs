@@ -3,7 +3,7 @@
 //! Provides thread-safe metrics collection for compaction operations using atomic counters.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// Thread-safe metrics for tracking compaction operations
@@ -26,6 +26,7 @@ struct MetricsInner {
     total_duration_ms: AtomicU64,
     deferred_open_partitions: AtomicUsize,
     unclassifiable_files: AtomicUsize,
+    stale_leases_expired: AtomicU64,
 }
 
 impl Default for CompactionMetrics {
@@ -51,6 +52,7 @@ impl CompactionMetrics {
                 total_duration_ms: AtomicU64::new(0),
                 deferred_open_partitions: AtomicUsize::new(0),
                 unclassifiable_files: AtomicUsize::new(0),
+                stale_leases_expired: AtomicU64::new(0),
             }),
         }
     }
@@ -122,6 +124,17 @@ impl CompactionMetrics {
         self.inner.jobs_failed.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record leases reclaimed from crashed instances by one expiry pass.
+    ///
+    /// This is the compactor's recovery path: a partition whose owner died
+    /// stays unclaimable until its lease is expired here, so operators need
+    /// to see the pass running (issue #1011).
+    pub fn record_stale_leases_expired(&self, count: u64) {
+        self.inner
+            .stale_leases_expired
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
     /// Record a detected conflict
     pub fn record_conflict(&self) {
         self.inner
@@ -157,6 +170,11 @@ impl CompactionMetrics {
     /// Get the number of retries attempted
     pub fn retries_attempted(&self) -> usize {
         self.inner.retries_attempted.load(Ordering::Relaxed)
+    }
+
+    /// Get the number of stale leases reclaimed from crashed instances
+    pub fn stale_leases_expired(&self) -> u64 {
+        self.inner.stale_leases_expired.load(Ordering::Relaxed)
     }
 
     /// Get the total input files processed
@@ -208,6 +226,7 @@ impl CompactionMetrics {
             jobs_failed: self.jobs_failed(),
             conflicts_detected: self.conflicts_detected(),
             retries_attempted: self.retries_attempted(),
+            stale_leases_expired: self.stale_leases_expired(),
             total_input_files: self.total_input_files(),
             total_output_files: self.total_output_files(),
             bytes_before_compaction: self.bytes_before_compaction(),
@@ -227,6 +246,7 @@ impl CompactionMetrics {
         self.inner.jobs_failed.store(0, Ordering::Relaxed);
         self.inner.conflicts_detected.store(0, Ordering::Relaxed);
         self.inner.retries_attempted.store(0, Ordering::Relaxed);
+        self.inner.stale_leases_expired.store(0, Ordering::Relaxed);
         self.inner.total_input_files.store(0, Ordering::Relaxed);
         self.inner.total_output_files.store(0, Ordering::Relaxed);
         self.inner
@@ -251,6 +271,7 @@ pub struct MetricsSummary {
     pub jobs_failed: usize,
     pub conflicts_detected: usize,
     pub retries_attempted: usize,
+    pub stale_leases_expired: u64,
     pub total_input_files: usize,
     pub total_output_files: usize,
     pub bytes_before_compaction: u64,
@@ -283,6 +304,7 @@ impl MetricsSummary {
             self.conflicts_detected,
             self.retries_attempted
         );
+        tracing::info!("Stale leases expired: {}", self.stale_leases_expired);
         tracing::info!(
             "Files: {} input → {} output",
             self.total_input_files,
@@ -303,6 +325,117 @@ impl MetricsSummary {
             self.deferred_open_partition_files,
             self.unclassifiable_files
         );
+    }
+}
+
+/// Identifies one of the four lifecycle-cycle tasks `CompactorService` runs.
+///
+/// Exists so [`CycleHealth`] and the supervising loop in
+/// [`crate::service::CompactorService::run_lifecycle_loop`] key panic
+/// tracking by an exhaustively-matched value rather than a bare `&str`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cycle {
+    Compaction,
+    LeaseExpiry,
+    Retention,
+    OrphanCleanup,
+}
+
+impl Cycle {
+    /// Human-readable name used in logs and metric labels.
+    pub fn label(self) -> &'static str {
+        match self {
+            Cycle::Compaction => "compaction",
+            Cycle::LeaseExpiry => "lease_expiry",
+            Cycle::Retention => "retention",
+            Cycle::OrphanCleanup => "orphan_cleanup",
+        }
+    }
+
+    /// All cycles, for iterating when rendering a metric per cycle.
+    pub fn all() -> [Cycle; 4] {
+        [
+            Cycle::Compaction,
+            Cycle::LeaseExpiry,
+            Cycle::Retention,
+            Cycle::OrphanCleanup,
+        ]
+    }
+}
+
+#[derive(Debug, Default)]
+struct CycleStatus {
+    /// Cumulative panics recovered from this cycle's task over the process
+    /// lifetime.
+    panics: AtomicU64,
+    /// Set while the cycle is in its post-panic backoff sleep; cleared as
+    /// soon as it resumes retrying. A liveness probe reading this only sees
+    /// a cycle as down for the bounded backoff window, not forever — a
+    /// cycle that keeps panicking keeps re-entering this state instead of
+    /// latching it, which is what makes it a meaningful "is it happening
+    /// right now" signal rather than "did it ever happen".
+    down: AtomicBool,
+}
+
+/// Health of the four lifecycle-cycle tasks that [`CompactorService`] runs.
+///
+/// [`crate::service::CompactorService::run_lifecycle_loop`] guards every
+/// `Cycle::run()` call against panics: a panic is caught there instead of
+/// ending that cycle's task for the rest of the process's life (issue
+/// #1011 is precisely about a cycle silently going away permanently — a
+/// caught-and-recovered panic must not become a second way for the same
+/// thing to happen). This type is what makes a recovered panic visible on
+/// `/health` and `/metrics` instead of only in the log.
+///
+/// [`CompactorService`]: crate::service::CompactorService
+#[derive(Debug, Clone, Default)]
+pub struct CycleHealth {
+    inner: Arc<CycleHealthInner>,
+}
+
+#[derive(Debug, Default)]
+struct CycleHealthInner {
+    compaction: CycleStatus,
+    lease_expiry: CycleStatus,
+    retention: CycleStatus,
+    orphan_cleanup: CycleStatus,
+}
+
+impl CycleHealth {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn status(&self, cycle: Cycle) -> &CycleStatus {
+        match cycle {
+            Cycle::Compaction => &self.inner.compaction,
+            Cycle::LeaseExpiry => &self.inner.lease_expiry,
+            Cycle::Retention => &self.inner.retention,
+            Cycle::OrphanCleanup => &self.inner.orphan_cleanup,
+        }
+    }
+
+    /// Record a caught panic and mark the cycle down for the backoff window
+    /// the caller is about to sleep through.
+    pub fn record_panic(&self, cycle: Cycle) {
+        let status = self.status(cycle);
+        status.panics.fetch_add(1, Ordering::Relaxed);
+        status.down.store(true, Ordering::Relaxed);
+    }
+
+    /// Clear the down flag once the cycle resumes retrying after backoff.
+    pub fn record_retrying(&self, cycle: Cycle) {
+        self.status(cycle).down.store(false, Ordering::Relaxed);
+    }
+
+    /// Panics recovered from this cycle over the process lifetime.
+    pub fn panics(&self, cycle: Cycle) -> u64 {
+        self.status(cycle).panics.load(Ordering::Relaxed)
+    }
+
+    /// Whether this cycle is currently in its post-panic backoff sleep.
+    pub fn is_down(&self, cycle: Cycle) -> bool {
+        self.status(cycle).down.load(Ordering::Relaxed)
     }
 }
 
