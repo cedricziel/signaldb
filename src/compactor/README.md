@@ -58,7 +58,6 @@ dry_run = false                   # default: false; set true to observe first
 cleanup_interval_hours = 24
 grace_period_hours = 24
 batch_size = 1000
-revalidate_before_delete = true
 max_live_files_threshold = 500000
 ```
 

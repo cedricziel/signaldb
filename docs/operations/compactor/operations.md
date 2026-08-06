@@ -206,7 +206,6 @@ dry_run = true  # Don't delete, just identify
 grace_period_hours = 24
 cleanup_interval_hours = 24
 batch_size = 1000
-revalidate_before_delete = true
 ```
 
 Start the compactor and monitor its stdout (or `.data/logs/monolithic.log` when using `./scripts/run-dev.sh`):
@@ -241,7 +240,6 @@ dry_run = false  # Enable actual deletion
 grace_period_hours = 24
 cleanup_interval_hours = 24
 batch_size = 1000
-revalidate_before_delete = true  # Extra safety
 ```
 
 Restart and monitor:

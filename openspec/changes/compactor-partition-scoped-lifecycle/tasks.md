@@ -7,7 +7,9 @@ Sequenced per design.md: live-set correctness (D5) lands before the default flip
 - [x] 1.1 (landed in #1007) Regression tests: reused-manifest EXISTING files stay live; idle-table live set equals table content (zero candidates); genuinely unreferenced file past grace is a candidate
 - [x] 1.2 (landed in #1007) Rebuild live-set construction from current-snapshot manifest list ∪ retained snapshots' manifests; remove the snapshot-age filter from detection (`detector.rs`, `manifest.rs`); age knob remains expiration-only
 - [x] 1.3 (landed in #1007) Stream manifest entries into a path-keyed set (no per-file struct materialization) and add a large-table test bound (#475)
-- [ ] 1.4 Make pre-delete re-validation unconditional; remove the `revalidate_before_delete` config key (BREAKING config, loud parse failure) and update `signaldb.dist.toml` + compactor docs
+- [x] 1.4 Make pre-delete re-validation unconditional; remove the `revalidate_before_delete` config key (BREAKING config, ~~loud parse failure~~ — see note) and update `signaldb.dist.toml` + compactor docs
+  - **Design correction:** D5/the task assumed removal would surface as a loud parse failure because "unknown keys already fail config parsing". They do not — neither `common::config::OrphanCleanupConfig` nor the compactor's copy uses `#[serde(deny_unknown_fields)]`, so a leftover key is silently ignored. Adding `deny_unknown_fields` is not a safe drive-by: these structs are also populated through figment's env-var provider. Documented as a breaking change in `docs/operations/compactor/configuration.md` instead; tightening the config structs is worth its own change.
+  - **Scope refinement:** re-validation is unconditional before any *real* deletion, and skipped in `dry_run` — a dry run deletes nothing, so there is no delete to guard, and it is the one mode that legitimately runs without a detector attached.
 
 ## 2. Manifest-derived partition identity (#930)
 

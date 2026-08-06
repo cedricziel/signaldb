@@ -181,8 +181,6 @@ pub struct OrphanCleanupConfig {
     pub batch_size: usize,
     #[serde(default = "default_orphan_dry_run")]
     pub dry_run: bool,
-    #[serde(default = "default_revalidate_before_delete")]
-    pub revalidate_before_delete: bool,
 
     /// Maximum estimated live file count before orphan cleanup is skipped.
     ///
@@ -211,10 +209,6 @@ fn default_batch_size() -> usize {
 
 fn default_orphan_dry_run() -> bool {
     false
-}
-
-fn default_revalidate_before_delete() -> bool {
-    true
 }
 
 fn default_max_live_files_threshold() -> usize {
@@ -249,7 +243,6 @@ impl Default for OrphanCleanupConfig {
             cleanup_interval_hours: default_cleanup_interval_hours(),
             batch_size: default_batch_size(),
             dry_run: default_orphan_dry_run(),
-            revalidate_before_delete: default_revalidate_before_delete(),
             max_live_files_threshold: default_max_live_files_threshold(),
         }
     }

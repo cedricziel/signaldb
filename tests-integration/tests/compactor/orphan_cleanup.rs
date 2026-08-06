@@ -74,7 +74,6 @@ async fn test_orphan_detection_finds_unreferenced_files() -> Result<()> {
         grace_period_hours: 0, // No grace period for test
         batch_size: 100,
         dry_run: false,
-        revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 500_000,
     };
@@ -178,7 +177,6 @@ async fn test_orphan_cleanup_grace_period_configuration() -> Result<()> {
         grace_period_hours: 24,
         batch_size: 100,
         dry_run: false,
-        revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 500_000,
     };
@@ -280,7 +278,6 @@ async fn test_orphan_cleanup_batch_deletion() -> Result<()> {
         grace_period_hours: 0,
         batch_size: 10,
         dry_run: false,
-        revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 500_000,
     };
@@ -385,7 +382,6 @@ async fn test_orphan_cleanup_dry_run_mode() -> Result<()> {
         grace_period_hours: 0,
         batch_size: 100,
         dry_run: true, // Dry-run mode
-        revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 500_000,
     };
@@ -496,7 +492,6 @@ async fn test_orphan_cleanup_preserves_live_files() -> Result<()> {
         grace_period_hours: 0,
         batch_size: 100,
         dry_run: false,
-        revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 500_000,
     };
@@ -602,7 +597,6 @@ async fn test_orphan_cleanup_threshold_skips_cleanup() -> Result<()> {
         grace_period_hours: 0,
         batch_size: 100,
         dry_run: false,
-        revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 1, // force threshold exceeded
     };
@@ -686,7 +680,6 @@ async fn idle_table_live_files_are_never_orphan_candidates() -> Result<()> {
         grace_period_hours: 0,
         batch_size: 100,
         dry_run: false,
-        revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 500_000,
     };
@@ -823,7 +816,6 @@ async fn files_replaced_by_compaction_stay_protected_while_snapshots_retained() 
         grace_period_hours: 0,
         batch_size: 100,
         dry_run: false,
-        revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 500_000,
     };
@@ -939,7 +931,6 @@ async fn revalidation_skips_live_files_and_deletes_orphans() -> Result<()> {
         grace_period_hours: 0,
         batch_size: 100,
         dry_run: false,
-        revalidate_before_delete: true,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 500_000,
     };
@@ -1051,7 +1042,6 @@ async fn metadata_orphans_are_reclaimed_but_live_metadata_is_protected() -> Resu
         grace_period_hours: 0,
         batch_size: 100,
         dry_run: false,
-        revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 500_000,
     };

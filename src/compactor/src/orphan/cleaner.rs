@@ -142,11 +142,15 @@ impl OrphanCleaner {
                 "Processing deletion batch"
             );
 
-            // Apply safety validation if enabled
-            let validated_batch = if self.config.revalidate_before_delete {
-                self.revalidate_batch(batch).await?
-            } else {
+            // Re-validation is unconditional before a real deletion:
+            // detection is correct on its own (#925), and this is the
+            // defense-in-depth pass on top of it. A dry run deletes nothing,
+            // so there is nothing to guard — and it is the one mode that may
+            // legitimately run without a detector attached.
+            let validated_batch = if self.config.dry_run {
                 batch.to_vec()
+            } else {
+                self.revalidate_batch(batch).await?
             };
 
             tracing::debug!(
@@ -248,10 +252,6 @@ impl OrphanCleaner {
     /// A table whose live set cannot be built has all of its candidates
     /// skipped for safety.
     async fn revalidate_batch(&self, batch: &[OrphanCandidate]) -> Result<Vec<OrphanCandidate>> {
-        if !self.config.revalidate_before_delete {
-            return Ok(batch.to_vec());
-        }
-
         let detector = self
             .detector
             .as_ref()
@@ -367,7 +367,6 @@ mod tests {
         let config = OrphanCleanupConfig {
             dry_run: true,
             batch_size: 10,
-            revalidate_before_delete: false, // Disable revalidation for this test
             ..Default::default()
         };
         let object_store = Arc::new(object_store::memory::InMemory::new());
@@ -405,7 +404,6 @@ mod tests {
         let config = OrphanCleanupConfig {
             dry_run: true,
             batch_size: 2,
-            revalidate_before_delete: false,
             ..Default::default()
         };
         let object_store = Arc::new(object_store::memory::InMemory::new());

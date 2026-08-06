@@ -19,7 +19,11 @@ use std::time::Duration;
 /// - `enabled`: true (set false to opt out)
 /// - `dry_run`: false (set true to log without deleting)
 /// - `grace_period_hours`: 24 (prevents deletion of recent files)
-/// - `revalidate_before_delete`: true (extra safety check)
+///
+/// Pre-delete re-validation is unconditional: the live-file set is rebuilt
+/// immediately before each deletion batch. It is defense-in-depth on top of a
+/// detection algorithm that is correct on its own (#925), not the only thing
+/// standing between cleanup and data loss, so it is not switchable.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OrphanCleanupConfig {
     /// Enable orphan file cleanup.
@@ -73,18 +77,6 @@ pub struct OrphanCleanupConfig {
     #[serde(default = "default_dry_run")]
     pub dry_run: bool,
 
-    /// Re-validate orphan status before deletion.
-    ///
-    /// When enabled, files identified as orphans will be re-validated
-    /// immediately before deletion to catch any concurrent writes that
-    /// may have referenced them.
-    ///
-    /// Default: true (adds extra safety)
-    ///
-    /// Env: SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__REVALIDATE_BEFORE_DELETE
-    #[serde(default = "default_revalidate_before_delete")]
-    pub revalidate_before_delete: bool,
-
     /// Maximum estimated live file count before orphan cleanup is skipped.
     ///
     /// Before reading all manifest files, the detector sums the file counts
@@ -123,10 +115,6 @@ fn default_dry_run() -> bool {
     false // Delete by default; grace period + revalidation are the rails (#935)
 }
 
-fn default_revalidate_before_delete() -> bool {
-    true // Extra safety by default
-}
-
 fn default_max_live_files_threshold() -> usize {
     500_000
 }
@@ -139,7 +127,6 @@ impl Default for OrphanCleanupConfig {
             cleanup_interval_hours: default_cleanup_interval_hours(),
             batch_size: default_batch_size(),
             dry_run: default_dry_run(),
-            revalidate_before_delete: default_revalidate_before_delete(),
             max_live_files_threshold: default_max_live_files_threshold(),
         }
     }
@@ -153,7 +140,6 @@ impl From<common::config::OrphanCleanupConfig> for OrphanCleanupConfig {
             cleanup_interval_hours: config.cleanup_interval_hours,
             batch_size: config.batch_size,
             dry_run: config.dry_run,
-            revalidate_before_delete: config.revalidate_before_delete,
             max_live_files_threshold: config.max_live_files_threshold,
         }
     }
@@ -214,10 +200,6 @@ mod tests {
         let config = OrphanCleanupConfig::default();
         assert!(config.enabled, "Should be enabled by default (#935)");
         assert!(!config.dry_run, "Should delete (not dry-run) by default");
-        assert!(
-            config.revalidate_before_delete,
-            "Should revalidate by default"
-        );
         assert_eq!(config.grace_period_hours, 24);
         assert_eq!(config.cleanup_interval_hours, 24);
         assert_eq!(config.batch_size, 1000);
