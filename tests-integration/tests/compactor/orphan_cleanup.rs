@@ -1131,7 +1131,6 @@ async fn a_gzipped_current_metadata_file_is_never_flagged() -> Result<()> {
         grace_period_hours: 0,
         batch_size: 100,
         dry_run: false,
-        revalidate_before_delete: false,
         cleanup_interval_hours: 24,
         max_live_files_threshold: 500_000,
     };
