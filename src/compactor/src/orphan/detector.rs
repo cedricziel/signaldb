@@ -362,7 +362,13 @@ impl OrphanDetector {
         {
             let hint = String::from_utf8_lossy(&bytes).trim().to_string();
             if !hint.is_empty() {
+                // The hint names a version, not a file: the same version is
+                // `<hint>.metadata.json` uncompressed and `<hint>.gz.metadata.json`
+                // when the table sets `write.metadata.compression-codec = gzip`.
+                // Protect both -- getting this wrong deletes the *live* metadata
+                // pointer, which is the one file that must never be reclaimed.
                 live.insert(format!("{metadata_dir}/{hint}.metadata.json"));
+                live.insert(format!("{metadata_dir}/{hint}.gz.metadata.json"));
             }
         }
 
