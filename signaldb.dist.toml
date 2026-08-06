@@ -297,6 +297,15 @@ target_file_size_mb = 128             # Target file size after compaction (MB)
 file_count_threshold = 5              # Minimum files to trigger compaction
 max_input_file_size_kb = 65536        # Maximum input file size for compaction (KB); larger files are left alone
 
+# Compaction is scoped to one closed `timestamp_hour` partition per job and
+# commits a delta (remove inputs / add outputs) rather than rewriting the whole
+# table, so it runs alongside live ingest without losing the commit race.
+partition_lateness = "10m"            # How long a partition stays open for late data
+                                      # after its hour ends; only closed partitions
+                                      # are compacted
+memory_limit_mb = 512                 # Memory budget for one rewrite; larger partitions
+                                      # spill to disk instead of growing the heap
+
 # Phase 4: Multi-Instance Safety + Scheduling
 # Multiple compactor instances coordinate through distributed leases in the
 # SQL catalog; the round-robin scheduler ensures per-tenant fairness.

@@ -225,6 +225,14 @@ fn default_max_candidates_per_cycle() -> usize {
     20
 }
 
+fn default_partition_lateness() -> Duration {
+    Duration::from_secs(600)
+}
+
+fn default_compactor_memory_limit_mb() -> usize {
+    512
+}
+
 fn default_max_per_tenant() -> usize {
     5
 }
@@ -392,6 +400,31 @@ pub struct CompactorConfig {
     /// Env: SIGNALDB__COMPACTOR__MAX_INPUT_FILE_SIZE_KB
     pub max_input_file_size_kb: u64,
 
+    /// How long an hour partition stays "open" after its hour ends before
+    /// compaction will touch it.
+    ///
+    /// Compaction is scoped to closed partitions only (issue #933): the
+    /// partition still receiving writes is the one whose manifests keep
+    /// changing under a running rewrite, which is what made the previous
+    /// whole-table design lose its commit race against ingest. This is the
+    /// allowance for late-arriving data, not a commit-cadence knob.
+    ///
+    /// Default: 10 minutes.
+    /// Env: SIGNALDB__COMPACTOR__PARTITION_LATENESS
+    #[serde(default = "default_partition_lateness", with = "humantime_serde")]
+    pub partition_lateness: Duration,
+
+    /// Memory budget in MB for a single compaction rewrite.
+    ///
+    /// The rewrite runs in a DataFusion runtime with a spill pool of this
+    /// size, so a large partition spills to disk instead of growing the
+    /// process heap without bound. Sorting is the dominant consumer.
+    ///
+    /// Default: 512 MB.
+    /// Env: SIGNALDB__COMPACTOR__MEMORY_LIMIT_MB
+    #[serde(default = "default_compactor_memory_limit_mb")]
+    pub memory_limit_mb: usize,
+
     /// Retention enforcement configuration (Phase 3)
     /// Env: SIGNALDB__COMPACTOR__RETENTION__*
     #[serde(default)]
@@ -461,6 +494,8 @@ impl Default for CompactorConfig {
             target_file_size_mb: 128,
             file_count_threshold: 10,
             max_input_file_size_kb: 65536, // 64MB (half the default target size)
+            partition_lateness: default_partition_lateness(),
+            memory_limit_mb: default_compactor_memory_limit_mb(),
             retention: RetentionConfig::default(),
             orphan_cleanup: OrphanCleanupConfig::default(),
             attr_promotion: AttrPromotionConfig::default(),

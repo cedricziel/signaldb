@@ -375,6 +375,7 @@ mod tests {
                 file_count_threshold: 10,
                 max_input_file_size_bytes: 64 * 1024 * 1024,
                 target_file_size_bytes: 128 * 1024 * 1024,
+                partition_lateness: std::time::Duration::from_secs(600),
             },
         ));
         let metrics = CompactionMetrics::new();

@@ -35,6 +35,7 @@ use opentelemetry_proto::tonic::{
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
     resource::v1::Resource,
 };
+use tests_integration::compaction_helpers::busiest_partition;
 use uuid::Uuid;
 use writer::IcebergTableWriter;
 
@@ -120,12 +121,17 @@ async fn write_small_log_files(
     Ok(())
 }
 
-fn make_candidate(tenant_id: &str, dataset_id: &str) -> CompactionCandidate {
+/// Build a candidate for one `timestamp_hour` partition.
+///
+/// Compaction is partition-scoped (issue #933), so the candidate must name a
+/// real partition — hours since the Unix epoch — not a whole-table
+/// placeholder. Callers pass the partition their seeded data landed in.
+fn make_candidate(tenant_id: &str, dataset_id: &str, partition: i64) -> CompactionCandidate {
     CompactionCandidate {
         tenant_id: tenant_id.to_string(),
         dataset_id: dataset_id.to_string(),
         table_name: "logs".to_string(),
-        partition_id: "all".to_string(),
+        partition_id: partition.to_string(),
         stats: PartitionStats {
             file_count: 10,
             total_size_bytes: 1024 * 1024,
@@ -276,10 +282,14 @@ async fn test_two_instances_compact_without_duplicate_work() -> Result<()> {
         .await?;
     }
 
-    let candidates: Vec<CompactionCandidate> = datasets
-        .iter()
-        .map(|d| make_candidate(tenant_id, d))
-        .collect();
+    // Resolve each dataset's own partition. The datasets are seeded by
+    // separate writes, so a UTC hour boundary falling between them would put
+    // a later dataset in a different partition than the first.
+    let mut candidates: Vec<CompactionCandidate> = Vec::new();
+    for dataset in &datasets {
+        let partition = busiest_partition(&catalog_manager, tenant_id, dataset, "logs").await?;
+        candidates.push(make_candidate(tenant_id, dataset, partition));
+    }
 
     let in_flight: Arc<HashMap<String, AtomicUsize>> = Arc::new(
         candidates
@@ -405,7 +415,8 @@ async fn test_crashed_instance_lease_taken_over() -> Result<()> {
     )
     .await?;
 
-    let candidate = make_candidate(tenant_id, dataset_id);
+    let partition = busiest_partition(&catalog_manager, tenant_id, dataset_id, "logs").await?;
+    let candidate = make_candidate(tenant_id, dataset_id, partition);
 
     // "Crashed" instance: acquires with a short TTL and then disappears
     // without executing or releasing. The TTL must be long enough that the

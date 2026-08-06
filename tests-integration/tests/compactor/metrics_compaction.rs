@@ -18,6 +18,7 @@ use opentelemetry_proto::tonic::metrics::v1::{
 };
 use opentelemetry_proto::tonic::resource::v1::Resource;
 use std::sync::Arc;
+use tests_integration::compaction_helpers::busiest_partition;
 use writer::IcebergTableWriter;
 
 /// Helper function to create a resource with service name
@@ -207,11 +208,12 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
         CompactionExecutor::new(catalog_manager.clone(), executor_config, metrics.clone());
 
     // Create compaction candidate
+    let partition = busiest_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
     let candidate = CompactionCandidate {
         tenant_id: tenant_id.to_string(),
         dataset_id: dataset_id.to_string(),
         table_name: table_name.to_string(),
-        partition_id: "test-partition".to_string(),
+        partition_id: partition.to_string(),
         stats: PartitionStats {
             file_count: 10,
             total_size_bytes: 10 * 1024 * 1024, // ~10MB estimate
@@ -310,11 +312,12 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
         CompactionExecutor::new(catalog_manager.clone(), executor_config, metrics.clone());
 
     // Create compaction candidate
+    let partition = busiest_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
     let candidate = CompactionCandidate {
         tenant_id: tenant_id.to_string(),
         dataset_id: dataset_id.to_string(),
         table_name: table_name.to_string(),
-        partition_id: "test-partition".to_string(),
+        partition_id: partition.to_string(),
         stats: PartitionStats {
             file_count: 10,
             total_size_bytes: 10 * 1024 * 1024, // ~10MB estimate

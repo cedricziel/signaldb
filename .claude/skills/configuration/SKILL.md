@@ -150,13 +150,15 @@ tick_interval = "5m"                  # Planning cycle interval
 target_file_size_mb = 128             # Target size after compaction
 file_count_threshold = 10             # Min files to trigger compaction
 max_input_file_size_kb = 65536        # Max file size to consider (64MB); larger files are left alone
+partition_lateness = "10m"            # Late-data allowance; only closed hour partitions are compacted
+memory_limit_mb = 512                 # Rewrite memory budget; larger partitions spill to disk
 max_candidates_per_cycle = 20         # Max candidates per scheduling cycle (0 = unlimited)
 max_per_tenant = 5                    # Max candidates per tenant per cycle (0 = unlimited)
 lease_ttl_seconds = 300               # Compaction lease validity without renewal
 metrics_addr = "0.0.0.0:9091"         # Observability HTTP endpoint ("" = disabled)
 ```
 
-Env: `SIGNALDB__COMPACTOR__ENABLED`, `SIGNALDB__COMPACTOR__TICK_INTERVAL`, `SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB`, `SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD`, `SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB`, `SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB`, `SIGNALDB__COMPACTOR__MAX_CANDIDATES_PER_CYCLE`, `SIGNALDB__COMPACTOR__MAX_PER_TENANT`, `SIGNALDB__COMPACTOR__LEASE_TTL_SECONDS`, `SIGNALDB__COMPACTOR__METRICS_ADDR` (or `COMPACTOR_METRICS_ADDR`)
+Env: `SIGNALDB__COMPACTOR__ENABLED`, `SIGNALDB__COMPACTOR__TICK_INTERVAL`, `SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB`, `SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD`, `SIGNALDB__COMPACTOR__MAX_INPUT_FILE_SIZE_KB`, `SIGNALDB__COMPACTOR__PARTITION_LATENESS`, `SIGNALDB__COMPACTOR__MEMORY_LIMIT_MB`, `SIGNALDB__COMPACTOR__MAX_CANDIDATES_PER_CYCLE`, `SIGNALDB__COMPACTOR__MAX_PER_TENANT`, `SIGNALDB__COMPACTOR__LEASE_TTL_SECONDS`, `SIGNALDB__COMPACTOR__METRICS_ADDR` (or `COMPACTOR_METRICS_ADDR`)
 
 **Note**: Environment variables for compactor use double-underscore (`__`) separator to support field names with underscores.
 

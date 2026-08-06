@@ -19,6 +19,20 @@ pub struct ManifestFileInfo {
     pub file_size_bytes: u64,
     /// Record count in the file
     pub record_count: u64,
+    /// Path of the manifest that carries this file's live entry.
+    ///
+    /// Required to build the `files_to_overwrite` map of a scoped delta
+    /// commit: Iceberg's overwrite operation rewrites manifests, so it is
+    /// keyed by manifest path rather than by data file alone.
+    pub manifest_path: String,
+    /// Hours since the Unix epoch of this file's `timestamp_hour` partition,
+    /// read from the manifest entry's typed partition struct.
+    ///
+    /// `None` marks an unclassifiable file (no usable partition value and no
+    /// recoverable path component). Such files are never compacted — they are
+    /// left untouched rather than silently swept into another partition's
+    /// rewrite.
+    pub partition_hours: Option<i64>,
 }
 
 /// Reads manifest files to extract data file information
@@ -143,13 +157,17 @@ impl ManifestReader {
         let mut files = Vec::new();
         let mut file_iter = std::pin::pin!(file_iter);
         while let Some(result) = file_iter.next().await {
-            let (_, entry) = result.context("Failed to read manifest entry")?;
+            let (manifest_path, entry) = result.context("Failed to read manifest entry")?;
             if *entry.status() != Status::Deleted {
                 let data_file = entry.data_file();
                 files.push(ManifestFileInfo {
                     file_path: data_file.file_path().to_string(),
                     file_size_bytes: *data_file.file_size_in_bytes() as u64,
                     record_count: *data_file.record_count() as u64,
+                    manifest_path,
+                    partition_hours: crate::iceberg::partition::data_file_partition_hours(
+                        data_file,
+                    ),
                 });
             }
         }

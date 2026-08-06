@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use common::CatalogManager;
 use common::schema::materialized_column_name;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::common::ScalarValue;
 use datafusion::prelude::*;
 use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::spec::manifest::DataFile;
@@ -92,28 +93,40 @@ impl ParquetRewriter {
         }
     }
 
-    /// Read, merge, sort, and rewrite the table's data into new Parquet files.
+    /// Read, merge, sort, and rewrite ONE hour partition into new Parquet
+    /// files.
     ///
-    /// Reads all live data from `table` (which the caller loaded fresh and
-    /// pinned to a snapshot), sorts it for query performance, and writes new
-    /// Parquet files directly to the table's object store. No snapshot is
-    /// committed here — the caller commits the returned files atomically.
+    /// Reads only the rows belonging to `partition_hours` from `table` (which
+    /// the caller loaded fresh and pinned to a snapshot), sorts them for query
+    /// performance, and writes new Parquet files directly to the table's
+    /// object store. No snapshot is committed here — the caller commits the
+    /// returned files atomically as a delta.
     ///
-    /// Returns `None` when the table has no data to compact.
-    pub async fn rewrite_table(
+    /// Scoping the read to a partition is what bounds compaction's cost
+    /// (issue #933): the previous whole-table rewrite made write amplification
+    /// and peak memory proportional to total table size, so compacting one new
+    /// hour re-read and re-wrote months of history.
+    ///
+    /// Returns `None` when the partition has no data to compact.
+    pub async fn rewrite_partition(
         &self,
         table: &Table,
+        partition_hours: i64,
         target_file_size_bytes: u64,
     ) -> Result<Option<RewriteOutcome>> {
         let table_name = table.identifier().name().to_string();
 
         let merged_batches = self
-            .read_and_merge(table)
+            .read_and_merge(table, partition_hours)
             .await
-            .context("Failed to read and merge table data")?;
+            .context("Failed to read and merge partition data")?;
 
         if merged_batches.is_empty() || merged_batches.iter().all(|b| b.num_rows() == 0) {
-            tracing::info!(table = %table_name, "No data found, skipping compaction");
+            tracing::info!(
+                table = %table_name,
+                partition_hours,
+                "No data found in partition, skipping compaction"
+            );
             return Ok(None);
         }
 
@@ -466,9 +479,62 @@ impl ParquetRewriter {
         }
     }
 
-    /// Read and merge all live data from the table, sorted for query performance.
-    async fn read_and_merge(&self, table: &Table) -> Result<Vec<RecordBatch>> {
-        let ctx = SessionContext::new();
+    /// Build the compaction session context.
+    ///
+    /// The rewrite runs under a bounded memory pool so a large partition
+    /// spills to disk instead of growing the process heap without limit — the
+    /// old unbounded `SessionContext::new()` is what let a big table OOM the
+    /// compactor outright. A runtime that fails to build falls back to an
+    /// unbounded context rather than failing the cycle, which is logged.
+    fn compaction_context(&self) -> SessionContext {
+        let memory_limit_mb = self.catalog_manager.config().compactor.memory_limit_mb;
+        let builder = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
+            .with_memory_limit(memory_limit_mb * 1024 * 1024, 1.0);
+        match builder.build() {
+            Ok(runtime_env) => {
+                tracing::debug!(memory_limit_mb, "Compaction memory pool configured");
+                SessionContext::new_with_config_rt(
+                    datafusion::prelude::SessionConfig::new(),
+                    Arc::new(runtime_env),
+                )
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "Failed to build limited RuntimeEnv for compaction; falling back to unlimited memory"
+                );
+                SessionContext::new()
+            }
+        }
+    }
+
+    /// Predicate selecting exactly the rows of one hour partition.
+    ///
+    /// The `timestamp_hour` partition transform is `Hour(timestamp)` and the
+    /// Iceberg `Timestamp` type is microseconds since the epoch, so partition
+    /// `h` is the half-open microsecond range `[h*3600e6, (h+1)*3600e6)`.
+    ///
+    /// `datafusion_iceberg` pushes this down twice — first pruning manifests
+    /// by their partition summaries, then pruning data files by column
+    /// statistics — so the scan reads only the target partition's files. The
+    /// predicate is also applied as a row filter, so correctness does not
+    /// depend on pruning being exact.
+    fn partition_predicate(partition_hours: i64) -> Expr {
+        const MICROS_PER_HOUR: i64 = 3_600 * 1_000_000;
+        let start = partition_hours * MICROS_PER_HOUR;
+        let end = start + MICROS_PER_HOUR;
+        col("timestamp")
+            .gt_eq(lit(ScalarValue::TimestampMicrosecond(Some(start), None)))
+            .and(col("timestamp").lt(lit(ScalarValue::TimestampMicrosecond(Some(end), None))))
+    }
+
+    /// Read and merge one partition's live data, sorted for query performance.
+    async fn read_and_merge(
+        &self,
+        table: &Table,
+        partition_hours: i64,
+    ) -> Result<Vec<RecordBatch>> {
+        let ctx = self.compaction_context();
 
         let table_name = table.identifier().name().to_string();
         let datafusion_table = Arc::new(datafusion_iceberg::DataFusionTable::from(table.clone()));
@@ -478,7 +544,11 @@ impl ParquetRewriter {
         let df = ctx
             .table(&table_name)
             .await
-            .context("Failed to read table")?;
+            .context("Failed to read table")?
+            .filter(Self::partition_predicate(partition_hours))
+            .with_context(|| {
+                format!("Failed to scope {table_name} read to partition {partition_hours}")
+            })?;
 
         let sort_cols = Self::get_sort_columns(&table_name);
         let sorted_df = if !sort_cols.is_empty() {
@@ -500,8 +570,9 @@ impl ParquetRewriter {
 
         tracing::debug!(
             table = %table_name,
+            partition_hours,
             batch_count = batches.len(),
-            "Collected table data for rewrite"
+            "Collected partition data for rewrite"
         );
 
         Ok(batches)

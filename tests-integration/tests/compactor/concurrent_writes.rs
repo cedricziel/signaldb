@@ -10,6 +10,7 @@ use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
 use object_store::memory::InMemory;
 use std::sync::Arc;
+use tests_integration::compaction_helpers::busiest_partition;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators;
 use writer::IcebergTableWriter;
@@ -98,13 +99,17 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
         metrics.clone(),
     ));
 
-    // Create a compaction candidate manually
-    // In real scenario, this would come from the planner
+    // Create a compaction candidate manually. In a real cycle this comes from
+    // the planner, which derives the partition from the manifest entries.
+    let partition = busiest_partition(&catalog_manager, tenant_id, dataset_id, table_name)
+        .await
+        .context("Failed to determine the partition holding the seeded files")?;
+
     let candidate = CompactionCandidate {
         tenant_id: tenant_id.to_string(),
         dataset_id: dataset_id.to_string(),
         table_name: table_name.to_string(),
-        partition_id: "test-partition".to_string(),
+        partition_id: partition.to_string(),
         stats: PartitionStats {
             file_count: 10,
             total_size_bytes: 10 * 1024 * 1024, // ~10MB estimate
@@ -302,12 +307,19 @@ async fn test_concurrent_compactions_different_partitions() -> Result<()> {
         metrics.clone(),
     ));
 
-    // Create candidates for two "partitions"
+    // Two candidates on the same table. The generator writes into a single
+    // hour, so the second partition is a neighbouring hour that holds no
+    // files — exercising that a job for an empty partition resolves cleanly
+    // rather than touching another partition's data.
+    let partition = busiest_partition(&catalog_manager, tenant_id, dataset_id, table_name)
+        .await
+        .context("Failed to determine the partition holding the seeded files")?;
+
     let candidate1 = CompactionCandidate {
         tenant_id: tenant_id.to_string(),
         dataset_id: dataset_id.to_string(),
         table_name: table_name.to_string(),
-        partition_id: "partition-1".to_string(),
+        partition_id: partition.to_string(),
         stats: PartitionStats {
             file_count: 5,
             total_size_bytes: 5 * 1024 * 1024,
@@ -319,7 +331,7 @@ async fn test_concurrent_compactions_different_partitions() -> Result<()> {
         tenant_id: tenant_id.to_string(),
         dataset_id: dataset_id.to_string(),
         table_name: table_name.to_string(),
-        partition_id: "partition-2".to_string(),
+        partition_id: (partition - 1).to_string(),
         stats: PartitionStats {
             file_count: 5,
             total_size_bytes: 5 * 1024 * 1024,

@@ -100,6 +100,11 @@ format contributing ACID commits, snapshots, schema evolution, and
 hour-partitioned metadata. That is what the compactor builds on —
 rewriting small files, expiring snapshots, and dropping expired
 partitions are Iceberg metadata operations, not filesystem surgery.
+Partition-level metadata is also what keeps compaction affordable: a
+compaction job scopes itself to one closed hour partition and commits a
+delta against it, so its cost tracks that partition rather than the whole
+table, and concurrent ingest into other partitions cannot invalidate the
+commit.
 
 **A WAL in front of the columnar path.** Arrow batches are buffered
 poorly by object stores, so ingestion writes to a local write-ahead log

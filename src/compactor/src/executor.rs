@@ -10,7 +10,7 @@ use crate::planner::{CompactionCandidate, PlannerConfig};
 use crate::rewriter::ParquetRewriter;
 use anyhow::{Context, Result};
 use common::CatalogManager;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::Instrument;
@@ -306,38 +306,47 @@ impl CompactionExecutor {
             job.partition_id
         );
 
+        // The job's partition is the unit this execution mutates. It is
+        // produced by the planner from the manifest entries' typed partition
+        // values, so anything unparseable is a programming error rather than
+        // a data condition.
+        let partition_hours: i64 = job.partition_id.parse().with_context(|| {
+            format!(
+                "Compaction job {} has a non-numeric partition id {:?}; expected hours since epoch",
+                job.job_id, job.partition_id
+            )
+        })?;
+
         // Step 1: Load the table with fresh metadata and pin the snapshot.
         // All reads below use this pinned table handle, so the rewrite sees a
-        // consistent snapshot even if concurrent writes land meanwhile; the
-        // commit detects such writes as conflicts and the job retries.
+        // consistent snapshot even if concurrent writes land meanwhile. The
+        // delta commit re-validates only this partition's input files, so a
+        // concurrent append elsewhere in the table is no longer a conflict.
         let table = self
             .rewriter
             .load_fresh_table(&job.tenant_id, &job.dataset_id, &job.table_name)
             .await
             .context("Failed to load table for compaction")?;
 
-        let original_snapshot_id = table.metadata().current_snapshot_id;
-
-        tracing::debug!(
-            "Job {}: Original snapshot ID: {:?}",
-            job.job_id,
-            original_snapshot_id
-        );
-
-        // Step 2: Read the real input file set from the snapshot's manifests.
+        // Step 2: Read this partition's input file set from the snapshot's
+        // manifests. Files in other partitions are untouched by this job.
         let manifest_reader = ManifestReader::new();
-        let input_files = manifest_reader
+        let input_files: Vec<_> = manifest_reader
             .get_snapshot_files(&table)
             .await
-            .context("Failed to read input file list from manifests")?;
+            .context("Failed to read input file list from manifests")?
+            .into_iter()
+            .filter(|file| file.partition_hours == Some(partition_hours))
+            .collect();
 
         if input_files.len() <= 1 {
             tracing::info!(
-                "Job {}: table {}/{}/{} has {} live data file(s), nothing to compact",
+                "Job {}: table {}/{}/{} partition {} has {} live data file(s), nothing to compact",
                 job.job_id,
                 job.tenant_id,
                 job.dataset_id,
                 job.table_name,
+                partition_hours,
                 input_files.len()
             );
             return Ok(CompactionResult {
@@ -355,12 +364,13 @@ impl CompactionExecutor {
         let input_size: u64 = input_files.iter().map(|f| f.file_size_bytes).sum();
         let input_rows: u64 = input_files.iter().map(|f| f.record_count).sum();
 
-        // Step 3: Read, merge, sort, and write new compacted files.
+        // Step 3: Read, merge, sort, and write new compacted files for this
+        // partition only.
         let outcome = match self
             .rewriter
-            .rewrite_table(&table, job.target_file_size_bytes)
+            .rewrite_partition(&table, partition_hours, job.target_file_size_bytes)
             .await
-            .context("Failed to rewrite table data")?
+            .context("Failed to rewrite partition data")?
         {
             Some(outcome) => outcome,
             None => {
@@ -381,10 +391,11 @@ impl CompactionExecutor {
         // the manifests said was live. Abort before committing otherwise.
         anyhow::ensure!(
             outcome.rows_written == input_rows,
-            "Compaction row count mismatch for {}/{}/{}: manifests report {} live rows but rewrite produced {}",
+            "Compaction row count mismatch for {}/{}/{} partition {}: manifests report {} live rows but rewrite produced {}",
             job.tenant_id,
             job.dataset_id,
             job.table_name,
+            partition_hours,
             input_rows,
             outcome.rows_written
         );
@@ -398,17 +409,24 @@ impl CompactionExecutor {
             outcome.output_size_bytes
         );
 
-        // Step 4: Commit atomically — the new files replace all previous data
-        // files in a single snapshot; old files become orphans handled by the
-        // orphan cleanup cycle after snapshot expiration.
+        // Step 4: Commit atomically as a delta — this partition's input files
+        // are removed and the new files added in a single snapshot, leaving
+        // every other partition's files referenced exactly as they were. The
+        // replaced files become orphans handled by the orphan cleanup cycle
+        // after snapshot expiration.
         let output_files_count = outcome.new_files.len();
         let output_size = outcome.output_size_bytes;
+        let input_file_paths: HashSet<String> = input_files
+            .iter()
+            .map(|file| file.file_path.clone())
+            .collect();
         self.committer
-            .commit_compaction(
+            .commit_delta(
                 &job.tenant_id,
                 &job.dataset_id,
                 &job.table_name,
-                original_snapshot_id,
+                partition_hours,
+                &input_file_paths,
                 outcome.new_files,
             )
             .await

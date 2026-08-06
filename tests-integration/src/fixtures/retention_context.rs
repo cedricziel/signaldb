@@ -87,6 +87,10 @@ impl RetentionTestContext {
             file_count_threshold: 10,
             max_input_file_size_bytes: 64 * 1024 * 1024,
             target_file_size_bytes: 128 * 1024 * 1024,
+            // Tests write data into recent hours and expect it to be
+            // compactable immediately; a production lateness allowance would
+            // defer every generated partition as still open.
+            partition_lateness: std::time::Duration::ZERO,
         };
         let metrics = CompactionMetrics::new();
 

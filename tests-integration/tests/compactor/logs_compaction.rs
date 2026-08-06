@@ -21,6 +21,7 @@ use opentelemetry_proto::tonic::{
     resource::v1::Resource,
 };
 use std::sync::Arc;
+use tests_integration::compaction_helpers::busiest_partition;
 use writer::IcebergTableWriter;
 
 /// Initialize test logging
@@ -182,11 +183,12 @@ async fn test_logs_table_compaction() -> Result<()> {
 
     // Create compaction candidate manually
     // In real scenario, this would come from the planner
+    let partition = busiest_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
     let candidate = CompactionCandidate {
         tenant_id: tenant_id.to_string(),
         dataset_id: dataset_id.to_string(),
         table_name: table_name.to_string(),
-        partition_id: "all".to_string(),
+        partition_id: partition.to_string(),
         stats: PartitionStats {
             file_count: 10,
             total_size_bytes: 10 * 5 * 1024 * 1024, // 10 files * ~5MB
@@ -304,11 +306,12 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
     let executor =
         CompactionExecutor::new(catalog_manager.clone(), executor_config, metrics.clone());
 
+    let partition = busiest_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
     let candidate = CompactionCandidate {
         tenant_id: tenant_id.to_string(),
         dataset_id: dataset_id.to_string(),
         table_name: table_name.to_string(),
-        partition_id: "all".to_string(),
+        partition_id: partition.to_string(),
         stats: PartitionStats {
             file_count: 10,
             total_size_bytes: 10 * 5 * 1024 * 1024,

@@ -101,9 +101,18 @@ async fn compact(catalog_manager: &Arc<CatalogManager>) {
         file_count_threshold: 2,
         max_input_file_size_bytes: u64::MAX, // include every file
         target_file_size_bytes: 128 * 1024 * 1024,
+        // Tests seed data into recent hours and compact it immediately;
+        // a production lateness allowance would defer every such partition.
+        partition_lateness: std::time::Duration::ZERO,
     };
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());
     let candidates = planner.plan().await.expect("plan compaction");
+    // Compaction is partition-scoped: if planning selects nothing the
+    // benchmark would silently measure uncompacted data.
+    assert!(
+        !candidates.is_empty(),
+        "benchmark setup must produce at least one compaction candidate"
+    );
     println!("compaction: {} candidate partition(s)", candidates.len());
     let executor = CompactionExecutor::new(
         catalog_manager.clone(),

@@ -111,13 +111,16 @@ impl CompactorService {
         instance_id: Uuid,
     ) -> Result<Self> {
         let planner_config = PlannerConfig::from(&config.compactor);
-        let planner = Arc::new(CompactionPlanner::new(
-            catalog_manager.clone(),
-            planner_config.clone(),
-        ));
-
         let executor_config = ExecutorConfig::from(&planner_config);
         let compaction_metrics = CompactionMetrics::new();
+
+        // The planner shares the executor's metrics so the files it declines
+        // to compact — still-open partitions, unclassifiable files — are
+        // visible next to the jobs it does produce.
+        let planner = Arc::new(
+            CompactionPlanner::new(catalog_manager.clone(), planner_config.clone())
+                .with_metrics(compaction_metrics.clone()),
+        );
         let executor = Arc::new(
             CompactionExecutor::new(
                 catalog_manager.clone(),
@@ -276,6 +279,14 @@ impl CompactorService {
     async fn run_compaction_cycle(&mut self) {
         tracing::debug!("Running compaction planning cycle");
 
+        // The declined-file counters are cumulative for the process lifetime,
+        // so snapshot them before planning and report only this cycle's delta
+        // below. Logging the raw totals would attribute every earlier cycle's
+        // declined files to this one, which is exactly backwards for the
+        // question the log exists to answer.
+        let deferred_before = self.compaction_metrics.deferred_open_partition_files();
+        let unclassifiable_before = self.compaction_metrics.unclassifiable_files();
+
         let candidates = match self.scheduler.schedule().await {
             Ok(candidates) => candidates,
             Err(e) => {
@@ -285,7 +296,22 @@ impl CompactorService {
         };
 
         if candidates.is_empty() {
-            tracing::info!("No compaction candidates found in this cycle");
+            // Report what *this* planning pass declined, so an empty cycle is
+            // distinguishable from one where every file was deferred to a
+            // still-open partition or excluded as unclassifiable.
+            let deferred = self
+                .compaction_metrics
+                .deferred_open_partition_files()
+                .saturating_sub(deferred_before);
+            let unclassifiable = self
+                .compaction_metrics
+                .unclassifiable_files()
+                .saturating_sub(unclassifiable_before);
+            tracing::info!(
+                deferred_open_partition_files = deferred,
+                unclassifiable_files = unclassifiable,
+                "No compaction candidates found in this cycle"
+            );
             return;
         }
 

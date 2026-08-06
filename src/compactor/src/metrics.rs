@@ -24,6 +24,8 @@ struct MetricsInner {
     bytes_before_compaction: AtomicU64,
     bytes_after_compaction: AtomicU64,
     total_duration_ms: AtomicU64,
+    deferred_open_partitions: AtomicUsize,
+    unclassifiable_files: AtomicUsize,
 }
 
 impl Default for CompactionMetrics {
@@ -47,8 +49,40 @@ impl CompactionMetrics {
                 bytes_before_compaction: AtomicU64::new(0),
                 bytes_after_compaction: AtomicU64::new(0),
                 total_duration_ms: AtomicU64::new(0),
+                deferred_open_partitions: AtomicUsize::new(0),
+                unclassifiable_files: AtomicUsize::new(0),
             }),
         }
+    }
+
+    /// Record data files skipped because their partition is still open.
+    ///
+    /// Deferral is expected steady-state behavior, not an error: the current
+    /// hour is always deferred. The counter exists so an operator can tell
+    /// "nothing to compact" apart from "everything is waiting on
+    /// `partition_lateness`".
+    pub fn record_deferred_open_partition_files(&self, count: usize) {
+        self.inner
+            .deferred_open_partitions
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Files skipped because their partition is still open.
+    pub fn deferred_open_partition_files(&self) -> usize {
+        self.inner.deferred_open_partitions.load(Ordering::Relaxed)
+    }
+
+    /// Record data files whose `timestamp_hour` partition could not be
+    /// determined, and which are therefore never compacted.
+    pub fn record_unclassifiable_files(&self, count: usize) {
+        self.inner
+            .unclassifiable_files
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Data files excluded from compaction as unclassifiable.
+    pub fn unclassifiable_files(&self) -> usize {
+        self.inner.unclassifiable_files.load(Ordering::Relaxed)
     }
 
     /// Record the start of a compaction job
@@ -180,6 +214,8 @@ impl CompactionMetrics {
             bytes_after_compaction: self.bytes_after_compaction(),
             compression_ratio: self.compression_ratio(),
             avg_duration_ms: self.avg_duration_ms(),
+            deferred_open_partition_files: self.deferred_open_partition_files(),
+            unclassifiable_files: self.unclassifiable_files(),
         }
     }
 
@@ -200,6 +236,10 @@ impl CompactionMetrics {
             .bytes_after_compaction
             .store(0, Ordering::Relaxed);
         self.inner.total_duration_ms.store(0, Ordering::Relaxed);
+        self.inner
+            .deferred_open_partitions
+            .store(0, Ordering::Relaxed);
+        self.inner.unclassifiable_files.store(0, Ordering::Relaxed);
     }
 }
 
@@ -217,6 +257,10 @@ pub struct MetricsSummary {
     pub bytes_after_compaction: u64,
     pub compression_ratio: f64,
     pub avg_duration_ms: f64,
+    /// Files skipped because their partition is still open.
+    pub deferred_open_partition_files: usize,
+    /// Files excluded from compaction as unclassifiable.
+    pub unclassifiable_files: usize,
 }
 
 impl MetricsSummary {
@@ -251,6 +295,14 @@ impl MetricsSummary {
             self.compression_ratio
         );
         tracing::info!("Average job duration: {:.2}ms", self.avg_duration_ms);
+        // Declined files are what separates "nothing to compact" from
+        // "everything is waiting on partition_lateness" or "everything is
+        // unclassifiable", so they belong in the same summary.
+        tracing::info!(
+            "Declined: {} files in still-open partitions, {} unclassifiable",
+            self.deferred_open_partition_files,
+            self.unclassifiable_files
+        );
     }
 }
 
