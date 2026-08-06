@@ -206,12 +206,12 @@ RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
 **Key Features:**
 
 - 3-tier retention policies (Global → Tenant → Dataset)
-- Per-signal type retention (traces/logs/metrics)
+- Per-signal type retention (traces/logs/metrics/profiles)
 - Automatic partition dropping
 - Snapshot expiration
 - Orphan file cleanup
 
-**Defaults:** the compactor and retention enforcement are enabled by default with `dry_run = false` and 30-day retention for traces, logs, and metrics — a default deployment deletes data older than 30 days. Set `[compactor.retention].enabled = false` for infinite retention. Orphan cleanup is also enabled by default (`dry_run = false`) and physically reclaims files no retained snapshot references — including unreferenced metadata files; set `[compactor.orphan_cleanup].enabled = false` to opt out.
+**Defaults:** the compactor and retention enforcement are enabled by default with `dry_run = false` and 30-day retention for traces, logs, metrics, and profiles — a default deployment deletes data older than 30 days. Set `[compactor.retention].enabled = false` for infinite retention. Orphan cleanup is also enabled by default (`dry_run = false`) and physically reclaims files no retained snapshot references — including unreferenced metadata files; set `[compactor.orphan_cleanup].enabled = false` to opt out.
 
 **Configuration Example:**
 

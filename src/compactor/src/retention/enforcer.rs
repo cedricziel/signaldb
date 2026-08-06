@@ -685,6 +685,10 @@ impl RetentionEnforcer {
 
     /// Get all signal tables for a tenant/dataset by listing the catalog
     /// namespace, so retention only touches tables that actually exist.
+    ///
+    /// Classification goes through [`SignalType::from_table_name`] — the one
+    /// predicate every lifecycle job shares — rather than a local name
+    /// allowlist that silently skipped whole signals (#1014).
     async fn get_tables(
         &self,
         tenant_id: &str,
@@ -705,12 +709,7 @@ impl RetentionEnforcer {
             .iter()
             .filter_map(|identifier| {
                 let name = identifier.name();
-                let signal_type = match name {
-                    "traces" => SignalType::Traces,
-                    "logs" => SignalType::Logs,
-                    n if n.starts_with("metrics") => SignalType::Metrics,
-                    _ => return None,
-                };
+                let signal_type = SignalType::from_table_name(name).ok()?;
                 Some((name.to_string(), signal_type))
             })
             .collect();
@@ -763,6 +762,7 @@ mod tests {
             traces: std::time::Duration::from_secs(7 * 86400), // 7 days
             logs: std::time::Duration::from_secs(30 * 86400),  // 30 days
             metrics: std::time::Duration::from_secs(90 * 86400), // 90 days
+            profiles: std::time::Duration::from_secs(14 * 86400), // 14 days
             tenant_overrides: HashMap::new(),
             grace_period: std::time::Duration::from_secs(3600), // 1 hour
             timezone: "UTC".to_string(),
@@ -849,6 +849,39 @@ mod tests {
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].0, "traces");
         assert_eq!(tables[0].1, SignalType::Traces);
+    }
+
+    /// #1014: `profiles` matched no arm of the old hardcoded filter, so it
+    /// received neither retention nor snapshot expiration and grew an
+    /// unbounded metadata backlog.
+    #[tokio::test]
+    async fn get_tables_covers_every_signal_table_including_profiles() {
+        let config = create_test_config();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let metrics = RetentionMetrics::new_mock();
+        let enforcer = RetentionEnforcer::new(catalog_manager.clone(), config, metrics).unwrap();
+
+        for table in ["traces", "logs", "metrics_gauge", "profiles"] {
+            catalog_manager
+                .ensure_table("test_tenant", "test_dataset", table)
+                .await
+                .unwrap();
+        }
+
+        let tables = enforcer
+            .get_tables("test_tenant", "test_dataset")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tables,
+            vec![
+                ("logs".to_string(), SignalType::Logs),
+                ("metrics_gauge".to_string(), SignalType::Metrics),
+                ("profiles".to_string(), SignalType::Profiles),
+                ("traces".to_string(), SignalType::Traces),
+            ]
+        );
     }
 
     #[test]

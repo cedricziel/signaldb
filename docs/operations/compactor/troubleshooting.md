@@ -290,6 +290,29 @@ curl -s localhost:9091/metrics | grep compactor_snapshots_expired_total
 
 **Solution:** Verify the compactor is fully deployed.
 
+3. **The Table Is Not Recognized As a Signal Table:**
+
+If a single table's snapshot count grows without bound while every other
+table in the same dataset falls to `snapshots_to_keep`, the lifecycle is not
+enumerating that table at all — it gets no retention, no snapshot expiration,
+and no orphan cleanup. Table membership is decided by one predicate
+(`SignalType::from_table_name`), listed under
+[Signal Type Mapping](configuration.md#global-retention-periods); a table name
+it does not classify is invisible to every lifecycle job.
+
+Compare per-table snapshot counts to spot the outlier:
+
+```bash
+for t in traces logs metrics_gauge profiles; do
+  echo -n "$t: "
+  jq '.snapshots | length' \
+    .data/storage/<tenant>/<dataset>/$t/metadata/*.metadata.json 2>/dev/null | tail -1
+done
+```
+
+**Solution:** This is a bug, not a misconfiguration — file an issue naming the
+table. `profiles` was affected until [#1014](https://github.com/cedricziel/signaldb/issues/1014).
+
 ## Orphan Cleanup Issues
 
 ### Issue 5: Orphan Files Not Being Deleted

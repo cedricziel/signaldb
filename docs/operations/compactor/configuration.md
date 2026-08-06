@@ -112,11 +112,12 @@ timezone = "America/New_York"  # For logging only
 
 Default retention periods for all tenants/datasets (unless overridden).
 
-| Field     | Type            | Default | Description           |
-| --------- | --------------- | ------- | --------------------- |
-| `traces`  | duration string | `"30d"` | Trace data retention  |
-| `logs`    | duration string | `"30d"` | Log data retention    |
-| `metrics` | duration string | `"30d"` | Metric data retention |
+| Field      | Type            | Default | Description            |
+| ---------- | --------------- | ------- | ---------------------- |
+| `traces`   | duration string | `"30d"` | Trace data retention   |
+| `logs`     | duration string | `"30d"` | Log data retention     |
+| `metrics`  | duration string | `"30d"` | Metric data retention  |
+| `profiles` | duration string | `"30d"` | Profile data retention |
 
 > **Warning:** Retention enforcement is enabled by default with `dry_run = false`, so a default deployment deletes data older than 30 days. To keep data indefinitely, set `[compactor.retention].enabled = false`; to keep it longer, raise the per-signal durations or use tenant/dataset overrides.
 
@@ -127,6 +128,7 @@ Default retention periods for all tenants/datasets (unless overridden).
 traces = "7d"
 logs = "30d"
 metrics = "90d"
+profiles = "14d"
 ```
 
 **Signal Type Mapping:**
@@ -134,6 +136,12 @@ metrics = "90d"
 - `traces` → `traces` table
 - `logs` → `logs` table
 - `metrics` → any table whose name starts with `metrics_` (`metrics_gauge`, `metrics_sum`, `metrics_histogram` by default)
+- `profiles` → `profiles` table
+
+This mapping is the single predicate deciding which catalog tables the
+lifecycle owns. A table it does not classify gets no retention, no snapshot
+expiration, and no orphan cleanup — which is how `profiles` accumulated an
+unbounded metadata backlog before [#1014](https://github.com/cedricziel/signaldb/issues/1014).
 
 #### Safety Settings
 
@@ -311,11 +319,11 @@ manifests of expired snapshots).
 
 #### Basic Settings
 
-| Field                    | Type   | Default | Description                                 |
-| ------------------------ | ------ | ------- | ------------------------------------------- |
-| `enabled`                | `bool` | `true`  | Enable orphan cleanup (on by default)       |
-| `dry_run`                | `bool` | `false` | When `true`, log orphans without deleting   |
-| `cleanup_interval_hours` | `u64`  | `24`    | Interval between cleanup runs (hours)       |
+| Field                    | Type   | Default | Description                               |
+| ------------------------ | ------ | ------- | ----------------------------------------- |
+| `enabled`                | `bool` | `true`  | Enable orphan cleanup (on by default)     |
+| `dry_run`                | `bool` | `false` | When `true`, log orphans without deleting |
+| `cleanup_interval_hours` | `u64`  | `24`    | Interval between cleanup runs (hours)     |
 
 **Example:**
 
@@ -484,6 +492,7 @@ SIGNALDB__COMPACTOR__RETENTION__TIMEZONE="UTC"
 SIGNALDB__COMPACTOR__RETENTION__TRACES=7d
 SIGNALDB__COMPACTOR__RETENTION__LOGS=30d
 SIGNALDB__COMPACTOR__RETENTION__METRICS=90d
+SIGNALDB__COMPACTOR__RETENTION__PROFILES=14d
 ```
 
 **Safety:**
@@ -675,7 +684,7 @@ Retention configuration is validated at startup: `RetentionConfig::validate` run
 
 ### Retention Validation
 
-- `traces`, `logs`, and `metrics` retention durations must be positive (non-zero) — globally and in every tenant/dataset override
+- `traces`, `logs`, `metrics`, and `profiles` retention durations must be positive (non-zero) — globally and in every tenant/dataset override
 - `grace_period` must not be negative
 
 No other retention fields are validated; there are no enforced value ranges, and `retention_check_interval` is not checked.

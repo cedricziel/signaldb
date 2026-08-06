@@ -65,6 +65,7 @@ async fn test_partition_drop_removes_old_partitions() -> Result<()> {
         traces: std::time::Duration::from_secs(3 * 3600), // 3 hours
         logs: std::time::Duration::from_secs(24 * 3600),
         metrics: std::time::Duration::from_secs(24 * 3600),
+        profiles: std::time::Duration::from_secs(24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(0), // No grace period for this test
         timezone: "UTC".to_string(),
@@ -238,6 +239,7 @@ async fn test_partition_drop_respects_grace_period() -> Result<()> {
         traces: std::time::Duration::from_secs(3 * 3600), // 3 hours
         logs: std::time::Duration::from_secs(24 * 3600),
         metrics: std::time::Duration::from_secs(24 * 3600),
+        profiles: std::time::Duration::from_secs(24 * 3600),
         tenant_overrides: HashMap::new(),
         // Partitions are dated by their Hour-transform bucket start
         // (`PartitionInfo.timestamp` = floor-to-hour), so a data point at
@@ -353,6 +355,7 @@ async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
         traces: std::time::Duration::from_secs(3 * 24 * 3600), // 3 days
         logs: std::time::Duration::from_secs(7 * 24 * 3600),   // 7 days
         metrics: std::time::Duration::from_secs(5 * 24 * 3600), // 5 days
+        profiles: std::time::Duration::from_secs(5 * 24 * 3600), // 5 days
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(0),
         timezone: "UTC".to_string(),
@@ -502,6 +505,7 @@ async fn test_partition_drop_preserves_partition_metadata() -> Result<()> {
         traces: std::time::Duration::from_secs(3 * 24 * 3600), // 3 days
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(7 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(7 * 24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(0),
         timezone: "UTC".to_string(),
@@ -622,6 +626,7 @@ async fn test_partition_drop_dry_run_mode() -> Result<()> {
         traces: std::time::Duration::from_secs(5 * 3600), // 5 hours
         logs: std::time::Duration::from_secs(24 * 3600),
         metrics: std::time::Duration::from_secs(24 * 3600),
+        profiles: std::time::Duration::from_secs(24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(0),
         timezone: "UTC".to_string(),

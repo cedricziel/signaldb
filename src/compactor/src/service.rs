@@ -30,7 +30,7 @@ use crate::metrics::CompactionMetrics;
 use crate::orphan::{OrphanCleaner, OrphanCleanupConfig, OrphanDetector};
 use crate::planner::{CompactionPlanner, PlannerConfig};
 use crate::retention::metrics::RetentionMetrics;
-use crate::retention::{RetentionConfig, RetentionEnforcer};
+use crate::retention::{RetentionConfig, RetentionEnforcer, SignalType};
 use crate::scheduler::RoundRobinScheduler;
 
 /// Enumerate the active tenants through the source-agnostic registry, logging
@@ -51,6 +51,11 @@ async fn active_tenants_or_empty(
 
 /// List the signal tables that actually exist in a dataset's namespace,
 /// so lifecycle jobs neither chase phantom tables nor skip real ones.
+///
+/// Membership is decided by [`SignalType::from_table_name`], shared with the
+/// retention enforcer, so every signal the schema registry can create is
+/// covered — a local name allowlist here left `profiles` with no orphan
+/// cleanup at all (#1014).
 async fn list_signal_tables(
     catalog_manager: &CatalogManager,
     tenant_id: &str,
@@ -68,7 +73,7 @@ async fn list_signal_tables(
     let mut tables: Vec<String> = identifiers
         .iter()
         .map(|identifier| identifier.name().to_string())
-        .filter(|name| name == "traces" || name == "logs" || name.starts_with("metrics"))
+        .filter(|name| SignalType::from_table_name(name).is_ok())
         .collect();
     tables.sort();
     Ok(tables)
@@ -636,14 +641,18 @@ mod tests {
         assert!(tables.is_empty(), "empty catalog must list no tables");
 
         // Only the tables that exist come back — including the metrics
-        // subtypes the old hardcoded list skipped.
-        for table in ["traces", "metrics_sum", "metrics_summary"] {
+        // subtypes the old hardcoded list skipped, and `profiles`, which
+        // the same list excluded from orphan cleanup entirely (#1014).
+        for table in ["traces", "metrics_sum", "metrics_summary", "profiles"] {
             catalog_manager.ensure_table("t", "d", table).await.unwrap();
         }
         let tables = list_signal_tables(&catalog_manager, "t", "d")
             .await
             .unwrap();
-        assert_eq!(tables, vec!["metrics_sum", "metrics_summary", "traces"]);
+        assert_eq!(
+            tables,
+            vec!["metrics_sum", "metrics_summary", "profiles", "traces"]
+        );
 
         // The phantom table from the old list cannot even be created.
         assert!(
