@@ -163,10 +163,19 @@ export function initTelemetry(): void {
     tracerProvider: provider,
     instrumentations: [
       getWebAutoInstrumentations({
-        // Same-origin API calls receive `traceparent` automatically; we do not
-        // set propagateTraceHeaderCorsUrls, so no headers leak to third-party
-        // (cross-origin) requests.
+        // Same-origin API calls (fetch and XHR) receive `traceparent`
+        // automatically; we do not set propagateTraceHeaderCorsUrls, so no
+        // headers leak to third-party (cross-origin) requests.
+        //
+        // clearTimingResources regularly clears the browser's
+        // PerformanceResourceTiming buffer (capped at 250 entries in Chrome,
+        // 150 in Safari), which each instrumentation reads to attach network
+        // timing to its spans — without it, timing data silently stops once
+        // the buffer fills.
         "@opentelemetry/instrumentation-fetch": { clearTimingResources: true },
+        "@opentelemetry/instrumentation-xml-http-request": {
+          clearTimingResources: true,
+        },
       }),
     ],
   });
