@@ -160,7 +160,15 @@ catalog_uri = "sqlite::memory:"          # In-memory (default, for dev/testing)
 
 > **Limitation**: Only SQLite is supported for the Iceberg catalog. PostgreSQL URIs are rejected. This is distinct from the service discovery catalog which supports both SQLite and PostgreSQL.
 
-For a file-backed catalog — both the `sqlite://<path>` and the on-disk `sqlite:file:<path>` URI forms — SignalDB enables **WAL journal mode** on the database before the catalog opens its connection pool (`enable_wal_on_sqlite_catalog` in `src/common/src/iceberg/mod.rs`); in-memory catalogs are left untouched. WAL lets readers proceed during a write and makes each write cheaper, so concurrent trace/log commits don't serialize behind an exclusive rollback-journal lock and stall first-time table creation. WAL adds `-wal`/`-shm` sidecar files next to `catalog.db`. The `iceberg-sql-catalog` pool exposes no connection options, so its `busy_timeout` stays at sqlx's 5s default; the service discovery catalog (`src/common/src/catalog.rs`), which we open directly, additionally sets a 30s `busy_timeout` and `synchronous = NORMAL`.
+Every connection the Iceberg catalog's pool opens is configured with the pragmas in `sqlite_session_statements` (`src/common/src/iceberg/mod.rs`):
+
+- `journal_mode = wal` — WAL lets readers proceed during a write and makes each write cheaper, so concurrent trace/log commits don't serialize behind an exclusive rollback-journal lock and stall first-time table creation. It adds `-wal`/`-shm` sidecar files next to `catalog.db`, and is a no-op on an in-memory database.
+- `busy_timeout = 30000` — sqlx's 5s default is short enough that a commit contending with a compaction gives up while the lock is still moving.
+- `synchronous = normal`.
+
+These match what the service discovery catalog (`src/common/src/catalog.rs`) sets. They cannot be carried on the DSN — sqlx's SQLite URL parser rejects `journal_mode`/`busy_timeout` as query parameters — so they are applied through the catalog's session statements ([JanKaul/iceberg-rust#386](https://github.com/JanKaul/iceberg-rust/pull/386)). Previously only `journal_mode` could be reached, by opening a throwaway connection before the pool and relying on WAL being a persistent property of the file; `busy_timeout` and `synchronous` never reached the pool's connections at all.
+
+The pool connects lazily, so the pragmas are applied on first use rather than at construction. Nothing touches the database in between.
 
 ### Metadata retention
 
