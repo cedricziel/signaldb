@@ -3,6 +3,7 @@
 //! Provides both PostgreSQL-backed and in-memory catalog contexts for tests.
 
 use anyhow::Result;
+use common::catalog::Catalog;
 use common::catalog_manager::CatalogManager;
 use std::sync::Arc;
 
@@ -39,6 +40,25 @@ impl CatalogTestContext {
     /// this may be extended to support PostgreSQL via testcontainers.
     pub async fn new() -> Result<Self> {
         Self::new_in_memory().await
+    }
+
+    /// Creates an in-memory catalog wired with a database `Catalog` as the
+    /// additional tenant source, so `list_active_tenants()` (the registry
+    /// consumers like the compactor drive lifecycle off) returns the union of
+    /// config-defined and database-created tenants. Use this to test
+    /// registry-driven behavior for a tenant that exists only in the
+    /// database, with no `[[auth.tenants]]` config entry.
+    pub async fn new_in_memory_with_tenant_source(tenant_source: Arc<Catalog>) -> Result<Self> {
+        let catalog_manager = Arc::new(
+            CatalogManager::new_in_memory()
+                .await?
+                .with_tenant_source(tenant_source),
+        );
+
+        Ok(Self {
+            catalog_manager,
+            _storage_mode: StorageMode::InMemory,
+        })
     }
 }
 

@@ -10,12 +10,14 @@
 //! filtering slip through undetected.
 
 use anyhow::Result;
+use common::catalog::Catalog;
 use compactor::retention::config::{
     DatasetRetentionConfig, RetentionConfig, TenantRetentionConfig,
 };
 use compactor::retention::enforcer::RetentionEnforcer;
 use compactor::retention::metrics::RetentionMetrics;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tests_integration::fixtures::{
     DataGeneratorConfig, PartitionGranularity, RetentionTestContext,
 };
@@ -523,6 +525,117 @@ async fn test_retention_with_clock_skew() -> Result<()> {
          a higher fraction suggests future-dated partitions were incorrectly dropped",
         result.total_partitions_dropped,
         evaluated
+    );
+
+    Ok(())
+}
+
+/// Test 1.6: A database-sourced tenant's over-age data is selected under the
+/// resolved retention policy (`unified-tenant-catalog-registry` tasks.md 5.3).
+///
+/// The compactor's retention cycle (`CompactorService::run_retention_cycle`)
+/// enumerates tenants through `CatalogManager::list_active_tenants` — the
+/// same source-agnostic registry the planner already proved reaches database
+/// tenants (`plan_enumerates_database_tenants` in planner.rs). This test
+/// closes the equivalent gap for retention: a tenant that exists ONLY in the
+/// database (admin-API created, `source = "database"`, no `[[auth.tenants]]`
+/// config entry) must be both *discoverable* through that same registry call
+/// and have its over-age data *actually selected* when
+/// `RetentionEnforcer::enforce_retention` runs for the tenant/dataset pair
+/// the registry returned — exactly how the retention loop drives it.
+#[tokio::test]
+async fn test_retention_for_database_sourced_tenant() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+
+    const DB_TENANT: &str = "gamma-tenant";
+    const DB_DATASET: &str = "production";
+
+    // A tenant that exists only in the database, with no config block.
+    let source = Arc::new(Catalog::new_in_memory().await?);
+    source
+        .upsert_tenant(DB_TENANT, "Gamma Tenant", Some(DB_DATASET), "database")
+        .await?;
+    source.create_dataset(DB_TENANT, DB_DATASET).await?;
+
+    let ctx = RetentionTestContext::new_in_memory_with_tenant_source(source).await?;
+
+    let mut writer = ctx.create_table(DB_TENANT, DB_DATASET, "traces").await?;
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let thirty_days_ago = now - (30 * 24 * 60 * 60 * 1000);
+
+    let config = DataGeneratorConfig {
+        partition_count: 30,
+        files_per_partition: 2,
+        rows_per_file: 50,
+        base_timestamp: thirty_days_ago,
+        partition_granularity: PartitionGranularity::Day,
+    };
+    generators::generate_traces(&mut writer, &config).await?;
+
+    // The database tenant must be discoverable through the same registry
+    // enumeration the retention loop drives off — not just resolvable when
+    // addressed directly by ID.
+    let active_tenants = ctx.catalog_manager().list_active_tenants().await?;
+    let resolved = active_tenants
+        .iter()
+        .find(|t| t.id == DB_TENANT)
+        .expect("database-sourced tenant must be enumerated by the registry");
+    assert!(
+        resolved.datasets.iter().any(|d| d.id == DB_DATASET),
+        "expected the database tenant's dataset to be resolved: {:?}",
+        resolved.datasets
+    );
+
+    // 14-day retention over 30 days of data: some must be dropped, some retained.
+    let retention_config = RetentionConfig {
+        enabled: true,
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        traces: std::time::Duration::from_secs(14 * 24 * 3600),
+        logs: std::time::Duration::from_secs(7 * 24 * 3600),
+        metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(30 * 24 * 3600),
+        tenant_overrides: HashMap::new(),
+        grace_period: std::time::Duration::from_secs(1),
+        timezone: "UTC".to_string(),
+        dry_run: true,
+        snapshots_to_keep: Some(10),
+    };
+
+    let metrics = RetentionMetrics::new();
+    let enforcer =
+        RetentionEnforcer::new(ctx.catalog_manager().clone(), retention_config, metrics)?;
+
+    // Act: enforce retention exactly as the loop does — using the
+    // tenant/dataset IDs the registry resolved, not hardcoded strings.
+    let result = enforcer.enforce_retention(&resolved.id, DB_DATASET).await?;
+
+    tracing::info!(
+        "Database tenant retention: {} dropped of {} evaluated",
+        result.total_partitions_dropped,
+        result
+            .table_results
+            .first()
+            .map(|r| r.partitions_evaluated)
+            .unwrap_or(0)
+    );
+
+    assert_eq!(result.table_results.len(), 1);
+    let table_result = &result.table_results[0];
+
+    assert!(
+        table_result.partitions_dropped > 0,
+        "expected at least one partition older than the 14-day cutoff to be dropped for the \
+         database tenant, got 0 of {}",
+        table_result.partitions_evaluated
+    );
+    assert!(
+        table_result.partitions_dropped < table_result.partitions_evaluated,
+        "expected some partitions to be retained, but all {} were dropped",
+        table_result.partitions_evaluated
     );
 
     Ok(())

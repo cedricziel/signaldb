@@ -71,10 +71,15 @@ is_default }], default_dataset, enabled }`. Make 1.1–1.3 pass.
 - [x] 5.2 Route `CompactionPlanner::plan` (planner.rs) and the retention /
       orphan-cleanup loops (main.rs:468/514/527) through the registry. Make 5.1
       pass.
-- [ ] 5.3 (Deferred) Add a retention test that a database tenant's over-age
-      data is selected under the resolved policy. Not yet written — the
-      retention loops live in a `select!` cycle in `main.rs`, so this needs a
-      full over-age-data fixture rather than a unit test.
+- [x] 5.3 Add a retention test that a database tenant's over-age data is
+      selected under the resolved policy
+      (`tests-integration/tests/compactor/retention_cutoff.rs`,
+      `test_retention_for_database_sourced_tenant`): a `source="database"`
+      tenant with no config entry is enumerated via
+      `CatalogManager::list_active_tenants` (the same call
+      `CompactorService::run_retention_cycle` drives off) and its 30-day-old
+      data is partially dropped under a 14-day policy via
+      `RetentionEnforcer::enforce_retention`.
 
 ## 6. Cross-service integration coverage (`tests-integration`)
 
