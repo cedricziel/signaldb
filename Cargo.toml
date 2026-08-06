@@ -102,12 +102,13 @@ object_store = { version = "0.13.2", features = ["aws"] }
 #   JanKaul/iceberg-rust#382 — reclaim superseded metadata files on commit
 #   JanKaul/iceberg-rust#383 — zero, not absent, added counts on a filtered manifest
 #   JanKaul/iceberg-rust#384 — report a conflict when the metadata swap matches no rows
+#   JanKaul/iceberg-rust#385 — honor the write.metadata.metrics.* table properties
 #
 # Drop a commit from the branch as its PR merges; revert to JanKaul/iceberg-rust
 # once the branch is empty.
-datafusion_iceberg = { git = "https://github.com/cedricziel/iceberg-rust", rev = "0accdfda08dedeb6cbf5eafb55498aeb07817ea0" }
-iceberg-rust = { git = "https://github.com/cedricziel/iceberg-rust", rev = "0accdfda08dedeb6cbf5eafb55498aeb07817ea0" }
-iceberg-sql-catalog = { git = "https://github.com/cedricziel/iceberg-rust", rev = "0accdfda08dedeb6cbf5eafb55498aeb07817ea0" }
+datafusion_iceberg = { git = "https://github.com/cedricziel/iceberg-rust", rev = "158cbf09f42a26673cef98d91afef96774d1d2b3" }
+iceberg-rust = { git = "https://github.com/cedricziel/iceberg-rust", rev = "158cbf09f42a26673cef98d91afef96774d1d2b3" }
+iceberg-sql-catalog = { git = "https://github.com/cedricziel/iceberg-rust", rev = "158cbf09f42a26673cef98d91afef96774d1d2b3" }
 
 tonic = { version = "0.14.2", features = ["transport", "channel", "gzip", "zstd"] }
 tonic-build = "0.14.2"

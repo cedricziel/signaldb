@@ -119,6 +119,42 @@ pub fn bloom_filter_properties_for_labels(labels: &[String]) -> Vec<(String, Str
         .collect()
 }
 
+/// Free-text columns whose min/max bounds can never prune a scan.
+///
+/// Iceberg stores a column's bounds inline in the manifest entry of every data
+/// file, so a bound is a permanent per-file cost paid on every query plan. For
+/// these columns nothing ever pays it back: no query compares them by range.
+/// `body` and `status_message` are matched by substring or regex, and
+/// `exemplars` is a JSON blob read whole or not at all.
+///
+/// The columns are listed per signal because the schemas do not share names;
+/// a column absent from a table simply has no effect there.
+pub const UNBOUNDED_FREE_TEXT_COLUMNS: [&str; 3] = ["body", "status_message", "exemplars"];
+
+/// Metrics-mode table properties for the free-text columns of a signal.
+///
+/// Emits `write.metadata.metrics.column.<col> = "counts"` for each column in
+/// [`UNBOUNDED_FREE_TEXT_COLUMNS`] present in `columns`: value and null counts
+/// are still collected — the planner uses those for cardinality estimates —
+/// but the useless bounds are dropped.
+///
+/// Every other column keeps the default `truncate(16)`, which iceberg-rust
+/// applies without a property.
+pub fn metrics_properties_for_free_text_columns(columns: &[String]) -> Vec<(String, String)> {
+    use iceberg_rust::spec::table_metadata::WRITE_METADATA_METRICS_COLUMN_PREFIX;
+
+    UNBOUNDED_FREE_TEXT_COLUMNS
+        .iter()
+        .filter(|column| columns.iter().any(|present| present == *column))
+        .map(|column| {
+            (
+                format!("{WRITE_METADATA_METRICS_COLUMN_PREFIX}{column}"),
+                "counts".to_string(),
+            )
+        })
+        .collect()
+}
+
 /// Embedded schema definitions from schemas.toml
 pub const SCHEMA_DEFINITIONS_TOML: &str = include_str!("../../../../schemas.toml");
 
@@ -315,6 +351,56 @@ mod tests {
     use super::*;
     use crate::config::{DefaultSchemas, SchemaConfig, TenantSchemaConfig, TenantsConfig};
     use std::collections::HashMap;
+
+    /// Bounds on a free-text column are dead weight in every manifest entry,
+    /// so those columns opt down to counts. Counts stay: the planner uses them.
+    #[test]
+    fn metrics_properties_drop_bounds_for_free_text_columns() {
+        let columns = vec![
+            "timestamp".to_string(),
+            "body".to_string(),
+            "service_name".to_string(),
+        ];
+        let properties = metrics_properties_for_free_text_columns(&columns);
+
+        assert_eq!(
+            properties,
+            vec![(
+                "write.metadata.metrics.column.body".to_string(),
+                "counts".to_string()
+            )]
+        );
+    }
+
+    /// A column the signal does not have must not produce a property; a
+    /// property naming an absent column is noise in the table metadata.
+    #[test]
+    fn metrics_properties_skip_columns_the_table_lacks() {
+        let traces = vec!["trace_id".to_string(), "status_message".to_string()];
+        let properties = metrics_properties_for_free_text_columns(&traces);
+
+        assert_eq!(
+            properties,
+            vec![(
+                "write.metadata.metrics.column.status_message".to_string(),
+                "counts".to_string()
+            )]
+        );
+        assert!(metrics_properties_for_free_text_columns(&[]).is_empty());
+    }
+
+    /// Columns that queries actually prune on must keep their bounds — this is
+    /// the whole reason the list is explicit rather than "every string column".
+    #[test]
+    fn metrics_properties_leave_prunable_columns_alone() {
+        let columns = vec![
+            "timestamp".to_string(),
+            "service_name".to_string(),
+            "trace_id".to_string(),
+            "label_http_method".to_string(),
+        ];
+        assert!(metrics_properties_for_free_text_columns(&columns).is_empty());
+    }
 
     #[test]
     fn materialized_column_name_sanitizes_and_prefixes() {
