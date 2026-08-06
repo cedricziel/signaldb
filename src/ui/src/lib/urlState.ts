@@ -1,7 +1,9 @@
-// Every explore view is a URL: signal, time range, filters, and options all
-// live in search params so views are deep-linkable and shareable.
+// Every explore view is a URL: the signal lives in the path (/logs, /traces,
+// ...) so views are separately navigable and bookmarkable; time range,
+// filters, and other options live in search params alongside it.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
+import { useLocation, useNavigate, useParams } from "react-router";
 import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
 import { DEFAULT_GROUP_BY } from "./traceGroups";
 import {
@@ -59,17 +61,30 @@ export const DEFAULT_STATE: ExploreState = {
   dataset: "",
 };
 
-const SIGNALS: Signal[] = ["logs", "traces", "metrics", "profiles", "query"];
+export const SIGNALS: Signal[] = [
+  "logs",
+  "traces",
+  "metrics",
+  "profiles",
+  "query",
+];
 
+/** Maps a `:signal` route param to a known signal, defaulting invalid/missing values to "logs". */
+export function signalFromParam(value: string | undefined): Signal {
+  return value && SIGNALS.includes(value as Signal)
+    ? (value as Signal)
+    : "logs";
+}
+
+/**
+ * Parses the search-param half of explore state (everything but the signal,
+ * which comes from the route path — see {@link signalFromParam}).
+ */
 export function parseExploreState(search: string): ExploreState {
   const p = new URLSearchParams(search);
-  const signalParam = p.get("signal");
-  const signal = SIGNALS.includes(signalParam as Signal)
-    ? (signalParam as Signal)
-    : "logs";
   const limit = Number(p.get("limit"));
   return {
-    signal,
+    signal: "logs",
     range: parseRangeParam(p.get("range")),
     filters: p
       .getAll("f")
@@ -92,7 +107,6 @@ export function parseExploreState(search: string): ExploreState {
 
 export function buildSearch(state: ExploreState): string {
   const p = new URLSearchParams();
-  if (state.signal !== "logs") p.set("signal", state.signal);
   const rangeParam = rangeToParam(state.range);
   if (rangeParam !== rangeToParam(DEFAULT_RANGE)) p.set("range", rangeParam);
   for (const f of state.filters) p.append("f", filterToParam(f));
@@ -113,33 +127,35 @@ export function buildSearch(state: ExploreState): string {
 }
 
 /**
- * URL-backed state. Updates use replaceState (queries as you refine are one
- * history entry); browser back/forward still works across externally
- * navigated URLs via popstate.
+ * URL-backed state: the signal comes from the route's `:signal` path segment
+ * (must be rendered under a matching route — see `routes.tsx`), everything
+ * else from search params. Updates replace the current history entry
+ * (queries as you refine are one entry) and switch path when the signal
+ * changes; browser back/forward still works across externally navigated
+ * URLs since it all flows through the router.
  */
 export function useExploreState(): [
   ExploreState,
   (patch: Partial<ExploreState>) => void,
 ] {
-  const [state, setState] = useState<ExploreState>(() =>
-    parseExploreState(window.location.search),
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { signal: signalParam } = useParams<{ signal?: string }>();
+  const state: ExploreState = {
+    ...parseExploreState(location.search),
+    signal: signalFromParam(signalParam),
+  };
+
+  const update = useCallback(
+    (patch: Partial<ExploreState>) => {
+      const next = { ...state, ...patch };
+      navigate(`/${next.signal}${buildSearch(next)}`, { replace: true });
+    },
+    // `state` is recomputed each render from location.search/signalParam, so
+    // depending on those (not `state` itself) still recreates `update`
+    // exactly when its captured `state` would otherwise go stale.
+    [navigate, location.search, signalParam],
   );
-
-  useEffect(() => {
-    const onPop = () => setState(parseExploreState(window.location.search));
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, []);
-
-  const update = useCallback((patch: Partial<ExploreState>) => {
-    setState((prev) => {
-      const next = { ...prev, ...patch };
-      const search = buildSearch(next);
-      const url = `${window.location.pathname}${search}`;
-      window.history.replaceState(null, "", url);
-      return next;
-    });
-  }, []);
 
   return [state, update];
 }

@@ -31,10 +31,12 @@
 }
 
 .manage-trigger {
+  display: inline-block;
   margin-left: auto;
   padding: 4px 10px;
   color: var(--dim);
   font-size: 12px;
+  text-decoration: none;
   border: 1px solid var(--border);
   border-radius: 5px;
 }
