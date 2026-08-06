@@ -236,50 +236,93 @@ impl Span {
 ///
 /// The input `span_map` is consumed and mutated in place so that parent spans
 /// contain their children.
-pub fn build_span_hierarchy(mut span_map: HashMap<String, Span>) -> Vec<Span> {
+pub fn build_span_hierarchy(span_map: HashMap<String, Span>) -> Vec<Span> {
     use std::collections::HashSet;
 
-    // Collect parent-child relationships
-    let mut parent_child_pairs = Vec::new();
+    // Adjacency list: parent span id -> child span ids, siblings ordered by
+    // start time (span id as the tie-break) so the output is deterministic.
+    let mut children_ids: HashMap<&str, Vec<&Span>> = HashMap::new();
     for span in span_map.values() {
         if !is_root_parent_id(&span.parent_span_id) {
-            parent_child_pairs.push((span.parent_span_id.clone(), span.span_id.clone()));
-        }
-    }
-
-    // Group children by parent
-    let mut child_spans: HashMap<String, Vec<Span>> = HashMap::new();
-    for (parent_span_id, span_id) in parent_child_pairs {
-        if let Some(child_span) = span_map.get(&span_id) {
-            child_spans
-                .entry(parent_span_id)
+            children_ids
+                .entry(span.parent_span_id.as_str())
                 .or_default()
-                .push(child_span.clone());
+                .push(span);
         }
     }
-
-    // Attach children to parents; track orphan span IDs whose parent is missing
-    let mut orphan_ids: HashSet<String> = HashSet::new();
-    for (parent_span_id, children) in child_spans {
-        if let Some(parent_span) = span_map.get_mut(&parent_span_id) {
-            parent_span.children.extend(children);
-        } else {
-            // Parent not in span_map — treat these children as roots
-            for child in &children {
-                orphan_ids.insert(child.span_id.clone());
-            }
-        }
+    for children in children_ids.values_mut() {
+        children.sort_by(|a, b| {
+            a.start_time_unix_nano
+                .cmp(&b.start_time_unix_nano)
+                .then_with(|| a.span_id.cmp(&b.span_id))
+        });
     }
 
-    // Collect root spans (explicitly marked, zero-parent, or orphaned)
-    span_map
-        .into_values()
+    // Copy a span with its whole descendant subtree attached. The visited
+    // set guards against parent-id cycles in malformed data (and keeps a
+    // span claimed by several parents from being duplicated).
+    fn build_subtree<'a>(
+        span: &'a Span,
+        children_ids: &HashMap<&str, Vec<&'a Span>>,
+        visited: &mut HashSet<&'a str>,
+    ) -> Option<Span> {
+        if !visited.insert(&span.span_id) {
+            return None;
+        }
+        let mut copy = span.clone();
+        copy.children = children_ids
+            .get(span.span_id.as_str())
+            .map(|children| {
+                children
+                    .iter()
+                    .filter_map(|child| build_subtree(child, children_ids, visited))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(copy)
+    }
+
+    // Roots: explicitly marked, zero-parent, or orphaned (parent id not in
+    // the map). Ordered like siblings, for deterministic output.
+    let mut root_spans: Vec<&Span> = span_map
+        .values()
         .filter(|span| {
             span.is_root
                 || is_root_parent_id(&span.parent_span_id)
-                || orphan_ids.contains(&span.span_id)
+                || !span_map.contains_key(&span.parent_span_id)
         })
-        .collect()
+        .collect();
+    root_spans.sort_by(|a, b| {
+        a.start_time_unix_nano
+            .cmp(&b.start_time_unix_nano)
+            .then_with(|| a.span_id.cmp(&b.span_id))
+    });
+
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut roots: Vec<Span> = root_spans
+        .into_iter()
+        .filter_map(|span| build_subtree(span, &children_ids, &mut visited))
+        .collect();
+
+    // Any span still unvisited sits in a parent-id cycle no root reaches.
+    // Break each cycle at its earliest-starting span so the data still
+    // surfaces instead of silently vanishing from the trace.
+    let mut unvisited: Vec<&Span> = span_map
+        .values()
+        .filter(|span| !visited.contains(span.span_id.as_str()))
+        .collect();
+    unvisited.sort_by(|a, b| {
+        a.start_time_unix_nano
+            .cmp(&b.start_time_unix_nano)
+            .then_with(|| a.span_id.cmp(&b.span_id))
+    });
+    for span in unvisited {
+        if let Some(root) = build_subtree(span, &children_ids, &mut visited) {
+            roots.push(root);
+        }
+    }
+
+    roots
 }
 
 /// Returns true if the parent span ID indicates a root span (empty or the zero sentinel).
@@ -466,6 +509,107 @@ impl From<&RecordBatch> for SpanBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chain_span(span_id: &str, parent_span_id: &str, start: u64) -> Span {
+        Span {
+            trace_id: "trace".to_string(),
+            span_id: span_id.to_string(),
+            parent_span_id: parent_span_id.to_string(),
+            status: SpanStatus::Ok,
+            is_root: parent_span_id.is_empty(),
+            name: span_id.to_string(),
+            service_name: "svc".to_string(),
+            span_kind: SpanKind::Internal,
+            start_time_unix_nano: start,
+            duration_nano: 1,
+            attributes: HashMap::new(),
+            resource: HashMap::new(),
+            children: vec![],
+            events: vec![],
+        }
+    }
+
+    fn span_map(spans: Vec<Span>) -> HashMap<String, Span> {
+        spans
+            .into_iter()
+            .map(|span| (span.span_id.clone(), span))
+            .collect()
+    }
+
+    /// Count every span reachable from the returned roots.
+    fn count_spans(spans: &[Span]) -> usize {
+        spans
+            .iter()
+            .map(|span| 1 + count_spans(&span.children))
+            .sum()
+    }
+
+    #[test]
+    fn hierarchy_preserves_spans_deeper_than_the_roots_children() {
+        // root -> a -> b -> c: every span must be reachable from the root.
+        let map = span_map(vec![
+            chain_span("root", "", 0),
+            chain_span("a", "root", 1),
+            chain_span("b", "a", 2),
+            chain_span("c", "b", 3),
+        ]);
+
+        let roots = build_span_hierarchy(map);
+        assert_eq!(roots.len(), 1, "one root expected");
+        assert_eq!(
+            count_spans(&roots),
+            4,
+            "grandchildren must not be dropped from the hierarchy"
+        );
+        let a = &roots[0].children[0];
+        assert_eq!(a.span_id, "a");
+        let b = &a.children[0];
+        assert_eq!(b.span_id, "b");
+        assert_eq!(b.children[0].span_id, "c");
+    }
+
+    #[test]
+    fn hierarchy_promotes_orphan_subtrees_to_roots() {
+        // Parent "lost" is not in the map: its child becomes a root but
+        // keeps its own descendants.
+        let map = span_map(vec![
+            chain_span("orphan", "lost", 5),
+            chain_span("leaf", "orphan", 6),
+        ]);
+
+        let roots = build_span_hierarchy(map);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].span_id, "orphan");
+        assert_eq!(roots[0].children.len(), 1);
+        assert_eq!(roots[0].children[0].span_id, "leaf");
+    }
+
+    #[test]
+    fn hierarchy_orders_siblings_by_start_time() {
+        let map = span_map(vec![
+            chain_span("root", "", 0),
+            chain_span("late", "root", 20),
+            chain_span("early", "root", 10),
+        ]);
+
+        let roots = build_span_hierarchy(map);
+        let children: Vec<&str> = roots[0]
+            .children
+            .iter()
+            .map(|s| s.span_id.as_str())
+            .collect();
+        assert_eq!(children, vec!["early", "late"]);
+    }
+
+    #[test]
+    fn hierarchy_survives_parent_cycles() {
+        // Malformed data: x and y claim each other as parents. Both must
+        // surface (as roots of broken subtrees) without infinite recursion.
+        let map = span_map(vec![chain_span("x", "y", 1), chain_span("y", "x", 2)]);
+
+        let roots = build_span_hierarchy(map);
+        assert_eq!(count_spans(&roots), 2, "both spans must survive a cycle");
+    }
 
     #[test]
     fn test_span() {
