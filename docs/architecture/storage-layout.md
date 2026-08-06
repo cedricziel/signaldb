@@ -160,13 +160,15 @@ catalog_uri = "sqlite::memory:"          # In-memory (default, for dev/testing)
 
 > **Limitation**: Only SQLite is supported for the Iceberg catalog. PostgreSQL URIs are rejected. This is distinct from the service discovery catalog which supports both SQLite and PostgreSQL.
 
-Every connection the Iceberg catalog's pool opens is configured with the pragmas in `sqlite_session_statements` (`src/common/src/iceberg/mod.rs`):
+Every connection the Iceberg catalog's pool opens gets three pragmas, set in two places:
 
-- `journal_mode = wal` — WAL lets readers proceed during a write and makes each write cheaper, so concurrent trace/log commits don't serialize behind an exclusive rollback-journal lock and stall first-time table creation. It adds `-wal`/`-shm` sidecar files next to `catalog.db`, and is a no-op on an in-memory database.
-- `busy_timeout = 30000` — sqlx's 5s default is short enough that a commit contending with a compaction gives up while the lock is still moving.
-- `synchronous = normal`.
+| Pragma                 | Set by                                                                        | Why                                                                                                                                                                                                                                                                                      |
+| ---------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `journal_mode = wal`   | the catalog itself ([#381](https://github.com/JanKaul/iceberg-rust/pull/381)) | WAL lets readers proceed during a write and makes each write cheaper, so concurrent trace/log commits don't serialize behind an exclusive rollback-journal lock and stall first-time table creation. Adds `-wal`/`-shm` sidecars next to `catalog.db`; a no-op on an in-memory database. |
+| `busy_timeout = 30000` | the catalog itself ([#381](https://github.com/JanKaul/iceberg-rust/pull/381)) | sqlx's 5s default is short enough that a commit contending with a compaction gives up while the lock is still moving.                                                                                                                                                                    |
+| `synchronous = normal` | SignalDB, via `sqlite_session_statements` (`src/common/src/iceberg/mod.rs`)   | Under WAL this skips an fsync per commit while staying crash-safe.                                                                                                                                                                                                                       |
 
-These match what the service discovery catalog (`src/common/src/catalog.rs`) sets. They cannot be carried on the DSN — sqlx's SQLite URL parser rejects `journal_mode`/`busy_timeout` as query parameters — so they are applied through the catalog's session statements ([JanKaul/iceberg-rust#386](https://github.com/JanKaul/iceberg-rust/pull/386)). Previously only `journal_mode` could be reached, by opening a throwaway connection before the pool and relying on WAL being a persistent property of the file; `busy_timeout` and `synchronous` never reached the pool's connections at all.
+Together these match what the service discovery catalog (`src/common/src/catalog.rs`) sets. Pragmas cannot be carried on the DSN — sqlx's SQLite URL parser rejects them as query parameters — so they have to be set on the connection; SignalDB reaches them through the catalog's session-statement support ([#386](https://github.com/JanKaul/iceberg-rust/pull/386), currently a fork pin). Session statements run _after_ the catalog's own, so SignalDB could override a default if it ever needed to; today it only adds.
 
 The pool connects lazily, so the pragmas are applied on first use rather than at construction. Nothing touches the database in between.
 
@@ -430,6 +432,26 @@ ingest and compaction output carry the filters. Enabled columns:
 - **logs** — the derived `attr_tokens` list leaf (`key=value` containment) and
   every materialized `label_<key>` column.
 - **all signals** — every materialized `label_<key>` column.
+
+The traces columns additionally carry
+`write.parquet.bloom-filter-fpp.column.<col> = "0.01"`. A filter is sized from
+its target false-positive probability, and Parquet's `0.05` default means one
+row group in twenty is read for nothing — for a single-trace lookup, that
+wasted read _is_ the query. `0.01` cuts it five-fold for a filter roughly 40%
+larger.
+
+### Parquet compression
+
+Every table records `write.parquet.compression-codec = "zstd"` and
+`write.parquet.compression-level = "1"`
+(`common::schema::compression_properties`). Level 1 is what files have always
+been written at; iceberg-rust's `CreateTableBuilder` recorded level 3 in table
+metadata while the writer hardcoded level 1, so the metadata described a file
+that was never written. Now that the writer honors these properties
+([JanKaul/iceberg-rust#387](https://github.com/JanKaul/iceberg-rust/pull/387)),
+pinning the level keeps the bytes identical and makes the metadata true.
+Raising it trades ingest CPU for storage and is worth measuring rather than
+inheriting by accident.
 
 The properties are metadata set at **creation time**: a table created before a
 column was added to the enabled set does not gain the filter retroactively

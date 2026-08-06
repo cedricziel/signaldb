@@ -206,6 +206,7 @@ impl IcebergTableManager {
         let mut properties: std::collections::HashMap<String, String> =
             bloom_properties.into_iter().collect();
         properties.extend(metrics_properties);
+        properties.extend(crate::schema::compression_properties());
         properties.insert(DELETE_AFTER_COMMIT_KEY.to_string(), "true".to_string());
         properties.insert(
             PREVIOUS_VERSIONS_MAX_KEY.to_string(),

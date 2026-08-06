@@ -139,28 +139,23 @@ pub async fn create_sql_catalog(
     create_sql_catalog_with_builder(catalog_uri, catalog_name, object_store_builder).await
 }
 
-/// Pragmas applied to every connection the Iceberg catalog's pool opens.
+/// Extra pragmas applied to every connection the Iceberg catalog's pool opens.
 ///
-/// Under the site's trace+log commit volume the default rollback journal
-/// serializes writers and blocks readers, which is what makes first-time
-/// metric-table creation time out (see the `iceberg_tables` slow-statement
-/// warnings). WAL lets readers proceed during a write and makes each write
-/// cheaper, so the writer's `do_put` no longer exhausts its deadline. The
-/// `busy_timeout` matters just as much: sqlx's 5s default is short enough that
-/// a commit contending with a compaction gives up while the lock is still
-/// moving. This matches what `src/common/src/catalog.rs` sets on the service
-/// discovery catalog, which we open directly.
+/// The catalog itself already sets `journal_mode = wal` and
+/// `busy_timeout = 30000` on every SQLite connection
+/// ([JanKaul/iceberg-rust#381](https://github.com/JanKaul/iceberg-rust/pull/381)),
+/// which is what keeps concurrent trace/log commits from serializing behind an
+/// exclusive rollback-journal lock and stalling first-time table creation. This
+/// adds the one setting it does not: `synchronous = normal`, which under WAL
+/// skips an fsync per commit while still being crash-safe, and matches what
+/// `src/common/src/catalog.rs` sets on the service discovery catalog.
 ///
-/// These cannot be carried on the DSN — sqlx's SQLite URL parser rejects
-/// `journal_mode`/`busy_timeout` as query parameters — so they have to be set
-/// on the connection. `journal_mode = wal` is a no-op on an in-memory database
-/// rather than an error, so the same statements apply to every SQLite catalog.
+/// Pragmas cannot be carried on the DSN — sqlx's SQLite URL parser rejects them
+/// as query parameters — so they have to be set on the connection. Caller
+/// statements run after the catalog's own, so this could also override a
+/// default if we ever needed to.
 fn sqlite_session_statements() -> Vec<String> {
-    vec![
-        "pragma journal_mode = wal".to_string(),
-        "pragma synchronous = normal".to_string(),
-        "pragma busy_timeout = 30000".to_string(),
-    ]
+    vec!["pragma synchronous = normal".to_string()]
 }
 
 /// Connection options for a SQLite-backed Iceberg catalog.
@@ -342,32 +337,25 @@ mod tests {
         assert_eq!(pragma(&uri, "journal_mode").await.to_lowercase(), "wal");
     }
 
-    /// `busy_timeout` is per-connection, so it only takes effect if it is set on
-    /// the catalog's own pooled connections. It could not be reached at all
-    /// before the pool exposed session statements, leaving the catalog on
-    /// sqlx's 5s default -- short enough that a commit contending with a
-    /// compaction gives up while the lock is still moving.
+    /// We add only what the catalog does not already set for itself. Repeating
+    /// its `journal_mode`/`busy_timeout` would be harmless but would hide which
+    /// component owns the setting, and would drift silently if it ever changed
+    /// them.
     #[test]
-    fn sqlite_session_statements_cover_the_pragmas_the_catalog_needs() {
+    fn sqlite_session_statements_add_only_what_the_catalog_does_not_set() {
         let statements = sqlite_session_statements();
 
         assert!(
             statements
                 .iter()
-                .any(|s| s.contains("journal_mode") && s.contains("wal")),
-            "WAL journaling must be set: {statements:?}"
-        );
-        assert!(
-            statements
-                .iter()
-                .any(|s| s.contains("busy_timeout") && s.contains("30000")),
-            "a 30s busy_timeout must be set, not sqlx's 5s default: {statements:?}"
-        );
-        assert!(
-            statements
-                .iter()
                 .any(|s| s.contains("synchronous") && s.contains("normal")),
             "synchronous must be relaxed to NORMAL: {statements:?}"
+        );
+        assert!(
+            !statements
+                .iter()
+                .any(|s| s.contains("journal_mode") || s.contains("busy_timeout")),
+            "the catalog sets these itself; repeating them muddies ownership: {statements:?}"
         );
     }
 

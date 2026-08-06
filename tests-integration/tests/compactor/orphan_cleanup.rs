@@ -1061,3 +1061,89 @@ async fn metadata_orphans_are_reclaimed_but_live_metadata_is_protected() -> Resu
     );
     Ok(())
 }
+
+/// The version hint names a *version*, not a file: the same version is
+/// `<hint>.metadata.json` uncompressed and `<hint>.gz.metadata.json` when the
+/// table sets `write.metadata.compression-codec = gzip`. Reconstructing only
+/// the uncompressed name would leave a gzipped current metadata.json outside
+/// the live set — and orphan cleanup deletes for real by default, so that is
+/// the live metadata pointer gone.
+#[tokio::test]
+async fn a_gzipped_current_metadata_file_is_never_flagged() -> Result<()> {
+    let ctx = RetentionTestContext::new_in_memory().await?;
+
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let table_name = "traces";
+    let mut writer = ctx.create_table(tenant_id, dataset_id, table_name).await?;
+
+    let config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 1,
+        rows_per_file: 20,
+        base_timestamp: Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    generators::generate_traces(&mut writer, &config).await?;
+
+    let table_identifier = ctx
+        .catalog_manager()
+        .build_table_identifier(tenant_id, dataset_id, table_name);
+    let table_store = match ctx
+        .catalog_manager()
+        .catalog()
+        .load_tabular(&table_identifier)
+        .await?
+    {
+        Tabular::Table(t) => t.object_store(),
+        _ => anyhow::bail!("expected a table"),
+    };
+
+    let metadata_dir = format!("{tenant_id}/{dataset_id}/{table_name}/metadata");
+
+    // Stand in for a gzip-configured table: point the version hint at a
+    // version that exists only as a `.gz.metadata.json`.
+    let version = "00007-abcd0000-abcd-abcd-abcd-abcdabcd0000";
+    let gzipped_current = format!("{metadata_dir}/{version}.gz.metadata.json");
+    // A higher-numbered unreferenced file, so the detector's "never flag the
+    // newest version seen" fallback protects that one instead. Without it the
+    // fallback would shield the gzipped file regardless of the hint, and this
+    // test would pass whether or not the hint is handled correctly.
+    let newer_orphan =
+        format!("{metadata_dir}/00009-dead0000-dead-dead-dead-deaddead0000.metadata.json");
+    for path in [&gzipped_current, &newer_orphan] {
+        table_store
+            .put(
+                &ObjectPath::from(path.as_str()),
+                bytes::Bytes::from(vec![0u8; 256]).into(),
+            )
+            .await?;
+    }
+    table_store
+        .put(
+            &ObjectPath::from(format!("{metadata_dir}/version-hint.text").as_str()),
+            bytes::Bytes::from(version.as_bytes().to_vec()).into(),
+        )
+        .await?;
+
+    let detector_config = OrphanCleanupConfig {
+        enabled: true,
+        grace_period_hours: 0,
+        batch_size: 100,
+        dry_run: false,
+        cleanup_interval_hours: 24,
+        max_live_files_threshold: 500_000,
+    };
+    let detector = OrphanDetector::new(detector_config, ctx.catalog_manager().clone(), table_store);
+
+    let orphans = detector
+        .identify_orphan_metadata_candidates(tenant_id, dataset_id, table_name)
+        .await?;
+
+    assert!(
+        !orphans.iter().any(|o| o.path == gzipped_current),
+        "the gzipped current metadata.json must not be flagged, got {:?}",
+        orphans.iter().map(|o| &o.path).collect::<Vec<_>>()
+    );
+    Ok(())
+}
