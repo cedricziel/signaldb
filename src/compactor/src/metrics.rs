@@ -3,7 +3,7 @@
 //! Provides thread-safe metrics collection for compaction operations using atomic counters.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// Thread-safe metrics for tracking compaction operations
@@ -325,6 +325,126 @@ impl MetricsSummary {
             self.deferred_open_partition_files,
             self.unclassifiable_files
         );
+    }
+}
+
+/// Identifies one of the four lifecycle-cycle tasks `CompactorService` runs.
+///
+/// Exists so [`CycleHealth`] and the supervising loop in
+/// [`crate::service::CompactorService::run_lifecycle_loop`] key panic
+/// tracking by an exhaustively-matched value rather than a bare `&str`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cycle {
+    Compaction,
+    LeaseExpiry,
+    Retention,
+    OrphanCleanup,
+}
+
+impl Cycle {
+    /// Human-readable name used in logs and metric labels.
+    pub fn label(self) -> &'static str {
+        match self {
+            Cycle::Compaction => "compaction",
+            Cycle::LeaseExpiry => "lease_expiry",
+            Cycle::Retention => "retention",
+            Cycle::OrphanCleanup => "orphan_cleanup",
+        }
+    }
+
+    /// All cycles, for iterating when rendering a metric per cycle.
+    pub fn all() -> [Cycle; 4] {
+        [
+            Cycle::Compaction,
+            Cycle::LeaseExpiry,
+            Cycle::Retention,
+            Cycle::OrphanCleanup,
+        ]
+    }
+}
+
+#[derive(Debug, Default)]
+struct CycleStatus {
+    /// Cumulative panics recovered from this cycle's task over the process
+    /// lifetime.
+    panics: AtomicU64,
+    /// Set while the cycle is in its post-panic backoff sleep; cleared as
+    /// soon as it resumes retrying. A liveness probe reading this only sees
+    /// a cycle as down for the bounded backoff window, not forever — a
+    /// cycle that keeps panicking keeps re-entering this state instead of
+    /// latching it, which is what makes it a meaningful "is it happening
+    /// right now" signal rather than "did it ever happen".
+    down: AtomicBool,
+}
+
+/// Health of the four lifecycle-cycle tasks that [`CompactorService`] runs.
+///
+/// [`crate::service::CompactorService::run_lifecycle_loop`] guards every
+/// `Cycle::run()` call against panics: a panic is caught there instead of
+/// ending that cycle's task for the rest of the process's life (issue
+/// #1011 is precisely about a cycle silently going away permanently — a
+/// caught-and-recovered panic must not become a second way for the same
+/// thing to happen). This type is what makes a recovered panic visible on
+/// `/health` and `/metrics` instead of only in the log.
+///
+/// [`CompactorService`]: crate::service::CompactorService
+#[derive(Debug, Clone, Default)]
+pub struct CycleHealth {
+    inner: Arc<CycleHealthInner>,
+}
+
+#[derive(Debug, Default)]
+struct CycleHealthInner {
+    compaction: CycleStatus,
+    lease_expiry: CycleStatus,
+    retention: CycleStatus,
+    orphan_cleanup: CycleStatus,
+}
+
+impl CycleHealth {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn status(&self, cycle: Cycle) -> &CycleStatus {
+        match cycle {
+            Cycle::Compaction => &self.inner.compaction,
+            Cycle::LeaseExpiry => &self.inner.lease_expiry,
+            Cycle::Retention => &self.inner.retention,
+            Cycle::OrphanCleanup => &self.inner.orphan_cleanup,
+        }
+    }
+
+    /// Record a caught panic and mark the cycle down for the backoff window
+    /// the caller is about to sleep through.
+    pub fn record_panic(&self, cycle: Cycle) {
+        let status = self.status(cycle);
+        status.panics.fetch_add(1, Ordering::Relaxed);
+        status.down.store(true, Ordering::Relaxed);
+    }
+
+    /// Clear the down flag once the cycle resumes retrying after backoff.
+    pub fn record_retrying(&self, cycle: Cycle) {
+        self.status(cycle).down.store(false, Ordering::Relaxed);
+    }
+
+    /// Panics recovered from this cycle over the process lifetime.
+    pub fn panics(&self, cycle: Cycle) -> u64 {
+        self.status(cycle).panics.load(Ordering::Relaxed)
+    }
+
+    /// Whether this cycle is currently in its post-panic backoff sleep.
+    pub fn is_down(&self, cycle: Cycle) -> bool {
+        self.status(cycle).down.load(Ordering::Relaxed)
+    }
+
+    /// Labels of every cycle currently down, for a liveness probe.
+    pub fn down_cycles(&self) -> Vec<&'static str> {
+        Cycle::all()
+            .into_iter()
+            .filter(|c| self.is_down(*c))
+            .map(Cycle::label)
+            .collect()
     }
 }
 

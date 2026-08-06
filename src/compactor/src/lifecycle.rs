@@ -32,6 +32,7 @@ use crate::executor::CompactionExecutor;
 use crate::lease::LeaseManager;
 use crate::metrics::CompactionMetrics;
 use crate::orphan::{OrphanCleaner, OrphanCleanupConfig, OrphanDetector};
+use crate::retention::metrics::RetentionMetrics;
 use crate::retention::{RetentionConfig, RetentionEnforcer, SignalType};
 use crate::scheduler::RoundRobinScheduler;
 
@@ -288,6 +289,7 @@ impl LeaseExpiryCycle {
 pub(crate) struct RetentionCycle {
     config: RetentionConfig,
     enforcer: Arc<RetentionEnforcer>,
+    metrics: RetentionMetrics,
     catalog_manager: Arc<CatalogManager>,
     /// Serializes enforcement passes. The retention cycle and the orphan
     /// cleanup cycle run on separate tasks but share this enforcer, and two
@@ -299,11 +301,13 @@ impl RetentionCycle {
     pub(crate) fn new(
         config: RetentionConfig,
         enforcer: Arc<RetentionEnforcer>,
+        metrics: RetentionMetrics,
         catalog_manager: Arc<CatalogManager>,
     ) -> Self {
         Self {
             config,
             enforcer,
+            metrics,
             catalog_manager,
             gate: Mutex::new(()),
         }
@@ -351,6 +355,8 @@ impl RetentionCycle {
                         );
 
                         if !result.errors.is_empty() {
+                            self.metrics
+                                .record_enforcement_failures(result.errors.len());
                             tracing::warn!(
                                 "Retention enforcement had {} errors for {}/{}",
                                 result.errors.len(),
@@ -363,6 +369,7 @@ impl RetentionCycle {
                         }
                     }
                     Err(e) => {
+                        self.metrics.record_enforcement_failures(1);
                         tracing::error!(
                             "Retention enforcement failed for {}/{} ({}): {e:?}",
                             tenant_id,
@@ -520,17 +527,22 @@ impl OrphanCleanupCycle {
                                 .instrument(job_span.clone())
                                 .await
                             {
-                                Ok(result) => tracing::info!(
-                                    "Metadata orphan cleanup {}/{}/{}: deleted={}, \
+                                Ok(result) => {
+                                    self.detector
+                                        .metrics()
+                                        .record_deletion_failures(result.failed_count);
+                                    tracing::info!(
+                                        "Metadata orphan cleanup {}/{}/{}: deleted={}, \
                                      would_delete={}, bytes_freed={}, failed={}",
-                                    tid,
-                                    did,
-                                    table_name,
-                                    result.deleted_count,
-                                    result.would_delete_count,
-                                    result.total_bytes_freed,
-                                    result.failed_count,
-                                ),
+                                        tid,
+                                        did,
+                                        table_name,
+                                        result.deleted_count,
+                                        result.would_delete_count,
+                                        result.total_bytes_freed,
+                                        result.failed_count,
+                                    )
+                                }
                                 Err(e) => tracing::error!(
                                     "Metadata orphan cleanup failed for {}/{}/{}: {e:?}",
                                     tid,
@@ -559,20 +571,21 @@ impl OrphanCleanupCycle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::retention::metrics::RetentionMetrics;
     use tokio::time::{Duration as TokioDuration, timeout};
 
     fn retention_cycle(catalog_manager: Arc<CatalogManager>) -> Arc<RetentionCycle> {
         let config = RetentionConfig::default();
+        let metrics = RetentionMetrics::new();
         let enforcer = Arc::new(
-            RetentionEnforcer::new(
-                catalog_manager.clone(),
-                config.clone(),
-                RetentionMetrics::new(),
-            )
-            .expect("retention enforcer builds from default config"),
+            RetentionEnforcer::new(catalog_manager.clone(), config.clone(), metrics.clone())
+                .expect("retention enforcer builds from default config"),
         );
-        Arc::new(RetentionCycle::new(config, enforcer, catalog_manager))
+        Arc::new(RetentionCycle::new(
+            config,
+            enforcer,
+            metrics,
+            catalog_manager,
+        ))
     }
 
     #[tokio::test]

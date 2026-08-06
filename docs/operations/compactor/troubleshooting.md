@@ -665,15 +665,17 @@ rate(compactor_partitions_dropped_total[5m]) > 20
 **Diagnostic Steps:**
 
 ```bash
-# 1. Which leases are currently held, and by which instance?
-curl -s localhost:9091/status | jq .
-# Flight admin: compact_status returns active leases + counters
+# 1. Which leases are currently held, and by which instance? Active leases
+#    come from the Flight admin action, not the HTTP endpoint — /status
+#    carries instance metadata and counters only.
+signaldb-cli ops compact status  # or the compactor Flight action compact_status
 
 # 2. Is the sweep running at all? (increments only when it reclaims)
 curl -s localhost:9091/metrics | grep compactor_stale_leases_expired_total
 
-# 3. Does the holder ID belong to a live instance?
-curl -s localhost:9091/status | jq -r .instance_id
+# 3. Compare each holder_id against the instances that are actually up —
+#    every live compactor reports its own id and uptime here.
+curl -s localhost:9091/status | jq '{instance_id, uptime_seconds}'
 ```
 
 **How it should behave:** stale leases are swept every 30s on a dedicated task,
@@ -689,8 +691,13 @@ current compaction pass takes.
 lease_ttl_seconds = 3600  # An hour before a crashed holder's lease expires
 ```
 
-**Solution:** Lower `lease_ttl_seconds` toward the default `300`. Held leases
-are renewed every `ttl / 3`, so a shorter TTL costs renewals, not safety.
+**Solution:** Lower `lease_ttl_seconds` toward the default `300`, but keep
+margin. Held leases are renewed every `ttl / 3`, and a renewal failure does not
+stop the running job — there is no fencing token, so once the lease expires
+another instance can claim the partition and start a duplicate rewrite. Iceberg
+CAS keeps both from committing, so the cost is wasted work rather than
+corruption, but the TTL still needs to cover process pauses and catalog or
+network outages.
 
 2. **The Holder Is Alive and Genuinely Slow:**
 

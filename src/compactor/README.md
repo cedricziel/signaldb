@@ -78,7 +78,7 @@ RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
 
 ## Lifecycle Tasks
 
-The four background jobs each run on their own task, at their own cadence:
+Each enabled lifecycle cycle runs on its own task, at its own cadence:
 
 | Cycle           | Cadence                                | Work                                                       |
 | --------------- | -------------------------------------- | ---------------------------------------------------------- |
@@ -100,6 +100,15 @@ else, including the lease expiry that crashed instances depend on for recovery
 
 Disabled cycles (`enabled = false` for retention or orphan cleanup) get no
 task at all.
+
+**Panic recovery:** every cycle iteration is also guarded against panics. A
+panic is caught, counted (`compactor_cycle_panics_total{cycle="..."}`), and
+the cycle retries on its normal cadence plus a short exponential backoff
+instead of ending permanently — an unhandled panic in one cycle would
+otherwise silently reopen exactly the failure mode this split exists to
+close, just triggered by a bug instead of a slow tick. `compactor_cycle_down`
+and `/health` (`503` while a cycle is mid-backoff) surface it to operators;
+see [docs/operations/compactor/operations.md](../../docs/operations/compactor/operations.md#lifecycle-task-recovery).
 
 ## Multi-Instance Safety (Phase 4)
 

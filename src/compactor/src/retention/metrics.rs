@@ -28,6 +28,8 @@ struct MetricsInner {
     bytes_reclaimed: AtomicU64,
     /// Total duration in milliseconds
     total_duration_ms: AtomicU64,
+    /// Enforcement passes that failed, per tenant/dataset or per table
+    enforcement_failures: AtomicUsize,
 }
 
 impl Default for RetentionMetrics {
@@ -48,8 +50,26 @@ impl RetentionMetrics {
                 unclassifiable_files: AtomicUsize::new(0),
                 bytes_reclaimed: AtomicU64::new(0),
                 total_duration_ms: AtomicU64::new(0),
+                enforcement_failures: AtomicUsize::new(0),
             }),
         }
+    }
+
+    /// Record failed retention enforcement.
+    ///
+    /// Retention deletes data, so a repeatedly failing pass needs an
+    /// alertable signal rather than only an error log: counted both when a
+    /// tenant/dataset pass fails outright and per table that errored inside
+    /// an otherwise successful pass.
+    pub fn record_enforcement_failures(&self, count: usize) {
+        self.inner
+            .enforcement_failures
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Retention enforcement failures observed so far.
+    pub fn enforcement_failures(&self) -> usize {
+        self.inner.enforcement_failures.load(Ordering::Relaxed)
     }
 
     /// Record a retention cutoff computation

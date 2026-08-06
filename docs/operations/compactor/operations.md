@@ -276,7 +276,7 @@ curl -s localhost:9091/metrics | grep -E "compactor_(orphan_candidates_identifie
 
 ### Key Metrics to Monitor
 
-All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Counters are process-global — there are no per-tenant, per-dataset, or per-table labels. The only labelled metric is `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}`.
+All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Counters are process-global — there are no per-tenant, per-dataset, or per-table labels. The labelled metrics are `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}` and the `cycle="compaction"|"lease_expiry"|"retention"|"orphan_cleanup"` label on `compactor_cycle_panics_total` / `compactor_cycle_down` (see [Lifecycle Task Recovery](#lifecycle-task-recovery) below).
 
 #### Lease Recovery
 
@@ -291,9 +291,47 @@ counter keeps advancing even while a long compaction cycle is in flight.
 increase(compactor_stale_leases_expired_total[24h])
 ```
 
-A steadily climbing value in a healthy fleet points at instances dying
-mid-compaction — check for restarts or OOM kills before tuning
-`lease_ttl_seconds`.
+The counter says a lease reached its expiry without a successful renewal; it
+does not say why. Before touching `lease_ttl_seconds`, rule out the causes in
+order of likelihood: instances dying mid-compaction (restarts, OOM kills),
+renewal calls failing against the catalog, catalog or network latency
+swallowing the `ttl / 3` renewal window, and process pauses (long GC-like
+stalls, suspended containers). A TTL that is simply too short for your job
+durations is the last of these, not the first.
+
+#### Lifecycle Task Recovery
+
+Each of the four lifecycle tasks (compaction, lease expiry, retention, orphan
+cleanup) guards its own iterations against panics: a panic is caught,
+counted, and the task retries on its normal cadence plus a short exponential
+backoff, rather than the task ending permanently. This closes the same class
+of failure #1011 fixed for slow cycles — a bug in one cycle no longer takes
+that cycle (or the process) down for good.
+
+```promql
+# Panics recovered per cycle (last 24h) — should normally be flat at 0
+increase(compactor_cycle_panics_total[24h])
+
+# Is any cycle currently in its post-panic backoff?
+compactor_cycle_down
+```
+
+`compactor_cycle_down{cycle="..."}` is `1` only while that cycle is actively
+retrying after a panic; it clears on the next successful iteration, so it
+does not stay latched after a one-off failure. `/health` returns `503` while
+any cycle reports down, and lists which one in the body:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' localhost:9091/health
+curl -s localhost:9091/health   # body names the down cycle(s), if any
+```
+
+**Alerting:** any nonzero `increase(compactor_cycle_panics_total[1h])` is
+worth paging on — a healthy compactor should show zero. A cycle that keeps
+reappearing in `compactor_cycle_down` indicates a persistent bug rather than
+a transient failure; check the logs for the cycle's name and panic message
+(`tracing::error!` logs it on every recovery) before assuming a restart will
+fix it.
 
 #### Retention Enforcement
 

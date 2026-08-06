@@ -15,6 +15,9 @@
 //! monolith wired only the planner and silently never enforced retention
 //! (issue #959).
 
+use std::any::Any;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,6 +26,7 @@ use common::catalog::Catalog;
 use common::catalog_manager::CatalogManager;
 use common::config::Configuration;
 use common::storage::create_object_store;
+use futures::FutureExt;
 use tokio::task::JoinSet;
 use tokio::time::{Interval, MissedTickBehavior, interval};
 use uuid::Uuid;
@@ -35,21 +39,113 @@ use crate::lifecycle::{
     CompactionCycle, LEASE_EXPIRY_INTERVAL, LeaseExpiryCycle, LifecycleIntervals,
     OrphanCleanupCycle, RetentionCycle,
 };
-use crate::metrics::CompactionMetrics;
+use crate::metrics::{CompactionMetrics, Cycle, CycleHealth};
 use crate::orphan::{OrphanCleaner, OrphanCleanupConfig, OrphanDetector};
 use crate::planner::{CompactionPlanner, PlannerConfig};
 use crate::retention::metrics::RetentionMetrics;
 use crate::retention::{RetentionConfig, RetentionEnforcer};
 use crate::scheduler::RoundRobinScheduler;
 
+/// Smallest cadence a lifecycle cycle may tick at.
+///
+/// `tokio::time::interval` panics on a zero period, and every cadence except
+/// lease expiry comes from configuration (`tick_interval = "0s"`,
+/// `cleanup_interval_hours = 0`). A cycle that busy-loops is not a useful
+/// reading of that config either, so a zero is clamped and reported rather
+/// than taking the process down.
+const MIN_CYCLE_PERIOD: Duration = Duration::from_secs(1);
+
 /// Ticker for one lifecycle cycle.
 ///
 /// `Delay` keeps a cycle that overran its period from bursting through every
 /// missed tick afterwards; it resumes on cadence instead.
-fn lifecycle_ticker(period: Duration) -> Interval {
+fn lifecycle_ticker(cycle: Cycle, period: Duration) -> Interval {
+    let period = if period < MIN_CYCLE_PERIOD {
+        tracing::warn!(
+            "Configured {} interval {period:?} is below the {MIN_CYCLE_PERIOD:?} minimum; using the minimum",
+            cycle.label()
+        );
+        MIN_CYCLE_PERIOD
+    } else {
+        period
+    };
     let mut ticker = interval(period);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     ticker
+}
+
+/// Smallest and largest backoff sleep after a cycle iteration panics.
+///
+/// The next scheduled tick already provides pacing between attempts; this is
+/// an *additional* sleep layered on top, so a cycle that panics every single
+/// time backs off exponentially instead of retrying at its raw tick cadence
+/// forever (which for the 30s lease-expiry cadence would otherwise mean a
+/// panic loop retrying every 30s indefinitely).
+const PANIC_BACKOFF_MIN: Duration = Duration::from_secs(1);
+const PANIC_BACKOFF_MAX: Duration = Duration::from_secs(300);
+
+/// Backoff for the `n`th consecutive panic (`n >= 1`): doubles per panic,
+/// capped at [`PANIC_BACKOFF_MAX`].
+fn backoff_for(consecutive_panics: u32) -> Duration {
+    let exponent = consecutive_panics.saturating_sub(1).min(8);
+    PANIC_BACKOFF_MIN
+        .saturating_mul(1u32 << exponent)
+        .min(PANIC_BACKOFF_MAX)
+}
+
+/// Best-effort human-readable message from a caught panic payload.
+fn panic_message(panic: &(dyn Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
+/// Run one lifecycle-cycle iteration, catching a panic instead of letting it
+/// unwind the task the ticking loop lives on.
+///
+/// Left unguarded, a panic inside `fut` (e.g. `compaction.run()`) would end
+/// that cycle's task for the rest of the process's life — for lease expiry
+/// that is exactly the silent, permanent loss issue #1011 is about, just
+/// moved from "one long compaction cycle" to "one panic". The cycle's owned
+/// state (`compaction`, `lease_expiry`, ...) lives one stack frame up from
+/// the panicking call and is untouched by the unwind, so the same instance
+/// keeps running on the next tick — no reconstruction needed. RAII guards
+/// inside a cycle (e.g. the lease renewal task) still run their `Drop` during
+/// the unwind, so a panic mid-job does not leak a lease.
+///
+/// `consecutive_panics` tracks the run of panics on this specific cycle so
+/// repeated failures back off exponentially ([`backoff_for`]); a successful
+/// iteration resets it to zero.
+async fn run_cycle_guarded<F>(
+    cycle: Cycle,
+    health: &CycleHealth,
+    consecutive_panics: &mut u32,
+    fut: F,
+) where
+    F: Future<Output = ()>,
+{
+    match AssertUnwindSafe(fut).catch_unwind().await {
+        Ok(()) => {
+            *consecutive_panics = 0;
+        }
+        Err(panic) => {
+            *consecutive_panics = consecutive_panics.saturating_add(1);
+            health.record_panic(cycle);
+            let message = panic_message(&*panic);
+            let backoff = backoff_for(*consecutive_panics);
+            tracing::error!(
+                "{} lifecycle cycle panicked ({} consecutive): {message}; retrying after {backoff:?}",
+                cycle.label(),
+                consecutive_panics,
+            );
+            tokio::time::sleep(backoff).await;
+            health.record_retrying(cycle);
+        }
+    }
 }
 
 /// Fully assembled compactor: every component the lifecycle loop and the
@@ -66,6 +162,7 @@ pub struct CompactorService {
     retention: Arc<RetentionCycle>,
     orphan_cleanup: OrphanCleanupCycle,
     intervals: LifecycleIntervals,
+    cycle_health: CycleHealth,
 }
 
 impl CompactorService {
@@ -187,6 +284,7 @@ impl CompactorService {
         let retention = Arc::new(RetentionCycle::new(
             retention_config,
             retention_enforcer,
+            retention_metrics.clone(),
             catalog_manager.clone(),
         ));
         let orphan_cleanup = OrphanCleanupCycle::new(
@@ -209,6 +307,7 @@ impl CompactorService {
             retention,
             orphan_cleanup,
             intervals,
+            cycle_health: CycleHealth::new(),
         })
     }
 
@@ -232,6 +331,7 @@ impl CompactorService {
             self.compaction_metrics.clone(),
             self.retention_metrics.clone(),
             self.orphan_detector.metrics().clone(),
+            self.cycle_health.clone(),
         )
     }
 
@@ -244,6 +344,14 @@ impl CompactorService {
     /// retries and backoff) blocked stale-lease expiry, delaying recovery from
     /// crashed instances by the length of that pass (issue #1011).
     ///
+    /// Every cycle iteration is also guarded against panics
+    /// ([`run_cycle_guarded`]): a panic is caught, counted in
+    /// [`CycleHealth`](crate::metrics::CycleHealth) (visible on `/health` and
+    /// `/metrics`), and retried after a backoff — a cycle task ending
+    /// permanently on an unhandled panic would reopen the exact failure mode
+    /// this split exists to close, just triggered by a bug instead of a slow
+    /// tick.
+    ///
     /// Callers `tokio::spawn` this and abort the handle on shutdown: the
     /// `JoinSet` aborts every cycle task when this future is dropped.
     pub async fn run_lifecycle_loop(self) {
@@ -253,36 +361,61 @@ impl CompactorService {
             retention,
             orphan_cleanup,
             intervals,
+            cycle_health,
             ..
         } = self;
 
         let mut tasks = JoinSet::new();
 
         let compaction_interval = intervals.compaction;
+        let health = cycle_health.clone();
         tasks.spawn(async move {
-            let mut ticker = lifecycle_ticker(compaction_interval);
+            let mut ticker = lifecycle_ticker(Cycle::Compaction, compaction_interval);
+            let mut consecutive_panics = 0;
             loop {
                 ticker.tick().await;
-                compaction.run().await;
+                run_cycle_guarded(
+                    Cycle::Compaction,
+                    &health,
+                    &mut consecutive_panics,
+                    compaction.run(),
+                )
+                .await;
             }
         });
 
         let lease_expiry_interval = intervals.lease_expiry;
+        let health = cycle_health.clone();
         tasks.spawn(async move {
-            let mut ticker = lifecycle_ticker(lease_expiry_interval);
+            let mut ticker = lifecycle_ticker(Cycle::LeaseExpiry, lease_expiry_interval);
+            let mut consecutive_panics = 0;
             loop {
                 ticker.tick().await;
-                lease_expiry.run().await;
+                run_cycle_guarded(
+                    Cycle::LeaseExpiry,
+                    &health,
+                    &mut consecutive_panics,
+                    lease_expiry.run(),
+                )
+                .await;
             }
         });
 
         if retention.enabled() {
             let retention_interval = intervals.retention;
+            let health = cycle_health.clone();
             tasks.spawn(async move {
-                let mut ticker = lifecycle_ticker(retention_interval);
+                let mut ticker = lifecycle_ticker(Cycle::Retention, retention_interval);
+                let mut consecutive_panics = 0;
                 loop {
                     ticker.tick().await;
-                    retention.run().await;
+                    run_cycle_guarded(
+                        Cycle::Retention,
+                        &health,
+                        &mut consecutive_panics,
+                        retention.run(),
+                    )
+                    .await;
                 }
             });
         } else {
@@ -291,19 +424,29 @@ impl CompactorService {
 
         if orphan_cleanup.enabled() {
             let orphan_cleanup_interval = intervals.orphan_cleanup;
+            let health = cycle_health.clone();
             tasks.spawn(async move {
-                let mut ticker = lifecycle_ticker(orphan_cleanup_interval);
+                let mut ticker = lifecycle_ticker(Cycle::OrphanCleanup, orphan_cleanup_interval);
+                let mut consecutive_panics = 0;
                 loop {
                     ticker.tick().await;
-                    orphan_cleanup.run().await;
+                    run_cycle_guarded(
+                        Cycle::OrphanCleanup,
+                        &health,
+                        &mut consecutive_panics,
+                        orphan_cleanup.run(),
+                    )
+                    .await;
                 }
             });
         } else {
             tracing::info!("Orphan cleanup disabled — not starting its lifecycle task");
         }
 
-        // The cycle tasks never return on their own, so this only yields when
-        // one panics: report it rather than losing the cycle silently.
+        // The cycle tasks never return on their own (panics inside them are
+        // caught by run_cycle_guarded, not propagated), so this only yields
+        // on a genuine task-level failure: report it rather than losing the
+        // cycle silently.
         while let Some(joined) = tasks.join_next().await {
             if let Err(e) = joined
                 && !e.is_cancelled()
@@ -371,6 +514,24 @@ mod tests {
         }
     }
 
+    /// Panics on its first call, then behaves like [`CountingPlanner`].
+    /// Stands in for a cycle that hits a bug once (e.g. an unexpected catalog
+    /// response) and must keep running afterward rather than going dark.
+    struct PanicOnFirstCallPlanner {
+        entered: Arc<AtomicUsize>,
+    }
+
+    #[tonic::async_trait]
+    impl Planner for PanicOnFirstCallPlanner {
+        async fn plan(&self) -> Result<Vec<CompactionCandidate>> {
+            let call = self.entered.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                panic!("simulated planner panic on the first call");
+            }
+            Ok(vec![])
+        }
+    }
+
     fn candidate(partition_id: &str) -> CompactionCandidate {
         CompactionCandidate {
             tenant_id: "test-tenant".to_string(),
@@ -383,6 +544,78 @@ mod tests {
                 avg_file_size_bytes: 204_800,
             },
         }
+    }
+
+    /// A zero interval reaches `tokio::time::interval`, which panics on it —
+    /// and every cadence but lease expiry comes from user configuration.
+    #[tokio::test]
+    async fn zero_cycle_intervals_are_clamped_instead_of_panicking() {
+        let ticker = lifecycle_ticker(Cycle::Compaction, Duration::ZERO);
+        assert_eq!(ticker.period(), MIN_CYCLE_PERIOD);
+
+        // A configured cadence above the floor is left exactly as configured.
+        let ticker = lifecycle_ticker(Cycle::Retention, Duration::from_secs(3600));
+        assert_eq!(ticker.period(), Duration::from_secs(3600));
+    }
+
+    /// A cycle that panics must not end its task permanently — that would
+    /// silently reopen the exact failure mode this refactor exists to close
+    /// (issue #1011), just triggered by a bug instead of a slow tick.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_panicking_cycle_recovers_and_keeps_ticking() {
+        let mut config = Configuration::default();
+        config.compactor.retention.enabled = false;
+        config.compactor.orphan_cleanup.enabled = false;
+
+        let service_catalog = Arc::new(Catalog::new_in_memory().await.unwrap());
+        let mut service = service_from(&config, service_catalog).await;
+
+        let entered = Arc::new(AtomicUsize::new(0));
+        service
+            .compaction
+            .replace_scheduler(RoundRobinScheduler::new(
+                Arc::new(PanicOnFirstCallPlanner {
+                    entered: entered.clone(),
+                }),
+                0,
+                0,
+            ));
+
+        let health = service.cycle_health.clone();
+        let lifecycle = tokio::spawn(
+            service
+                .with_intervals(LifecycleIntervals {
+                    compaction: Duration::from_millis(10),
+                    lease_expiry: Duration::from_millis(10),
+                    retention: Duration::from_secs(3600),
+                    orphan_cleanup: Duration::from_secs(3600),
+                })
+                .run_lifecycle_loop(),
+        );
+
+        // The first tick panics inside `plan()`. The cycle must recover and
+        // reach a second, successful entry rather than the task quietly
+        // ending after the first.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while entered.load(Ordering::SeqCst) < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "compaction cycle never recovered from its panic"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        assert_eq!(
+            health.panics(Cycle::Compaction),
+            1,
+            "the caught panic must be recorded"
+        );
+        assert!(
+            !health.is_down(Cycle::Compaction),
+            "the cycle must be marked retrying again once backoff completes"
+        );
+
+        lifecycle.abort();
     }
 
     #[tokio::test]
@@ -484,7 +717,14 @@ mod tests {
     /// too, not leave them ticking against a torn-down catalog.
     #[tokio::test(flavor = "multi_thread")]
     async fn aborting_the_loop_stops_every_cycle_task() {
-        let mut service = in_memory_service().await;
+        // Only the compaction counter is asserted on, and the cycles tick at
+        // 10ms here — keep the two destructive cycles out of the loop rather
+        // than pointing them at a catalog at that cadence.
+        let mut config = Configuration::default();
+        config.compactor.retention.enabled = false;
+        config.compactor.orphan_cleanup.enabled = false;
+        let service_catalog = Arc::new(Catalog::new_in_memory().await.unwrap());
+        let mut service = service_from(&config, service_catalog).await;
 
         let entered = Arc::new(AtomicUsize::new(0));
         service

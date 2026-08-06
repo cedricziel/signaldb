@@ -6,7 +6,9 @@
 //!   and orphan-cleanup counters
 //! - `GET /status` — JSON snapshot of the same counters plus instance metadata,
 //!   intended for operators and the admin API
-//! - `GET /health` — liveness probe
+//! - `GET /health` — liveness probe: `503` while a lifecycle cycle is in its
+//!   post-panic backoff window (see [`crate::metrics::CycleHealth`]), `200`
+//!   otherwise
 //!
 //! The endpoint listens on `[compactor] metrics_addr` (default `0.0.0.0:9091`,
 //! overridable via `COMPACTOR_METRICS_ADDR`).
@@ -14,10 +16,11 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::http::StatusCode;
 use axum::{Json, Router, extract::State, routing::get};
 use uuid::Uuid;
 
-use crate::metrics::CompactionMetrics;
+use crate::metrics::{CompactionMetrics, Cycle, CycleHealth};
 use crate::orphan::OrphanMetrics;
 use crate::retention::metrics::RetentionMetrics;
 
@@ -37,6 +40,7 @@ struct StateInner {
     compaction: CompactionMetrics,
     retention: RetentionMetrics,
     orphan: OrphanMetrics,
+    cycle_health: CycleHealth,
 }
 
 impl ObservabilityState {
@@ -45,6 +49,7 @@ impl ObservabilityState {
         compaction: CompactionMetrics,
         retention: RetentionMetrics,
         orphan: OrphanMetrics,
+        cycle_health: CycleHealth,
     ) -> Self {
         Self {
             inner: Arc::new(StateInner {
@@ -53,6 +58,7 @@ impl ObservabilityState {
                 compaction,
                 retention,
                 orphan,
+                cycle_health,
             }),
         }
     }
@@ -157,6 +163,11 @@ impl ObservabilityState {
             s.retention.unclassifiable_files() as u64,
         );
         counter(
+            "compactor_retention_failures_total",
+            "Retention enforcement passes that failed (per tenant/dataset or per table)",
+            s.retention.enforcement_failures() as u64,
+        );
+        counter(
             "compactor_retention_duration_ms_total",
             "Cumulative wall-clock milliseconds spent enforcing retention",
             s.retention.total_duration_ms(),
@@ -192,6 +203,35 @@ impl ObservabilityState {
              # TYPE compactor_orphan_cleanup_skipped_total counter\n\
              compactor_orphan_cleanup_skipped_total{{reason=\"live_files_threshold_exceeded\"}} {skipped}\n"
         ));
+
+        // Lifecycle-cycle panics, labelled by cycle: each of the four
+        // background tasks (compaction, lease_expiry, retention,
+        // orphan_cleanup) is guarded against panics and retried with
+        // backoff rather than ending permanently (issue #1011) — this is
+        // the counter that makes a recovered panic visible instead of only
+        // logged.
+        out.push_str(
+            "# HELP compactor_cycle_panics_total Lifecycle cycle iterations that panicked and were recovered\n\
+             # TYPE compactor_cycle_panics_total counter\n",
+        );
+        for cycle in Cycle::all() {
+            let label = cycle.label();
+            let panics = s.cycle_health.panics(cycle);
+            out.push_str(&format!(
+                "compactor_cycle_panics_total{{cycle=\"{label}\"}} {panics}\n"
+            ));
+        }
+        out.push_str(
+            "# HELP compactor_cycle_down Whether a lifecycle cycle is currently in its post-panic backoff (1) or not (0)\n\
+             # TYPE compactor_cycle_down gauge\n",
+        );
+        for cycle in Cycle::all() {
+            let label = cycle.label();
+            let down = u8::from(s.cycle_health.is_down(cycle));
+            out.push_str(&format!(
+                "compactor_cycle_down{{cycle=\"{label}\"}} {down}\n"
+            ));
+        }
 
         // Uptime gauge
         out.push_str(&format!(
@@ -232,6 +272,7 @@ impl ObservabilityState {
                 "snapshots_expired": s.retention.snapshots_expired(),
                 "unclassifiable_files": s.retention.unclassifiable_files(),
                 "bytes_reclaimed": s.retention.bytes_reclaimed(),
+                "enforcement_failures": s.retention.enforcement_failures(),
             },
             "orphan_cleanup": {
                 "candidates_identified": s.orphan.candidates_identified(),
@@ -240,7 +281,20 @@ impl ObservabilityState {
                 "deletion_failures": s.orphan.deletion_failures(),
                 "skipped_threshold": s.orphan.cleanup_skipped_threshold(),
             },
+            "lifecycle": Cycle::all().map(|cycle| {
+                (cycle.label().to_string(), serde_json::json!({
+                    "panics": s.cycle_health.panics(cycle),
+                    "down": s.cycle_health.is_down(cycle),
+                }))
+            }).into_iter().collect::<serde_json::Map<_, _>>(),
         })
+    }
+
+    /// Cycles currently in their post-panic backoff window, for the `/health`
+    /// liveness endpoint. Empty means every cycle is either healthy or has
+    /// never panicked.
+    fn down_cycles(&self) -> Vec<&'static str> {
+        self.inner.cycle_health.down_cycles()
     }
 }
 
@@ -249,12 +303,35 @@ pub fn router(state: ObservabilityState) -> Router {
     Router::new()
         .route("/metrics", get(metrics_handler))
         .route("/status", get(status_handler))
-        .route("/health", get(|| async { "ok" }))
+        .route("/health", get(health_handler))
         .with_state(state)
 }
 
 async fn metrics_handler(State(state): State<ObservabilityState>) -> String {
     state.render_prometheus()
+}
+
+/// Liveness probe: `503` while any lifecycle cycle is in its post-panic
+/// backoff window, `200 "ok"` otherwise.
+///
+/// The down state is self-clearing — a cycle re-enters it on every fresh
+/// panic and leaves it as soon as it resumes retrying (see
+/// [`crate::metrics::CycleHealth`]) — so a probe wired to this only flags a
+/// cycle that is failing *right now*, not one that panicked once and
+/// recovered.
+async fn health_handler(State(state): State<ObservabilityState>) -> (StatusCode, String) {
+    let down = state.down_cycles();
+    if down.is_empty() {
+        (StatusCode::OK, "ok".to_string())
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "lifecycle cycle(s) in backoff after a panic: {}",
+                down.join(", ")
+            ),
+        )
+    }
 }
 
 async fn status_handler(State(state): State<ObservabilityState>) -> Json<serde_json::Value> {
@@ -288,7 +365,13 @@ mod tests {
         orphan.record_files_deleted(7);
         orphan.record_bytes_freed(8192);
 
-        ObservabilityState::new(Uuid::nil(), compaction, retention, orphan)
+        ObservabilityState::new(
+            Uuid::nil(),
+            compaction,
+            retention,
+            orphan,
+            CycleHealth::new(),
+        )
     }
 
     #[test]
@@ -307,20 +390,37 @@ mod tests {
             "compactor_bytes_reclaimed_total 4096",
             "compactor_unclassifiable_files_total 2",
             "compactor_orphan_cleanup_skipped_total{reason=\"live_files_threshold_exceeded\"} 0",
+            "compactor_cycle_panics_total{cycle=\"compaction\"} 0",
+            "compactor_cycle_down{cycle=\"lease_expiry\"} 0",
         ] {
             assert!(rendered.contains(name), "missing `{name}` in:\n{rendered}");
         }
     }
 
+    /// Every sample line's metric name must have a preceding `# TYPE` (and by
+    /// construction, `# HELP`) declaration. This does NOT require a 1:1 line
+    /// count — `compactor_cycle_panics_total` and `compactor_cycle_down` each
+    /// declare their TYPE once and then emit one sample per [`Cycle`], which
+    /// is standard Prometheus text exposition for a labelled metric.
     #[test]
     fn prometheus_output_has_help_and_type_for_every_sample() {
         let rendered = test_state().render_prometheus();
-        let samples = rendered
+        let declared_types: std::collections::HashSet<&str> = rendered
             .lines()
-            .filter(|l| !l.starts_with('#') && !l.is_empty())
-            .count();
-        let types = rendered.lines().filter(|l| l.starts_with("# TYPE")).count();
-        assert_eq!(samples, types, "every sample needs a # TYPE line");
+            .filter_map(|l| l.strip_prefix("# TYPE "))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .collect();
+
+        for line in rendered.lines() {
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            let name = line.split(['{', ' ']).next().unwrap_or(line);
+            assert!(
+                declared_types.contains(name),
+                "sample `{line}` has no matching `# TYPE {name}` line"
+            );
+        }
     }
 
     #[test]
@@ -330,7 +430,39 @@ mod tests {
         assert_eq!(status["retention"]["partitions_dropped"], 3);
         assert_eq!(status["retention"]["unclassifiable_files"], 2);
         assert_eq!(status["orphan_cleanup"]["files_deleted"], 7);
+        assert_eq!(status["lifecycle"]["compaction"]["panics"], 0);
+        assert_eq!(status["lifecycle"]["compaction"]["down"], false);
         assert!(status["instance_id"].is_string());
+    }
+
+    /// `/health` is the one place a recovered panic changes externally
+    /// observable behavior (as opposed to only a counter) — while a cycle is
+    /// in its post-panic backoff it must fail the probe, and it must recover
+    /// as soon as the cycle resumes retrying.
+    #[tokio::test]
+    async fn health_handler_reports_unavailable_only_while_a_cycle_is_down() {
+        let cycle_health = CycleHealth::new();
+        let state = ObservabilityState::new(
+            Uuid::nil(),
+            CompactionMetrics::new(),
+            RetentionMetrics::new(),
+            OrphanMetrics::new(),
+            cycle_health.clone(),
+        );
+
+        let (status, body) = health_handler(State(state.clone())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "ok");
+
+        cycle_health.record_panic(Cycle::LeaseExpiry);
+        let (status, body) = health_handler(State(state.clone())).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("lease_expiry"), "body was: {body}");
+
+        cycle_health.record_retrying(Cycle::LeaseExpiry);
+        let (status, body) = health_handler(State(state)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "ok");
     }
 
     #[tokio::test]
