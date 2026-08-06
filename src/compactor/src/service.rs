@@ -279,6 +279,14 @@ impl CompactorService {
     async fn run_compaction_cycle(&mut self) {
         tracing::debug!("Running compaction planning cycle");
 
+        // The declined-file counters are cumulative for the process lifetime,
+        // so snapshot them before planning and report only this cycle's delta
+        // below. Logging the raw totals would attribute every earlier cycle's
+        // declined files to this one, which is exactly backwards for the
+        // question the log exists to answer.
+        let deferred_before = self.compaction_metrics.deferred_open_partition_files();
+        let unclassifiable_before = self.compaction_metrics.unclassifiable_files();
+
         let candidates = match self.scheduler.schedule().await {
             Ok(candidates) => candidates,
             Err(e) => {
@@ -288,13 +296,20 @@ impl CompactorService {
         };
 
         if candidates.is_empty() {
-            // Report what the planner declined, so an empty cycle is
+            // Report what *this* planning pass declined, so an empty cycle is
             // distinguishable from one where every file was deferred to a
             // still-open partition or excluded as unclassifiable.
-            let summary = self.compaction_metrics.summary();
+            let deferred = self
+                .compaction_metrics
+                .deferred_open_partition_files()
+                .saturating_sub(deferred_before);
+            let unclassifiable = self
+                .compaction_metrics
+                .unclassifiable_files()
+                .saturating_sub(unclassifiable_before);
             tracing::info!(
-                deferred_open_partition_files = summary.deferred_open_partition_files,
-                unclassifiable_files = summary.unclassifiable_files,
+                deferred_open_partition_files = deferred,
+                unclassifiable_files = unclassifiable,
                 "No compaction candidates found in this cycle"
             );
             return;
