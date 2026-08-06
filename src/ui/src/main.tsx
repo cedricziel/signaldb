@@ -1,15 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
-import { ConsentView } from "./features/consent/ConsentView";
+import { BrowserRouter } from "react-router";
+import { AppRoutes } from "./routes";
 import { initTelemetry } from "./telemetry";
 import "./styles/global.css";
-
-// The OAuth connector consent screen is a distinct top-level view reached at
-// `/oauth/consent` (the router redirects here from `/oauth/authorize`); it
-// bypasses the explore shell.
-const isConsent = window.location.pathname === "/oauth/consent";
 
 // Start browser telemetry before anything issues a request, so the fetch
 // instrumentation is patched in and API calls carry a `traceparent`.
@@ -29,7 +24,9 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      {isConsent ? <ConsentView /> : <App />}
+      <BrowserRouter>
+        <AppRoutes />
+      </BrowserRouter>
     </QueryClientProvider>
   </StrictMode>,
 );

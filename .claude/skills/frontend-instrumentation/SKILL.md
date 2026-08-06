@@ -154,7 +154,10 @@ Unit-test the pure logic (`session.ts`, `sessionSpanProcessor.ts`,
 clock/storage/id/entry providers — see the `.test.ts` files.
 Do **not** import `telemetry/index.ts` from tests: it pulls in `zone.js` and
 patches globals. The SDK wiring is validated by `pnpm --filter signaldb-ui
-build`.
+build`. For the same reason it's excluded from `vite.config.ts`'s coverage
+`thresholds` (80% lines/statements/functions/branches, CI-enforced) — don't
+remove the exclusion to chase the number; write injectable-provider unit
+tests for the underlying logic instead, as above.
 
 ## Configuration
 

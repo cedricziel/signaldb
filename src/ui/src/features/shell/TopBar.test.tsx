@@ -1,9 +1,18 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router";
 import { DEFAULT_STATE } from "../../lib/urlState";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { TopBar } from "./TopBar";
+
+function renderTopBar(props: Parameters<typeof TopBar>[0]) {
+  return renderWithClient(
+    <MemoryRouter>
+      <TopBar {...props} />
+    </MemoryRouter>,
+  );
+}
 
 const WHOAMI = {
   user: {
@@ -29,7 +38,7 @@ describe("TenantSelector with whoami", () => {
   it("shows the tenant read-only and datasets as a selector", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
     const update = vi.fn();
-    renderWithClient(<TopBar state={DEFAULT_STATE} update={update} />);
+    renderTopBar({ state: DEFAULT_STATE, update });
 
     // Chip reflects the server-reported tenant and default dataset.
     await waitFor(() =>
@@ -62,12 +71,10 @@ describe("TenantSelector with whoami", () => {
 
   it("keeps an explicitly selected dataset over the default", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderWithClient(
-      <TopBar
-        state={{ ...DEFAULT_STATE, tenant: "acme", dataset: "staging" }}
-        update={vi.fn()}
-      />,
-    );
+    renderTopBar({
+      state: { ...DEFAULT_STATE, tenant: "acme", dataset: "staging" },
+      update: vi.fn(),
+    });
     await userEvent.click(
       screen.getByTitle("Tenant / dataset context for all queries"),
     );
@@ -82,7 +89,7 @@ describe("TenantSelector with whoami", () => {
       { match: "/api/v1/whoami", body: { error: "not found" }, status: 404 },
     ]);
     const update = vi.fn();
-    renderWithClient(<TopBar state={DEFAULT_STATE} update={update} />);
+    renderTopBar({ state: DEFAULT_STATE, update });
 
     await userEvent.click(
       screen.getByTitle("Tenant / dataset context for all queries"),
@@ -95,21 +102,18 @@ describe("TenantSelector with whoami", () => {
     expect(update).toHaveBeenCalledWith({ tenant: "acme", dataset: "prod" });
   });
 
-  it("shows management only to tenant administrators", async () => {
-    stubFetchRoutes([
-      { match: "/api/v1/whoami", body: WHOAMI },
-      { match: "/api-keys", body: [] },
-      { match: "/memberships", body: [] },
-    ]);
-    renderWithClient(<TopBar state={DEFAULT_STATE} update={vi.fn()} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Manage" }));
-    expect(
-      screen.getByRole("dialog", { name: "Manage tenant" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Ingestion scopes")).toBeInTheDocument();
+  it("links to /manage for tenant administrators", async () => {
+    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
+    renderTopBar({ state: DEFAULT_STATE, update: vi.fn() });
+    // The panel itself (Ingestion scopes, etc.) is owned by ManagementRoute
+    // now — see App.test.tsx's "/manage" tests — TopBar just links there.
+    expect(await screen.findByRole("link", { name: "Manage" })).toHaveAttribute(
+      "href",
+      "/manage",
+    );
   });
 
-  it("hides management from viewers", async () => {
+  it("hides the manage link from viewers", async () => {
     stubFetchRoutes([
       {
         match: "/api/v1/whoami",
@@ -119,12 +123,12 @@ describe("TenantSelector with whoami", () => {
         },
       },
     ]);
-    renderWithClient(<TopBar state={DEFAULT_STATE} update={vi.fn()} />);
+    renderTopBar({ state: DEFAULT_STATE, update: vi.fn() });
     await waitFor(() =>
       expect(
         screen.getByTitle("Tenant / dataset context for all queries"),
       ).toHaveTextContent("acme"),
     );
-    expect(screen.queryByRole("button", { name: "Manage" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Manage" })).toBeNull();
   });
 });

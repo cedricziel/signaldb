@@ -94,11 +94,25 @@ jobs:
       - name: Lint
         run: pnpm --filter signaldb-ui lint
 
-      - name: Test
-        run: pnpm --filter signaldb-ui test
+      - name: Test (coverage gate: 80%)
+        run: pnpm --filter signaldb-ui test:coverage
 
       - name: Build
         run: pnpm --filter signaldb-ui build
+
+      - name: Install Playwright browsers
+        run: pnpm --filter signaldb-ui exec playwright install --with-deps chromium
+
+      - name: E2E tests
+        run: pnpm --filter signaldb-ui test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: src/ui/playwright-report/
+          retention-days: 7
 
   # Verify the generated clients are in sync with the code-first OpenAPI spec.
   # `cargo xtask check` regenerates the progenitor Rust SDK and the hey-api
