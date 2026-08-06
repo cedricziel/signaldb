@@ -580,6 +580,48 @@ fn map_sdk_err(err: signaldb_sdk::Error<()>, what: &str) -> ErrorData {
 mod tests {
     use super::*;
 
+    /// Text is what the model (and every non-UI client) reads, so it is present
+    /// either way; `structuredContent` is what the app renders from, so it
+    /// appears only when the caller negotiated apps. Sending both to a client
+    /// that cannot use the second would put the trace in its context twice.
+    #[test]
+    fn structured_content_is_attached_only_for_ui_clients() {
+        let trace = serde_json::json!({ "traceID": "abc", "durationMs": 24 });
+
+        let with_ui = json_result_for_app(&trace, true).expect("serializes");
+        assert_eq!(
+            with_ui.structured_content.as_ref().map(|v| &v["traceID"]),
+            Some(&serde_json::json!("abc"))
+        );
+        assert!(
+            !with_ui.content.is_empty(),
+            "the text block always survives"
+        );
+
+        let without_ui = json_result_for_app(&trace, false).expect("serializes");
+        assert!(without_ui.structured_content.is_none());
+        assert!(!without_ui.content.is_empty());
+    }
+
+    /// The size cap governs both representations: an oversized result must not
+    /// smuggle the full payload through `structuredContent`.
+    #[test]
+    fn oversized_result_carries_neither_representation() {
+        let bulky = serde_json::json!({ "blob": "x".repeat(MAX_TOOL_PAYLOAD_BYTES + 1) });
+
+        let result = json_result_for_app(&bulky, true).expect("serializes");
+        assert!(
+            result.structured_content.is_none(),
+            "the cap must apply to structuredContent too"
+        );
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("the truncation notice is a text block");
+        };
+        let notice: serde_json::Value =
+            serde_json::from_str(&text.text).expect("the notice is valid JSON");
+        assert_eq!(notice["truncated"], true);
+    }
+
     #[test]
     fn read_tools_are_registered() {
         let router = McpServer::tool_router();

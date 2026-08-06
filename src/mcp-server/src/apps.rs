@@ -74,15 +74,29 @@ const APPS: &[UiApp] = &[UiApp {
     html: include_str!("../ui/trace.html"),
 }];
 
-/// Whether the connected client negotiated the MCP Apps extension.
+/// Whether the connected client negotiated the MCP Apps extension *and* can
+/// render what this server serves.
 ///
-/// Per the spec, servers SHOULD check this before registering UI-enabled tools;
-/// when it is `false` the tool surface stays plain text.
+/// `mimeTypes` is a required setting on the extension capability, and it is the
+/// client's statement of what it can display. Declaring the extension without
+/// naming [`UI_MIME_TYPE`] is not an offer this server can fill — handing such a
+/// client a `ui://` resource it cannot render would leave it with a tool it
+/// cannot display and no text to fall back on. So the check requires the MIME
+/// type, and anything short of that keeps the plain-text tool surface.
+///
+/// Per the spec, servers SHOULD check this before registering UI-enabled tools.
 pub fn client_supports_ui(capabilities: &ClientCapabilities) -> bool {
     capabilities
         .extensions
         .as_ref()
-        .is_some_and(|extensions| extensions.contains_key(UI_EXTENSION_ID))
+        .and_then(|extensions| extensions.get(UI_EXTENSION_ID))
+        .and_then(|settings| settings.get("mimeTypes"))
+        .and_then(|mime_types| mime_types.as_array())
+        .is_some_and(|mime_types| {
+            mime_types
+                .iter()
+                .any(|mime_type| mime_type.as_str() == Some(UI_MIME_TYPE))
+        })
 }
 
 /// Build the `_meta` object linking a tool to its UI resource:
@@ -129,25 +143,71 @@ mod tests {
     use super::*;
     use rmcp::model::ExtensionCapabilities;
 
-    fn capabilities_with(extension: Option<&str>) -> ClientCapabilities {
+    /// Client capabilities declaring `extension` with the given settings.
+    fn capabilities_with(
+        extension: Option<&str>,
+        settings: serde_json::Value,
+    ) -> ClientCapabilities {
         let mut capabilities = ClientCapabilities::default();
         if let Some(id) = extension {
             let mut extensions = ExtensionCapabilities::new();
-            extensions.insert(id.to_string(), Default::default());
+            extensions.insert(
+                id.to_string(),
+                settings
+                    .as_object()
+                    .expect("capability settings are an object")
+                    .clone(),
+            );
             capabilities.extensions = Some(extensions);
         }
         capabilities
     }
 
+    /// Settings a conformant MCP Apps client sends.
+    fn ui_settings() -> serde_json::Value {
+        serde_json::json!({ "mimeTypes": [UI_MIME_TYPE] })
+    }
+
     #[test]
     fn ui_support_follows_the_client_declaration() {
-        assert!(client_supports_ui(&capabilities_with(Some(
-            UI_EXTENSION_ID
-        ))));
-        assert!(!client_supports_ui(&capabilities_with(None)));
-        assert!(!client_supports_ui(&capabilities_with(Some(
-            "io.modelcontextprotocol/tasks"
-        ))));
+        assert!(client_supports_ui(&capabilities_with(
+            Some(UI_EXTENSION_ID),
+            ui_settings()
+        )));
+        assert!(!client_supports_ui(&capabilities_with(
+            None,
+            serde_json::json!({})
+        )));
+        assert!(!client_supports_ui(&capabilities_with(
+            Some("io.modelcontextprotocol/tasks"),
+            ui_settings()
+        )));
+    }
+
+    /// Declaring the extension is not enough: the client must also say it can
+    /// render the type this server serves.
+    #[test]
+    fn ui_support_requires_the_apps_mime_type() {
+        // `mimeTypes` omitted entirely — the setting is required by the spec.
+        assert!(!client_supports_ui(&capabilities_with(
+            Some(UI_EXTENSION_ID),
+            serde_json::json!({})
+        )));
+        // Declared but empty.
+        assert!(!client_supports_ui(&capabilities_with(
+            Some(UI_EXTENSION_ID),
+            serde_json::json!({ "mimeTypes": [] })
+        )));
+        // Renders HTML, but not the MCP Apps profile.
+        assert!(!client_supports_ui(&capabilities_with(
+            Some(UI_EXTENSION_ID),
+            serde_json::json!({ "mimeTypes": ["text/html"] })
+        )));
+        // Ours among others is a match.
+        assert!(client_supports_ui(&capabilities_with(
+            Some(UI_EXTENSION_ID),
+            serde_json::json!({ "mimeTypes": ["text/plain", UI_MIME_TYPE] })
+        )));
     }
 
     #[test]

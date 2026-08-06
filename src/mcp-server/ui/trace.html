@@ -429,9 +429,11 @@
 
   var ROOT_PARENT = "0000000000000000";
 
+  // Escapes `'` too: every attribute emitted below is double-quoted today, but
+  // a later single-quoted one would otherwise lose its escaping silently.
   function esc(value) {
-    return String(value).replace(/[&<>"]/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    return String(value).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
   // Span timestamps are nanoseconds since the epoch — past Number.MAX_SAFE_INTEGER,
@@ -442,7 +444,8 @@
   function fmtDur(ns) {
     if (ns < 1000) return ns + " ns";
     if (ns < 1e6) return (ns / 1e3).toFixed(2) + " µs";
-    return (ns / 1e6).toFixed(3) + " ms";
+    if (ns < 1e9) return (ns / 1e6).toFixed(3) + " ms";
+    return (ns / 1e9).toFixed(3) + " s";
   }
 
   /** Flatten a Tempo-shaped trace into depth-ordered spans with offsets. */
@@ -462,7 +465,10 @@
     }
     if (t0 === null) throw new Error("no usable span timestamps");
 
-    var byId = {};
+    // Prototype-less: span IDs arrive over the wire, and a plain object would
+    // resolve `toString`/`constructor`/`__proto__` to inherited members —
+    // making a bogus parent ID look like a real span and killing the render.
+    var byId = Object.create(null);
     var all = [];
     for (var m = 0; m < raw.length; m++) {
       var s = raw[m];
@@ -494,8 +500,15 @@
     }
     roots.sort(function (a, b) { return a.offset - b.offset; });
 
+    // A parent cycle (A's parent is B, B's parent is A) leaves both spans off
+    // `roots` and would otherwise recurse forever. `seen` bounds the walk to one
+    // visit per span; the sweep then promotes anything stranded inside a cycle
+    // to a root, so a malformed payload still renders every span it carries —
+    // and `roots` is never empty, which `render` relies on.
     var ordered = [];
     function walk(node, depth) {
+      if (node.seen) return;
+      node.seen = true;
       node.depth = depth;
       node.covered = 0;
       for (var c = 0; c < node.children.length; c++) node.covered += node.children[c].dur;
@@ -505,6 +518,12 @@
       for (var d = 0; d < node.children.length; d++) walk(node.children[d], depth + 1);
     }
     for (var r = 0; r < roots.length; r++) walk(roots[r], 0);
+    for (var u = 0; u < all.length; u++) {
+      if (!all[u].seen) {
+        roots.push(all[u]);
+        walk(all[u], 0);
+      }
+    }
 
     var total = 0;
     for (var t = 0; t < all.length; t++) total = Math.max(total, all[t].offset + all[t].dur);
@@ -622,11 +641,19 @@
     for (var i = 0; i < candidates.length; i++) {
       if (totalMs / candidates[i] <= 8) { step = candidates[i]; break; }
     }
+    // The table tops out at 5 s. Past ~40 s it would saturate and emit a label
+    // every 5 s — a 10-minute trace would draw ~120 overlapping ticks.
+    while (totalMs / step > 8) step *= 10;
+    // Past a second, label in seconds: a 10-minute trace reads "500 s", not
+    // "500000 ms".
+    var inSeconds = step >= 1000;
+    var unit = inSeconds ? " s" : " ms";
     var out = "";
     for (var ms = 0; ms * 1e6 <= model.total; ms += step) {
-      var label = step < 1 ? ms.toFixed(2) : String(Math.round(ms * 100) / 100);
+      var value = inSeconds ? ms / 1000 : ms;
+      var label = step < 1 ? value.toFixed(2) : String(Math.round(value * 100) / 100);
       out += '<div class="tick" style="left:' + ((ms * 1e6 / model.total) * 100) + '%">' +
-        "<b>" + label + " ms</b></div>";
+        "<b>" + label + unit + "</b></div>";
     }
     return out;
   }

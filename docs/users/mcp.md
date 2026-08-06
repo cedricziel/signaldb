@@ -54,7 +54,9 @@ other client keeps receiving the same JSON text result it always did.
 How it works, if you are curious or writing a client:
 
 - The client declares `io.modelcontextprotocol/ui` in its `initialize`
-  capabilities.
+  capabilities, naming `text/html;profile=mcp-app` in that capability's
+  `mimeTypes`. A client that declares the extension without naming the type
+  cannot render the view, so it keeps the plain-text tool surface.
 - The server then marks `get_trace` with `_meta.ui.resourceUri` pointing at
   `ui://signaldb/trace`, and attaches the trace to the result as
   `structuredContent` alongside the usual text block.
