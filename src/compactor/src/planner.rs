@@ -116,6 +116,9 @@ pub(crate) fn is_partition_closed(
 pub struct CompactionPlanner {
     catalog_manager: Arc<CatalogManager>,
     config: PlannerConfig,
+    /// Optional counters for files the planner declined to compact. `None`
+    /// keeps planning log-only, which is what the unit tests use.
+    metrics: Option<crate::metrics::CompactionMetrics>,
 }
 
 impl CompactionPlanner {
@@ -124,7 +127,15 @@ impl CompactionPlanner {
         Self {
             catalog_manager,
             config,
+            metrics: None,
         }
+    }
+
+    /// Record declined-file counters (deferred-open and unclassifiable) into
+    /// the shared compaction metrics.
+    pub fn with_metrics(mut self, metrics: crate::metrics::CompactionMetrics) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// Run a planning cycle and return the closed partitions that need
@@ -341,6 +352,15 @@ impl CompactionPlanner {
                 });
         }
 
+        if let Some(metrics) = &self.metrics {
+            if unclassifiable > 0 {
+                metrics.record_unclassifiable_files(unclassifiable);
+            }
+            if deferred_open > 0 {
+                metrics.record_deferred_open_partition_files(deferred_open);
+            }
+        }
+
         if unclassifiable > 0 {
             tracing::warn!(
                 table = %table.identifier(),
@@ -467,6 +487,35 @@ mod tests {
         let zero = std::time::Duration::ZERO;
         assert!(!is_partition_closed(100, 363_599, zero));
         assert!(is_partition_closed(100, 363_600, zero));
+    }
+
+    /// The planner's declined-file counters are what tell an operator
+    /// "nothing to compact" apart from "everything is still open" or
+    /// "everything is unclassifiable" (spec: the deferral must be observable).
+    #[tokio::test]
+    async fn planner_records_deferred_and_unclassifiable_files() {
+        let metrics = crate::metrics::CompactionMetrics::new();
+        assert_eq!(metrics.deferred_open_partition_files(), 0);
+        assert_eq!(metrics.unclassifiable_files(), 0);
+
+        metrics.record_deferred_open_partition_files(3);
+        metrics.record_unclassifiable_files(2);
+
+        assert_eq!(metrics.deferred_open_partition_files(), 3);
+        assert_eq!(metrics.unclassifiable_files(), 2);
+    }
+
+    #[tokio::test]
+    async fn planner_without_metrics_still_plans() {
+        // The counters are opt-in; a planner built without them must behave
+        // identically (the unit tests and the Flight admin path rely on this).
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let planner = CompactionPlanner::new(
+            catalog_manager,
+            PlannerConfig::from(&CompactorConfig::default()),
+        );
+        assert!(planner.metrics.is_none());
+        planner.plan().await.expect("planning must succeed");
     }
 
     #[test]

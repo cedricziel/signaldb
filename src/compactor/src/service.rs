@@ -111,13 +111,16 @@ impl CompactorService {
         instance_id: Uuid,
     ) -> Result<Self> {
         let planner_config = PlannerConfig::from(&config.compactor);
-        let planner = Arc::new(CompactionPlanner::new(
-            catalog_manager.clone(),
-            planner_config.clone(),
-        ));
-
         let executor_config = ExecutorConfig::from(&planner_config);
         let compaction_metrics = CompactionMetrics::new();
+
+        // The planner shares the executor's metrics so the files it declines
+        // to compact — still-open partitions, unclassifiable files — are
+        // visible next to the jobs it does produce.
+        let planner = Arc::new(
+            CompactionPlanner::new(catalog_manager.clone(), planner_config.clone())
+                .with_metrics(compaction_metrics.clone()),
+        );
         let executor = Arc::new(
             CompactionExecutor::new(
                 catalog_manager.clone(),
