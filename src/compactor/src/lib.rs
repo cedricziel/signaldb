@@ -10,6 +10,8 @@
 //!   orphan file cleanup
 //! - `lease`: distributed lease management for conflict-free multi-instance
 //!   operation
+//! - `service`/`lifecycle`: assembly from configuration and the background
+//!   cycles, each driven on its own task
 //! - `flight`/`http`: on-demand admin actions and observability endpoints
 
 pub mod attr_promotion;
@@ -20,6 +22,7 @@ pub mod flight;
 pub mod http;
 pub mod iceberg;
 pub mod lease;
+mod lifecycle;
 pub mod metrics;
 pub mod orphan;
 pub mod planner;

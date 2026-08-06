@@ -95,6 +95,11 @@ impl ObservabilityState {
             s.compaction.retries_attempted() as u64,
         );
         counter(
+            "compactor_stale_leases_expired_total",
+            "Compaction leases reclaimed from crashed instances",
+            s.compaction.stale_leases_expired(),
+        );
+        counter(
             "compactor_input_files_total",
             "Input files consumed by compaction jobs",
             s.compaction.total_input_files() as u64,
@@ -212,6 +217,7 @@ impl ObservabilityState {
                 "jobs_failed": compaction.jobs_failed,
                 "conflicts_detected": compaction.conflicts_detected,
                 "retries_attempted": compaction.retries_attempted,
+                "stale_leases_expired": compaction.stale_leases_expired,
                 "input_files": compaction.total_input_files,
                 "output_files": compaction.total_output_files,
                 "bytes_before": compaction.bytes_before_compaction,

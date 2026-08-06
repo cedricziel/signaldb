@@ -60,6 +60,17 @@ Controls compaction planning: which files are merged into larger ones and when a
 | `lease_ttl_seconds`        | integer         | `300`            | How long a compaction lease stays valid without renewal                                                                            |
 | `metrics_addr`             | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled)                                                                                      |
 
+**How the cadences interact:** each lifecycle cycle runs on its own task, so
+these intervals are independent of one another — a compaction pass that runs
+long does not postpone retention, orphan cleanup, or the 30s stale-lease sweep
+(the sweep cadence is fixed and not configurable; `lease_ttl_seconds` controls
+only how long a lease survives without renewal). Two consequences worth
+knowing: retention and compaction can commit against the same table at the same
+time, which shows up as Iceberg commit conflicts that both paths retry
+(`compactor_conflicts_detected_total`, `compactor_retries_attempted_total`);
+and a cycle disabled with `enabled = false` gets no task at all rather than a
+task that wakes up and returns.
+
 **How file selection works:** compaction exists to merge many small ingest files into few large ones. Only files **smaller than** `max_input_file_size_kb` count as compaction inputs; when at least `file_count_threshold` such files exist, the table becomes a candidate and its small files are rewritten toward `target_file_size_mb`. Files at or above the maximum are considered "already big" — re-reading and rewriting them buys nothing, so they never trigger compaction on their own. The default of 64 MB is half the default 128 MB target output size, which keeps freshly ingested files (typically tens to hundreds of KB) always eligible.
 
 **How compaction is scoped:** a compaction job operates on exactly one `timestamp_hour` partition and commits a **delta** — the input files are removed and the compacted outputs added in a single snapshot, leaving every other partition referenced as it was. Two consequences matter operationally:

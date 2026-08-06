@@ -278,6 +278,23 @@ curl -s localhost:9091/metrics | grep -E "compactor_(orphan_candidates_identifie
 
 All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Counters are process-global — there are no per-tenant, per-dataset, or per-table labels. The only labelled metric is `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}`.
 
+#### Lease Recovery
+
+**Stale Leases Expired:**
+
+A partition whose compactor instance crashed stays unclaimable until its lease
+is expired. The lease-expiry task sweeps every 30s on its own task, so this
+counter keeps advancing even while a long compaction cycle is in flight.
+
+```promql
+# Leases reclaimed from crashed instances (last 24h)
+increase(compactor_stale_leases_expired_total[24h])
+```
+
+A steadily climbing value in a healthy fleet points at instances dying
+mid-compaction — check for restarts or OOM kills before tuning
+`lease_ttl_seconds`.
+
 #### Retention Enforcement
 
 **Partitions Dropped:**

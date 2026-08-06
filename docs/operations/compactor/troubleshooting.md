@@ -17,6 +17,7 @@ Comprehensive troubleshooting guide for SignalDB Compactor retention and lifecyc
 - [Orphan Cleanup Issues](#orphan-cleanup-issues)
 - [Performance Issues](#performance-issues)
 - [Data Integrity Issues](#data-integrity-issues)
+- [Lease and Recovery Issues](#lease-and-recovery-issues)
 - [Debug Procedures](#debug-procedures)
 - [Common Error Messages](#common-error-messages)
 - [Attribute Promotion](#attribute-promotion)
@@ -650,6 +651,52 @@ Set up alerts for unexpected partition drops:
 # Alert if > 100 partitions dropped in 5 minutes
 rate(compactor_partitions_dropped_total[5m]) > 20
 ```
+
+## Lease and Recovery Issues
+
+### Issue 12: Partitions Never Compacted After an Instance Crash
+
+**Symptoms:**
+
+- One partition is planned as a candidate every cycle but never executed
+- Logs repeat `lease held by another instance` for a holder that no longer exists
+- `compactor_stale_leases_expired_total` is flat while the fleet has restarted
+
+**Diagnostic Steps:**
+
+```bash
+# 1. Which leases are currently held, and by which instance?
+curl -s localhost:9091/status | jq .
+# Flight admin: compact_status returns active leases + counters
+
+# 2. Is the sweep running at all? (increments only when it reclaims)
+curl -s localhost:9091/metrics | grep compactor_stale_leases_expired_total
+
+# 3. Does the holder ID belong to a live instance?
+curl -s localhost:9091/status | jq -r .instance_id
+```
+
+**How it should behave:** stale leases are swept every 30s on a dedicated task,
+independent of the compaction cycle, so a partition orphaned by a crash becomes
+claimable within roughly `lease_ttl_seconds + 30s` no matter how long the
+current compaction pass takes.
+
+**Common Causes:**
+
+1. **Lease TTL Longer Than the Outage Window:**
+
+```toml
+lease_ttl_seconds = 3600  # An hour before a crashed holder's lease expires
+```
+
+**Solution:** Lower `lease_ttl_seconds` toward the default `300`. Held leases
+are renewed every `ttl / 3`, so a shorter TTL costs renewals, not safety.
+
+2. **The Holder Is Alive and Genuinely Slow:**
+
+A lease that keeps being renewed is not stale. Check whether the holder is
+still executing the job (`compactor_jobs_started_total` vs
+`compactor_jobs_succeeded_total`) before assuming a crash.
 
 ## Debug Procedures
 

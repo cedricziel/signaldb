@@ -26,6 +26,7 @@ struct MetricsInner {
     total_duration_ms: AtomicU64,
     deferred_open_partitions: AtomicUsize,
     unclassifiable_files: AtomicUsize,
+    stale_leases_expired: AtomicU64,
 }
 
 impl Default for CompactionMetrics {
@@ -51,6 +52,7 @@ impl CompactionMetrics {
                 total_duration_ms: AtomicU64::new(0),
                 deferred_open_partitions: AtomicUsize::new(0),
                 unclassifiable_files: AtomicUsize::new(0),
+                stale_leases_expired: AtomicU64::new(0),
             }),
         }
     }
@@ -122,6 +124,17 @@ impl CompactionMetrics {
         self.inner.jobs_failed.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record leases reclaimed from crashed instances by one expiry pass.
+    ///
+    /// This is the compactor's recovery path: a partition whose owner died
+    /// stays unclaimable until its lease is expired here, so operators need
+    /// to see the pass running (issue #1011).
+    pub fn record_stale_leases_expired(&self, count: u64) {
+        self.inner
+            .stale_leases_expired
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
     /// Record a detected conflict
     pub fn record_conflict(&self) {
         self.inner
@@ -157,6 +170,11 @@ impl CompactionMetrics {
     /// Get the number of retries attempted
     pub fn retries_attempted(&self) -> usize {
         self.inner.retries_attempted.load(Ordering::Relaxed)
+    }
+
+    /// Get the number of stale leases reclaimed from crashed instances
+    pub fn stale_leases_expired(&self) -> u64 {
+        self.inner.stale_leases_expired.load(Ordering::Relaxed)
     }
 
     /// Get the total input files processed
@@ -208,6 +226,7 @@ impl CompactionMetrics {
             jobs_failed: self.jobs_failed(),
             conflicts_detected: self.conflicts_detected(),
             retries_attempted: self.retries_attempted(),
+            stale_leases_expired: self.stale_leases_expired(),
             total_input_files: self.total_input_files(),
             total_output_files: self.total_output_files(),
             bytes_before_compaction: self.bytes_before_compaction(),
@@ -227,6 +246,7 @@ impl CompactionMetrics {
         self.inner.jobs_failed.store(0, Ordering::Relaxed);
         self.inner.conflicts_detected.store(0, Ordering::Relaxed);
         self.inner.retries_attempted.store(0, Ordering::Relaxed);
+        self.inner.stale_leases_expired.store(0, Ordering::Relaxed);
         self.inner.total_input_files.store(0, Ordering::Relaxed);
         self.inner.total_output_files.store(0, Ordering::Relaxed);
         self.inner
@@ -251,6 +271,7 @@ pub struct MetricsSummary {
     pub jobs_failed: usize,
     pub conflicts_detected: usize,
     pub retries_attempted: usize,
+    pub stale_leases_expired: u64,
     pub total_input_files: usize,
     pub total_output_files: usize,
     pub bytes_before_compaction: u64,
@@ -283,6 +304,7 @@ impl MetricsSummary {
             self.conflicts_detected,
             self.retries_attempted
         );
+        tracing::info!("Stale leases expired: {}", self.stale_leases_expired);
         tracing::info!(
             "Files: {} input → {} output",
             self.total_input_files,
