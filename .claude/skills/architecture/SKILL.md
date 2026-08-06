@@ -95,10 +95,10 @@ Key details:
 **Note**: Monolithic mode runs the same compactor lifecycle loop as the standalone service (`compactor::service::CompactorService`) when `[compactor].enabled = true` (the default; retention enforcement — 30d for each of traces, logs, metrics and profiles — and orphan cleanup are also both on by default), and serves the compactor Flight endpoint (50055) plus observability HTTP on `[compactor].metrics_addr`. The lifecycle loop covers:
 
 - Compaction planning and execution (Parquet rewrite for storage efficiency), scoped to one closed `timestamp_hour` partition per job and committed as an Iceberg delta (remove inputs / add outputs) so cost tracks the partition rather than the table and concurrent ingest does not invalidate the commit
-- Retention enforcement, snapshot expiration, and orphan file cleanup
+- Retention enforcement, snapshot expiration, and orphan file cleanup. Orphan liveness comes from the union of the retained snapshots' manifests (never snapshot age), and a re-validation pass rebuilds that set before every real deletion batch, unconditionally
 - Distributed-lease expiry for multi-instance safety
 
-Each rewrite also runs a read-only attribute-stats pass logging per-key presence/cardinality + advisory materialization candidates (epic #737 L4a). The compactor runs concurrent background loops for compaction, retention enforcement, and orphan cleanup, all using tokio::select! for non-blocking execution. Every rewrite also runs the advisory attribute-stats pass (persisted to the catalog's `attribute_stats` table; dry-run promotion decisions under `[compactor.attr_promotion]` — epic #737 Layer 4).
+Each rewrite also runs a read-only attribute-stats pass logging per-key presence/cardinality + advisory materialization candidates (epic #737 L4a). The compactor runs compaction, retention enforcement, orphan cleanup and lease expiry as `tokio::select!` arms of a *single* lifecycle task, and exactly one such task is spawned per process — so the cycles are **serial**, not concurrent: a long compaction cycle delays the others (that is what #1011 proposes to change). Cross-process safety rests on catalog CAS plus the compaction commit's input-scoped validation, not on in-process locking. Every rewrite also runs the advisory attribute-stats pass (persisted to the catalog's `attribute_stats` table; dry-run promotion decisions under `[compactor.attr_promotion]` — epic #737 Layer 4).
 
 ## Dual Catalog System
 
