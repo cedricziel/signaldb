@@ -1,7 +1,12 @@
-// Client for the router's Loki-compatible API (/loki/api/v1). SignalDB
+// Client for the router's Loki-compatible API (/loki/api/v1), layered over
+// the generated OpenAPI SDK — the UI never hand-writes the HTTP call for
+// endpoints the SDK covers (see docs/architecture/openapi-codegen.md,
+// "Adding or changing an endpoint"), mirroring api/queryIr.ts. SignalDB
 // materializes `severity_text` as Loki's `level` label; other materialized
 // attributes appear as stream labels.
+import "./client";
 
+import { logqlLabels, logqlLabelValues, logqlQueryRange } from "./gen";
 import { msToNanos, nanosToMs, type ResolvedRange } from "../lib/time";
 import { ApiError, tenantHeaders } from "./http";
 
@@ -28,23 +33,22 @@ interface LokiMatrixResult {
   values: [number, string][];
 }
 
-interface LokiResponse<T> {
-  status: string;
-  data: { resultType: string; result: T[] };
-}
-
-async function lokiFetch<T>(path: string, params: URLSearchParams): Promise<T> {
-  const res = await fetch(`/loki/api/v1/${path}?${params}`, {
-    headers: tenantHeaders(),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new ApiError(
-      `Loki API ${path} failed (${res.status}): ${body.slice(0, 300)}`,
-      res.status,
-    );
+/**
+ * Unwrap a generated-client result carrying `{resultType, result}` data.
+ * Only checks the HTTP-level outcome (matching the original hand-written
+ * client, which never inspected a body-level `status` field for these
+ * endpoints) — an HTTP failure throws `ApiError` with the status embedded.
+ */
+function unwrapLoki<T>(
+  res: { error?: unknown; data?: unknown; response?: Response },
+  what: string,
+): T {
+  if (res.error || !res.data) {
+    const status = res.response?.status ?? 500;
+    const detail = typeof res.error === "string" ? `: ${res.error}` : "";
+    throw new ApiError(`${what} failed (${status})${detail}`, status);
   }
-  return (await res.json()) as T;
+  return (res.data as { data: T }).data;
 }
 
 export async function lokiQueryLogs(
@@ -52,24 +56,27 @@ export async function lokiQueryLogs(
   range: ResolvedRange,
   limit: number,
 ): Promise<LogRow[]> {
-  const params = new URLSearchParams({
-    query,
-    start: msToNanos(range.fromMs),
-    end: msToNanos(range.toMs),
-    limit: String(limit),
-    direction: "backward",
+  const res = await logqlQueryRange({
+    query: {
+      query,
+      start: msToNanos(range.fromMs),
+      end: msToNanos(range.toMs),
+      limit,
+      direction: "backward",
+    },
+    headers: tenantHeaders(),
   });
-  const res = await lokiFetch<LokiResponse<LokiStreamResult>>(
-    "query_range",
-    params,
+  const data = unwrapLoki<{ resultType: string; result: LokiStreamResult[] }>(
+    res,
+    "Loki query_range",
   );
-  if (res.data.resultType !== "streams") {
+  if (data.resultType !== "streams") {
     throw new Error(
-      `Expected a log query but got resultType=${res.data.resultType}`,
+      `Expected a log query but got resultType=${data.resultType}`,
     );
   }
   const rows: LogRow[] = [];
-  for (const stream of res.data.result) {
+  for (const stream of data.result) {
     for (const [tsNs, line] of stream.values) {
       rows.push({ tsNs, tsMs: nanosToMs(tsNs), line, labels: stream.stream });
     }
@@ -84,50 +91,46 @@ export async function lokiQueryHistogram(
   range: ResolvedRange,
   step: string,
 ): Promise<HistogramSeries[]> {
-  const params = new URLSearchParams({
-    query,
-    start: msToNanos(range.fromMs),
-    end: msToNanos(range.toMs),
-    step,
+  const res = await logqlQueryRange({
+    query: {
+      query,
+      start: msToNanos(range.fromMs),
+      end: msToNanos(range.toMs),
+      step,
+    },
+    headers: tenantHeaders(),
   });
-  const res = await lokiFetch<LokiResponse<LokiMatrixResult>>(
-    "query_range",
-    params,
+  const data = unwrapLoki<{ resultType: string; result: LokiMatrixResult[] }>(
+    res,
+    "Loki query_range",
   );
-  if (res.data.resultType !== "matrix") {
+  if (data.resultType !== "matrix") {
     throw new Error(
-      `Expected a metric query but got resultType=${res.data.resultType}`,
+      `Expected a metric query but got resultType=${data.resultType}`,
     );
   }
-  return res.data.result.map((r) => ({
+  return data.result.map((r) => ({
     level: r.metric["level"] ?? "unknown",
     points: r.values.map(([t, v]): [number, number] => [t * 1000, Number(v)]),
   }));
 }
 
 export async function lokiLabels(range: ResolvedRange): Promise<string[]> {
-  const params = new URLSearchParams({
-    start: msToNanos(range.fromMs),
-    end: msToNanos(range.toMs),
+  const res = await logqlLabels({
+    query: { start: msToNanos(range.fromMs), end: msToNanos(range.toMs) },
+    headers: tenantHeaders(),
   });
-  const res = await lokiFetch<{ status: string; data: string[] }>(
-    "labels",
-    params,
-  );
-  return res.data ?? [];
+  return unwrapLoki<string[] | undefined>(res, "Loki labels") ?? [];
 }
 
 export async function lokiLabelValues(
   label: string,
   range: ResolvedRange,
 ): Promise<string[]> {
-  const params = new URLSearchParams({
-    start: msToNanos(range.fromMs),
-    end: msToNanos(range.toMs),
+  const res = await logqlLabelValues({
+    path: { name: label },
+    query: { start: msToNanos(range.fromMs), end: msToNanos(range.toMs) },
+    headers: tenantHeaders(),
   });
-  const res = await lokiFetch<{ status: string; data: string[] }>(
-    `label/${encodeURIComponent(label)}/values`,
-    params,
-  );
-  return res.data ?? [];
+  return unwrapLoki<string[] | undefined>(res, "Loki label values") ?? [];
 }

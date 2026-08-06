@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
+import { client as generatedClient } from "../api/gen/client.gen";
 
 export function renderWithClient(ui: ReactElement) {
   const client = new QueryClient({
@@ -14,16 +15,29 @@ export function renderWithClient(ui: ReactElement) {
   );
 }
 
+const realFetch = globalThis.fetch;
+
+// Registered once per importing test file: restores the generated client's
+// config after any test that called `stubFetchRoutes`, mirroring the
+// `vi.unstubAllGlobals()` cleanup those files already do for global fetch.
+afterEach(() => {
+  generatedClient.setConfig({ baseUrl: "/", fetch: realFetch });
+});
+
 type JsonRoute = { match: string | RegExp; body: unknown; status?: number };
 
 /**
- * Stub global fetch with URL-matched JSON routes. Later routes win when
- * multiple match; unmatched URLs 404 so tests fail loudly on unexpected
- * requests.
+ * Stub URL-matched JSON routes for both raw `fetch` calls (e.g.
+ * `promLabelStats`, not yet in the OpenAPI document) and the generated
+ * OpenAPI client's transport (everything else) — the client constructs its
+ * own `Request(url)` before any fetch mock runs, and `Request` rejects
+ * relative URLs under jsdom/Node, so it needs an absolute `baseUrl` too (see
+ * api/queryIr.ts's test precedent). Later routes win when multiple match;
+ * unmatched URLs 404 so tests fail loudly on unexpected requests.
  */
 export function stubFetchRoutes(routes: JsonRoute[]) {
   const fn = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-    const url = String(input);
+    const url = String(input instanceof Request ? input.url : input);
     const route = [...routes]
       .reverse()
       .find((r) =>
@@ -44,6 +58,7 @@ export function stubFetchRoutes(routes: JsonRoute[]) {
     );
   });
   vi.stubGlobal("fetch", fn);
+  generatedClient.setConfig({ baseUrl: "http://localhost", fetch: fn });
   return fn;
 }
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { setTenantContext } from "./http";
 import {
   lokiLabels,
@@ -6,27 +6,15 @@ import {
   lokiQueryHistogram,
   lokiQueryLogs,
 } from "./loki";
+import { resetApiClient, stubApiFetch } from "../test/apiClient";
 
 const RANGE = { fromMs: 1_000_000, toMs: 2_000_000 };
 
-function mockFetchOnce(body: unknown, status = 200) {
-  const fn = vi.fn().mockResolvedValue(
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "Content-Type": "application/json" },
-    }),
-  );
-  vi.stubGlobal("fetch", fn);
-  return fn;
-}
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
+afterEach(resetApiClient);
 
 describe("lokiQueryLogs", () => {
   it("flattens streams and sorts rows newest-first", async () => {
-    mockFetchOnce({
+    stubApiFetch({
       status: "success",
       data: {
         resultType: "streams",
@@ -52,7 +40,7 @@ describe("lokiQueryLogs", () => {
   });
 
   it("attaches tenant headers from the current context", async () => {
-    const fn = mockFetchOnce({
+    const calls = stubApiFetch({
       status: "success",
       data: { resultType: "streams", result: [] },
     });
@@ -62,20 +50,19 @@ describe("lokiQueryLogs", () => {
     } finally {
       setTenantContext({ tenant: "", dataset: "" });
     }
-    const init = fn.mock.calls[0]?.[1] as RequestInit;
-    expect(init.headers).toMatchObject({
-      "X-Tenant-ID": "acme",
-      "X-Dataset-ID": "prod",
+    expect(calls[0]!.headers).toMatchObject({
+      "x-tenant-id": "acme",
+      "x-dataset-id": "prod",
     });
   });
 
   it("sends nanosecond bounds and backward direction", async () => {
-    const fn = mockFetchOnce({
+    const calls = stubApiFetch({
       status: "success",
       data: { resultType: "streams", result: [] },
     });
     await lokiQueryLogs('{x="y"}', RANGE, 250);
-    const url = String(fn.mock.calls[0]?.[0]);
+    const url = calls[0]!.url;
     expect(url).toContain("/loki/api/v1/query_range?");
     expect(url).toContain("start=1000000000000");
     expect(url).toContain("end=2000000000000");
@@ -84,14 +71,14 @@ describe("lokiQueryLogs", () => {
   });
 
   it("throws a readable error on HTTP failure", async () => {
-    mockFetchOnce({ error: "parse error in query" }, 400);
+    stubApiFetch({ error: "parse error in query" }, 400);
     await expect(lokiQueryLogs("{", RANGE, 10)).rejects.toThrow(
       /query_range failed \(400\)/,
     );
   });
 
   it("rejects matrix responses for a log query", async () => {
-    mockFetchOnce({
+    stubApiFetch({
       status: "success",
       data: { resultType: "matrix", result: [] },
     });
@@ -103,7 +90,7 @@ describe("lokiQueryLogs", () => {
 
 describe("lokiQueryHistogram", () => {
   it("maps matrix results to per-level series in milliseconds", async () => {
-    mockFetchOnce({
+    stubApiFetch({
       status: "success",
       data: {
         resultType: "matrix",
@@ -135,25 +122,23 @@ describe("lokiQueryHistogram", () => {
 
 describe("label endpoints", () => {
   it("fetches labels within the range", async () => {
-    const fn = mockFetchOnce({
+    const calls = stubApiFetch({
       status: "success",
       data: ["level", "service_name"],
     });
     const labels = await lokiLabels(RANGE);
     expect(labels).toEqual(["level", "service_name"]);
-    expect(String(fn.mock.calls[0]?.[0])).toContain("/loki/api/v1/labels?");
+    expect(calls[0]!.url).toContain("/loki/api/v1/labels?");
   });
 
   it("URL-encodes label names for the values endpoint", async () => {
-    const fn = mockFetchOnce({ status: "success", data: ["a"] });
+    const calls = stubApiFetch({ status: "success", data: ["a"] });
     await lokiLabelValues("weird/label", RANGE);
-    expect(String(fn.mock.calls[0]?.[0])).toContain(
-      "/loki/api/v1/label/weird%2Flabel/values?",
-    );
+    expect(calls[0]!.url).toContain("/loki/api/v1/label/weird%2Flabel/values?");
   });
 
   it("tolerates a missing data field", async () => {
-    mockFetchOnce({ status: "success" });
+    stubApiFetch({ status: "success" });
     expect(await lokiLabels(RANGE)).toEqual([]);
   });
 });
