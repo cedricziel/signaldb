@@ -49,7 +49,7 @@
     "jsdom": "^26.0.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.18.0",
-    "vite": "^7.0.0",
+    "vite": "^8.2.0",
     "vitest": "^3.0.0"
   }
 }
