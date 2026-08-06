@@ -4,6 +4,7 @@
 
 use super::{CatalogTestContext, StorageTestContext};
 use anyhow::Result;
+use common::catalog::Catalog;
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::PlannerConfig;
 use std::sync::Arc;
@@ -105,6 +106,30 @@ impl RetentionTestContext {
     /// Creates a new retention test context (defaults to in-memory)
     pub async fn new() -> Result<Self> {
         Self::new_in_memory().await
+    }
+
+    /// Creates a retention test context whose `CatalogManager` is wired with
+    /// a database `Catalog` as the additional tenant source, so tenants
+    /// enumerated through the registry (`list_active_tenants`, the
+    /// enumeration the compactor's retention loop drives off) include
+    /// database-created tenants alongside config-defined ones.
+    pub async fn new_in_memory_with_tenant_source(tenant_source: Arc<Catalog>) -> Result<Self> {
+        let catalog = CatalogTestContext::new_in_memory_with_tenant_source(tenant_source).await?;
+        let storage = StorageTestContext::new_in_memory().await?;
+        let planner_config = PlannerConfig {
+            file_count_threshold: 10,
+            max_input_file_size_bytes: 64 * 1024 * 1024,
+            target_file_size_bytes: 128 * 1024 * 1024,
+            partition_lateness: std::time::Duration::ZERO,
+        };
+        let metrics = CompactionMetrics::new();
+
+        Ok(Self {
+            catalog,
+            storage,
+            planner_config,
+            metrics,
+        })
     }
 
     /// Creates a table and populates it with test data

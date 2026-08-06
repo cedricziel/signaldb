@@ -124,6 +124,10 @@ name = "component_integration_tests"
 path = "tests/e2e/component_integration_tests.rs"
 
 [[test]]
+name = "database_tenant_namespace_parity"
+path = "tests/e2e/database_tenant_namespace_parity.rs"
+
+[[test]]
 name = "prometheus_remote_write_test"
 path = "tests/prometheus_remote_write_test.rs"
 

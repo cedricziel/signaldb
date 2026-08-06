@@ -71,10 +71,15 @@ is_default }], default_dataset, enabled }`. Make 1.1–1.3 pass.
 - [x] 5.2 Route `CompactionPlanner::plan` (planner.rs) and the retention /
       orphan-cleanup loops (main.rs:468/514/527) through the registry. Make 5.1
       pass.
-- [ ] 5.3 (Deferred) Add a retention test that a database tenant's over-age
-      data is selected under the resolved policy. Not yet written — the
-      retention loops live in a `select!` cycle in `main.rs`, so this needs a
-      full over-age-data fixture rather than a unit test.
+- [x] 5.3 Add a retention test that a database tenant's over-age data is
+      selected under the resolved policy
+      (`tests-integration/tests/compactor/retention_cutoff.rs`,
+      `test_retention_for_database_sourced_tenant`): a `source="database"`
+      tenant with no config entry is enumerated via
+      `CatalogManager::list_active_tenants` (the same call
+      `CompactorService::run_retention_cycle` drives off) and its 30-day-old
+      data is partially dropped under a 14-day policy via
+      `RetentionEnforcer::enforce_retention`.
 
 ## 6. Cross-service integration coverage (`tests-integration`)
 
@@ -83,12 +88,15 @@ is_default }], default_dataset, enabled }`. Make 1.1–1.3 pass.
       the querier is running and asserts — through the real Flight `do_get`,
       with no restart — that the logs query resolves the catalog on demand
       instead of failing with `failed to resolve catalog`.
-- [ ] 6.2 (Deferred) Add an assertion that read and write namespaces match by
-      pushing data through the full acceptor→writer pipeline and reading it
-      back. Not yet written — 6.1 asserts catalog resolution but not a data
-      round-trip; the namespace-parity invariant is covered indirectly by the
-      `common` unit test that maps database datasets by name to the same slug
-      the write path uses.
+- [x] 6.2 Add an assertion that read and write namespaces match by pushing
+      data through the full acceptor→writer pipeline and reading it back
+      (`tests-integration/tests/e2e/database_tenant_namespace_parity.rs`,
+      `database_tenant_log_round_trips_through_matching_namespace`): a
+      `source="database"` tenant with no config entry ingests real logs
+      through the OTLP gRPC acceptor, the write-side object-store path is
+      asserted to contain `CatalogManager::build_namespace`'s resolved
+      namespace, and the exact ingested log body/service round-trips back
+      through the querier's Flight `query_logs`.
 - [x] 6.3 Make 6.1 pass end to end.
 
 ## 7. Docs and provisioning guidance
