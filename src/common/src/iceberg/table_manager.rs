@@ -175,10 +175,23 @@ impl IcebergTableManager {
             bloom_properties.extend(crate::schema::bloom_filter_properties_for_trace_columns());
         }
 
+        // Drop the min/max bounds of the free-text columns. Bounds ride along
+        // in every data file's manifest entry, and no query compares these
+        // columns by range, so they are permanent cost for no pruning. Every
+        // other column keeps iceberg-rust's default `truncate(16)`.
+        let schema = table_schema.schema_with_labels(labels)?;
+        let column_names: Vec<String> = schema
+            .fields()
+            .iter()
+            .map(|field| field.name.clone())
+            .collect();
+        let metrics_properties =
+            crate::schema::metrics_properties_for_free_text_columns(&column_names);
+
         let mut builder = CreateTableBuilder::default();
         builder
             .with_name(table_name.to_string())
-            .with_schema(table_schema.schema_with_labels(labels)?)
+            .with_schema(schema)
             .with_partition_spec(table_schema.partition_spec()?)
             .with_location(names::build_table_location(
                 tenant_slug,
@@ -192,6 +205,7 @@ impl IcebergTableManager {
         // delete-after-commit support (JanKaul/iceberg-rust#382).
         let mut properties: std::collections::HashMap<String, String> =
             bloom_properties.into_iter().collect();
+        properties.extend(metrics_properties);
         properties.insert(DELETE_AFTER_COMMIT_KEY.to_string(), "true".to_string());
         properties.insert(
             PREVIOUS_VERSIONS_MAX_KEY.to_string(),
