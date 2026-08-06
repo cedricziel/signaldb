@@ -1522,6 +1522,57 @@ export type QueryIrResponses = {
 
 export type QueryIrResponse2 = QueryIrResponses[keyof QueryIrResponses];
 
+export type LogqlLabelValuesData = {
+    body?: never;
+    path: {
+        /**
+         * Label name to list values for
+         */
+        name: string;
+    };
+    query?: {
+        /**
+         * Range start (unix epoch ns, s, or RFC3339)
+         */
+        start?: string;
+        /**
+         * Range end (unix epoch ns, s, or RFC3339)
+         */
+        end?: string;
+    };
+    url: '/loki/api/v1/label/{name}/values';
+};
+
+export type LogqlLabelValuesResponses = {
+    /**
+     * Distinct values for the label
+     */
+    200: unknown;
+};
+
+export type LogqlLabelsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Range start (unix epoch ns, s, or RFC3339)
+         */
+        start?: string;
+        /**
+         * Range end (unix epoch ns, s, or RFC3339)
+         */
+        end?: string;
+    };
+    url: '/loki/api/v1/labels';
+};
+
+export type LogqlLabelsResponses = {
+    /**
+     * Known log label names
+     */
+    200: unknown;
+};
+
 export type LogqlQueryData = {
     body?: never;
     path?: never;
@@ -1654,6 +1705,57 @@ export type OauthConsentContextResponses = {
 };
 
 export type OauthConsentContextResponse = OauthConsentContextResponses[keyof OauthConsentContextResponses];
+
+export type PromqlLabelValuesData = {
+    body?: never;
+    path: {
+        /**
+         * Label name to list values for
+         */
+        name: string;
+    };
+    query?: {
+        /**
+         * Range start (unix seconds or RFC3339)
+         */
+        start?: string;
+        /**
+         * Range end (unix seconds or RFC3339)
+         */
+        end?: string;
+    };
+    url: '/prometheus/api/v1/label/{name}/values';
+};
+
+export type PromqlLabelValuesResponses = {
+    /**
+     * Distinct values for the label
+     */
+    200: unknown;
+};
+
+export type PromqlLabelsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Range start (unix seconds or RFC3339)
+         */
+        start?: string;
+        /**
+         * Range end (unix seconds or RFC3339)
+         */
+        end?: string;
+    };
+    url: '/prometheus/api/v1/labels';
+};
+
+export type PromqlLabelsResponses = {
+    /**
+     * Known metric label names
+     */
+    200: unknown;
+};
 
 export type PromqlQueryData = {
     body?: never;

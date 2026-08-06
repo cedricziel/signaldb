@@ -1465,6 +1465,103 @@
         ]
       }
     },
+    "/loki/api/v1/label/{name}/values": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "GET /loki/api/v1/label/{name}/values — list values of one label.",
+        "operationId": "logql_label_values",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Label name to list values for",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Range start (unix epoch ns, s, or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Range end (unix epoch ns, s, or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Distinct values for the label",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/loki/api/v1/labels": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "GET /loki/api/v1/labels — list label names.",
+        "operationId": "logql_labels",
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Range start (unix epoch ns, s, or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Range end (unix epoch ns, s, or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Known log label names",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/loki/api/v1/query": {
       "get": {
         "tags": [
@@ -1693,6 +1790,103 @@
         },
         "security": [
           {}
+        ]
+      }
+    },
+    "/prometheus/api/v1/label/{name}/values": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "GET /prometheus/api/v1/label/{name}/values — distinct values of a label.",
+        "operationId": "promql_label_values",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Label name to list values for",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Range start (unix seconds or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Range end (unix seconds or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Distinct values for the label",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/prometheus/api/v1/labels": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "GET /prometheus/api/v1/labels — metric label names.",
+        "operationId": "promql_labels",
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Range start (unix seconds or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Range end (unix seconds or RFC3339)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Known metric label names",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
         ]
       }
     },

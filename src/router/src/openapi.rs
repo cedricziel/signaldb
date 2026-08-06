@@ -89,9 +89,13 @@ impl Modify for SecurityAddon {
         // Prometheus-compatible metrics query endpoints (PromQL)
         crate::endpoints::promql::query,
         crate::endpoints::promql::query_range,
+        crate::endpoints::promql::labels,
+        crate::endpoints::promql::label_values,
         // Loki-compatible log query endpoints (LogQL)
         crate::endpoints::logql::query,
         crate::endpoints::logql::query_range,
+        crate::endpoints::logql::labels,
+        crate::endpoints::logql::label_values,
         // Operational control (compaction) endpoints
         crate::endpoints::ops::compact,
         crate::endpoints::ops::compact_status,

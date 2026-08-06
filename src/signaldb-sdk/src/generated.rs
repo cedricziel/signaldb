@@ -5776,6 +5776,42 @@ impl Client {
     pub fn query_ir(&self) -> builder::QueryIr<'_> {
         builder::QueryIr::new(self)
     }
+    /**GET /loki/api/v1/label/{name}/values — list values of one label
+
+    Sends a `GET` request to `/loki/api/v1/label/{name}/values`
+
+    Arguments:
+    - `name`: Label name to list values for
+    - `end`: Range end (unix epoch ns, s, or RFC3339)
+    - `start`: Range start (unix epoch ns, s, or RFC3339)
+    ```ignore
+    let response = client.logql_label_values()
+        .name(name)
+        .end(end)
+        .start(start)
+        .send()
+        .await;
+    ```*/
+    pub fn logql_label_values(&self) -> builder::LogqlLabelValues<'_> {
+        builder::LogqlLabelValues::new(self)
+    }
+    /**GET /loki/api/v1/labels — list label names
+
+    Sends a `GET` request to `/loki/api/v1/labels`
+
+    Arguments:
+    - `end`: Range end (unix epoch ns, s, or RFC3339)
+    - `start`: Range start (unix epoch ns, s, or RFC3339)
+    ```ignore
+    let response = client.logql_labels()
+        .end(end)
+        .start(start)
+        .send()
+        .await;
+    ```*/
+    pub fn logql_labels(&self) -> builder::LogqlLabels<'_> {
+        builder::LogqlLabels::new(self)
+    }
     /**GET /loki/api/v1/query — instant query
 
     For a log selector this returns the most recent lines in the window;
@@ -5861,6 +5897,42 @@ impl Client {
     ```*/
     pub fn oauth_consent_context(&self) -> builder::OauthConsentContext<'_> {
         builder::OauthConsentContext::new(self)
+    }
+    /**GET /prometheus/api/v1/label/{name}/values — distinct values of a label
+
+    Sends a `GET` request to `/prometheus/api/v1/label/{name}/values`
+
+    Arguments:
+    - `name`: Label name to list values for
+    - `end`: Range end (unix seconds or RFC3339)
+    - `start`: Range start (unix seconds or RFC3339)
+    ```ignore
+    let response = client.promql_label_values()
+        .name(name)
+        .end(end)
+        .start(start)
+        .send()
+        .await;
+    ```*/
+    pub fn promql_label_values(&self) -> builder::PromqlLabelValues<'_> {
+        builder::PromqlLabelValues::new(self)
+    }
+    /**GET /prometheus/api/v1/labels — metric label names
+
+    Sends a `GET` request to `/prometheus/api/v1/labels`
+
+    Arguments:
+    - `end`: Range end (unix seconds or RFC3339)
+    - `start`: Range start (unix seconds or RFC3339)
+    ```ignore
+    let response = client.promql_labels()
+        .end(end)
+        .start(start)
+        .send()
+        .await;
+    ```*/
+    pub fn promql_labels(&self) -> builder::PromqlLabels<'_> {
+        builder::PromqlLabels::new(self)
     }
     /**GET|POST /prometheus/api/v1/query — instant query
 
@@ -8036,6 +8108,169 @@ pub mod builder {
             }
         }
     }
+    /**Builder for [`Client::logql_label_values`]
+
+    [`Client::logql_label_values`]: super::Client::logql_label_values*/
+    #[derive(Debug, Clone)]
+    pub struct LogqlLabelValues<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+        end: Result<Option<::std::string::String>, String>,
+        start: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> LogqlLabelValues<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+                end: Ok(None),
+                start: Ok(None),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        pub fn end<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.end = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for end failed".to_string()
+            });
+            self
+        }
+        pub fn start<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.start = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for start failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/loki/api/v1/label/{name}/values`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self {
+                client,
+                name,
+                end,
+                start,
+            } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let end = end.map_err(Error::InvalidRequest)?;
+            let start = start.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/loki/api/v1/label/{}/values",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("end", &end))
+                .query(&progenitor_client::QueryParam::new("start", &start))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "logql_label_values",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::logql_labels`]
+
+    [`Client::logql_labels`]: super::Client::logql_labels*/
+    #[derive(Debug, Clone)]
+    pub struct LogqlLabels<'a> {
+        client: &'a super::Client,
+        end: Result<Option<::std::string::String>, String>,
+        start: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> LogqlLabels<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                end: Ok(None),
+                start: Ok(None),
+            }
+        }
+        pub fn end<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.end = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for end failed".to_string()
+            });
+            self
+        }
+        pub fn start<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.start = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for start failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/loki/api/v1/labels`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self { client, end, start } = self;
+            let end = end.map_err(Error::InvalidRequest)?;
+            let start = start.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/loki/api/v1/labels", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("end", &end))
+                .query(&progenitor_client::QueryParam::new("start", &start))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "logql_labels",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
     /**Builder for [`Client::logql_query`]
 
     [`Client::logql_query`]: super::Client::logql_query*/
@@ -8402,6 +8637,169 @@ pub mod builder {
                 200u16 => ResponseValue::from_response(response).await,
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::promql_label_values`]
+
+    [`Client::promql_label_values`]: super::Client::promql_label_values*/
+    #[derive(Debug, Clone)]
+    pub struct PromqlLabelValues<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+        end: Result<Option<::std::string::String>, String>,
+        start: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> PromqlLabelValues<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+                end: Ok(None),
+                start: Ok(None),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        pub fn end<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.end = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for end failed".to_string()
+            });
+            self
+        }
+        pub fn start<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.start = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for start failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/prometheus/api/v1/label/{name}/values`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self {
+                client,
+                name,
+                end,
+                start,
+            } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let end = end.map_err(Error::InvalidRequest)?;
+            let start = start.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/prometheus/api/v1/label/{}/values",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("end", &end))
+                .query(&progenitor_client::QueryParam::new("start", &start))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "promql_label_values",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::promql_labels`]
+
+    [`Client::promql_labels`]: super::Client::promql_labels*/
+    #[derive(Debug, Clone)]
+    pub struct PromqlLabels<'a> {
+        client: &'a super::Client,
+        end: Result<Option<::std::string::String>, String>,
+        start: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> PromqlLabels<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                end: Ok(None),
+                start: Ok(None),
+            }
+        }
+        pub fn end<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.end = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for end failed".to_string()
+            });
+            self
+        }
+        pub fn start<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.start = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for start failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/prometheus/api/v1/labels`
+        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+            let Self { client, end, start } = self;
+            let end = end.map_err(Error::InvalidRequest)?;
+            let start = start.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/prometheus/api/v1/labels", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("end", &end))
+                .query(&progenitor_client::QueryParam::new("start", &start))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "promql_labels",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

@@ -173,6 +173,20 @@ pub async fn query<S: RouterState>(
 }
 
 /// GET /prometheus/api/v1/labels — metric label names.
+#[utoipa::path(
+    get,
+    path = "/prometheus/api/v1/labels",
+    operation_id = "promql_labels",
+    tag = "metrics",
+    security(("bearerAuth" = [])),
+    params(
+        ("start" = Option<String>, Query, description = "Range start (unix seconds or RFC3339)"),
+        ("end" = Option<String>, Query, description = "Range end (unix seconds or RFC3339)"),
+    ),
+    responses(
+        (status = 200, description = "Known metric label names", body = serde_json::Value),
+    )
+)]
 pub async fn labels<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
@@ -190,6 +204,21 @@ pub async fn labels<S: RouterState>(
 }
 
 /// GET /prometheus/api/v1/label/{name}/values — distinct values of a label.
+#[utoipa::path(
+    get,
+    path = "/prometheus/api/v1/label/{name}/values",
+    operation_id = "promql_label_values",
+    tag = "metrics",
+    security(("bearerAuth" = [])),
+    params(
+        ("name" = String, Path, description = "Label name to list values for"),
+        ("start" = Option<String>, Query, description = "Range start (unix seconds or RFC3339)"),
+        ("end" = Option<String>, Query, description = "Range end (unix seconds or RFC3339)"),
+    ),
+    responses(
+        (status = 200, description = "Distinct values for the label", body = serde_json::Value),
+    )
+)]
 pub async fn label_values<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,

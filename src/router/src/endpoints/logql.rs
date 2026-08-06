@@ -242,6 +242,20 @@ pub async fn query_range<S: RouterState>(
 }
 
 /// GET /loki/api/v1/labels — list label names.
+#[utoipa::path(
+    get,
+    path = "/loki/api/v1/labels",
+    operation_id = "logql_labels",
+    tag = "logs",
+    security(("bearerAuth" = [])),
+    params(
+        ("start" = Option<String>, Query, description = "Range start (unix epoch ns, s, or RFC3339)"),
+        ("end" = Option<String>, Query, description = "Range end (unix epoch ns, s, or RFC3339)"),
+    ),
+    responses(
+        (status = 200, description = "Known log label names", body = serde_json::Value),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
@@ -266,6 +280,21 @@ pub async fn labels<S: RouterState>(
 }
 
 /// GET /loki/api/v1/label/{name}/values — list values of one label.
+#[utoipa::path(
+    get,
+    path = "/loki/api/v1/label/{name}/values",
+    operation_id = "logql_label_values",
+    tag = "logs",
+    security(("bearerAuth" = [])),
+    params(
+        ("name" = String, Path, description = "Label name to list values for"),
+        ("start" = Option<String>, Query, description = "Range start (unix epoch ns, s, or RFC3339)"),
+        ("end" = Option<String>, Query, description = "Range end (unix epoch ns, s, or RFC3339)"),
+    ),
+    responses(
+        (status = 200, description = "Distinct values for the label", body = serde_json::Value),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
