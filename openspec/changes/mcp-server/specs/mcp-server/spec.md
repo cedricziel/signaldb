@@ -56,7 +56,11 @@ The MCP server SHALL hold no credential of its own and SHALL NOT validate creden
 
 ### Requirement: Query and exploration tools
 
-The MCP server SHALL expose read-only tools that wrap the SignalDB query API: trace search (`search_traces`), single-trace retrieval (`get_trace`), log search (`search_logs`), metric query (`query_metrics`), and attribute discovery (`discover_attributes`). Each tool SHALL return structured JSON derived from the API response. In v1 these tools SHALL be visible to every authenticated tenant session without role-based filtering.
+The MCP server SHALL expose read-only tools that wrap the SignalDB query API: trace search (`search_traces`), single-trace retrieval (`get_trace`), log search (`search_logs`), metric query (`query_metrics`), attribute discovery (`discover_attributes`), and metric-name discovery (`discover_metrics`). Each tool SHALL return structured JSON derived from the API response. In v1 these tools SHALL be visible to every authenticated tenant session without role-based filtering.
+
+**Signal-aware attribute discovery.** `discover_attributes` SHALL accept an optional `signal` argument (`traces` | `logs` | `metrics`, default `traces`) selecting the backend it queries: `traces` uses the Tempo tag-name/tag-value endpoints, `logs` uses the Loki label-name/label-value endpoints, and `metrics` uses the Prometheus label-name/label-value endpoints. Called without a `tag` argument it SHALL return the known names for that signal; called with a `tag` it SHALL return the known values for that name. Results SHALL be scoped to the caller's tenant regardless of signal.
+
+**Metric-name discovery.** `discover_metrics` SHALL return the distinct metric names visible to the caller's tenant, sourced from the Prometheus label-value endpoint for the `__name__` label. It SHALL accept the same optional `dataset` argument, dataset-scoping, and payload-cap rules as the other query tools.
 
 **Dataset selection.** Each tool SHALL accept an optional `dataset` argument. When omitted, the session's default dataset (from the resolved tenant context) is used. When provided, it SHALL be forwarded as `X-Dataset-ID` and validated server-side against the caller's tenant context; a dataset the caller may not access SHALL be rejected with an access-denied error rather than silently substituting the default.
 
@@ -101,6 +105,26 @@ The MCP server SHALL expose read-only tools that wrap the SignalDB query API: tr
 
 - **WHEN** a query tool call is rejected by the router's per-tenant rate limit
 - **THEN** the tool returns an MCP error indicating the request was throttled and can be retried
+
+#### Scenario: Attribute discovery defaults to traces
+
+- **WHEN** a session calls `discover_attributes` without a `signal` argument
+- **THEN** the tool returns Tempo trace-attribute names for the caller's tenant
+
+#### Scenario: Attribute discovery for logs
+
+- **WHEN** a session calls `discover_attributes` with `signal: "logs"` and no `tag`
+- **THEN** the tool returns the Loki label names known for the caller's tenant
+
+#### Scenario: Attribute discovery for metrics
+
+- **WHEN** a session calls `discover_attributes` with `signal: "metrics"` and a `tag`
+- **THEN** the tool returns the Prometheus label values for that label name, scoped to the caller's tenant
+
+#### Scenario: Discover metric names
+
+- **WHEN** a session calls `discover_metrics`
+- **THEN** the tool returns the distinct metric names visible to the caller's tenant
 
 #### Scenario: Tools are listed for any authenticated tenant session
 

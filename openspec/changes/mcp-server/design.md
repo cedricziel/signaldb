@@ -75,6 +75,15 @@ The query tools forward the caller's credential by reading it from the HTTP requ
 
 This makes `signaldb-mcp --stdio` genuinely usable for a developer pointing an MCP client at a running dev router, while keeping the HTTP path credential-free on the server. The SDK-client builder gains one branch (prefer `Parts` headers; else the configured stdio credential; else error); the forwarding principle is unchanged.
 
+### D9: Signal-aware `discover_attributes` + `discover_metrics` — reuse existing label endpoints, defer series/label_stats
+
+The router already implements label-discovery handlers beyond Tempo's tags: Loki's `labels`/`label_values` (`src/router/src/endpoints/logql.rs`) and Prometheus's `labels`/`label_values` (`src/router/src/endpoints/promql.rs`). Neither is in the OpenAPI document yet — Phase E only annotated `query`/`query_range`. Rather than inventing a new discovery model, **Phase F** applies the same D2 treatment (utoipa `ToSchema`/`IntoParams`, regenerate the SDK) to these four handlers, and the MCP layer gets two changes:
+
+- `discover_attributes` gains an optional `signal` argument (`traces` | `logs` | `metrics`, default `traces`) that selects which generated SDK method it calls — Tempo tags (existing), Loki labels, or Prometheus labels — keeping one tool and one mental model ("list names, or list values for a name") instead of three near-duplicate tools.
+- `discover_metrics` is new because metric names are not a label in the tool-facing sense — they're the value of Prometheus's reserved `__name__` label. Modeling that as `discover_attributes(signal: "metrics", tag: "__name__")` would work mechanically but is not how an agent thinks about metrics (`query_metrics` pairs naturally with `discover_metrics`, mirroring `search_traces`/`discover_attributes`). The tool is a thin wrapper that hardcodes the `__name__` label lookup against the Prometheus `label_values` SDK method.
+
+**Deferred:** Loki/Prometheus `/series` (selector-matcher discovery — matcher in, series out, a different shape than name/value) and Prometheus `label_stats` (cardinality-advisory, reads compactor stats rather than the querier) are out of scope for this addition. Both endpoints exist server-side and can reuse the same OpenAPI groundwork as a fast follow if agents need them.
+
 ## Risks / Trade-offs
 
 - **rmcp Streamable-HTTP wiring is the one unproven detail** → spike the transport (header access, session lifecycle, SSE) in Phase B behind a `server_info`/`ping` tool before wiring any domain tool; architecture above does not depend on how headers surface because auth is done at the MCP boundary and the SDK client is built there.
