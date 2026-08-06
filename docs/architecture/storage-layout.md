@@ -431,6 +431,26 @@ ingest and compaction output carry the filters. Enabled columns:
   every materialized `label_<key>` column.
 - **all signals** — every materialized `label_<key>` column.
 
+The traces columns additionally carry
+`write.parquet.bloom-filter-fpp.column.<col> = "0.01"`. A filter is sized from
+its target false-positive probability, and Parquet's `0.05` default means one
+row group in twenty is read for nothing — for a single-trace lookup, that
+wasted read _is_ the query. `0.01` cuts it five-fold for a filter roughly 40%
+larger.
+
+### Parquet compression
+
+Every table records `write.parquet.compression-codec = "zstd"` and
+`write.parquet.compression-level = "1"`
+(`common::schema::compression_properties`). Level 1 is what files have always
+been written at; iceberg-rust's `CreateTableBuilder` recorded level 3 in table
+metadata while the writer hardcoded level 1, so the metadata described a file
+that was never written. Now that the writer honors these properties
+([JanKaul/iceberg-rust#387](https://github.com/JanKaul/iceberg-rust/pull/387)),
+pinning the level keeps the bytes identical and makes the metadata true.
+Raising it trades ingest CPU for storage and is worth measuring rather than
+inheriting by accident.
+
 The properties are metadata set at **creation time**: a table created before a
 column was added to the enabled set does not gain the filter retroactively
 (compaction rewrites inherit whatever the table metadata currently declares).

@@ -68,25 +68,67 @@ pub fn bloom_filter_property_for_attr_tokens() -> (String, String) {
 /// span-level point lookups.
 pub const BLOOM_FILTER_TRACE_COLUMNS: [&str; 2] = ["trace_id", "span_id"];
 
+/// False-positive probability for the trace point-lookup bloom filters.
+///
+/// A false positive costs a row-group read that returns nothing, which for a
+/// single-trace lookup is the entire cost of the query. Parquet's default
+/// `0.05` means one row group in twenty is read for nothing; `0.01` cuts that
+/// five-fold for a filter roughly 40% larger, which is a good trade on a
+/// column whose whole purpose is point lookups.
+pub const BLOOM_FILTER_TRACE_FPP: &str = "0.01";
+
 /// Per-column Parquet bloom-filter table properties for the built-in traces
 /// point-lookup columns ([`BLOOM_FILTER_TRACE_COLUMNS`]).
 ///
-/// Emits `write.parquet.bloom-filter-enabled.column.<col> = "true"` for each,
-/// the standard Iceberg property the pinned iceberg-rust Parquet writer
-/// honors per column. Set at table creation for [`schemas::TableSchema::Traces`]
-/// so every new file (ingest and compaction output) carries the filters.
+/// Emits `write.parquet.bloom-filter-enabled.column.<col> = "true"` and
+/// `write.parquet.bloom-filter-fpp.column.<col>` for each — standard Iceberg
+/// properties the pinned iceberg-rust Parquet writer honors per column. Set at
+/// table creation for [`schemas::TableSchema::Traces`] so every new file
+/// (ingest and compaction output) carries the filters.
 pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
-    use iceberg_rust::spec::table_metadata::WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX;
+    use iceberg_rust::spec::table_metadata::{
+        WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX,
+        WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX,
+    };
 
     BLOOM_FILTER_TRACE_COLUMNS
         .iter()
-        .map(|column| {
-            (
-                format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{column}"),
-                "true".to_string(),
-            )
+        .flat_map(|column| {
+            [
+                (
+                    format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{column}"),
+                    "true".to_string(),
+                ),
+                (
+                    format!("{WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX}{column}"),
+                    BLOOM_FILTER_TRACE_FPP.to_string(),
+                ),
+            ]
         })
         .collect()
+}
+
+/// Parquet compression properties recorded on every table.
+///
+/// `CreateTableBuilder` records `zstd` / level `3` on a new table, but the
+/// writer hardcoded zstd level 1 -- so the metadata described a file that was
+/// never written. Now that the writer honors these properties, leaving them
+/// alone would silently move every write to level 3. Pin the level the files
+/// have actually been written at, making the metadata true without changing a
+/// byte; raising it is a separate decision, worth measuring against the
+/// ingest path's CPU budget rather than inheriting by accident.
+pub fn compression_properties() -> Vec<(String, String)> {
+    use iceberg_rust::spec::table_metadata::{
+        WRITE_PARQUET_COMPRESSION_CODEC, WRITE_PARQUET_COMPRESSION_LEVEL,
+    };
+
+    vec![
+        (
+            WRITE_PARQUET_COMPRESSION_CODEC.to_string(),
+            "zstd".to_string(),
+        ),
+        (WRITE_PARQUET_COMPRESSION_LEVEL.to_string(), "1".to_string()),
+    ]
 }
 
 /// Per-column Parquet bloom-filter table properties for a set of
@@ -352,6 +394,52 @@ mod tests {
     use crate::config::{DefaultSchemas, SchemaConfig, TenantSchemaConfig, TenantsConfig};
     use std::collections::HashMap;
 
+    /// A point-lookup filter must be sized for point lookups: Parquet's default
+    /// 0.05 reads one row group in twenty for nothing, which for a single-trace
+    /// lookup is the entire cost of the query.
+    #[test]
+    fn trace_bloom_filters_are_sized_tighter_than_the_parquet_default() {
+        let properties = bloom_filter_properties_for_trace_columns();
+
+        for column in BLOOM_FILTER_TRACE_COLUMNS {
+            assert!(
+                properties.contains(&(
+                    format!("write.parquet.bloom-filter-enabled.column.{column}"),
+                    "true".to_string()
+                )),
+                "{column} must have a bloom filter"
+            );
+
+            let fpp = properties
+                .iter()
+                .find(|(key, _)| key == &format!("write.parquet.bloom-filter-fpp.column.{column}"))
+                .map(|(_, value)| value.parse::<f64>().expect("fpp must be a number"))
+                .unwrap_or_else(|| panic!("{column} must have an fpp"));
+
+            assert!(
+                fpp > 0.0 && fpp < 0.05,
+                "{column} fpp must be tighter than Parquet's 0.05 default, got {fpp}"
+            );
+        }
+    }
+
+    /// The writer wrote zstd level 1 while table metadata claimed level 3. Now
+    /// that the writer honors the property, it must say what the files are, or
+    /// every write silently moves to level 3.
+    #[test]
+    fn compression_properties_pin_the_level_the_files_are_written_at() {
+        let properties = compression_properties();
+
+        assert!(properties.contains(&(
+            "write.parquet.compression-codec".to_string(),
+            "zstd".to_string()
+        )));
+        assert!(properties.contains(&(
+            "write.parquet.compression-level".to_string(),
+            "1".to_string()
+        )));
+    }
+
     /// Bounds on a free-text column are dead weight in every manifest entry,
     /// so those columns opt down to counts. Counts stay: the planner uses them.
     #[test]
@@ -434,8 +522,16 @@ mod tests {
                     "true".to_string()
                 ),
                 (
+                    "write.parquet.bloom-filter-fpp.column.trace_id".to_string(),
+                    BLOOM_FILTER_TRACE_FPP.to_string()
+                ),
+                (
                     "write.parquet.bloom-filter-enabled.column.span_id".to_string(),
                     "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-fpp.column.span_id".to_string(),
+                    BLOOM_FILTER_TRACE_FPP.to_string()
                 ),
             ]
         );
