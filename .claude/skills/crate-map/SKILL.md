@@ -106,8 +106,8 @@ This is the shared foundation. Key modules:
 | Module                  | Path                            | Purpose                                                  |
 | ----------------------- | ------------------------------- | -------------------------------------------------------- |
 | `main.rs`               | `src/compactor/src/main.rs`     | `signaldb-compactor` binary entry point                  |
-| `planner.rs`            | `src/compactor/src/planner.rs`  | Compaction planning -- identifies candidates             |
-| `executor.rs`           | `src/compactor/src/executor.rs` | Compaction execution -- rewrites Parquet files           |
+| `planner.rs`            | `src/compactor/src/planner.rs`  | Compaction planning -- one candidate per closed partition |
+| `executor.rs`           | `src/compactor/src/executor.rs` | Compaction execution -- rewrites one partition, delta commit |
 | `scheduler/`            | `src/compactor/src/scheduler/`  | Round-robin per-tenant scheduling (Phase 4)              |
 | `lease/`                | `src/compactor/src/lease/`      | Distributed leases for multi-instance safety (Phase 4)   |
 | `flight.rs`             | `src/compactor/src/flight.rs`   | CompactorFlightService (Flight :50055)                   |

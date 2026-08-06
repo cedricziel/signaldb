@@ -94,7 +94,7 @@ Key details:
 
 **Note**: Monolithic mode runs the same compactor lifecycle loop as the standalone service (`compactor::service::CompactorService`) when `[compactor].enabled = true` (the default; retention enforcement — 30d for each of traces, logs, metrics and profiles — and orphan cleanup are also both on by default), and serves the compactor Flight endpoint (50055) plus observability HTTP on `[compactor].metrics_addr`. The lifecycle loop covers:
 
-- Compaction planning and execution (Parquet rewrite for storage efficiency)
+- Compaction planning and execution (Parquet rewrite for storage efficiency), scoped to one closed `timestamp_hour` partition per job and committed as an Iceberg delta (remove inputs / add outputs) so cost tracks the partition rather than the table and concurrent ingest does not invalidate the commit
 - Retention enforcement, snapshot expiration, and orphan file cleanup
 - Distributed-lease expiry for multi-instance safety
 

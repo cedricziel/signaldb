@@ -400,9 +400,9 @@ grace_period_hours = 1  # ← Too short for busy systems
 
 2. **Compaction Creating New Files:**
 
-Compaction creates new files that reference data from old files. The old files become orphans after compaction completes.
+Compaction writes new files and drops its input files from the current snapshot; the inputs become orphans once no retained snapshot references them.
 
-**Solution:** This is expected. Ensure grace period covers compaction duration.
+**Solution:** This is expected. Ensure the grace period covers compaction duration. Compaction is partition-scoped, so the orphans produced by one job are bounded by that partition rather than by the whole table.
 
 ### Issue 7: Orphan Cleanup Taking Too Long
 
