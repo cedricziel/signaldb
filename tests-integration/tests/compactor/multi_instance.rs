@@ -282,14 +282,14 @@ async fn test_two_instances_compact_without_duplicate_work() -> Result<()> {
         .await?;
     }
 
-    // Every dataset was seeded by the same writer, so they share the hour
-    // partition; read it back from the manifests rather than assuming one.
-    let partition = busiest_partition(&catalog_manager, tenant_id, datasets[0], "logs").await?;
-
-    let candidates: Vec<CompactionCandidate> = datasets
-        .iter()
-        .map(|d| make_candidate(tenant_id, d, partition))
-        .collect();
+    // Resolve each dataset's own partition. The datasets are seeded by
+    // separate writes, so a UTC hour boundary falling between them would put
+    // a later dataset in a different partition than the first.
+    let mut candidates: Vec<CompactionCandidate> = Vec::new();
+    for dataset in &datasets {
+        let partition = busiest_partition(&catalog_manager, tenant_id, dataset, "logs").await?;
+        candidates.push(make_candidate(tenant_id, dataset, partition));
+    }
 
     let in_flight: Arc<HashMap<String, AtomicUsize>> = Arc::new(
         candidates

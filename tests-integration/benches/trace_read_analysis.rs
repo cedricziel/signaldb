@@ -107,6 +107,12 @@ async fn compact(catalog_manager: &Arc<CatalogManager>) {
     };
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());
     let candidates = planner.plan().await.expect("plan compaction");
+    // Compaction is partition-scoped: if planning selects nothing the
+    // benchmark would silently measure uncompacted data.
+    assert!(
+        !candidates.is_empty(),
+        "benchmark setup must produce at least one compaction candidate"
+    );
     println!("compaction: {} candidate partition(s)", candidates.len());
     let executor = CompactionExecutor::new(
         catalog_manager.clone(),

@@ -214,6 +214,8 @@ impl CompactionMetrics {
             bytes_after_compaction: self.bytes_after_compaction(),
             compression_ratio: self.compression_ratio(),
             avg_duration_ms: self.avg_duration_ms(),
+            deferred_open_partition_files: self.deferred_open_partition_files(),
+            unclassifiable_files: self.unclassifiable_files(),
         }
     }
 
@@ -234,6 +236,10 @@ impl CompactionMetrics {
             .bytes_after_compaction
             .store(0, Ordering::Relaxed);
         self.inner.total_duration_ms.store(0, Ordering::Relaxed);
+        self.inner
+            .deferred_open_partitions
+            .store(0, Ordering::Relaxed);
+        self.inner.unclassifiable_files.store(0, Ordering::Relaxed);
     }
 }
 
@@ -251,6 +257,10 @@ pub struct MetricsSummary {
     pub bytes_after_compaction: u64,
     pub compression_ratio: f64,
     pub avg_duration_ms: f64,
+    /// Files skipped because their partition is still open.
+    pub deferred_open_partition_files: usize,
+    /// Files excluded from compaction as unclassifiable.
+    pub unclassifiable_files: usize,
 }
 
 impl MetricsSummary {
@@ -285,6 +295,14 @@ impl MetricsSummary {
             self.compression_ratio
         );
         tracing::info!("Average job duration: {:.2}ms", self.avg_duration_ms);
+        // Declined files are what separates "nothing to compact" from
+        // "everything is waiting on partition_lateness" or "everything is
+        // unclassifiable", so they belong in the same summary.
+        tracing::info!(
+            "Declined: {} files in still-open partitions, {} unclassifiable",
+            self.deferred_open_partition_files,
+            self.unclassifiable_files
+        );
     }
 }
 

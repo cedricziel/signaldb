@@ -344,8 +344,11 @@ async fn concurrent_append_does_not_invalidate_the_delta_commit() -> Result<()> 
         summary.jobs_succeeded, 1,
         "the compaction job must resolve as succeeded, not exhaust its retries"
     );
+    // The executor makes at most `max_retries` attempts, so it can record at
+    // most `max_retries - 1` retries — asserting `<= max_retries` could never
+    // fail and would prove nothing.
     assert!(
-        summary.retries_attempted <= ExecutorConfig::default().max_retries as usize,
+        summary.retries_attempted < ExecutorConfig::default().max_retries as usize,
         "any conflict must resolve within the retry budget, got {} retries",
         summary.retries_attempted
     );
@@ -357,6 +360,18 @@ async fn concurrent_append_does_not_invalidate_the_delta_commit() -> Result<()> 
     assert!(
         after.len() >= 2,
         "the concurrently appended partition must survive the compaction commit"
+    );
+
+    // `Success` alone also covers the no-op path, so require that the target
+    // partition was genuinely merged.
+    let target_after = after
+        .get(&target)
+        .expect("target partition must still hold data after compaction");
+    assert!(
+        target_after.len() < before[&target].len(),
+        "the target partition must be genuinely compacted: {} -> {}",
+        before[&target].len(),
+        target_after.len()
     );
 
     let rows_after = live_row_count(&catalog_manager, tenant_id, dataset_id, table_name).await?;

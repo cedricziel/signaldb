@@ -288,7 +288,15 @@ impl CompactorService {
         };
 
         if candidates.is_empty() {
-            tracing::info!("No compaction candidates found in this cycle");
+            // Report what the planner declined, so an empty cycle is
+            // distinguishable from one where every file was deferred to a
+            // still-open partition or excluded as unclassifiable.
+            let summary = self.compaction_metrics.summary();
+            tracing::info!(
+                deferred_open_partition_files = summary.deferred_open_partition_files,
+                unclassifiable_files = summary.unclassifiable_files,
+                "No compaction candidates found in this cycle"
+            );
             return;
         }
 
