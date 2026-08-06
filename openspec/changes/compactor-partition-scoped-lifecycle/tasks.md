@@ -7,7 +7,9 @@ Sequenced per design.md: live-set correctness (D5) lands before the default flip
 - [x] 1.1 (landed in #1007) Regression tests: reused-manifest EXISTING files stay live; idle-table live set equals table content (zero candidates); genuinely unreferenced file past grace is a candidate
 - [x] 1.2 (landed in #1007) Rebuild live-set construction from current-snapshot manifest list ∪ retained snapshots' manifests; remove the snapshot-age filter from detection (`detector.rs`, `manifest.rs`); age knob remains expiration-only
 - [x] 1.3 (landed in #1007) Stream manifest entries into a path-keyed set (no per-file struct materialization) and add a large-table test bound (#475)
-- [ ] 1.4 Make pre-delete re-validation unconditional; remove the `revalidate_before_delete` config key (BREAKING config, loud parse failure) and update `signaldb.dist.toml` + compactor docs
+- [x] 1.4 Make pre-delete re-validation unconditional; remove the `revalidate_before_delete` config key (BREAKING config, ~~loud parse failure~~ — see note) and update `signaldb.dist.toml` + compactor docs
+  - **Design correction:** D5/the task assumed removal would surface as a loud parse failure because "unknown keys already fail config parsing". They do not — neither `common::config::OrphanCleanupConfig` nor the compactor's copy uses `#[serde(deny_unknown_fields)]`, so a leftover key is silently ignored. Adding `deny_unknown_fields` is not a safe drive-by: these structs are also populated through figment's env-var provider. Documented as a breaking change in `docs/operations/compactor/configuration.md` instead; tightening the config structs is worth its own change.
+  - **Scope refinement:** re-validation is unconditional before any *real* deletion, and skipped in `dry_run` — a dry run deletes nothing, so there is no delete to guard, and it is the one mode that legitimately runs without a detector attached.
 
 ## 2. Manifest-derived partition identity (#930)
 
@@ -28,17 +30,19 @@ Sequenced per design.md: live-set correctness (D5) lands before the default flip
 
 ## 5. Executor/rewriter: bounded streaming rewrite (D4, #933)
 
-- [ ] 5.1 **partial** (#1017: other-partitions-byte-identical and row-count-parity done; peak-memory test under a small budget still missing) Tests: rewrite of one partition leaves other partitions' files byte-identical; peak-memory test with a small `FairSpillPool` budget completes or fails attributably (no OOM); row-count parity preserved
+- [x] 5.1 (#1020 added `oversized_partition_stays_within_its_memory_budget`: a 1 MB budget against a 10k-row partition must complete with rows preserved, or fail with an attributable error leaving the live set untouched — never OOM. Note it currently resolves via the success branch, so it pins the no-OOM/no-corruption contract rather than proving a spill occurred.) Tests: rewrite of one partition leaves other partitions' files byte-identical; peak-memory test with a small `FairSpillPool` budget completes or fails attributably (no OOM); row-count parity preserved
 - [ ] 5.2 **partial** (#1017: scoped to `rewrite_partition` with a pushed-down partition predicate; still `collect()`s rather than `execute_stream`) Scope `rewrite_table` → `rewrite_partition(inputs)`: register only input files, `execute_stream` instead of `collect`, per-partition sort retained
 - [x] 5.3 (#1017; uses `RuntimeEnvBuilder::with_memory_limit` — the same idiom as the querier — rather than constructing `FairSpillPool` directly) Build compaction `RuntimeEnv` with `FairSpillPool(compactor.memory_limit_mb)` + spill config (new config keys)
 - [ ] 5.4 Roll output files at target _encoded_ size using writer bytes-written feedback; test that merged output approximates target file size
 
 ## 6. Commit: delta semantics + typed conflicts (D2, part of #933)
 
-- [ ] 6.1 **partial** (#1017: concurrent-append case done; retention-drops-target-partition and failed-commit-leaves-outputs-reclaimable still missing) Tests: commit succeeds while ingest appends concurrently to another partition (no retry starvation); retention dropping the target partition aborts the commit; failed commit leaves output files unreferenced (reclaimable)
+- [x] 6.1 (#1020 added `delta_commit_aborts_when_its_inputs_are_no_longer_live`: an input file removed underneath the job — the shape a concurrent partition drop leaves — aborts the commit, classifies as a conflict, and creates no snapshot, so any already-written output stays unreferenced and reclaimable) Tests: commit succeeds while ingest appends concurrently to another partition (no retry starvation); retention dropping the target partition aborts the commit; failed commit leaves output files unreferenced (reclaimable)
 - [x] 6.2 (#1017) Replace whole-table `replace` with the scoped delta commit; conflict check = input files still live in target partition at commit time
 - [x] 6.3 (typed `CommitError::SnapshotConflict` predates this change; `commit_delta` raises it for a mutated input set and keeps post-commit verification) Replace substring conflict classification with typed errors (also fixes the self-authored verification errors); keep post-commit catalog verification
 - [ ] 6.4 Per-table async mutex serializing compaction/retention/expiration loops in-process (D6)
+  - **Still required — an earlier note here claimed otherwise and was wrong.** It is true that `run_lifecycle_loop` serializes its *own* cycles: it is one spawned task whose `tokio::select!` arms each `.await` to completion, one loop per process. But that is not the whole picture. `CompactorFlightService::do_action("compact_now")` calls `executor.execute_candidate(...)` directly on the Flight request task (`compactor/src/flight.rs:193-208`), entirely outside that loop — so an admin-triggered compaction *can* run concurrently with a retention or snapshot-expiration cycle on the same table. Leases cover compaction-vs-compaction only; retention and expiration take none.
+  - Scope for the fix: a shared per-table async mutex (or equivalent conflict-and-retry guarantee) covering compaction from both entry points, retention drops, and snapshot expiration — which additionally commits without conflict retry today. #1011 widens the exposure by splitting the cycles into independent tasks, but it is not a prerequisite.
 
 ## 7. Defaults flip + release surface (D7, #935)
 

@@ -30,7 +30,7 @@
 //! # let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
 //! # let object_store = Arc::new(InMemory::new());
 //! let config = OrphanCleanupConfig::default();
-//! let detector = OrphanDetector::new(config.clone(), catalog_manager, object_store.clone());
+//! let detector = Arc::new(OrphanDetector::new(config.clone(), catalog_manager, object_store.clone()));
 //!
 //! // Identify orphan candidates
 //! let candidates = detector.identify_orphan_candidates(
@@ -39,8 +39,9 @@
 //!     "traces",
 //! ).await?;
 //!
-//! // Delete orphans (respects dry_run mode)
-//! let cleaner = OrphanCleaner::new(config, object_store);
+//! // Delete orphans (respects dry_run mode). The detector is required: every
+//! // real deletion batch is re-validated against the live set before it runs.
+//! let cleaner = OrphanCleaner::with_detector(config, object_store, detector);
 //! let result = cleaner.delete_orphans_batch(candidates).await?;
 //! # Ok(())
 //! # }

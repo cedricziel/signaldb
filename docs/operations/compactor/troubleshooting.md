@@ -364,7 +364,6 @@ dry_run = true  # ← Problem: still in dry-run
 enabled = true
 dry_run = false
 grace_period_hours = 24
-revalidate_before_delete = true
 ```
 
 ### Issue 6: False Orphan Detection

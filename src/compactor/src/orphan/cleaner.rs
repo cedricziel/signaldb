@@ -40,7 +40,12 @@ pub struct OrphanCleaner {
 }
 
 impl OrphanCleaner {
-    /// Create a new orphan cleaner.
+    /// Create a new orphan cleaner **without** a detector.
+    ///
+    /// Only usable for dry runs. Re-validation is mandatory before every real
+    /// deletion batch, so a cleaner built here with `dry_run = false` — which
+    /// is [`OrphanCleanupConfig`]'s default — fails at the first batch. Use
+    /// [`OrphanCleaner::with_detector`] for anything that actually deletes.
     pub fn new(config: OrphanCleanupConfig, object_store: Arc<dyn ObjectStore>) -> Self {
         Self {
             config,
@@ -64,8 +69,9 @@ impl OrphanCleaner {
 
     /// Delete orphan files in batches.
     ///
-    /// Processes files in configurable batches with optional revalidation
-    /// and rate limiting between batches.
+    /// Processes files in configurable batches with rate limiting between
+    /// them. Every real deletion batch is re-validated first; a dry run skips
+    /// that pass, since it deletes nothing.
     ///
     /// # Arguments
     ///
@@ -142,11 +148,15 @@ impl OrphanCleaner {
                 "Processing deletion batch"
             );
 
-            // Apply safety validation if enabled
-            let validated_batch = if self.config.revalidate_before_delete {
-                self.revalidate_batch(batch).await?
-            } else {
+            // Re-validation is unconditional before a real deletion:
+            // detection is correct on its own (#925), and this is the
+            // defense-in-depth pass on top of it. A dry run deletes nothing,
+            // so there is nothing to guard — and it is the one mode that may
+            // legitimately run without a detector attached.
+            let validated_batch = if self.config.dry_run {
                 batch.to_vec()
+            } else {
+                self.revalidate_batch(batch).await?
             };
 
             tracing::debug!(
@@ -248,14 +258,10 @@ impl OrphanCleaner {
     /// A table whose live set cannot be built has all of its candidates
     /// skipped for safety.
     async fn revalidate_batch(&self, batch: &[OrphanCandidate]) -> Result<Vec<OrphanCandidate>> {
-        if !self.config.revalidate_before_delete {
-            return Ok(batch.to_vec());
-        }
-
-        let detector = self
-            .detector
-            .as_ref()
-            .context("Detector required for revalidation but not provided")?;
+        let detector = self.detector.as_ref().context(
+            "Detector required for revalidation but not provided: \
+                 build the cleaner with OrphanCleaner::with_detector, or set dry_run",
+        )?;
 
         // One freshly-loaded live set per (table, candidate kind) in this
         // batch: metadata candidates check the metadata reference set, data
@@ -367,7 +373,6 @@ mod tests {
         let config = OrphanCleanupConfig {
             dry_run: true,
             batch_size: 10,
-            revalidate_before_delete: false, // Disable revalidation for this test
             ..Default::default()
         };
         let object_store = Arc::new(object_store::memory::InMemory::new());
@@ -405,7 +410,6 @@ mod tests {
         let config = OrphanCleanupConfig {
             dry_run: true,
             batch_size: 2,
-            revalidate_before_delete: false,
             ..Default::default()
         };
         let object_store = Arc::new(object_store::memory::InMemory::new());

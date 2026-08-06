@@ -82,6 +82,10 @@ partition_lateness = "10m"      # only compact hours that closed 10m ago
 memory_limit_mb = 512           # rewrites spill past this instead of growing the heap
 ```
 
+> **Removed setting (breaking change, issue #925):**
+>
+> - `[compactor.orphan_cleanup] revalidate_before_delete` no longer exists. Re-validation now runs unconditionally before any real deletion: orphan detection derives its live set from the retained snapshots' manifests and is correct on its own, so re-validation is defense-in-depth rather than the switch that made cleanup safe. A dry run skips it, since it deletes nothing. The key is silently ignored if left in a config file — these structs do not reject unknown keys — so remove it when upgrading.
+
 > **Removed settings (breaking change, issue #934):**
 >
 > - `min_input_file_size_kb` was replaced by `max_input_file_size_kb` with **inverted semantics**. The old minimum-size filter excluded exactly the small ingest files compaction exists to merge, so a default deployment never compacted anything. There is no backward-compat alias; deployments setting the old key must switch to the new one.
@@ -350,14 +354,12 @@ cleanup_interval_hours = 24  # Run once per day
 | Field                      | Type   | Default | Description                                  |
 | -------------------------- | ------ | ------- | -------------------------------------------- |
 | `grace_period_hours`       | `u64`  | `24`    | Don't delete files younger than this (hours) |
-| `revalidate_before_delete` | `bool` | `true`  | Re-check file status before deletion         |
 
 **Example:**
 
 ```toml
 [compactor.orphan_cleanup]
 grace_period_hours = 48          # 2-day grace period
-revalidate_before_delete = true  # Extra safety
 ```
 
 The live-file set is the union of every snapshot still retained in table
@@ -375,7 +377,7 @@ for cleanup.
 2. **Revalidation:** Before deleting, re-check if file is still orphaned.
    - Catches concurrent writes that referenced the file
    - Adds ~10% overhead but prevents data loss
-   - Recommended: always `true`
+   - Not configurable: runs before every real deletion batch. A dry run skips it, since it deletes nothing
 
 3. **Retained-Snapshot Live Set:** The reference set is the union of every snapshot still retained in table metadata; snapshot expiration is what makes files eligible for cleanup.
    - Reduces memory usage for tables with many snapshots
@@ -414,7 +416,6 @@ cleanup_interval_hours = 24
 
 # Safety (conservative defaults)
 grace_period_hours = 24
-revalidate_before_delete = true
 
 # Performance
 batch_size = 1000
@@ -526,7 +527,6 @@ SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__ENABLED=true
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__DRY_RUN=false
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__CLEANUP_INTERVAL_HOURS=24
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__GRACE_PERIOD_HOURS=24
-SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__REVALIDATE_BEFORE_DELETE=true
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__MAX_SNAPSHOT_AGE_HOURS=720
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__BATCH_SIZE=1000
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__MAX_LIVE_FILES_THRESHOLD=500000
@@ -601,7 +601,6 @@ enabled = true
 dry_run = false
 cleanup_interval_hours = 24  # Once per day
 grace_period_hours = 24
-revalidate_before_delete = true
 batch_size = 1000
 ```
 
@@ -640,7 +639,6 @@ enabled = true
 dry_run = false
 cleanup_interval_hours = 24
 grace_period_hours = 24
-revalidate_before_delete = true
 ```
 
 ### Example 4: High-Volume Environment
@@ -663,7 +661,6 @@ enabled = true
 dry_run = false
 cleanup_interval_hours = 48  # Every 2 days
 grace_period_hours = 24
-revalidate_before_delete = true
 batch_size = 5000  # Larger batches
 ```
 
@@ -687,7 +684,6 @@ enabled = true
 dry_run = false
 cleanup_interval_hours = 168  # Once per week
 grace_period_hours = 168  # 1-week grace period
-revalidate_before_delete = true
 batch_size = 500  # Smaller batches for safety
 ```
 

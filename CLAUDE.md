@@ -239,7 +239,6 @@ enabled = true   # default: true
 dry_run = false  # default: false; set true to log without deleting
 cleanup_interval_hours = 24
 grace_period_hours = 24
-revalidate_before_delete = true
 ```
 
 **Testing retention & lifecycle:**

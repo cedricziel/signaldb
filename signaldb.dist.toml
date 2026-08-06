@@ -404,7 +404,6 @@ cleanup_interval_hours = 24           # Run cleanup every N hours (default: 24, 
 # Safety Settings (conservative defaults)
 grace_period_hours = 24               # Don't delete files younger than this (default: 24h)
                                       # Protects against in-flight writes and race conditions
-revalidate_before_delete = true       # Re-check file status before deletion (recommended: true)
                                       # Adds ~10% overhead but prevents accidental deletion
 
 # Performance Settings

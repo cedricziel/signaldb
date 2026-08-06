@@ -215,7 +215,6 @@ enabled = true                        # Enable orphan cleanup (default: true)
 dry_run = false                       # Set true to log orphans without deleting
 cleanup_interval_hours = 24           # Run cleanup every N hours
 grace_period_hours = 24               # Don't delete files younger than this
-revalidate_before_delete = true       # Re-check file status before deletion
 batch_size = 1000                     # Process N files per batch
 max_live_files_threshold = 500000     # Skip cleanup when estimated live files exceed this (0 = no cap)
 ```

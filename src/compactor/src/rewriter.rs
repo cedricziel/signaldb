@@ -481,11 +481,22 @@ impl ParquetRewriter {
 
     /// Build the compaction session context.
     ///
-    /// The rewrite runs under a bounded memory pool so a large partition
-    /// spills to disk instead of growing the process heap without limit — the
-    /// old unbounded `SessionContext::new()` is what let a big table OOM the
-    /// compactor outright. A runtime that fails to build falls back to an
-    /// unbounded context rather than failing the cycle, which is logged.
+    /// The rewrite runs under a bounded memory pool, so DataFusion's own
+    /// operators (the partition sort above all) spill to disk rather than
+    /// growing the process heap without limit — the old unbounded
+    /// `SessionContext::new()` is what let a big table OOM the compactor
+    /// outright.
+    ///
+    /// The bound is **not** total: `read_and_merge` still calls `collect()`,
+    /// and the resulting `Vec<RecordBatch>` lives outside the pool's
+    /// accounting for the whole of attribute analysis, backfill, splitting
+    /// and writing. A partition large enough can therefore still exhaust the
+    /// heap despite this limit. Closing that gap means streaming the rewrite
+    /// via `execute_stream` (openspec task 5.2), which is blocked on making
+    /// the attribute-stats pass incremental (epic #737).
+    ///
+    /// A runtime that fails to build falls back to an unbounded context
+    /// rather than failing the cycle, which is logged.
     fn compaction_context(&self) -> SessionContext {
         let memory_limit_mb = self.catalog_manager.config().compactor.memory_limit_mb;
         let builder = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
