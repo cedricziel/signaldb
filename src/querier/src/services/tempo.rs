@@ -74,10 +74,12 @@ fn querier_error_to_status(e: QuerierError) -> Status {
 }
 
 /// Collect a trace's spans depth-first, flattening the child hierarchy.
+/// Iterative so deep hierarchies cannot overflow the stack.
 fn collect_spans<'a>(spans: &'a [ModelSpan], out: &mut Vec<&'a ModelSpan>) {
-    for span in spans {
+    let mut stack: Vec<&'a ModelSpan> = spans.iter().rev().collect();
+    while let Some(span) = stack.pop() {
         out.push(span);
-        collect_spans(&span.children, out);
+        stack.extend(span.children.iter().rev());
     }
 }
 

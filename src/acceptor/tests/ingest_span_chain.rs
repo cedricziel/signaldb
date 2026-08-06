@@ -223,6 +223,14 @@ async fn ingest_span_chain_stays_in_one_trace() {
             roots_by_name.get(name).copied().unwrap_or(0)
         );
     }
+    let client_spans = total_by_name
+        .get("arrow.flight.protocol.FlightService/DoPut")
+        .copied()
+        .unwrap_or(0);
+    assert!(
+        client_spans > 0,
+        "no DoPut client spans were exported; the assertion below would pass vacuously"
+    );
     let orphaned_clients = roots_by_name
         .get("arrow.flight.protocol.FlightService/DoPut")
         .copied()
