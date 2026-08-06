@@ -303,7 +303,7 @@ available for machine clients and ingestion.
 - Flight admin interface exposes only `do_action` commands (`compact_now`, `compact_status`, `compact_dry_run`) and `list_actions`; all other Flight RPCs return `unimplemented`
 - Retention enforcement and orphan-file cleanup, configured via `[compactor.retention]` and `[compactor.orphan_cleanup]`
 - Advisory attribute-stats pass on every rewrite: logs per-key presence / approximate cardinality, persists the statistics to the catalog's `attribute_stats` table, and — when `[compactor.attr_promotion]` is enabled — computes a promotion/demotion decision (demand × presence under a schema-width budget with streak hysteresis; epic #737 Layer 4). With `dry_run = false` (default is `true`, log-only) promotions are acted on at rewrite: the table schema is evolved to add the `label_<key>` columns, then the rewrite backfills them from the attributes map and commits via the normal replace path
-- Enabled by default (retention enforcement with 30d per signal, and orphan-file cleanup — data files and unreferenced metadata files alike); disable with `[compactor].enabled = false`, or `[compactor.orphan_cleanup].enabled = false` / `dry_run = true` for cleanup alone
+- Enabled by default (retention enforcement with 30d for each of traces, logs, metrics and profiles, and orphan-file cleanup — data files and unreferenced metadata files alike); disable with `[compactor].enabled = false`, or `[compactor.orphan_cleanup].enabled = false` / `dry_run = true` for cleanup alone
 
 ## Multi-Tenancy and Authentication
 

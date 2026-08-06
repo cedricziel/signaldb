@@ -40,6 +40,8 @@ pub struct RetentionConfig {
     pub logs: Duration,
     #[serde(with = "humantime_serde", default = "default_signal_retention")]
     pub metrics: Duration,
+    #[serde(with = "humantime_serde", default = "default_signal_retention")]
+    pub profiles: Duration,
     #[serde(with = "humantime_serde", default = "default_grace_period")]
     pub grace_period: Duration,
     #[serde(default = "default_timezone")]
@@ -57,7 +59,7 @@ fn default_retention_check_interval() -> Duration {
 }
 
 fn default_signal_retention() -> Duration {
-    Duration::from_secs(30 * 24 * 3600) // 30 days for traces, logs, and metrics
+    Duration::from_secs(30 * 24 * 3600) // 30 days for every signal
 }
 
 fn default_grace_period() -> Duration {
@@ -80,6 +82,7 @@ impl Default for RetentionConfig {
             traces: default_signal_retention(),
             logs: default_signal_retention(),
             metrics: default_signal_retention(),
+            profiles: default_signal_retention(),
             grace_period: default_grace_period(),
             timezone: default_timezone(),
             dry_run: default_dry_run(),

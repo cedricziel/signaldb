@@ -63,6 +63,7 @@ async fn test_retention_handles_catalog_unavailable() -> Result<()> {
         traces: std::time::Duration::from_secs(3 * 24 * 3600), // 3 days
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(7 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(7 * 24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(60), // 1 minute grace period
         timezone: "UTC".to_string(),
@@ -127,6 +128,7 @@ async fn test_retention_handles_empty_table() -> Result<()> {
         traces: std::time::Duration::from_secs(7 * 24 * 3600), // 7 days
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(7 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(7 * 24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(60), // 1 minute grace period
         timezone: "UTC".to_string(),
@@ -218,6 +220,7 @@ async fn test_retention_concurrent_with_compaction() -> Result<()> {
         traces: std::time::Duration::from_secs(14 * 24 * 3600), // 14 days
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(7 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(7 * 24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(60), // 1 minute grace period
         timezone: "UTC".to_string(),
@@ -310,6 +313,7 @@ async fn test_retention_respects_dry_run_mode() -> Result<()> {
         traces: std::time::Duration::from_secs(5 * 24 * 3600), // 5 days (should drop ~5 days)
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(7 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(7 * 24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(60), // 1 minute grace period
         timezone: "UTC".to_string(),
@@ -456,6 +460,7 @@ async fn test_retention_handles_invalid_partition_metadata() -> Result<()> {
         traces: std::time::Duration::from_secs(7 * 24 * 3600), // 7 days
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(7 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(7 * 24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(60), // 1 minute grace period
         timezone: "UTC".to_string(),

@@ -180,6 +180,7 @@ impl RetentionPolicyResolver {
             SignalType::Traces => self.config.traces,
             SignalType::Logs => self.config.logs,
             SignalType::Metrics => self.config.metrics,
+            SignalType::Profiles => self.config.profiles,
         };
 
         (period, RetentionPolicySource::Global)
@@ -195,6 +196,7 @@ impl RetentionPolicyResolver {
             SignalType::Traces => config.traces(),
             SignalType::Logs => config.logs(),
             SignalType::Metrics => config.metrics(),
+            SignalType::Profiles => config.profiles(),
         }
     }
 
@@ -289,6 +291,7 @@ mod tests {
                 traces: Some(Duration::from_secs(14 * 24 * 3600)),
                 logs: None,
                 metrics: None,
+                profiles: None,
                 dataset_overrides: HashMap::new(),
             },
         );
@@ -309,6 +312,7 @@ mod tests {
             traces: Some(Duration::from_secs(14 * 24 * 3600)),
             logs: None,
             metrics: None,
+            profiles: None,
             dataset_overrides: HashMap::new(),
         };
         tenant_config.dataset_overrides.insert(
@@ -317,6 +321,7 @@ mod tests {
                 traces: Some(Duration::from_secs(30 * 24 * 3600)),
                 logs: None,
                 metrics: None,
+                profiles: None,
             },
         );
         config
@@ -344,6 +349,7 @@ mod tests {
             traces: Some(Duration::from_secs(14 * 24 * 3600)),
             logs: None,
             metrics: None,
+            profiles: None,
             dataset_overrides: HashMap::new(),
         };
 
@@ -353,6 +359,7 @@ mod tests {
                 traces: Some(Duration::from_secs(30 * 24 * 3600)),
                 logs: None,
                 metrics: None,
+                profiles: None,
             },
         );
 
@@ -401,6 +408,7 @@ mod tests {
             traces: Duration::from_secs(7 * 24 * 3600),
             logs: Duration::from_secs(30 * 24 * 3600),
             metrics: Duration::from_secs(90 * 24 * 3600),
+            profiles: Duration::from_secs(14 * 24 * 3600),
             ..Default::default()
         };
         let resolver = RetentionPolicyResolver::new(config).unwrap();
@@ -428,6 +436,62 @@ mod tests {
             metrics_cutoff.retention_period,
             Duration::from_secs(90 * 24 * 3600)
         );
+
+        let profiles_cutoff = resolver
+            .compute_cutoff("tenant1", "dataset1", SignalType::Profiles)
+            .unwrap();
+        assert_eq!(
+            profiles_cutoff.retention_period,
+            Duration::from_secs(14 * 24 * 3600)
+        );
+    }
+
+    /// Profiles must honor the same 3-tier resolution (global → tenant →
+    /// dataset) as the other signals, not fall back to a global default.
+    #[test]
+    fn profiles_honors_tenant_and_dataset_overrides() {
+        let mut config = create_default_config();
+        config.profiles = Duration::from_secs(7 * 24 * 3600);
+        config.tenant_overrides.insert(
+            "acme".to_string(),
+            super::super::config::TenantRetentionConfig {
+                traces: None,
+                logs: None,
+                metrics: None,
+                profiles: Some(Duration::from_secs(30 * 24 * 3600)),
+                dataset_overrides: HashMap::from([(
+                    "critical".to_string(),
+                    super::super::config::DatasetRetentionConfig {
+                        traces: None,
+                        logs: None,
+                        metrics: None,
+                        profiles: Some(Duration::from_secs(90 * 24 * 3600)),
+                    },
+                )]),
+            },
+        );
+        let resolver = RetentionPolicyResolver::new(config).unwrap();
+
+        let global = resolver
+            .compute_cutoff("other", "prod", SignalType::Profiles)
+            .unwrap();
+        assert_eq!(global.retention_period, Duration::from_secs(7 * 24 * 3600));
+        assert_eq!(global.source, RetentionPolicySource::Global);
+
+        let tenant = resolver
+            .compute_cutoff("acme", "prod", SignalType::Profiles)
+            .unwrap();
+        assert_eq!(tenant.retention_period, Duration::from_secs(30 * 24 * 3600));
+        assert_eq!(tenant.source, RetentionPolicySource::Tenant);
+
+        let dataset = resolver
+            .compute_cutoff("acme", "critical", SignalType::Profiles)
+            .unwrap();
+        assert_eq!(
+            dataset.retention_period,
+            Duration::from_secs(90 * 24 * 3600)
+        );
+        assert_eq!(dataset.source, RetentionPolicySource::Dataset);
     }
 
     #[test]

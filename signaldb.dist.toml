@@ -331,6 +331,7 @@ snapshots_to_keep = 5                 # Keep last N snapshots per table (minimum
 traces = "30d"                        # Trace data retention (default: 30 days)
 logs = "30d"                          # Log data retention (default: 30 days)
 metrics = "30d"                       # Metric data retention (default: 30 days)
+profiles = "30d"                      # Profile data retention (default: 30 days)
 
 # Tenant-Specific Retention Overrides (optional)
 # Override global defaults for specific tenants.
@@ -342,6 +343,7 @@ metrics = "30d"                       # Metric data retention (default: 30 days)
 # traces = "30d"                      # Override: Keep production traces for 30 days
 # logs = "7d"                         # Override: Keep production logs for 7 days
 # metrics = "90d"                     # Override: Keep production metrics for 90 days
+# profiles = "14d"                    # Override: Keep production profiles for 14 days
 #
 # # Dataset-Specific Retention Overrides (highest priority)
 # # Override tenant defaults for specific datasets within a tenant.

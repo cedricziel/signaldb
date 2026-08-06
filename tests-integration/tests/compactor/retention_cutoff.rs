@@ -63,6 +63,7 @@ async fn test_retention_cutoff_basic() -> Result<()> {
         traces: std::time::Duration::from_secs(14 * 24 * 3600), // 14 days
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(1), // Minimum 1 second for validation
         timezone: "UTC".to_string(),
@@ -161,6 +162,7 @@ async fn test_retention_per_tenant_override() -> Result<()> {
             traces: Some(std::time::Duration::from_secs(30 * 24 * 3600)), // 30 days
             logs: None,
             metrics: None,
+            profiles: None,
             dataset_overrides: HashMap::new(),
         },
     );
@@ -172,6 +174,7 @@ async fn test_retention_per_tenant_override() -> Result<()> {
         traces: std::time::Duration::from_secs(7 * 24 * 3600), // 7 days (global default)
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides,
         grace_period: std::time::Duration::from_secs(1), // Minimum 1 second for validation
         timezone: "UTC".to_string(),
@@ -277,6 +280,7 @@ async fn test_retention_per_dataset_override() -> Result<()> {
             traces: Some(std::time::Duration::from_secs(90 * 24 * 3600)), // 90 days
             logs: None,
             metrics: None,
+            profiles: None,
         },
     );
     dataset_overrides.insert(
@@ -285,6 +289,7 @@ async fn test_retention_per_dataset_override() -> Result<()> {
             traces: Some(std::time::Duration::from_secs(3 * 24 * 3600)), // 3 days
             logs: None,
             metrics: None,
+            profiles: None,
         },
     );
 
@@ -295,6 +300,7 @@ async fn test_retention_per_dataset_override() -> Result<()> {
             traces: None, // Use global default
             logs: None,
             metrics: None,
+            profiles: None,
             dataset_overrides,
         },
     );
@@ -305,6 +311,7 @@ async fn test_retention_per_dataset_override() -> Result<()> {
         traces: std::time::Duration::from_secs(30 * 24 * 3600), // 30 days (global default)
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides,
         grace_period: std::time::Duration::from_secs(1), // Minimum 1 second for validation
         timezone: "UTC".to_string(),
@@ -386,6 +393,7 @@ async fn test_retention_zero_days() -> Result<()> {
         traces: std::time::Duration::from_secs(0), // Zero retention - INVALID
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(1),
         timezone: "UTC".to_string(),
@@ -466,6 +474,7 @@ async fn test_retention_with_clock_skew() -> Result<()> {
         traces: std::time::Duration::from_secs(3 * 24 * 3600), // 3 days
         logs: std::time::Duration::from_secs(7 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(1), // Minimum 1 second for validation
         timezone: "UTC".to_string(),

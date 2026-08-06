@@ -449,6 +449,7 @@ async fn test_enforce_retention_expires_snapshots_for_real() -> Result<()> {
         traces: std::time::Duration::from_secs(30 * 24 * 3600),
         logs: std::time::Duration::from_secs(30 * 24 * 3600),
         metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(30 * 24 * 3600),
         tenant_overrides: HashMap::new(),
         grace_period: std::time::Duration::from_secs(0),
         timezone: "UTC".to_string(),
@@ -495,6 +496,107 @@ async fn test_enforce_retention_expires_snapshots_for_real() -> Result<()> {
     assert!(
         !manifests.is_empty(),
         "Current snapshot must remain readable after expiration"
+    );
+
+    Ok(())
+}
+
+/// Test: profiles tables get snapshot expiration like every other signal (#1014)
+///
+/// On hive every signal fell to ≤100 retained snapshots after the #1005/#1007/
+/// #1008 stack — except `profiles`, which held 7,305 snapshots and a 4.1 MB
+/// metadata.json because the lifecycle's table enumeration matched only
+/// traces/logs/metrics*. This drives the real enforcement path against a
+/// profiles table: before the fix `enforce_retention` reports zero tables.
+#[tokio::test]
+async fn test_enforce_retention_covers_profiles_tables() -> Result<()> {
+    use compactor::retention::config::RetentionConfig;
+    use compactor::retention::enforcer::RetentionEnforcer;
+    use compactor::retention::metrics::RetentionMetrics;
+    use std::collections::HashMap;
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+
+    let ctx = RetentionTestContext::new_in_memory().await?;
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let mut writer = ctx.create_table(tenant_id, dataset_id, "profiles").await?;
+
+    // 10 writes -> 10 snapshots of recent data: nothing to partition-drop,
+    // so only snapshot expiration is under test.
+    let config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 1,
+        rows_per_file: 10,
+        base_timestamp: chrono::Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    for _ in 0..10 {
+        generators::generate_profiles(&mut writer, &config).await?;
+    }
+
+    let table_identifier = ctx
+        .catalog_manager()
+        .build_table_identifier(tenant_id, dataset_id, "profiles");
+    let load_table = || async {
+        let tabular = ctx
+            .catalog_manager()
+            .catalog()
+            .load_tabular(&table_identifier)
+            .await
+            .context("Failed to load table")?;
+        match tabular {
+            Tabular::Table(t) => Ok(t),
+            _ => anyhow::bail!("Expected table but got view"),
+        }
+    };
+
+    let snapshot_manager = SnapshotManager::new();
+    let table_before = load_table().await?;
+    assert_eq!(snapshot_manager.list_snapshots(&table_before)?.len(), 10);
+
+    let retention_config = RetentionConfig {
+        enabled: true,
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        traces: std::time::Duration::from_secs(30 * 24 * 3600),
+        logs: std::time::Duration::from_secs(30 * 24 * 3600),
+        metrics: std::time::Duration::from_secs(30 * 24 * 3600),
+        profiles: std::time::Duration::from_secs(30 * 24 * 3600),
+        tenant_overrides: HashMap::new(),
+        grace_period: std::time::Duration::from_secs(0),
+        timezone: "UTC".to_string(),
+        dry_run: false,
+        snapshots_to_keep: Some(3),
+    };
+    let enforcer = RetentionEnforcer::new(
+        ctx.catalog_manager().clone(),
+        retention_config,
+        RetentionMetrics::new(),
+    )?;
+
+    let result = enforcer.enforce_retention(tenant_id, dataset_id).await?;
+    assert!(
+        result.errors.is_empty(),
+        "Enforcement must not error: {:?}",
+        result.errors
+    );
+    assert_eq!(
+        result.tables_processed, 1,
+        "The profiles table must be enumerated by retention enforcement"
+    );
+    assert_eq!(
+        result.total_snapshots_expired, 7,
+        "10 profiles snapshots with keep=3 must expire 7"
+    );
+
+    let snapshots_after = snapshot_manager.list_snapshots(&load_table().await?)?;
+    assert_eq!(
+        snapshots_after.len(),
+        3,
+        "Profiles metadata must stop growing without bound"
     );
 
     Ok(())

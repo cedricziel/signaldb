@@ -92,7 +92,7 @@ Key details:
 - **Microservices**: Independent binaries, shared catalog (PostgreSQL or SQLite)
 - **Hybrid**: Mix of co-located and distributed services
 
-**Note**: Monolithic mode runs the same compactor lifecycle loop as the standalone service (`compactor::service::CompactorService`) when `[compactor].enabled = true` (the default; retention enforcement — 30d per signal — and orphan cleanup are also both on by default), and serves the compactor Flight endpoint (50055) plus observability HTTP on `[compactor].metrics_addr`. The lifecycle loop covers:
+**Note**: Monolithic mode runs the same compactor lifecycle loop as the standalone service (`compactor::service::CompactorService`) when `[compactor].enabled = true` (the default; retention enforcement — 30d for each of traces, logs, metrics and profiles — and orphan cleanup are also both on by default), and serves the compactor Flight endpoint (50055) plus observability HTTP on `[compactor].metrics_addr`. The lifecycle loop covers:
 
 - Compaction planning and execution (Parquet rewrite for storage efficiency)
 - Retention enforcement, snapshot expiration, and orphan file cleanup

@@ -40,6 +40,12 @@ pub struct RetentionConfig {
     #[serde(with = "humantime_serde")]
     pub metrics: Duration,
 
+    /// Default retention period for profiles.
+    ///
+    /// Env: SIGNALDB__COMPACTOR__RETENTION__PROFILES
+    #[serde(with = "humantime_serde")]
+    pub profiles: Duration,
+
     /// Tenant-specific retention overrides.
     #[serde(default)]
     pub tenant_overrides: HashMap<String, TenantRetentionConfig>,
@@ -93,6 +99,7 @@ impl Default for RetentionConfig {
             traces: Duration::from_secs(30 * 24 * 3600),         // 30 days
             logs: Duration::from_secs(30 * 24 * 3600),           // 30 days
             metrics: Duration::from_secs(30 * 24 * 3600),        // 30 days
+            profiles: Duration::from_secs(30 * 24 * 3600),       // 30 days
             tenant_overrides: HashMap::new(),
             grace_period: default_grace_period(),
             timezone: default_timezone(),
@@ -110,6 +117,7 @@ impl From<common::config::RetentionConfig> for RetentionConfig {
             traces: config.traces,
             logs: config.logs,
             metrics: config.metrics,
+            profiles: config.profiles,
             grace_period: config.grace_period,
             timezone: config.timezone,
             dry_run: config.dry_run,
@@ -164,6 +172,12 @@ impl RetentionConfig {
                 duration: self.metrics,
             });
         }
+        if self.profiles <= zero {
+            return Err(RetentionConfigError::InvalidRetentionPeriod {
+                signal_type: SignalType::Profiles,
+                duration: self.profiles,
+            });
+        }
 
         if self.grace_period < zero {
             return Err(RetentionConfigError::InvalidGracePeriod(self.grace_period));
@@ -207,6 +221,13 @@ pub struct TenantRetentionConfig {
     )]
     pub metrics: Option<Duration>,
 
+    /// Override default retention for profiles.
+    #[serde(
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub profiles: Option<Duration>,
+
     /// Dataset-specific retention overrides.
     #[serde(default)]
     pub dataset_overrides: HashMap<String, DatasetRetentionConfig>,
@@ -240,6 +261,15 @@ impl TenantRetentionConfig {
         {
             return Err(RetentionConfigError::InvalidRetentionPeriod {
                 signal_type: SignalType::Metrics,
+                duration,
+            });
+        }
+
+        if let Some(duration) = self.profiles
+            && duration <= zero
+        {
+            return Err(RetentionConfigError::InvalidRetentionPeriod {
+                signal_type: SignalType::Profiles,
                 duration,
             });
         }
@@ -281,6 +311,13 @@ pub struct DatasetRetentionConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub metrics: Option<Duration>,
+
+    /// Override retention for profiles in this dataset.
+    #[serde(
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub profiles: Option<Duration>,
 }
 
 impl DatasetRetentionConfig {
@@ -315,6 +352,15 @@ impl DatasetRetentionConfig {
             });
         }
 
+        if let Some(duration) = self.profiles
+            && duration <= zero
+        {
+            return Err(RetentionConfigError::InvalidRetentionPeriod {
+                signal_type: SignalType::Profiles,
+                duration,
+            });
+        }
+
         Ok(())
     }
 }
@@ -329,20 +375,28 @@ pub enum SignalType {
     Logs,
     /// Metrics (time series metrics).
     Metrics,
+    /// Profiles (continuous profiling data).
+    Profiles,
 }
 
 impl SignalType {
     /// Parse signal type from table name.
     ///
-    /// Supports both exact matches ("traces", "logs", "metrics") and
-    /// metric subtypes ("metrics_gauge", "metrics_counter", "metrics_histogram").
+    /// This is the single predicate deciding whether a catalog table is a
+    /// signal table the lifecycle owns — retention, snapshot expiration, and
+    /// orphan cleanup all classify through it, so a table it rejects gets no
+    /// lifecycle management at all (#1014).
+    ///
+    /// Supports both exact matches ("traces", "logs", "metrics", "profiles")
+    /// and metric subtypes ("metrics_gauge", "metrics_sum", "metrics_histogram").
     pub fn from_table_name(table_name: &str) -> Result<Self, RetentionConfigError> {
         let lower = table_name.to_lowercase();
         match lower.as_str() {
             "traces" => Ok(SignalType::Traces),
             "logs" => Ok(SignalType::Logs),
             "metrics" => Ok(SignalType::Metrics),
-            // Handle metric subtypes (metrics_gauge, metrics_counter, metrics_histogram)
+            "profiles" => Ok(SignalType::Profiles),
+            // Handle metric subtypes (metrics_gauge, metrics_sum, metrics_histogram)
             s if s.starts_with("metrics_") => Ok(SignalType::Metrics),
             _ => Err(RetentionConfigError::UnknownSignalType(
                 table_name.to_string(),
@@ -356,6 +410,7 @@ impl SignalType {
             SignalType::Traces => "traces",
             SignalType::Logs => "logs",
             SignalType::Metrics => "metrics",
+            SignalType::Profiles => "profiles",
         }
     }
 }
@@ -385,6 +440,8 @@ pub trait RetentionOverride {
     fn logs(&self) -> Option<Duration>;
     /// Get metrics retention override if present.
     fn metrics(&self) -> Option<Duration>;
+    /// Get profiles retention override if present.
+    fn profiles(&self) -> Option<Duration>;
 }
 
 impl RetentionOverride for TenantRetentionConfig {
@@ -399,6 +456,10 @@ impl RetentionOverride for TenantRetentionConfig {
     fn metrics(&self) -> Option<Duration> {
         self.metrics
     }
+
+    fn profiles(&self) -> Option<Duration> {
+        self.profiles
+    }
 }
 
 impl RetentionOverride for DatasetRetentionConfig {
@@ -412,6 +473,10 @@ impl RetentionOverride for DatasetRetentionConfig {
 
     fn metrics(&self) -> Option<Duration> {
         self.metrics
+    }
+
+    fn profiles(&self) -> Option<Duration> {
+        self.profiles
     }
 }
 
@@ -485,7 +550,27 @@ mod tests {
             SignalType::from_table_name("metrics").unwrap(),
             SignalType::Metrics
         );
+        assert_eq!(
+            SignalType::from_table_name("profiles").unwrap(),
+            SignalType::Profiles
+        );
         assert!(SignalType::from_table_name("invalid").is_err());
+    }
+
+    /// Every table the schema registry can create must map to a retention
+    /// signal type, or the lifecycle silently skips it (#1014: `profiles`
+    /// accumulated 7,305 snapshots because it matched no arm here). Adding a
+    /// `TableSchema` variant without a `SignalType` fails this test.
+    #[test]
+    fn every_registry_table_maps_to_a_signal_type() {
+        for schema in common::iceberg::schemas::TableSchema::all() {
+            let table_name = schema.table_name();
+            assert!(
+                SignalType::from_table_name(table_name).is_ok(),
+                "table {table_name} has no retention signal type — the \
+                 lifecycle would never enumerate it"
+            );
+        }
     }
 
     #[test]
@@ -520,6 +605,7 @@ mod tests {
         assert_eq!(SignalType::Traces.table_name(), "traces");
         assert_eq!(SignalType::Logs.table_name(), "logs");
         assert_eq!(SignalType::Metrics.table_name(), "metrics");
+        assert_eq!(SignalType::Profiles.table_name(), "profiles");
     }
 
     #[test]
@@ -528,6 +614,7 @@ mod tests {
             traces: Some(Duration::from_secs(14 * 24 * 3600)),
             logs: None,
             metrics: None,
+            profiles: None,
             dataset_overrides: HashMap::new(),
         };
 
@@ -543,6 +630,7 @@ mod tests {
             traces: Some(Duration::from_secs(30 * 24 * 3600)),
             logs: None,
             metrics: None,
+            profiles: None,
         };
 
         assert!(dataset_config.validate().is_ok());

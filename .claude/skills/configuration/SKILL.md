@@ -175,6 +175,7 @@ snapshots_to_keep = 10                # Keep last N snapshots per table (default
 traces = "30d"
 logs = "30d"
 metrics = "30d"
+profiles = "30d"
 
 # Tenant overrides (optional) -- a map keyed by tenant ID
 [compactor.retention.tenant_overrides.production]
