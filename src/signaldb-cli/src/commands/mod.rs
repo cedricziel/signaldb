@@ -1,6 +1,7 @@
 pub mod api_key;
 pub mod completions;
 pub mod dataset;
+pub mod discover;
 pub mod ops;
 pub mod query;
 pub mod tenant;
@@ -38,6 +39,11 @@ enum Commands {
     /// Query SignalDB in one language (exactly one of
     /// --sql/--promql/--logql/--traceql/--ir)
     Query(query::QueryArgs),
+    /// Discover attribute/label names and metric names
+    Discover {
+        #[command(subcommand)]
+        action: discover::DiscoverAction,
+    },
     /// Administrative operations (tenants, API keys, datasets)
     Admin {
         #[command(subcommand)]
@@ -141,6 +147,10 @@ impl Cli {
             return args.run().await;
         }
 
+        if let Commands::Discover { action } = self.command {
+            return action.run().await;
+        }
+
         if let Commands::Completions { shell } = self.command {
             return completions::generate(shell);
         }
@@ -219,6 +229,7 @@ impl Cli {
             Commands::User { action } => action.run(&client).await,
             Commands::Ops { .. } => unreachable!(),
             Commands::Query(_) => unreachable!(),
+            Commands::Discover { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
         }

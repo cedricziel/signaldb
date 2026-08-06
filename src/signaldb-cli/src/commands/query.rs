@@ -193,7 +193,10 @@ impl QueryArgs {
 
 /// Build an SDK HTTP client that carries bearer/tenant/dataset headers on every
 /// request, mirroring how the MCP server constructs it.
-fn build_http_client(
+///
+/// `pub(crate)` so the `discover` command (tenant-authenticated like `query`)
+/// builds its client the same way instead of duplicating header setup.
+pub(crate) fn build_http_client(
     url: &str,
     api_key: Option<&str>,
     tenant_id: Option<&str>,
