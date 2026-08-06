@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "react-router";
 import { DEFAULT_DATASET, DEFAULT_TENANT } from "../../api/http";
 import { whoami } from "../../api/session";
-import { ManagementPanel } from "../management/ManagementPanel";
 import type { ExploreState } from "../../lib/urlState";
 import "./TopBar.css";
 
@@ -12,7 +12,6 @@ interface Props {
 }
 
 export function TopBar({ state, update }: Props) {
-  const [managing, setManaging] = useState(false);
   const { data: who } = useQuery({
     queryKey: ["whoami", state.tenant, state.dataset],
     queryFn: () => whoami(),
@@ -24,9 +23,8 @@ export function TopBar({ state, update }: Props) {
   )?.role;
   const canManage = who?.user?.is_instance_admin || role === "admin";
   return (
-    <>
-      <header className="topbar">
-        <span className="topbar-mark">
+    <header className="topbar">
+      <span className="topbar-mark">
         <svg
           width="18"
           height="14"
@@ -43,26 +41,15 @@ export function TopBar({ state, update }: Props) {
           />
         </svg>
         signal<b>db</b>
-        </span>
-        <span className="topbar-sep">/</span>
-        <TenantSelector state={state} update={update} />
-        {canManage && (
-          <button className="manage-trigger" onClick={() => setManaging(true)}>
-            Manage
-          </button>
-        )}
-      </header>
-      {managing && who && (
-        <ManagementPanel
-          who={who}
-          onClose={() => setManaging(false)}
-          onTenantCreated={(tenant, dataset) => {
-            update({ tenant, dataset });
-            setManaging(false);
-          }}
-        />
+      </span>
+      <span className="topbar-sep">/</span>
+      <TenantSelector state={state} update={update} />
+      {canManage && (
+        <Link className="manage-trigger" to="/manage">
+          Manage
+        </Link>
       )}
-    </>
+    </header>
   );
 }
 

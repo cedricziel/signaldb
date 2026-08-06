@@ -1,6 +1,7 @@
 import { screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App";
+import { BrowserRouter } from "react-router";
+import { AppRoutes } from "./routes";
 import {
   emptyLabels,
   emptyMatrix,
@@ -8,6 +9,15 @@ import {
   renderWithClient,
   stubFetchRoutes,
 } from "./test/render";
+
+function renderApp(path = "/") {
+  window.history.replaceState(null, "", path);
+  return renderWithClient(
+    <BrowserRouter>
+      <AppRoutes />
+    </BrowserRouter>,
+  );
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -20,7 +30,7 @@ describe("App", () => {
       { match: "query_range", body: emptyStreams },
       { match: "/labels?", body: emptyLabels },
     ]);
-    renderWithClient(<App />);
+    renderApp();
     expect(screen.getByRole("banner")).toHaveTextContent(/signaldb/i);
     expect(screen.getByRole("tab", { name: "Logs" })).toHaveAttribute(
       "aria-selected",
@@ -31,12 +41,32 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("redirects / to /logs", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+    ]);
+    renderApp("/");
+    await screen.findByText(/No log lines match this query/);
+    expect(window.location.pathname).toBe("/logs");
+  });
+
+  it("redirects an unknown path to /logs", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+    ]);
+    renderApp("/bogus");
+    await screen.findByText(/No log lines match this query/);
+    expect(window.location.pathname).toBe("/logs");
+  });
+
   it("changes the tenant context from the top bar", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
       { match: "/labels?", body: emptyLabels },
     ]);
-    renderWithClient(<App />);
+    renderApp("/logs");
     const user = (await import("@testing-library/user-event")).default;
     await user.click(
       screen.getByTitle("Tenant / dataset context for all queries"),
@@ -53,15 +83,70 @@ describe("App", () => {
     );
   });
 
-  it("switches signals via tabs", async () => {
+  it("switches signals via tabs, updating the path", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyMatrix },
       { match: "/labels?", body: emptyLabels },
       { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
     ]);
-    renderWithClient(<App />);
+    renderApp("/logs");
     screen.getByRole("tab", { name: "Traces" }).click();
     expect(await screen.findByLabelText("Trace ID")).toBeInTheDocument();
-    expect(window.location.search).toContain("signal=traces");
+    expect(window.location.pathname).toBe("/traces");
+  });
+
+  it("navigates to /manage and back via the Manage link", async () => {
+    const WHOAMI = {
+      user: {
+        id: "user-1",
+        email: "admin@example.com",
+        display_name: "Admin",
+        is_instance_admin: true,
+      },
+      memberships: [{ tenant_id: "acme", role: "admin" }],
+      tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
+      datasets: [{ id: "production", slug: "production", is_default: true }],
+      default_dataset: "production",
+    };
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/api/v1/whoami", body: WHOAMI },
+      { match: "/api-keys", body: [] },
+      { match: "/memberships", body: [] },
+    ]);
+    renderApp("/logs");
+    const user = (await import("@testing-library/user-event")).default;
+    await user.click(await screen.findByRole("link", { name: "Manage" }));
+    expect(
+      await screen.findByRole("dialog", { name: "Manage tenant" }),
+    ).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/manage");
+
+    await user.click(screen.getByRole("button", { name: "Close management" }));
+    expect(window.location.pathname).toBe("/logs");
+  });
+
+  it("redirects /manage to /logs for non-admins", async () => {
+    const WHOAMI = {
+      user: {
+        id: "user-1",
+        email: "viewer@example.com",
+        display_name: "Viewer",
+        is_instance_admin: false,
+      },
+      memberships: [{ tenant_id: "acme", role: "viewer" }],
+      tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
+      datasets: [{ id: "production", slug: "production", is_default: true }],
+      default_dataset: "production",
+    };
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/api/v1/whoami", body: WHOAMI },
+    ]);
+    renderApp("/manage");
+    await screen.findByText(/No log lines match this query/);
+    expect(window.location.pathname).toBe("/logs");
   });
 });

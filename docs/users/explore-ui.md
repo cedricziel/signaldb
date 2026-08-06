@@ -48,8 +48,11 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   client, rendering the declared `rows`/`series`/`table` result.
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace.
-- Every view is a URL: time range, filters, and selection live in query
-  parameters, so views can be bookmarked and shared.
+- Every view is a URL: each signal has its own path (`/logs`, `/traces`,
+  `/metrics`, `/profiles`, `/query`), with time range, filters, and selection
+  in query parameters alongside it — so views are separately navigable and
+  can be bookmarked, shared, and revisited with the browser back/forward
+  buttons. Tenant/dataset administration lives at `/manage`.
 
 ![Explore UI trace waterfall with span details and a link to correlated logs](../assets/screenshots/explore-traces.png)
 

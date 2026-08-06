@@ -54,10 +54,16 @@ ENV/
 node_modules/
 .pnpm-store/
 
+.playwright-mcp/
+
 # Staged binaries for prebuilt Docker images (CI)
 /dist/
 
 # SignalDB UI
 src/ui/dist/
+src/ui/coverage/
+src/ui/test-results/
+src/ui/playwright-report/
+src/ui/e2e/.auth/
 .env.local
 site/

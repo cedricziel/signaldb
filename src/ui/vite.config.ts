@@ -2,6 +2,7 @@
 import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type ProxyOptions } from "vite";
+import { configDefaults } from "vitest/config";
 
 const require = createRequire(import.meta.url);
 const pkg = require("./package.json") as { version: string };
@@ -88,10 +89,31 @@ export default defineConfig(({ mode }) => {
       environment: "jsdom",
       setupFiles: "./src/test/setup.ts",
       css: false,
+      // e2e/** are Playwright specs (see playwright.config.ts) — a
+      // different runner, different test() import, not vitest's.
+      exclude: [...configDefaults.exclude, "e2e/**"],
       coverage: {
         provider: "v8",
         include: ["src/**/*.{ts,tsx}"],
-        exclude: ["src/main.tsx", "src/test/**", "src/**/*.d.ts"],
+        exclude: [
+          "src/main.tsx",
+          "src/test/**",
+          "src/**/*.d.ts",
+          // Machine-generated from the OpenAPI spec (`pnpm generate:api`) —
+          // not hand-written, and regenerating it isn't how bugs get fixed.
+          "src/**/*.gen.ts",
+          // Bootstraps the OTel SDK and patches global async primitives via
+          // zone.js; the module comment warns it must never be imported
+          // from test code (see src/telemetry/index.ts), so it can't be
+          // exercised here — same rationale as excluding main.tsx.
+          "src/telemetry/index.ts",
+        ],
+        thresholds: {
+          lines: 80,
+          statements: 80,
+          functions: 80,
+          branches: 80,
+        },
       },
     },
   };
