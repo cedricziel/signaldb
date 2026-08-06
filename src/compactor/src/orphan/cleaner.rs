@@ -40,7 +40,12 @@ pub struct OrphanCleaner {
 }
 
 impl OrphanCleaner {
-    /// Create a new orphan cleaner.
+    /// Create a new orphan cleaner **without** a detector.
+    ///
+    /// Only usable for dry runs. Re-validation is mandatory before every real
+    /// deletion batch, so a cleaner built here with `dry_run = false` — which
+    /// is [`OrphanCleanupConfig`]'s default — fails at the first batch. Use
+    /// [`OrphanCleaner::with_detector`] for anything that actually deletes.
     pub fn new(config: OrphanCleanupConfig, object_store: Arc<dyn ObjectStore>) -> Self {
         Self {
             config,
@@ -64,8 +69,9 @@ impl OrphanCleaner {
 
     /// Delete orphan files in batches.
     ///
-    /// Processes files in configurable batches with optional revalidation
-    /// and rate limiting between batches.
+    /// Processes files in configurable batches with rate limiting between
+    /// them. Every real deletion batch is re-validated first; a dry run skips
+    /// that pass, since it deletes nothing.
     ///
     /// # Arguments
     ///
@@ -252,10 +258,10 @@ impl OrphanCleaner {
     /// A table whose live set cannot be built has all of its candidates
     /// skipped for safety.
     async fn revalidate_batch(&self, batch: &[OrphanCandidate]) -> Result<Vec<OrphanCandidate>> {
-        let detector = self
-            .detector
-            .as_ref()
-            .context("Detector required for revalidation but not provided")?;
+        let detector = self.detector.as_ref().context(
+            "Detector required for revalidation but not provided: \
+                 build the cleaner with OrphanCleaner::with_detector, or set dry_run",
+        )?;
 
         // One freshly-loaded live set per (table, candidate kind) in this
         // batch: metadata candidates check the metadata reference set, data

@@ -377,7 +377,7 @@ for cleanup.
 2. **Revalidation:** Before deleting, re-check if file is still orphaned.
    - Catches concurrent writes that referenced the file
    - Adds ~10% overhead but prevents data loss
-   - Recommended: always `true`
+   - Not configurable: runs before every real deletion batch. A dry run skips it, since it deletes nothing
 
 3. **Retained-Snapshot Live Set:** The reference set is the union of every snapshot still retained in table metadata; snapshot expiration is what makes files eligible for cleanup.
    - Reduces memory usage for tables with many snapshots
@@ -527,7 +527,6 @@ SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__ENABLED=true
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__DRY_RUN=false
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__CLEANUP_INTERVAL_HOURS=24
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__GRACE_PERIOD_HOURS=24
-SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__REVALIDATE_BEFORE_DELETE=true
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__MAX_SNAPSHOT_AGE_HOURS=720
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__BATCH_SIZE=1000
 SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__MAX_LIVE_FILES_THRESHOLD=500000

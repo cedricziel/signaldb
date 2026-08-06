@@ -534,6 +534,13 @@ async fn delta_commit_aborts_when_its_inputs_are_no_longer_live() -> Result<()> 
         live_files_by_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
     let target = *before.keys().next().expect("one partition");
 
+    // The live file set alone cannot prove "no snapshot": a no-op snapshot
+    // would leave it identical. Pin the snapshot id too.
+    let snapshot_before = load_table(&catalog_manager, tenant_id, dataset_id, table_name)
+        .await?
+        .metadata()
+        .current_snapshot_id;
+
     // The job's input set: the partition's real files, plus one that is not
     // live — standing in for a file retention removed while the rewrite ran.
     let mut inputs: HashSet<String> = before[&target].clone();
@@ -569,6 +576,15 @@ async fn delta_commit_aborts_when_its_inputs_are_no_longer_live() -> Result<()> 
     assert_eq!(
         after, before,
         "an aborted delta commit must leave the table's live file set untouched"
+    );
+
+    let snapshot_after = load_table(&catalog_manager, tenant_id, dataset_id, table_name)
+        .await?
+        .metadata()
+        .current_snapshot_id;
+    assert_eq!(
+        snapshot_after, snapshot_before,
+        "an aborted delta commit must not create a snapshot, not even a no-op one"
     );
 
     Ok(())
