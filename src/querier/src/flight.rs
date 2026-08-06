@@ -1093,18 +1093,14 @@ impl QuerierFlightService {
         // Create schema matching the span batch schema
         let schema = create_span_batch_schema();
 
-        // Collect all spans from the trace (including nested children)
+        // Collect all spans from the trace (including nested children),
+        // iteratively so deep hierarchies cannot overflow the stack.
         let mut all_spans = Vec::new();
-        fn collect_spans(
-            spans: &[common::model::span::Span],
-            all_spans: &mut Vec<common::model::span::Span>,
-        ) {
-            for span in spans {
-                all_spans.push(span.clone());
-                collect_spans(&span.children, all_spans);
-            }
+        let mut stack: Vec<&common::model::span::Span> = trace.spans.iter().rev().collect();
+        while let Some(span) = stack.pop() {
+            stack.extend(span.children.iter().rev());
+            all_spans.push(span.clone_without_children());
         }
-        collect_spans(&trace.spans, &mut all_spans);
 
         if all_spans.is_empty() {
             return Ok(vec![]);

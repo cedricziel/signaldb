@@ -299,18 +299,14 @@ fn internal_trace_to_tempo(
     let mut root_service_name = "unknown".to_string();
     let mut root_trace_name = "unknown".to_string();
 
-    // Collect all spans including children
+    // Collect all spans including children, iteratively so deep hierarchies
+    // cannot overflow the stack.
     let mut all_spans = Vec::new();
-    fn collect_all_spans(
-        spans: &[common::model::span::Span],
-        all_spans: &mut Vec<common::model::span::Span>,
-    ) {
-        for span in spans {
-            all_spans.push(span.clone());
-            collect_all_spans(&span.children, all_spans);
-        }
+    let mut stack: Vec<&common::model::span::Span> = trace.spans.iter().rev().collect();
+    while let Some(span) = stack.pop() {
+        stack.extend(span.children.iter().rev());
+        all_spans.push(span.clone_without_children());
     }
-    collect_all_spans(&trace.spans, &mut all_spans);
 
     // Find root span and calculate timing info
     for span in &all_spans {
