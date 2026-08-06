@@ -2442,7 +2442,7 @@ dependencies = [
 [[package]]
 name = "datafusion_iceberg"
 version = "0.10.0"
-source = "git+https://github.com/cedricziel/iceberg-rust?rev=0accdfda08dedeb6cbf5eafb55498aeb07817ea0#0accdfda08dedeb6cbf5eafb55498aeb07817ea0"
+source = "git+https://github.com/cedricziel/iceberg-rust?rev=158cbf09f42a26673cef98d91afef96774d1d2b3#158cbf09f42a26673cef98d91afef96774d1d2b3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3458,7 +3458,7 @@ dependencies = [
 [[package]]
 name = "iceberg-rust"
 version = "0.10.0"
-source = "git+https://github.com/cedricziel/iceberg-rust?rev=0accdfda08dedeb6cbf5eafb55498aeb07817ea0#0accdfda08dedeb6cbf5eafb55498aeb07817ea0"
+source = "git+https://github.com/cedricziel/iceberg-rust?rev=158cbf09f42a26673cef98d91afef96774d1d2b3#158cbf09f42a26673cef98d91afef96774d1d2b3"
 dependencies = [
  "apache-avro",
  "arrow",
@@ -3494,7 +3494,7 @@ dependencies = [
 [[package]]
 name = "iceberg-rust-spec"
 version = "0.10.0"
-source = "git+https://github.com/cedricziel/iceberg-rust?rev=0accdfda08dedeb6cbf5eafb55498aeb07817ea0#0accdfda08dedeb6cbf5eafb55498aeb07817ea0"
+source = "git+https://github.com/cedricziel/iceberg-rust?rev=158cbf09f42a26673cef98d91afef96774d1d2b3#158cbf09f42a26673cef98d91afef96774d1d2b3"
 dependencies = [
  "apache-avro",
  "arrow-schema",
@@ -3520,7 +3520,7 @@ dependencies = [
 [[package]]
 name = "iceberg-sql-catalog"
 version = "0.10.0"
-source = "git+https://github.com/cedricziel/iceberg-rust?rev=0accdfda08dedeb6cbf5eafb55498aeb07817ea0#0accdfda08dedeb6cbf5eafb55498aeb07817ea0"
+source = "git+https://github.com/cedricziel/iceberg-rust?rev=158cbf09f42a26673cef98d91afef96774d1d2b3#158cbf09f42a26673cef98d91afef96774d1d2b3"
 dependencies = [
  "async-trait",
  "futures",
