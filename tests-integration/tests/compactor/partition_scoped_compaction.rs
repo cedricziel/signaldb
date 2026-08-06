@@ -383,3 +383,193 @@ async fn concurrent_append_does_not_invalidate_the_delta_commit() -> Result<()> 
 
     Ok(())
 }
+
+/// A partition far larger than the configured compaction memory budget must
+/// not take the process down (openspec task 5.1).
+///
+/// The spec's requirement is deliberately two-sided: the job either completes
+/// by spilling within the budget, or fails with an *attributable* resource
+/// error. What it must never do is exhaust host memory — which is exactly what
+/// the previous unbounded `SessionContext::new()` did on a large table.
+#[tokio::test]
+async fn oversized_partition_stays_within_its_memory_budget() -> Result<()> {
+    let mut config = common::testing::TestConfigBuilder::new()
+        .in_memory()
+        .with_tenant("test-tenant", "test-dataset")
+        .build();
+    // 1 MB is far below what sorting this partition needs, so the rewrite is
+    // forced onto the bounded path rather than growing the heap freely.
+    config.compactor.memory_limit_mb = 1;
+
+    let catalog_manager = Arc::new(CatalogManager::new(config).await?);
+    let object_store = Arc::new(InMemory::new());
+
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let table_name = "traces";
+
+    let mut writer = IcebergTableWriter::new(
+        &catalog_manager,
+        object_store.clone(),
+        tenant_id.to_string(),
+        dataset_id.to_string(),
+        table_name.to_string(),
+    )
+    .await
+    .context("Failed to create writer")?;
+
+    generators::generate_traces(
+        &mut writer,
+        &DataGeneratorConfig {
+            partition_count: 1,
+            files_per_partition: 20,
+            rows_per_file: 500,
+            base_timestamp: aligned_hour_start(5),
+            partition_granularity: PartitionGranularity::Hour,
+        },
+    )
+    .await
+    .context("Failed to generate trace data")?;
+
+    let before =
+        live_files_by_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
+    let target = *before.keys().next().expect("one partition");
+    let rows_before = live_row_count(&catalog_manager, tenant_id, dataset_id, table_name).await?;
+
+    let metrics = CompactionMetrics::new();
+    let executor = CompactionExecutor::new(
+        catalog_manager.clone(),
+        ExecutorConfig::default(),
+        metrics.clone(),
+    );
+
+    // Reaching this line at all is half the assertion: an OOM would abort the
+    // test process rather than return.
+    let result = executor
+        .execute_candidate(CompactionCandidate {
+            tenant_id: tenant_id.to_string(),
+            dataset_id: dataset_id.to_string(),
+            table_name: table_name.to_string(),
+            partition_id: target.to_string(),
+            stats: PartitionStats {
+                file_count: before[&target].len(),
+                total_size_bytes: 20 * 1024,
+                avg_file_size_bytes: 1024,
+            },
+        })
+        .await
+        .context("Compaction execution returned a hard error")?;
+
+    match result.status {
+        CompactionStatus::Success => {
+            // Spilled or fit; either way the data must be intact.
+            let rows_after =
+                live_row_count(&catalog_manager, tenant_id, dataset_id, table_name).await?;
+            assert_eq!(
+                rows_after, rows_before,
+                "a budget-constrained rewrite must still preserve every row"
+            );
+        }
+        CompactionStatus::Failed | CompactionStatus::Conflict => {
+            let error = result
+                .error
+                .expect("a non-success outcome must carry an error to be attributable");
+            assert!(
+                !error.is_empty(),
+                "the failure must name a cause, not fail silently"
+            );
+            // A failed compaction must leave the table exactly as it was.
+            let after =
+                live_files_by_partition(&catalog_manager, tenant_id, dataset_id, table_name)
+                    .await?;
+            assert_eq!(
+                after, before,
+                "a failed rewrite must not mutate the table's live file set"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// A delta commit whose inputs were mutated underneath it must abort as a
+/// conflict, and must leave no snapshot behind (openspec task 6.1).
+///
+/// This is the "retention dropped the partition mid-rewrite" case, driven
+/// directly through the committer: the job's input set names a file that is
+/// not live, which is what a concurrent partition drop leaves behind.
+#[tokio::test]
+async fn delta_commit_aborts_when_its_inputs_are_no_longer_live() -> Result<()> {
+    let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
+    let object_store = Arc::new(InMemory::new());
+
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let table_name = "traces";
+
+    let mut writer = IcebergTableWriter::new(
+        &catalog_manager,
+        object_store.clone(),
+        tenant_id.to_string(),
+        dataset_id.to_string(),
+        table_name.to_string(),
+    )
+    .await
+    .context("Failed to create writer")?;
+
+    generators::generate_traces(
+        &mut writer,
+        &DataGeneratorConfig {
+            partition_count: 1,
+            files_per_partition: 4,
+            rows_per_file: 50,
+            base_timestamp: aligned_hour_start(5),
+            partition_granularity: PartitionGranularity::Hour,
+        },
+    )
+    .await
+    .context("Failed to generate trace data")?;
+
+    let before =
+        live_files_by_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
+    let target = *before.keys().next().expect("one partition");
+
+    // The job's input set: the partition's real files, plus one that is not
+    // live — standing in for a file retention removed while the rewrite ran.
+    let mut inputs: HashSet<String> = before[&target].clone();
+    inputs.insert(format!(
+        "{tenant_id}/{dataset_id}/{table_name}/data/timestamp_hour={target}/dropped-by-retention.parquet"
+    ));
+
+    let committer = compactor::IcebergCommitter::new(catalog_manager.clone());
+    let error = committer
+        .commit_delta(
+            tenant_id,
+            dataset_id,
+            table_name,
+            target,
+            &inputs,
+            // Empty output: the liveness check must reject the commit before
+            // any files are considered, so this never reaches the transaction.
+            vec![],
+        )
+        .await
+        .expect_err("a mutated input set must abort the commit");
+
+    assert!(
+        compactor::is_conflict_error(&error),
+        "a mutated input set must classify as a conflict so the job retries, got: {error:#}"
+    );
+
+    // No snapshot may have been created: the table is exactly as it was, so
+    // any files the rewrite had already written stay unreferenced and are
+    // reclaimable by orphan cleanup.
+    let after =
+        live_files_by_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
+    assert_eq!(
+        after, before,
+        "an aborted delta commit must leave the table's live file set untouched"
+    );
+
+    Ok(())
+}

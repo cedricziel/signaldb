@@ -30,14 +30,14 @@ Sequenced per design.md: live-set correctness (D5) lands before the default flip
 
 ## 5. Executor/rewriter: bounded streaming rewrite (D4, #933)
 
-- [ ] 5.1 **partial** (#1017: other-partitions-byte-identical and row-count-parity done; peak-memory test under a small budget still missing) Tests: rewrite of one partition leaves other partitions' files byte-identical; peak-memory test with a small `FairSpillPool` budget completes or fails attributably (no OOM); row-count parity preserved
+- [x] 5.1 (#1020 added `oversized_partition_stays_within_its_memory_budget`: a 1 MB budget against a 10k-row partition must complete with rows preserved, or fail with an attributable error leaving the live set untouched — never OOM. Note it currently resolves via the success branch, so it pins the no-OOM/no-corruption contract rather than proving a spill occurred.) Tests: rewrite of one partition leaves other partitions' files byte-identical; peak-memory test with a small `FairSpillPool` budget completes or fails attributably (no OOM); row-count parity preserved
 - [ ] 5.2 **partial** (#1017: scoped to `rewrite_partition` with a pushed-down partition predicate; still `collect()`s rather than `execute_stream`) Scope `rewrite_table` → `rewrite_partition(inputs)`: register only input files, `execute_stream` instead of `collect`, per-partition sort retained
 - [x] 5.3 (#1017; uses `RuntimeEnvBuilder::with_memory_limit` — the same idiom as the querier — rather than constructing `FairSpillPool` directly) Build compaction `RuntimeEnv` with `FairSpillPool(compactor.memory_limit_mb)` + spill config (new config keys)
 - [ ] 5.4 Roll output files at target _encoded_ size using writer bytes-written feedback; test that merged output approximates target file size
 
 ## 6. Commit: delta semantics + typed conflicts (D2, part of #933)
 
-- [ ] 6.1 **partial** (#1017: concurrent-append case done; retention-drops-target-partition and failed-commit-leaves-outputs-reclaimable still missing) Tests: commit succeeds while ingest appends concurrently to another partition (no retry starvation); retention dropping the target partition aborts the commit; failed commit leaves output files unreferenced (reclaimable)
+- [x] 6.1 (#1020 added `delta_commit_aborts_when_its_inputs_are_no_longer_live`: an input file removed underneath the job — the shape a concurrent partition drop leaves — aborts the commit, classifies as a conflict, and creates no snapshot, so any already-written output stays unreferenced and reclaimable) Tests: commit succeeds while ingest appends concurrently to another partition (no retry starvation); retention dropping the target partition aborts the commit; failed commit leaves output files unreferenced (reclaimable)
 - [x] 6.2 (#1017) Replace whole-table `replace` with the scoped delta commit; conflict check = input files still live in target partition at commit time
 - [x] 6.3 (typed `CommitError::SnapshotConflict` predates this change; `commit_delta` raises it for a mutated input set and keeps post-commit verification) Replace substring conflict classification with typed errors (also fixes the self-authored verification errors); keep post-commit catalog verification
 - [ ] 6.4 Per-table async mutex serializing compaction/retention/expiration loops in-process (D6)
