@@ -41,6 +41,8 @@ Sequenced per design.md: live-set correctness (D5) lands before the default flip
 - [x] 6.2 (#1017) Replace whole-table `replace` with the scoped delta commit; conflict check = input files still live in target partition at commit time
 - [x] 6.3 (typed `CommitError::SnapshotConflict` predates this change; `commit_delta` raises it for a mutated input set and keeps post-commit verification) Replace substring conflict classification with typed errors (also fixes the self-authored verification errors); keep post-commit catalog verification
 - [ ] 6.4 Per-table async mutex serializing compaction/retention/expiration loops in-process (D6)
+  - **Blocked on a premise that does not hold today.** D6 assumes the three loops can overlap in-process. They cannot: `CompactorService::run_lifecycle_loop` is a single spawned task whose `tokio::select!` arms each `.await` their cycle to completion, and exactly one loop is spawned per process (`compactor/src/main.rs:212`, `signaldb-bin/src/main.rs:365`). Compaction, retention, snapshot expiration and lease expiry are already strictly serial, so a per-table mutex added now would guard a concurrency that does not exist.
+  - The mutex becomes load-bearing exactly when **#1011** ("run lifecycle cycles as independent tasks so long compaction cannot delay stale-lease expiry") lands — that change is what introduces the overlap D6 is written against. Recommend implementing 6.4 as part of #1011 rather than ahead of it; cross-process safety meanwhile rests on catalog CAS plus D2's input-scoped validation, which #1017 delivered.
 
 ## 7. Defaults flip + release surface (D7, #935)
 
