@@ -802,6 +802,52 @@ find .data/storage -name "*.parquet" -mtime -1 -ls
 
 ## Common Error Messages
 
+### Error: "Job ... failed with non-conflict error"
+
+**Full Message:**
+
+```
+ERROR compactor::executor: Job 6e30dfc6-0367-41a5-833d-2f075b0e40aa failed with non-conflict error: Failed to commit compaction: Failed to commit compaction delta snapshot: <underlying cause>
+```
+
+A compaction job failed for a reason the executor did **not** classify as a
+snapshot conflict. Everything after the first colon is the `anyhow` cause
+chain; the last segment is the real failure. The chain is what makes this
+message actionable — read it to the end rather than stopping at "Failed to
+commit compaction", which every commit failure shares.
+
+**Causes:** the chain distinguishes them; the wrapper alone does not.
+
+- `Failed to load table for commit` — the catalog could not serve the table
+- `Failed to re-read manifests for delta commit` — manifest read failed against
+  the object store
+- `Failed to commit compaction delta snapshot` — Iceberg rejected the
+  `overwrite`
+
+Snapshot conflicts are a _different_ path: they are retried with exponential
+backoff and reported as "Conflict", not here. Seeing this message means the
+failure was not contention.
+
+**Solutions:**
+
+1. Read the last segment of the chain and treat it as the actual error —
+   catalog connectivity, object store availability/permissions, or an Iceberg
+   commit rejection.
+2. Note that non-conflict failures are **not** retried; the job fails on its
+   first attempt.
+3. Check whether the same table/partition recurs across cycles. Planning has no
+   failure memory, so a partition that cannot commit is re-selected every
+   `tick_interval` and fails again, consuming compaction capacity. A persistent
+   repeat is a stuck partition, not a transient error.
+
+```bash
+# Failure rate over recent cycles (counters are cumulative per process)
+grep "Jobs:" /path/to/compactor.log | tail -5
+
+# Which tables/partitions keep coming back
+grep "Starting compaction job" /path/to/compactor.log | tail -20
+```
+
 ### Error: "Table retention enforcement failed"
 
 **Full Message:**
