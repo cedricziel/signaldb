@@ -17,13 +17,15 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      # The repo-root "." package (release-type: simple, tracked via
-      # version.txt) owns the unprefixed vX.Y.Z tag lineage and is linked
-      # into the signaldb-core group in signaldb-bin's place — see
-      # openspec/changes/align-core-component-versions/design.md. Root-path
-      # outputs are unprefixed per release-please-action's own convention.
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      release_created: ${{ steps.release.outputs['src/signaldb-bin--release_created'] }}
+      tag_name: ${{ steps.release.outputs['src/signaldb-bin--tag_name'] }}
+      # Plain semver, no tag prefix — signaldb-bin now tags as
+      # signaldb-bin-vX.Y.Z (include-component-in-tag: true, so it
+      # participates correctly in the signaldb-core linked-versions group;
+      # see openspec/changes/align-core-component-versions/design.md).
+      # Docker's type=semver tag rules below consume this instead of
+      # tag_name so they don't have to parse a business-prefixed ref.
+      version: ${{ steps.release.outputs['src/signaldb-bin--version'] }}
       grafana-plugin--release_created: ${{ steps.release.outputs['src/grafana-plugin--release_created'] }}
       grafana-plugin--tag_name: ${{ steps.release.outputs['src/grafana-plugin--tag_name'] }}
       grafana-plugin--version: ${{ steps.release.outputs['src/grafana-plugin--version'] }}
@@ -460,7 +462,7 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }},suffix=-amd64
+            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.version }},suffix=-amd64
 
       - name: Build and push image
         uses: docker/build-push-action@v7
@@ -529,7 +531,7 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }},suffix=-arm64
+            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.version }},suffix=-arm64
 
       - name: Build and push image
         uses: docker/build-push-action@v7
@@ -578,8 +580,8 @@ jobs:
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
+            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.version }}
 
       - name: Create and push manifests
         run: |

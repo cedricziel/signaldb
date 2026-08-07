@@ -21,14 +21,24 @@
 
 - [ ] 4.1 Add a short note to the merged release's notes/CHANGELOG entry (for `signaldb-bin` and `signaldb-cli`) explaining the one-time version-line jump from `0.1.x` to `0.2.x`+/`0.3.x`+, per proposal.md's BREAKING callout.
 
-## 5. Fix signaldb-bin's linked-versions divergence (root-package split)
+## 5. Fix signaldb-bin's linked-versions divergence
 
-- [x] 5.1 Create root `version.txt` containing `0.1.3` (matches the existing `v0.1.3` tag).
-- [x] 5.2 In `release-please-config.json`, add a `"."` package: `release-type: "simple"`, `component: "signaldb"`, `include-component-in-tag: false`.
-- [x] 5.3 In `release-please-config.json`, update the `signaldb-core` `linked-versions` group's `components`: remove `"signaldb-bin"`, add `"signaldb"`.
-- [x] 5.4 In `release-please-config.json`, flip `src/signaldb-bin`'s `include-component-in-tag` to `true`.
-- [x] 5.5 In `.release-please-manifest.json`, add `"." : "0.1.3"` (replacing the stale, disconnected `"0.1.0"`).
-- [x] 5.6 In `.github/workflows/release-please.yml`, switch the top-level `release_created`/`tag_name` outputs from `steps.release.outputs['src/signaldb-bin--release_created']`/`['src/signaldb-bin--tag_name']` to the root package's unprefixed `steps.release.outputs.release_created`/`.tag_name`.
-- [x] 5.7 Add a one-line comment to `version.txt` context (README or adjacent doc note) clarifying it's release-please bookkeeping for the aggregate project version, not a build input.
-- [x] 5.8 Validate both JSON config files are well-formed; commit and push.
-- [ ] 5.9 Observe the next release-please PR: confirm `.` appears, tags unprefixed, aligns with the rest of `signaldb-core`; confirm `signaldb-bin` now tags `signaldb-bin-vX.Y.Z` and also aligns; confirm Docker image tagging / GitHub Release creation still resolve a valid tag from the new output source.
+**Attempt 1 (superseded — root-package split), abandoned before merge:**
+
+- [x] ~~5.1 Create root `version.txt` containing `0.1.3`.~~
+- [x] ~~5.2 Add a `"."` package: `release-type: "simple"`, `component: "signaldb"`, `include-component-in-tag: false`.~~
+- [x] ~~5.3 Update the `signaldb-core` group's `components`: remove `"signaldb-bin"`, add `"signaldb"`.~~
+- [x] ~~5.6 Switch top-level `release_created`/`tag_name` outputs to the root package's unprefixed outputs.~~
+- [x] ~~5.7 Add a `version.txt` doc note to README.~~
+
+**Reverted in review** (PR #1047, CodeRabbit): verified against release-please v17.6.0 source that `getComponent()` unconditionally returns `undefined` when `include-component-in-tag` is `false`, and `linked-versions` silently skips any such package — a hard rule, not specific to which package holds the flag. The `.`-package would have hit the identical bug, just relocated, while also removing `signaldb-bin` from the group entirely. All five tasks above reverted (files deleted/restored to pre-attempt state).
+
+**Attempt 2 (this one — keeps `signaldb-bin` a real linked-versions member):**
+
+- [x] 5.10 In `release-please-config.json`, flip `src/signaldb-bin`'s `include-component-in-tag` to `true` (kept from attempt 1 — this part was always correct).
+- [x] 5.11 In `release-please-config.json`, keep `"signaldb-bin"` in the `signaldb-core` `linked-versions` group's `components` list (undo the attempt-1 swap).
+- [x] 5.12 In `.github/workflows/release-please.yml`, add a `version` output (`steps.release.outputs['src/signaldb-bin--version']`) alongside the unchanged `release_created`/`tag_name` outputs.
+- [x] 5.13 In `.github/workflows/release-please.yml`, switch the three Docker `type=semver` tag rules from `needs.release-please.outputs.tag_name` to `needs.release-please.outputs.version`; leave the GitHub Release step's `tag_name` usage unchanged.
+- [x] 5.14 Create and push git tag `signaldb-bin-v0.1.3` at the same commit as the existing `v0.1.3` (`dc218d8f...`), bootstrapping the tag lineage under the new `include-component-in-tag: true` convention.
+- [x] 5.15 Validate config JSON and workflow YAML are well-formed; commit and push.
+- [ ] 5.16 Observe the next release-please PR: confirm `signaldb-bin` now tags `signaldb-bin-vX.Y.Z` and aligns with the rest of `signaldb-core`; confirm Docker image tagging resolves correctly from the `version` output; confirm the GitHub Release still gets created correctly with the (now-prefixed) `tag_name`.
