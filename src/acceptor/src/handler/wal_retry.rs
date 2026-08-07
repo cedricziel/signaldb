@@ -15,17 +15,16 @@
 //! marks them processed on success so segment cleanup can reclaim disk.
 //!
 //! Entries whose payload cannot be read or deserialized are poison: they can
-//! never be forwarded, so retrying them forever just burns each pass and
-//! keeps their segments pinned. After [`MAX_ENTRY_FAILURES`] consecutive
-//! poison failures an entry is dead-lettered — its raw payload is preserved
-//! under `<wal_dir>/dead-letter/` and the entry is marked processed. Forward
-//! failures never count toward dead-lettering: they mean the writer is
+//! never be forwarded. Deserialization is deterministic, so a poison entry is
+//! dead-lettered the first time it fails — its raw payload is preserved under
+//! `<wal_dir>/dead-letter/` and the entry is marked processed, freeing its
+//! segment. Forward failures are treated separately: they mean the writer is
 //! unavailable, not that the entry is bad.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use common::error::format_error_chain;
 use common::flight::transport::InMemoryFlightTransport;
 use common::wal::{Wal, WalOperation, bytes_to_record_batch};
 use uuid::Uuid;
@@ -41,15 +40,6 @@ pub const DEFAULT_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 /// This keeps the consumer from racing the hot path, which forwards the
 /// entry inline right after appending it.
 pub const DEFAULT_MIN_ENTRY_AGE: Duration = Duration::from_secs(30);
-
-/// Consecutive poison failures (unreadable or undeserializable payload)
-/// after which an entry is dead-lettered instead of retried again.
-///
-/// Mirrors the writer-side WAL processor's policy: the raw payload is
-/// preserved under `<wal_dir>/dead-letter/` and the entry is marked
-/// processed so it stops being rescanned every pass and its segment can
-/// be reclaimed.
-pub const MAX_ENTRY_FAILURES: u32 = 10;
 
 /// Outcome of a single retry pass, for logging and tests.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -68,10 +58,6 @@ pub struct WalRetryConsumer {
     flight_transport: Arc<InMemoryFlightTransport>,
     interval: Duration,
     min_entry_age: Duration,
-    /// Consecutive poison-failure counts per pending entry. Entries are
-    /// removed when they forward successfully or get dead-lettered, so the
-    /// map stays bounded by the number of pending poison entries.
-    entry_failures: HashMap<Uuid, u32>,
 }
 
 impl WalRetryConsumer {
@@ -84,7 +70,6 @@ impl WalRetryConsumer {
             flight_transport,
             interval: DEFAULT_RETRY_INTERVAL,
             min_entry_age: DEFAULT_MIN_ENTRY_AGE,
-            entry_failures: HashMap::new(),
         }
     }
 
@@ -176,7 +161,8 @@ impl WalRetryConsumer {
                             error = %e,
                             "Failed to read WAL entry data; skipping"
                         );
-                        self.record_poison_failure(&wal, entry.id, &mut stats).await;
+                        self.record_unreadable_entry(&wal, entry.id, &e.to_string(), &mut stats)
+                            .await;
                         continue;
                     }
                 };
@@ -196,20 +182,23 @@ impl WalRetryConsumer {
                                 "Re-forwarded WAL entry but failed to mark it processed"
                             );
                         }
-                        self.entry_failures.remove(&entry.id);
                         stats.retried += 1;
                     }
                     Err(e) => {
+                        // The cause chain is the whole diagnostic value here:
+                        // "Flight do_put failed" alone cannot distinguish a
+                        // dead writer from a batch the writer rejects, and the
+                        // two demand opposite responses.
                         tracing::warn!(
                             tenant_id = %tenant,
                             dataset_id = %dataset,
                             signal = %signal,
                             entry_id = %entry.id,
-                            error = %e,
-                            "Failed to re-forward WAL entry; writer may be unavailable"
+                            error = %format_error_chain(&e),
+                            "Failed to re-forward WAL entry"
                         );
                         stats.failed += 1;
-                        // Writer is likely down — don't hammer it with the
+                        // Writer may be down — don't hammer it with the
                         // remaining entries of this WAL in the same pass.
                         break;
                     }
@@ -220,27 +209,23 @@ impl WalRetryConsumer {
         Ok(stats)
     }
 
-    /// Record a poison failure (unreadable or undeserializable payload) for
-    /// an entry, dead-lettering it once it exhausts its attempts.
+    /// Retire an entry whose payload could be read but is not a valid batch.
     ///
-    /// The count is in-memory only and resets on restart, so a poison entry
-    /// may get another full round of attempts after a restart — that's fine;
-    /// dead-lettering only needs to happen eventually, not exactly at N.
+    /// The failure is deterministic — misframed bytes do not become a valid
+    /// Arrow IPC frame on a later attempt — so there is nothing to gain from
+    /// counting attempts. Retrying only keeps the entry in the pending set,
+    /// which forces every subsequent pass to walk it again and pins its
+    /// segment against reclamation. Dead-letter it immediately: the raw bytes
+    /// are preserved under `<wal_dir>/dead-letter/` and the entry is marked
+    /// processed.
     async fn record_poison_failure(&mut self, wal: &Wal, entry_id: Uuid, stats: &mut RetryStats) {
-        let failures = self.entry_failures.entry(entry_id).or_insert(0);
-        *failures += 1;
-        if *failures < MAX_ENTRY_FAILURES {
-            stats.failed += 1;
-            return;
-        }
         match wal.dead_letter(entry_id).await {
             Ok(path) => {
                 tracing::error!(
                     entry_id = %entry_id,
                     path = %path.display(),
-                    "WAL entry exhausted its retries; payload preserved in the dead-letter directory and entry marked processed"
+                    "WAL entry payload could not be deserialized; raw bytes preserved in the dead-letter directory and entry marked processed"
                 );
-                self.entry_failures.remove(&entry_id);
                 stats.dead_lettered += 1;
             }
             Err(e) => {
@@ -248,6 +233,41 @@ impl WalRetryConsumer {
                     entry_id = %entry_id,
                     error = %e,
                     "Failed to dead-letter WAL entry; it will be retried"
+                );
+                stats.failed += 1;
+            }
+        }
+    }
+
+    /// Retire an entry whose payload cannot be read at all.
+    ///
+    /// [`Wal::dead_letter`] cannot be used here: it re-reads the payload before
+    /// preserving it, so the same read that already failed fails again and the
+    /// entry would stay pending, pinning its segment forever. Record the
+    /// entry's identity, byte range, and the read error as a marker instead,
+    /// then mark it processed. No bytes are recoverable, and the message says
+    /// so rather than promising a replayable payload.
+    async fn record_unreadable_entry(
+        &mut self,
+        wal: &Wal,
+        entry_id: Uuid,
+        reason: &str,
+        stats: &mut RetryStats,
+    ) {
+        match wal.dead_letter_unreadable(entry_id, reason).await {
+            Ok(path) => {
+                tracing::error!(
+                    entry_id = %entry_id,
+                    path = %path.display(),
+                    "WAL entry payload is unreadable and cannot be recovered; metadata recorded in the dead-letter directory and entry marked processed"
+                );
+                stats.dead_lettered += 1;
+            }
+            Err(e) => {
+                tracing::error!(
+                    entry_id = %entry_id,
+                    error = %e,
+                    "Failed to retire unreadable WAL entry; it will be retried"
                 );
                 stats.failed += 1;
             }
@@ -319,51 +339,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_once_counts_failures_and_keeps_entries_pending() {
+    async fn poison_entry_is_dead_lettered_on_first_failure() {
+        // A deserialize failure is deterministic: a truncated or misframed
+        // Arrow payload does not become readable on the tenth attempt. Holding
+        // such an entry pending only keeps its segment open and forces every
+        // later pass to walk it again — on the hive deployment that left
+        // 25k unreadable entries pinning a 3.1 GB segment indefinitely
+        // (issue #1058). Retire it the moment it fails to deserialize.
         let temp_dir = TempDir::new().unwrap();
         let manager = Arc::new(test_manager(temp_dir.path()));
+        // Payload is not valid Arrow IPC, so deserialization always fails.
         append_entry(&manager).await;
 
-        // The payload is not a valid RecordBatch, so the pass records a
-        // poison failure; below MAX_ENTRY_FAILURES the entry must remain
-        // unprocessed for a later pass.
         let mut consumer = WalRetryConsumer::new(manager.clone(), test_transport().await)
             .with_timing(Duration::from_secs(1), Duration::ZERO);
 
         let stats = consumer.run_once().await.unwrap();
         assert_eq!(stats.retried, 0);
-        assert_eq!(stats.failed, 1);
-        assert_eq!(stats.dead_lettered, 0);
-
-        let wal = manager
-            .get_wal("acme", "production", "traces")
-            .await
-            .unwrap();
-        assert_eq!(wal.get_unprocessed_entries().await.unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn poison_entry_is_dead_lettered_after_exhausting_retries() {
-        let temp_dir = TempDir::new().unwrap();
-        let manager = Arc::new(test_manager(temp_dir.path()));
-        // Payload is not valid Arrow IPC, so every deserialize attempt fails
-        append_entry(&manager).await;
-
-        let mut consumer = WalRetryConsumer::new(manager.clone(), test_transport().await)
-            .with_timing(Duration::from_secs(1), Duration::ZERO);
-
-        for _ in 0..MAX_ENTRY_FAILURES - 1 {
-            let stats = consumer.run_once().await.unwrap();
-            assert_eq!(stats.failed, 1);
-            assert_eq!(stats.dead_lettered, 0);
-        }
-
-        // The pass that exhausts the attempts dead-letters the entry
-        let stats = consumer.run_once().await.unwrap();
-        assert_eq!(stats.failed, 0);
+        assert_eq!(
+            stats.failed, 0,
+            "a poison entry is retired, not counted as a retryable failure"
+        );
         assert_eq!(stats.dead_lettered, 1);
 
-        // Entry no longer pending, so later passes are clean
+        // Entry is no longer pending, so the segment can be reclaimed and
+        // later passes are clean.
         let wal = manager
             .get_wal("acme", "production", "traces")
             .await
@@ -383,6 +383,100 @@ mod tests {
         let file = files.next_entry().await.unwrap().unwrap();
         let preserved = tokio::fs::read(file.path()).await.unwrap();
         assert_eq!(preserved, b"not-a-batch");
+    }
+
+    #[tokio::test]
+    async fn unreadable_entry_is_retired_without_re_reading_its_payload() {
+        // `dead_letter` re-reads the payload before preserving it, which is
+        // precisely what fails when the recorded byte range is unreadable. An
+        // entry in that state must still leave the pending set, or it pins its
+        // segment forever — the failure mode this whole change exists to end.
+        let temp_dir = TempDir::new().unwrap();
+        let manager = Arc::new(test_manager(temp_dir.path()));
+        append_entry(&manager).await;
+
+        // Truncate the segment's data file so the entry's recorded
+        // [data_offset, data_offset + data_size) range is out of bounds.
+        let data_path = temp_dir
+            .path()
+            .join("acme")
+            .join("production")
+            .join("traces")
+            .join("wal-0000000000.data");
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&data_path)
+            .await
+            .unwrap()
+            .set_len(0)
+            .await
+            .unwrap();
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), test_transport().await)
+            .with_timing(Duration::from_secs(1), Duration::ZERO);
+
+        let stats = consumer.run_once().await.unwrap();
+        assert_eq!(
+            stats.dead_lettered, 1,
+            "an unreadable entry must still be retired"
+        );
+        assert_eq!(stats.failed, 0);
+
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "unreadable entry must not stay pending and pin its segment"
+        );
+
+        // Nothing to preserve, so a marker recording what was known about the
+        // entry stands in for the payload.
+        let dead_letter_dir = temp_dir
+            .path()
+            .join("acme")
+            .join("production")
+            .join("traces")
+            .join("dead-letter");
+        let mut files = tokio::fs::read_dir(&dead_letter_dir).await.unwrap();
+        let file = files.next_entry().await.unwrap().unwrap();
+        let name = file.file_name().to_string_lossy().to_string();
+        assert!(
+            name.ends_with(".unreadable.json"),
+            "expected an unreadable marker, got {name}"
+        );
+        let marker = tokio::fs::read_to_string(file.path()).await.unwrap();
+        assert!(
+            marker.contains("out of bounds"),
+            "marker must record why the payload could not be read: {marker}"
+        );
+    }
+
+    #[tokio::test]
+    async fn poison_entry_does_not_block_the_rest_of_its_wal() {
+        // Retiring poison on sight must also let the pass continue past it, so
+        // a corrupt entry cannot starve the intact entries queued behind it.
+        let temp_dir = TempDir::new().unwrap();
+        let manager = Arc::new(test_manager(temp_dir.path()));
+        append_entry(&manager).await;
+        append_entry(&manager).await;
+        append_entry(&manager).await;
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), test_transport().await)
+            .with_timing(Duration::from_secs(1), Duration::ZERO);
+
+        let stats = consumer.run_once().await.unwrap();
+        assert_eq!(
+            stats.dead_lettered, 3,
+            "every poison entry in the WAL is retired in a single pass"
+        );
+
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
     }
 
     #[tokio::test]
