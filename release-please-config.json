@@ -1,10 +1,28 @@
 {
   "plugins": [
-    "cargo-workspace"
+    {
+      "type": "cargo-workspace",
+      "merge": false
+    },
+    {
+      "type": "linked-versions",
+      "groupName": "signaldb-core",
+      "components": [
+        "signaldb-bin",
+        "signaldb-cli",
+        "acceptor",
+        "router",
+        "writer",
+        "querier",
+        "compactor",
+        "common"
+      ]
+    }
   ],
   "packages": {
     "src/acceptor": {
       "release-type": "rust",
+      "component": "acceptor",
       "include-component-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
@@ -55,6 +73,7 @@
     },
     "src/common": {
       "release-type": "rust",
+      "component": "common",
       "include-component-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
@@ -105,6 +124,7 @@
     },
     "src/compactor": {
       "release-type": "rust",
+      "component": "compactor",
       "include-component-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
@@ -155,6 +175,7 @@
     },
     "src/querier": {
       "release-type": "rust",
+      "component": "querier",
       "include-component-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
@@ -205,6 +226,7 @@
     },
     "src/router": {
       "release-type": "rust",
+      "component": "router",
       "include-component-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
@@ -305,6 +327,7 @@
     },
     "src/signaldb-bin": {
       "release-type": "rust",
+      "component": "signaldb-bin",
       "include-component-in-tag": false,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
@@ -405,6 +428,7 @@
     },
     "src/writer": {
       "release-type": "rust",
+      "component": "writer",
       "include-component-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
@@ -756,6 +780,7 @@
     },
     "src/signaldb-cli": {
       "release-type": "rust",
+      "component": "signaldb-cli",
       "include-component-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
