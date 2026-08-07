@@ -77,24 +77,41 @@ pub const BLOOM_FILTER_TRACE_COLUMNS: [&str; 2] = ["trace_id", "span_id"];
 /// column whose whole purpose is point lookups.
 pub const BLOOM_FILTER_TRACE_FPP: &str = "0.01";
 
+/// Expected distinct-value count for `trace_id`'s bloom filter.
+///
+/// A filter is sized from fpp *and* ndv; fpp alone leaves ndv at parquet-rs's
+/// default, which assumes one distinct value per row in a full row group
+/// (its default ndv and default max row-group row count are the same
+/// number). That default is right for `span_id` — effectively unique per
+/// row, so left unset here — but wrong for `trace_id`: every span of a
+/// trace repeats the same id, so a row group's distinct trace count is a
+/// fraction of its row count. `50_000` assumes an average of roughly 20
+/// spans per trace against a row group approaching parquet-rs's default
+/// size; it's an estimate, not a measurement — revisit once SignalDB has
+/// real trace-shape telemetry to size it from.
+pub const BLOOM_FILTER_TRACE_ID_NDV: &str = "50000";
+
 /// Per-column Parquet bloom-filter table properties for the built-in traces
 /// point-lookup columns ([`BLOOM_FILTER_TRACE_COLUMNS`]).
 ///
 /// Emits `write.parquet.bloom-filter-enabled.column.<col> = "true"` and
-/// `write.parquet.bloom-filter-fpp.column.<col>` for each — standard Iceberg
-/// properties the pinned iceberg-rust Parquet writer honors per column. Set at
-/// table creation for [`schemas::TableSchema::Traces`] so every new file
-/// (ingest and compaction output) carries the filters.
+/// `write.parquet.bloom-filter-fpp.column.<col>` for each, plus
+/// `write.parquet.bloom-filter-ndv.column.trace_id` (see
+/// [`BLOOM_FILTER_TRACE_ID_NDV`]) — standard Iceberg properties the pinned
+/// iceberg-rust Parquet writer honors per column. Set at table creation for
+/// both [`schemas::TableSchema::Traces`] and [`schemas::TableSchema::Logs`]
+/// (see [`bloom_filter_properties_for_table`]) so every new file (ingest and
+/// compaction output) carries the filters.
 pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
     use iceberg_rust::spec::table_metadata::{
         WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX,
-        WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX,
+        WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX, WRITE_PARQUET_BLOOM_FILTER_NDV_COLUMN_PREFIX,
     };
 
     BLOOM_FILTER_TRACE_COLUMNS
         .iter()
         .flat_map(|column| {
-            [
+            let mut properties = vec![
                 (
                     format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{column}"),
                     "true".to_string(),
@@ -103,9 +120,45 @@ pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
                     format!("{WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX}{column}"),
                     BLOOM_FILTER_TRACE_FPP.to_string(),
                 ),
-            ]
+            ];
+            if *column == "trace_id" {
+                properties.push((
+                    format!("{WRITE_PARQUET_BLOOM_FILTER_NDV_COLUMN_PREFIX}{column}"),
+                    BLOOM_FILTER_TRACE_ID_NDV.to_string(),
+                ));
+            }
+            properties
         })
         .collect()
+}
+
+/// Assembles every Parquet bloom-filter table property for a table's
+/// columns, dispatching by table type and its materialized labels.
+///
+/// [`schemas::TableSchema::Logs`] gets a filter over the derived
+/// `attr_tokens` column (for `key=value` containment checks) in addition to
+/// every materialized label; both `Logs` and `Traces` get the `trace_id`/
+/// `span_id` point-lookup filters ([`bloom_filter_properties_for_trace_columns`])
+/// since `logs.v1` carries those same columns (optional, but named
+/// identically) for logs-for-a-trace correlation. Other table types get
+/// only the materialized-label filters.
+pub fn bloom_filter_properties_for_table(
+    table_schema: &crate::iceberg::schemas::TableSchema,
+    materialized_labels: &[String],
+) -> Vec<(String, String)> {
+    let mut properties = bloom_filter_properties_for_labels(materialized_labels);
+
+    if matches!(table_schema, crate::iceberg::schemas::TableSchema::Logs) {
+        properties.push(bloom_filter_property_for_attr_tokens());
+    }
+    if matches!(
+        table_schema,
+        crate::iceberg::schemas::TableSchema::Traces | crate::iceberg::schemas::TableSchema::Logs
+    ) {
+        properties.extend(bloom_filter_properties_for_trace_columns());
+    }
+
+    properties
 }
 
 /// Parquet compression properties recorded on every table.
@@ -423,6 +476,79 @@ mod tests {
         }
     }
 
+    /// `trace_id` repeats across every span of a trace, so its real
+    /// cardinality is a fraction of the row count; leaving ndv unset would
+    /// size its filter as if every row were a distinct trace. `span_id` is
+    /// effectively unique per row, matching parquet-rs's own default, so it
+    /// must stay unset rather than duplicate that default as a magic number.
+    #[test]
+    fn trace_id_bloom_filter_has_an_explicit_ndv_but_span_id_does_not() {
+        let properties = bloom_filter_properties_for_trace_columns();
+
+        assert!(
+            properties.contains(&(
+                "write.parquet.bloom-filter-ndv.column.trace_id".to_string(),
+                BLOOM_FILTER_TRACE_ID_NDV.to_string()
+            )),
+            "trace_id must have an explicit ndv"
+        );
+        assert!(
+            !properties
+                .iter()
+                .any(|(key, _)| key == "write.parquet.bloom-filter-ndv.column.span_id"),
+            "span_id must not override parquet-rs's default ndv"
+        );
+    }
+
+    /// `logs.v1` carries `trace_id`/`span_id` for logs-for-a-trace
+    /// correlation, the same point-lookup problem traces has, so logs must
+    /// get the same filters. It must also keep its `attr_tokens` filter.
+    /// Traces has no `attr_tokens` column and must not get one.
+    #[test]
+    fn logs_and_traces_get_trace_columns_but_only_logs_gets_attr_tokens() {
+        use crate::iceberg::schemas::TableSchema;
+
+        let logs = bloom_filter_properties_for_table(&TableSchema::Logs, &[]);
+        for column in BLOOM_FILTER_TRACE_COLUMNS {
+            assert!(
+                logs.contains(&(
+                    format!("write.parquet.bloom-filter-enabled.column.{column}"),
+                    "true".to_string()
+                )),
+                "logs must have a bloom filter on {column}"
+            );
+        }
+        let (attr_tokens_key, attr_tokens_value) = bloom_filter_property_for_attr_tokens();
+        assert!(
+            logs.contains(&(attr_tokens_key, attr_tokens_value)),
+            "logs must keep its attr_tokens filter"
+        );
+
+        let traces = bloom_filter_properties_for_table(&TableSchema::Traces, &[]);
+        for column in BLOOM_FILTER_TRACE_COLUMNS {
+            assert!(
+                traces.contains(&(
+                    format!("write.parquet.bloom-filter-enabled.column.{column}"),
+                    "true".to_string()
+                )),
+                "traces must have a bloom filter on {column}"
+            );
+        }
+        assert!(
+            !traces.iter().any(|(key, _)| key.contains("attr_tokens")),
+            "traces has no attr_tokens column and must not get a filter for one"
+        );
+    }
+
+    /// A table type with no point-lookup id columns and no materialized
+    /// labels gets no bloom filter properties at all.
+    #[test]
+    fn a_metrics_table_gets_no_bloom_filter_properties() {
+        use crate::iceberg::schemas::TableSchema;
+
+        assert!(bloom_filter_properties_for_table(&TableSchema::MetricsGauge, &[]).is_empty());
+    }
+
     /// The writer wrote zstd level 1 while table metadata claimed level 3. Now
     /// that the writer honors the property, it must say what the files are, or
     /// every write silently moves to level 3.
@@ -524,6 +650,10 @@ mod tests {
                 (
                     "write.parquet.bloom-filter-fpp.column.trace_id".to_string(),
                     BLOOM_FILTER_TRACE_FPP.to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-ndv.column.trace_id".to_string(),
+                    BLOOM_FILTER_TRACE_ID_NDV.to_string()
                 ),
                 (
                     "write.parquet.bloom-filter-enabled.column.span_id".to_string(),

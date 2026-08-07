@@ -425,20 +425,33 @@ filter**.
 SignalDB enables them by writing the standard Iceberg table property
 `write.parquet.bloom-filter-enabled.column.<col> = "true"` at table creation;
 the pinned iceberg-rust Parquet writer honors it on every write, so both
-ingest and compaction output carry the filters. Enabled columns:
+ingest and compaction output carry the filters. The per-table-type dispatch
+lives in `common::schema::bloom_filter_properties_for_table`. Enabled
+columns:
 
-- **traces** — `trace_id` and `span_id` (single-trace / single-span lookups).
-  Set via `common::schema::bloom_filter_properties_for_trace_columns`.
-- **logs** — the derived `attr_tokens` list leaf (`key=value` containment) and
-  every materialized `label_<key>` column.
+- **traces and logs** — `trace_id` and `span_id` (single-trace / single-span
+  lookups on traces; logs-for-a-trace correlation on logs, where the columns
+  are optional but named identically). Set via
+  `common::schema::bloom_filter_properties_for_trace_columns`.
+- **logs** — additionally the derived `attr_tokens` list leaf (`key=value`
+  containment).
 - **all signals** — every materialized `label_<key>` column.
 
-The traces columns additionally carry
+The `trace_id`/`span_id` columns additionally carry
 `write.parquet.bloom-filter-fpp.column.<col> = "0.01"`. A filter is sized from
 its target false-positive probability, and Parquet's `0.05` default means one
 row group in twenty is read for nothing — for a single-trace lookup, that
 wasted read _is_ the query. `0.01` cuts it five-fold for a filter roughly 40%
 larger.
+
+`trace_id` additionally carries
+`write.parquet.bloom-filter-ndv.column.trace_id`, sizing the filter from an
+estimated distinct-value count rather than parquet-rs's default (which
+assumes one distinct value per row in a full row group — correct for
+`span_id`, unique per row, but an overestimate for `trace_id`, which repeats
+across every span of a trace). `span_id` leaves ndv unset since the default
+already fits it. See `common::schema::BLOOM_FILTER_TRACE_ID_NDV` for the
+estimate and its caveats.
 
 ### Parquet compression
 

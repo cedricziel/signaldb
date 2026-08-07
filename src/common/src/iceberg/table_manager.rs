@@ -153,27 +153,15 @@ impl IcebergTableManager {
             }
         }
 
-        // Enable a Parquet bloom filter for every materialized label column
-        // so point lookups on promoted attributes can prune row groups. The
+        // Enable a Parquet bloom filter for every materialized label column,
+        // plus (for logs) the derived `attr_tokens` column and (for traces
+        // and logs) the `trace_id`/`span_id` point-lookup columns. The
         // pinned iceberg-rust Parquet writer reads these standard Iceberg
         // properties from the table metadata on every write.
-        let mut bloom_properties = crate::schema::bloom_filter_properties_for_labels(
+        let bloom_properties = crate::schema::bloom_filter_properties_for_table(
+            &table_schema,
             table_schema.materialized_labels_of(labels),
         );
-        // Logs tables also carry the derived `attr_tokens` column; enable a
-        // bloom filter over its List leaf so `key=value` containment checks
-        // can prune row groups.
-        if matches!(table_schema, schemas::TableSchema::Logs) {
-            bloom_properties.push(crate::schema::bloom_filter_property_for_attr_tokens());
-        }
-        // Traces tables carry the high-cardinality `trace_id`/`span_id`
-        // columns that single-trace and single-span point lookups filter on.
-        // Min/max statistics never prune those (files span the full random id
-        // range), so a bloom filter is the only structure that can skip row
-        // groups for the lookup.
-        if matches!(table_schema, schemas::TableSchema::Traces) {
-            bloom_properties.extend(crate::schema::bloom_filter_properties_for_trace_columns());
-        }
 
         // Drop the min/max bounds of the free-text columns. Bounds ride along
         // in every data file's manifest entry, and no query compares these
