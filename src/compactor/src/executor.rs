@@ -59,6 +59,18 @@ pub enum CompactionStatus {
     Failed,
 }
 
+/// Render an error together with its full cause chain.
+///
+/// `anyhow`'s plain `Display` renders only the outermost `.context(...)`
+/// message. Every compaction commit failure is wrapped in
+/// `.context("Failed to commit compaction")`, so plain formatting reduces all
+/// of them — a failed catalog load, a failed manifest re-read, a rejected
+/// Iceberg commit — to that one indistinguishable string, and the operator
+/// has nothing to act on. The alternate `{:#}` form joins the whole chain.
+fn format_error_chain(error: &anyhow::Error) -> String {
+    format!("{error:#}")
+}
+
 /// Configuration for compaction execution
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
@@ -255,12 +267,16 @@ impl CompactionExecutor {
                                 bytes_before: 0,
                                 bytes_after: 0,
                                 duration: job.created_at.elapsed(),
-                                error: Some(e.to_string()),
+                                error: Some(format_error_chain(&e)),
                             });
                         }
                     } else {
                         // Non-conflict error, fail immediately
-                        tracing::error!("Job {} failed with non-conflict error: {}", job_id, e);
+                        tracing::error!(
+                            "Job {} failed with non-conflict error: {}",
+                            job_id,
+                            format_error_chain(&e)
+                        );
 
                         self.metrics.record_job_failure();
 
@@ -272,7 +288,7 @@ impl CompactionExecutor {
                             bytes_before: 0,
                             bytes_after: 0,
                             duration: job.created_at.elapsed(),
-                            error: Some(e.to_string()),
+                            error: Some(format_error_chain(&e)),
                         });
                     }
                 }
@@ -465,6 +481,34 @@ impl CompactionExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards the exact failure this helper exists to prevent: a compaction
+    /// commit error reaching the operator as the bare string "Failed to commit
+    /// compaction", with the cause that actually explains it discarded.
+    #[test]
+    fn format_error_chain_preserves_causes_beneath_the_outermost_context() {
+        let error = anyhow::anyhow!("object store returned 503")
+            .context("Failed to commit compaction delta snapshot")
+            .context("Failed to commit compaction");
+
+        let rendered = format_error_chain(&error);
+
+        assert!(rendered.contains("Failed to commit compaction"));
+        assert!(rendered.contains("Failed to commit compaction delta snapshot"));
+        assert!(rendered.contains("object store returned 503"));
+    }
+
+    /// Pins the anyhow behaviour that motivates `format_error_chain`, so that
+    /// a future refactor back to `{}` / `to_string()` fails here loudly rather
+    /// than silently going dark in production.
+    #[test]
+    fn plain_display_drops_the_cause_chain() {
+        let error =
+            anyhow::anyhow!("object store returned 503").context("Failed to commit compaction");
+
+        assert_eq!(error.to_string(), "Failed to commit compaction");
+        assert!(!error.to_string().contains("object store returned 503"));
+    }
 
     #[test]
     fn test_executor_config_default() {
