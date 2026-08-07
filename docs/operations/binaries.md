@@ -32,6 +32,15 @@ On an older CPU the binaries fail immediately with an illegal-instruction
 fault (`SIGILL`), not a graceful error. If you must run on such hardware,
 build from source without the target-feature flags.
 
+These flags reach the compiler only while `RUSTFLAGS` is unset, because cargo
+picks a single source for flags and an environment value replaces the
+per-target `rustflags` in `.cargo/config.toml` rather than merging with it.
+The release jobs therefore pass `rustflags: ""` to
+`actions-rust-lang/setup-rust-toolchain`, whose default is `-D warnings`. If
+that is ever dropped, the published artifacts silently fall back to ahash's
+scalar mixer and the default linker while still passing CI — the build stays
+green and only gets slower, so nothing surfaces the regression.
+
 One carve-out on aarch64 musl builds (the Linux arm64 container images and
 release binaries): their C dependencies — jemalloc included — are compiled
 with `-mno-outline-atomics` (`.cargo/config.toml` sets

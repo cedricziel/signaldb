@@ -29,6 +29,13 @@ CFLAGS_aarch64_unknown_linux_musl = { value = "-mno-outline-atomics", condition 
 # dispatch. Requires post-2010 x86 (Westmere) / ARMv8-with-crypto CPUs; binaries
 # fault with SIGILL on anything older. aarch64-apple-darwin needs no section:
 # its baseline already includes aes+neon.
+#
+# CAUTION: a set RUSTFLAGS env var REPLACES every `rustflags` key below — cargo
+# picks exactly one source and does not merge them. CI must therefore keep
+# RUSTFLAGS unset (`rustflags: ""` on actions-rust-lang/setup-rust-toolchain,
+# which otherwise defaults to `-D warnings`), or none of this applies and the
+# release artifacts silently ship the scalar fallback and the default linker.
+# The `linker` keys are unaffected — only `rustflags` is clobbered.
 
 # Faster linking on Linux (requires mold linker to be installed)
 [target.x86_64-unknown-linux-gnu]
@@ -38,12 +45,23 @@ rustflags = [
     "-C", "target-feature=+aes,+sse2,+ssse3,+sse4.1,+sse4.2",
 ]
 
+# Static musl links the whole DataFusion/Arrow/Parquet/Iceberg graph into every
+# binary, so the link step dominates the release build; mold cuts it materially.
+# clang is the driver (rustc supplies the self-contained musl crt objects).
 [target.x86_64-unknown-linux-musl]
-rustflags = ["-C", "target-feature=+aes,+sse2,+ssse3,+sse4.1,+sse4.2"]
+linker = "clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=mold",
+    "-C", "target-feature=+aes,+sse2,+ssse3,+sse4.1,+sse4.2",
+]
 
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+aes,+neon"]
 
+# No mold here yet, unlike the x86_64 musl target above: this triple's C
+# toolchain is already the fragile one (see the CFLAGS note at the top), and the
+# linker swap has not been verified against it. Worth revisiting once someone
+# can test an aarch64 musl link end to end.
 [target.aarch64-unknown-linux-musl]
 rustflags = ["-C", "target-feature=+aes,+neon"]
 
