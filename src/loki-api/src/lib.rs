@@ -68,14 +68,90 @@ pub struct Stream {
     pub values: Vec<LogEntry>,
 }
 
-/// A single log entry: `["<unix epoch ns>", "<log line>"]`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct LogEntry(pub String, pub String);
+/// A single log entry: `["<unix epoch ns>", "<log line>"]`, or
+/// `["<unix epoch ns>", "<log line>", {"<key>": "<value>", ...}]` when it
+/// carries structured metadata.
+///
+/// Structured metadata (Loki 3.0+) is per-line, unlike stream labels, which
+/// are constant across every entry in a [`Stream`]. That distinction matters
+/// for columns like `trace_id`/`span_id`: their value varies line to line,
+/// so putting them in `stream` would fragment logs into one stream per
+/// trace instead of grouping by something stable like `service_name`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LogEntry {
+    pub timestamp_ns: String,
+    pub line: String,
+    /// Empty by default, serializing as the classic 2-element pair for
+    /// exact backward compatibility with pre-3.0 consumers.
+    pub metadata: HashMap<String, String>,
+}
 
 impl LogEntry {
-    /// Build an entry from a nanosecond timestamp and a log line.
+    /// Build an entry from a nanosecond timestamp and a log line, with no
+    /// structured metadata.
     pub fn new(timestamp_ns: i64, line: impl Into<String>) -> Self {
-        Self(timestamp_ns.to_string(), line.into())
+        Self {
+            timestamp_ns: timestamp_ns.to_string(),
+            line: line.into(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Build an entry carrying structured metadata alongside the line.
+    pub fn with_metadata(
+        timestamp_ns: i64,
+        line: impl Into<String>,
+        metadata: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            timestamp_ns: timestamp_ns.to_string(),
+            line: line.into(),
+            metadata,
+        }
+    }
+}
+
+impl Serialize for LogEntry {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let len = if self.metadata.is_empty() { 2 } else { 3 };
+        let mut seq = serializer.serialize_seq(Some(len))?;
+        seq.serialize_element(&self.timestamp_ns)?;
+        seq.serialize_element(&self.line)?;
+        if !self.metadata.is_empty() {
+            seq.serialize_element(&self.metadata)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for LogEntry {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct LogEntryVisitor;
+
+        impl<'de> Visitor<'de> for LogEntryVisitor {
+            type Value = LogEntry;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a [timestamp, line] or [timestamp, line, metadata] tuple")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<LogEntry, A::Error> {
+                let timestamp_ns: String = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let line: String = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let metadata: HashMap<String, String> = seq.next_element()?.unwrap_or_default();
+                Ok(LogEntry {
+                    timestamp_ns,
+                    line,
+                    metadata,
+                })
+            }
+        }
+
+        deserializer.deserialize_seq(LogEntryVisitor)
     }
 }
 
@@ -281,6 +357,36 @@ mod tests {
             }
         });
         assert_eq!(serde_json::to_value(&response).unwrap(), expected);
+    }
+
+    /// An entry's structured metadata is per-line data, distinct from a
+    /// stream's labels: two entries in the same stream can carry different
+    /// `trace_id`s without splitting into separate streams.
+    #[test]
+    fn log_entry_with_metadata_appends_a_third_element() {
+        let entry = LogEntry::with_metadata(
+            1_569_266_497_240_578_000,
+            "boom",
+            HashMap::from([("trace_id".to_string(), "abc123".to_string())]),
+        );
+
+        assert_eq!(
+            serde_json::to_value(&entry).unwrap(),
+            json!(["1569266497240578000", "boom", {"trace_id": "abc123"}])
+        );
+
+        let round_tripped: LogEntry =
+            serde_json::from_value(serde_json::to_value(&entry).unwrap()).unwrap();
+        assert_eq!(round_tripped, entry);
+    }
+
+    /// A bare `[timestamp, line]` pair (no metadata, matching every
+    /// pre-3.0 Loki producer) must still deserialize with empty metadata.
+    #[test]
+    fn log_entry_without_metadata_deserializes_from_a_bare_pair() {
+        let entry: LogEntry = serde_json::from_value(json!(["100", "hello"])).unwrap();
+        assert_eq!(entry, LogEntry::new(100, "hello"));
+        assert!(entry.metadata.is_empty());
     }
 
     #[test]
