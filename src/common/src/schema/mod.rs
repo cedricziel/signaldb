@@ -77,24 +77,40 @@ pub const BLOOM_FILTER_TRACE_COLUMNS: [&str; 2] = ["trace_id", "span_id"];
 /// column whose whole purpose is point lookups.
 pub const BLOOM_FILTER_TRACE_FPP: &str = "0.01";
 
+/// Expected distinct-value count for `trace_id`'s bloom filter.
+///
+/// A filter is sized from fpp *and* ndv; fpp alone leaves ndv at parquet-rs's
+/// default, which assumes one distinct value per row in a full row group
+/// (its default ndv and default max row-group row count are the same
+/// number). That default is right for `span_id` — effectively unique per
+/// row, so left unset here — but wrong for `trace_id`: every span of a
+/// trace repeats the same id, so a row group's distinct trace count is a
+/// fraction of its row count. `50_000` assumes an average of roughly 20
+/// spans per trace against a row group approaching parquet-rs's default
+/// size; it's an estimate, not a measurement — revisit once SignalDB has
+/// real trace-shape telemetry to size it from.
+pub const BLOOM_FILTER_TRACE_ID_NDV: &str = "50000";
+
 /// Per-column Parquet bloom-filter table properties for the built-in traces
 /// point-lookup columns ([`BLOOM_FILTER_TRACE_COLUMNS`]).
 ///
 /// Emits `write.parquet.bloom-filter-enabled.column.<col> = "true"` and
-/// `write.parquet.bloom-filter-fpp.column.<col>` for each — standard Iceberg
-/// properties the pinned iceberg-rust Parquet writer honors per column. Set at
-/// table creation for [`schemas::TableSchema::Traces`] so every new file
-/// (ingest and compaction output) carries the filters.
+/// `write.parquet.bloom-filter-fpp.column.<col>` for each, plus
+/// `write.parquet.bloom-filter-ndv.column.trace_id` (see
+/// [`BLOOM_FILTER_TRACE_ID_NDV`]) — standard Iceberg properties the pinned
+/// iceberg-rust Parquet writer honors per column. Set at table creation for
+/// [`schemas::TableSchema::Traces`] so every new file (ingest and compaction
+/// output) carries the filters.
 pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
     use iceberg_rust::spec::table_metadata::{
         WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX,
-        WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX,
+        WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX, WRITE_PARQUET_BLOOM_FILTER_NDV_COLUMN_PREFIX,
     };
 
     BLOOM_FILTER_TRACE_COLUMNS
         .iter()
         .flat_map(|column| {
-            [
+            let mut properties = vec![
                 (
                     format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{column}"),
                     "true".to_string(),
@@ -103,7 +119,14 @@ pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
                     format!("{WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX}{column}"),
                     BLOOM_FILTER_TRACE_FPP.to_string(),
                 ),
-            ]
+            ];
+            if *column == "trace_id" {
+                properties.push((
+                    format!("{WRITE_PARQUET_BLOOM_FILTER_NDV_COLUMN_PREFIX}{column}"),
+                    BLOOM_FILTER_TRACE_ID_NDV.to_string(),
+                ));
+            }
+            properties
         })
         .collect()
 }
@@ -423,6 +446,30 @@ mod tests {
         }
     }
 
+    /// `trace_id` repeats across every span of a trace, so its real
+    /// cardinality is a fraction of the row count; leaving ndv unset would
+    /// size its filter as if every row were a distinct trace. `span_id` is
+    /// effectively unique per row, matching parquet-rs's own default, so it
+    /// must stay unset rather than duplicate that default as a magic number.
+    #[test]
+    fn trace_id_bloom_filter_has_an_explicit_ndv_but_span_id_does_not() {
+        let properties = bloom_filter_properties_for_trace_columns();
+
+        assert!(
+            properties.contains(&(
+                "write.parquet.bloom-filter-ndv.column.trace_id".to_string(),
+                BLOOM_FILTER_TRACE_ID_NDV.to_string()
+            )),
+            "trace_id must have an explicit ndv"
+        );
+        assert!(
+            !properties
+                .iter()
+                .any(|(key, _)| key == "write.parquet.bloom-filter-ndv.column.span_id"),
+            "span_id must not override parquet-rs's default ndv"
+        );
+    }
+
     /// The writer wrote zstd level 1 while table metadata claimed level 3. Now
     /// that the writer honors the property, it must say what the files are, or
     /// every write silently moves to level 3.
@@ -524,6 +571,10 @@ mod tests {
                 (
                     "write.parquet.bloom-filter-fpp.column.trace_id".to_string(),
                     BLOOM_FILTER_TRACE_FPP.to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-ndv.column.trace_id".to_string(),
+                    BLOOM_FILTER_TRACE_ID_NDV.to_string()
                 ),
                 (
                     "write.parquet.bloom-filter-enabled.column.span_id".to_string(),
