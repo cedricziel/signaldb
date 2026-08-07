@@ -20,6 +20,19 @@ fn client_exposes_trace_query_builders() {
     let _tag_values = client.search_tag_values();
 }
 
+#[test]
+fn client_exposes_label_discovery_builders() {
+    let client = Client::new("http://localhost:8080");
+
+    // Loki/Prometheus label-name and label-value discovery, wrapped by the
+    // MCP server's signal-aware `discover_attributes` and `discover_metrics`
+    // tools (openspec change mcp-server, Phase F).
+    let _logql_labels = client.logql_labels();
+    let _logql_label_values = client.logql_label_values();
+    let _promql_labels = client.promql_labels();
+    let _promql_label_values = client.promql_label_values();
+}
+
 /// Task 7.1 — the generated `query` operation compiles and round-trips an IR
 /// request type through the SDK's DTOs.
 #[test]

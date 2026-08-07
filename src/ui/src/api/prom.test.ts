@@ -7,9 +7,12 @@ import {
   promQueryRange,
   seriesName,
 } from "./prom";
+import { resetApiClient, stubApiFetch } from "../test/apiClient";
 
 const RANGE = { fromMs: 1_000_000, toMs: 2_000_000 };
 
+// promLabelStats stays on raw `fetch` (not yet in the OpenAPI document, see
+// prom.ts), so it keeps stubbing the global directly.
 function mockFetchOnce(body: unknown, status = 200) {
   const fn = vi.fn().mockResolvedValue(
     new Response(JSON.stringify(body), {
@@ -23,11 +26,12 @@ function mockFetchOnce(body: unknown, status = 200) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetApiClient();
 });
 
 describe("promQueryRange", () => {
   it("maps matrix results to millisecond points", async () => {
-    const fn = mockFetchOnce({
+    const calls = stubApiFetch({
       status: "success",
       data: {
         resultType: "matrix",
@@ -52,7 +56,7 @@ describe("promQueryRange", () => {
         ],
       },
     ]);
-    const url = String(fn.mock.calls[0]?.[0]);
+    const url = calls[0]!.url;
     expect(url).toContain("/prometheus/api/v1/query_range?");
     expect(url).toContain("step=60");
     expect(url).toContain("start=1000");
@@ -60,7 +64,7 @@ describe("promQueryRange", () => {
   });
 
   it("throws the API error message on status=error", async () => {
-    mockFetchOnce({
+    stubApiFetch({
       status: "error",
       error: "parse error at char 3",
       data: { resultType: "matrix", result: [] },
@@ -71,12 +75,12 @@ describe("promQueryRange", () => {
   });
 
   it("throws on HTTP failure", async () => {
-    mockFetchOnce({ oops: true }, 500);
+    stubApiFetch({ oops: true }, 500);
     await expect(promQueryRange("up", RANGE, 60)).rejects.toThrow(/\(500\)/);
   });
 
   it("rejects non-matrix results", async () => {
-    mockFetchOnce({
+    stubApiFetch({
       status: "success",
       data: { resultType: "vector", result: [] },
     });
@@ -100,39 +104,43 @@ describe("seriesName", () => {
 
 describe("metadata pickers", () => {
   it("promLabelNames returns the data array and sends the window", async () => {
-    const fn = mockFetchOnce({ status: "success", data: ["service", "host"] });
+    const calls = stubApiFetch({
+      status: "success",
+      data: ["service", "host"],
+    });
     await expect(promLabelNames(RANGE)).resolves.toEqual(["service", "host"]);
-    const url = String(fn.mock.calls[0]?.[0]);
+    const url = calls[0]!.url;
     expect(url).toContain("/prometheus/api/v1/labels?");
     expect(url).toContain("start=1000");
     expect(url).toContain("end=2000");
   });
 
   it("promLabelValues encodes the label name in the path", async () => {
-    const fn = mockFetchOnce({ status: "success", data: ["checkout"] });
+    const calls = stubApiFetch({ status: "success", data: ["checkout"] });
     await expect(promLabelValues("k8s.pod", RANGE)).resolves.toEqual([
       "checkout",
     ]);
-    expect(String(fn.mock.calls[0]?.[0])).toContain(
-      "/prometheus/api/v1/label/k8s.pod/values?",
-    );
+    expect(calls[0]!.url).toContain("/prometheus/api/v1/label/k8s.pod/values?");
   });
 
   it("promMetricNames queries the reserved __name__ label", async () => {
-    const fn = mockFetchOnce({ status: "success", data: ["up", "http_reqs"] });
+    const calls = stubApiFetch({
+      status: "success",
+      data: ["up", "http_reqs"],
+    });
     await expect(promMetricNames(RANGE)).resolves.toEqual(["up", "http_reqs"]);
-    expect(String(fn.mock.calls[0]?.[0])).toContain(
+    expect(calls[0]!.url).toContain(
       "/prometheus/api/v1/label/__name__/values?",
     );
   });
 
   it("defaults to an empty list when data is absent", async () => {
-    mockFetchOnce({ status: "success" });
+    stubApiFetch({ status: "success" });
     await expect(promLabelNames(RANGE)).resolves.toEqual([]);
   });
 
   it("throws on HTTP failure", async () => {
-    mockFetchOnce("nope", 503);
+    stubApiFetch("nope", 503);
     await expect(promLabelNames(RANGE)).rejects.toThrow(/\(503\)/);
   });
 });

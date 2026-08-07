@@ -8,7 +8,10 @@
 //! - `server_info` — connectivity + resolved tenant
 //! - `search_traces` — TraceQL search
 //! - `get_trace` — single trace by ID
-//! - `discover_attributes` — queryable tag names / values
+//! - `discover_attributes` — queryable attribute/label names or values,
+//!   signal-aware (`traces` via Tempo tags, `logs` via Loki labels,
+//!   `metrics` via Prometheus labels)
+//! - `discover_metrics` — distinct metric names for the tenant
 //! - `query_metrics` — PromQL query (native Prometheus result)
 //! - `search_logs` — LogQL query (native Loki result)
 //! - `query_ir` — native Query IR document (structured query surface)
@@ -105,14 +108,41 @@ struct GetTraceParams {
     dataset: Option<String>,
 }
 
+/// Which signal `discover_attributes` targets.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "lowercase")]
+enum Signal {
+    /// Tempo trace attributes (tags).
+    #[default]
+    Traces,
+    /// Loki log labels.
+    Logs,
+    /// Prometheus metric labels.
+    Metrics,
+}
+
 /// Parameters for `discover_attributes`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DiscoverAttributesParams {
-    /// When set, returns the known values for this tag; when omitted, returns
-    /// the list of queryable tag names.
+    /// Which signal to discover attributes for: `traces` (default), `logs`,
+    /// or `metrics`.
+    #[serde(default)]
+    signal: Signal,
+    /// When set, returns the known values for this tag/label; when omitted,
+    /// returns the list of queryable tag/label names.
     #[serde(default)]
     tag: Option<String>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+/// Parameters for `discover_metrics`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DiscoverMetricsParams {
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -281,7 +311,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Discover queryable trace attributes for your tenant. Call with no arguments to list tag names; pass `tag` to list the known values for that tag. Use this to construct valid `search_traces` queries."
+        description = "Discover queryable attributes for your tenant. Call with no arguments to list trace tag names; pass `tag` to list the known values for that tag. Pass `signal: \"logs\"` or `signal: \"metrics\"` to discover Loki log labels or Prometheus metric labels instead. Use this to construct valid `search_traces`/`search_logs`/`query_metrics` queries."
     )]
     async fn discover_attributes(
         &self,
@@ -289,8 +319,8 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, p.dataset.as_deref())?;
-        match p.tag {
-            Some(tag) => {
+        match (p.signal, p.tag) {
+            (Signal::Traces, Some(tag)) => {
                 let resp = client
                     .search_tag_values()
                     .tag_name(tag)
@@ -299,7 +329,7 @@ impl McpServer {
                     .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
                 json_result(&resp.into_inner())
             }
-            None => {
+            (Signal::Traces, None) => {
                 let resp = client
                     .search_tags()
                     .send()
@@ -307,7 +337,59 @@ impl McpServer {
                     .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
                 json_result(&resp.into_inner())
             }
+            (Signal::Logs, Some(name)) => {
+                let resp = client
+                    .logql_label_values()
+                    .name(name)
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
+                json_result(&resp.into_inner())
+            }
+            (Signal::Logs, None) => {
+                let resp = client
+                    .logql_labels()
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
+                json_result(&resp.into_inner())
+            }
+            (Signal::Metrics, Some(name)) => {
+                let resp = client
+                    .promql_label_values()
+                    .name(name)
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
+                json_result(&resp.into_inner())
+            }
+            (Signal::Metrics, None) => {
+                let resp = client
+                    .promql_labels()
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
+                json_result(&resp.into_inner())
+            }
         }
+    }
+
+    #[tool(
+        description = "Discover metric names for your tenant. Returns the distinct metric names visible via PromQL (backed by Prometheus label discovery on `__name__`). Use this to construct valid `query_metrics` queries."
+    )]
+    async fn discover_metrics(
+        &self,
+        Parameters(p): Parameters<DiscoverMetricsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let resp = client
+            .promql_label_values()
+            .name("__name__")
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "discover_metrics"))?;
+        json_result(&resp.into_inner())
     }
 
     #[tool(
@@ -630,6 +712,7 @@ mod tests {
             "search_traces",
             "get_trace",
             "discover_attributes",
+            "discover_metrics",
             "query_metrics",
             "search_logs",
             "query_ir",

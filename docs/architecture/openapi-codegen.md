@@ -43,9 +43,10 @@ flowchart LR
   query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`),
   `endpoints/query.rs` (the native Query IR endpoint `POST /api/v1/query`, whose
   request/response DTOs are defined in that module), the PromQL/LogQL
-  instant and range query endpoints in `endpoints/promql.rs`
-  (`/prometheus/api/v1/query{,_range}`) and `endpoints/logql.rs`
-  (`/loki/api/v1/query{,_range}`), the operational-control endpoints in
+  instant and range query endpoints plus their label-discovery endpoints in
+  `endpoints/promql.rs` (`/prometheus/api/v1/query{,_range}`, `/labels`,
+  `/label/{name}/values`) and `endpoints/logql.rs`
+  (`/loki/api/v1/query{,_range}`, `/labels`, `/label/{name}/values`), the operational-control endpoints in
   `endpoints/ops.rs` (`/api/v1/ops/compact{,/status,/dry-run}`, admin-authenticated,
   proxied to the compactor's Flight `do_action` surface), and `endpoints/oauth.rs`
   (the session-authed OAuth consent surface the explore-UI consumes —
@@ -120,7 +121,9 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
   `[timestamp, "value"]` tuple sample shapes need extra schema handling, so the
   generated clients see an opaque JSON value and pass the native Loki/Prometheus
   response through unchanged. Tightening those two response schemas is a
-  follow-up (epic #620, Phase A).
+  follow-up (epic #620, Phase A). The Loki/Prometheus label-discovery endpoints
+  (`labels`, `label_values`) share the same loose-body treatment — they return
+  a flat `{status, data}` shape simple enough that a typed schema adds no value.
 - The polymorphic Tempo attribute `Value` (a serde-tagged union of
   string/int/bool/double) serializes as an untyped object in the schema, so the
   generated clients see it as an arbitrary JSON value rather than a typed enum.

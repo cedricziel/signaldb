@@ -64,10 +64,12 @@ describe("LogsView", () => {
     const fetchFn = routes();
     renderView();
     await waitFor(() => {
-      // URLSearchParams encodes spaces as "+".
-      const urls = fetchFn.mock.calls.map((c) =>
-        decodeURIComponent(String(c[0])).replace(/\+/g, " "),
-      );
+      // URLSearchParams encodes spaces as "+". Calls through the generated
+      // client pass a `Request`; raw-fetch calls pass the URL directly.
+      const urls = fetchFn.mock.calls.map((c) => {
+        const raw = c[0] instanceof Request ? c[0].url : String(c[0]);
+        return decodeURIComponent(raw).replace(/\+/g, " ");
+      });
       expect(
         urls.some((u) => u.includes("sum by (level) (count_over_time(")),
       ).toBe(true);

@@ -22,18 +22,19 @@ already allowed to see — tenant isolation stays enforced by the router.
 Tools (available to every authenticated tenant session — there is no role
 gating in v1):
 
-| Tool                  | Purpose                                                             |
-| --------------------- | ------------------------------------------------------------------- |
-| `server_info`         | Confirm connectivity and which tenant your credential resolves to.  |
-| `search_traces`       | TraceQL search over your tenant's traces.                           |
-| `get_trace`           | Fetch a single trace by ID (renders as a waterfall — see below).    |
-| `discover_attributes` | List queryable tag names, or the values for a tag.                  |
-| `query_metrics`       | PromQL query over your tenant's metrics (native Prometheus result). |
-| `search_logs`         | LogQL query over your tenant's logs (native Loki result).           |
-| `query_ir`            | Native Query IR document (the structured, versioned query surface). |
-| `compact_run`         | Trigger a compaction pass now (admin-authenticated).                |
-| `compact_status`      | Active compaction leases and metrics (admin-authenticated).         |
-| `compact_dry_run`     | Plan compaction candidates without executing (admin-authenticated). |
+| Tool                  | Purpose                                                                                                                                                         |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server_info`         | Confirm connectivity and which tenant your credential resolves to.                                                                                              |
+| `search_traces`       | TraceQL search over your tenant's traces.                                                                                                                       |
+| `get_trace`           | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                |
+| `discover_attributes` | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels). |
+| `discover_metrics`    | List the distinct metric names visible to your tenant.                                                                                                          |
+| `query_metrics`       | PromQL query over your tenant's metrics (native Prometheus result).                                                                                             |
+| `search_logs`         | LogQL query over your tenant's logs (native Loki result).                                                                                                       |
+| `query_ir`            | Native Query IR document (the structured, versioned query surface).                                                                                             |
+| `compact_run`         | Trigger a compaction pass now (admin-authenticated).                                                                                                            |
+| `compact_status`      | Active compaction leases and metrics (admin-authenticated).                                                                                                     |
+| `compact_dry_run`     | Plan compaction candidates without executing (admin-authenticated).                                                                                             |
 
 Each query tool accepts an optional `dataset` argument. Omit it to use your
 session's default dataset; pass one to target another dataset your tenant may
@@ -256,3 +257,20 @@ added credential type, not a replacement.
 3. `search_traces` with `{ .service.name = "checkout" && status = error }` and a
    time range to find failing requests.
 4. `get_trace` with an ID from the search results to inspect the full trace.
+
+To explore logs or metrics instead: `discover_attributes` with `signal:
+"logs"` lists Loki labels (add `tag` for a label's values); `signal:
+"metrics"` does the same for Prometheus labels. `discover_metrics` lists
+metric names directly, for building a `query_metrics` PromQL expression.
+
+## From the CLI
+
+The same discovery is available outside an agent session, via
+`signaldb-sdk` like every other CLI capability:
+
+```bash
+signaldb-cli discover attributes --signal traces --tag service.name
+signaldb-cli discover attributes --signal logs
+signaldb-cli discover attributes --signal metrics --tag job
+signaldb-cli discover metrics
+```

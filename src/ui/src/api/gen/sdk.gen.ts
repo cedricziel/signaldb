@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, LogqlQueryData, LogqlQueryRangeData, LogqlQueryRangeResponses, LogqlQueryResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, PromqlQueryData, PromqlQueryRangeData, PromqlQueryRangeResponses, PromqlQueryResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
+import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, LogqlLabelsData, LogqlLabelsResponses, LogqlLabelValuesData, LogqlLabelValuesResponses, LogqlQueryData, LogqlQueryRangeData, LogqlQueryRangeResponses, LogqlQueryResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, PromqlLabelsData, PromqlLabelsResponses, PromqlLabelValuesData, PromqlLabelValuesResponses, PromqlQueryData, PromqlQueryRangeData, PromqlQueryRangeResponses, PromqlQueryResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsResponses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -264,6 +264,24 @@ export const queryIr = <ThrowOnError extends boolean = false>(options: Options<Q
 });
 
 /**
+ * GET /loki/api/v1/label/{name}/values — list values of one label.
+ */
+export const logqlLabelValues = <ThrowOnError extends boolean = false>(options: Options<LogqlLabelValuesData, ThrowOnError>): RequestResult<LogqlLabelValuesResponses, unknown, ThrowOnError> => (options.client ?? client).get<LogqlLabelValuesResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/loki/api/v1/label/{name}/values',
+    ...options
+});
+
+/**
+ * GET /loki/api/v1/labels — list label names.
+ */
+export const logqlLabels = <ThrowOnError extends boolean = false>(options?: Options<LogqlLabelsData, ThrowOnError>): RequestResult<LogqlLabelsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<LogqlLabelsResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/loki/api/v1/labels',
+    ...options
+});
+
+/**
  * GET /loki/api/v1/query — instant query.
  *
  * For a log selector this returns the most recent lines in the window;
@@ -309,6 +327,24 @@ export const oauthConsentDecision = <ThrowOnError extends boolean = false>(optio
  * `whoami` this needs no tenant context.
  */
 export const oauthConsentContext = <ThrowOnError extends boolean = false>(options: Options<OauthConsentContextData, ThrowOnError>): RequestResult<OauthConsentContextResponses, OauthConsentContextErrors, ThrowOnError> => (options.client ?? client).get<OauthConsentContextResponses, OauthConsentContextErrors, ThrowOnError>({ url: '/oauth/consent/context', ...options });
+
+/**
+ * GET /prometheus/api/v1/label/{name}/values — distinct values of a label.
+ */
+export const promqlLabelValues = <ThrowOnError extends boolean = false>(options: Options<PromqlLabelValuesData, ThrowOnError>): RequestResult<PromqlLabelValuesResponses, unknown, ThrowOnError> => (options.client ?? client).get<PromqlLabelValuesResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/prometheus/api/v1/label/{name}/values',
+    ...options
+});
+
+/**
+ * GET /prometheus/api/v1/labels — metric label names.
+ */
+export const promqlLabels = <ThrowOnError extends boolean = false>(options?: Options<PromqlLabelsData, ThrowOnError>): RequestResult<PromqlLabelsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<PromqlLabelsResponses, unknown, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/prometheus/api/v1/labels',
+    ...options
+});
 
 /**
  * GET|POST /prometheus/api/v1/query — instant query.

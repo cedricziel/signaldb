@@ -1,5 +1,10 @@
-// Client for the router's Prometheus-compatible API (/prometheus/api/v1).
+// Client for the router's Prometheus-compatible API (/prometheus/api/v1),
+// layered over the generated OpenAPI SDK — the UI never hand-writes the HTTP
+// call for endpoints the SDK covers (see docs/architecture/openapi-codegen.md,
+// "Adding or changing an endpoint"), mirroring api/queryIr.ts.
+import "./client";
 
+import { promqlLabels, promqlLabelValues, promqlQueryRange } from "./gen";
 import type { ResolvedRange } from "../lib/time";
 import { ApiError, tenantHeaders } from "./http";
 
@@ -14,10 +19,34 @@ interface PromMatrixResult {
   values: [number, string][];
 }
 
-interface PromResponse {
+/** The Prometheus `{status, data, error}` envelope this API returns. */
+interface PromEnvelope<T> {
   status: string;
-  data: { resultType: string; result: PromMatrixResult[] };
+  data?: T;
   error?: string;
+}
+
+/**
+ * Unwrap a generated-client result carrying a `PromEnvelope`: an HTTP-level
+ * failure (non-2xx, or no body) throws `ApiError`; a body-level
+ * `status: "error"` response throws a plain `Error` — the same two-tier
+ * distinction the hand-written client used, which `isAuthError` (401 →
+ * `ApiError`) depends on.
+ */
+function unwrapProm<T>(
+  res: { error?: unknown; data?: unknown; response?: Response },
+  what: string,
+): T {
+  if (res.error || !res.data) {
+    const status = res.response?.status ?? 500;
+    const detail = typeof res.error === "string" ? `: ${res.error}` : "";
+    throw new ApiError(`${what} failed (${status})${detail}`, status);
+  }
+  const body = res.data as PromEnvelope<T>;
+  if (body.status !== "success") {
+    throw new Error(`${what} failed: ${body.error ?? body.status}`);
+  }
+  return body.data as T;
 }
 
 export async function promQueryRange(
@@ -25,30 +54,23 @@ export async function promQueryRange(
   range: ResolvedRange,
   stepSeconds: number,
 ): Promise<PromSeries[]> {
-  const params = new URLSearchParams({
-    query: promql,
-    start: String(range.fromMs / 1000),
-    end: String(range.toMs / 1000),
-    step: String(stepSeconds),
-  });
-  const res = await fetch(`/prometheus/api/v1/query_range?${params}`, {
+  const res = await promqlQueryRange({
+    query: {
+      query: promql,
+      start: String(range.fromMs / 1000),
+      end: String(range.toMs / 1000),
+      step: String(stepSeconds),
+    },
     headers: tenantHeaders(),
   });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new ApiError(
-      `Prometheus query_range failed (${res.status}): ${body.slice(0, 300)}`,
-      res.status,
-    );
+  const data = unwrapProm<{ resultType: string; result: PromMatrixResult[] }>(
+    res,
+    "Prometheus query_range",
+  );
+  if (data.resultType !== "matrix") {
+    throw new Error(`Expected a matrix result but got ${data.resultType}`);
   }
-  const json = (await res.json()) as PromResponse;
-  if (json.status !== "success") {
-    throw new Error(`Prometheus query failed: ${json.error ?? json.status}`);
-  }
-  if (json.data.resultType !== "matrix") {
-    throw new Error(`Expected a matrix result but got ${json.data.resultType}`);
-  }
-  return json.data.result.map((r) => ({
+  return data.result.map((r) => ({
     labels: r.metric,
     points: r.values.map(([t, v]): [number, number] => [t * 1000, Number(v)]),
   }));
@@ -66,50 +88,32 @@ export function seriesName(labels: Record<string, string>): string {
 
 // ---- metadata (feeds the visual builder's metric/label/value pickers) ----
 
-interface PromMetadataResponse {
-  status: string;
-  data?: string[];
-  error?: string;
-}
-
-async function promMetadata(
-  path: string,
-  range: ResolvedRange,
-  extra?: Record<string, string>,
-): Promise<string[]> {
-  const params = new URLSearchParams({
-    start: String(range.fromMs / 1000),
-    end: String(range.toMs / 1000),
-    ...extra,
-  });
-  const res = await fetch(`/prometheus/api/v1/${path}?${params}`, {
+/** Label names available for filtering/grouping in the current window. */
+export async function promLabelNames(range: ResolvedRange): Promise<string[]> {
+  const res = await promqlLabels({
+    query: {
+      start: String(range.fromMs / 1000),
+      end: String(range.toMs / 1000),
+    },
     headers: tenantHeaders(),
   });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new ApiError(
-      `Prometheus ${path} failed (${res.status}): ${body.slice(0, 300)}`,
-      res.status,
-    );
-  }
-  const json = (await res.json()) as PromMetadataResponse;
-  if (json.status !== "success") {
-    throw new Error(`Prometheus ${path} failed: ${json.error ?? json.status}`);
-  }
-  return json.data ?? [];
-}
-
-/** Label names available for filtering/grouping in the current window. */
-export function promLabelNames(range: ResolvedRange): Promise<string[]> {
-  return promMetadata("labels", range);
+  return unwrapProm<string[] | undefined>(res, "Prometheus labels") ?? [];
 }
 
 /** Distinct values of a single label. */
-export function promLabelValues(
+export async function promLabelValues(
   label: string,
   range: ResolvedRange,
 ): Promise<string[]> {
-  return promMetadata(`label/${encodeURIComponent(label)}/values`, range);
+  const res = await promqlLabelValues({
+    path: { name: label },
+    query: {
+      start: String(range.fromMs / 1000),
+      end: String(range.toMs / 1000),
+    },
+    headers: tenantHeaders(),
+  });
+  return unwrapProm<string[] | undefined>(res, "Prometheus label values") ?? [];
 }
 
 /** Metric names — the distinct values of the reserved `__name__` label. */
@@ -138,6 +142,10 @@ interface LabelStatsResponse {
  * Cardinality statistics for each label in the window. Only labels whose data
  * has been compacted at least once appear; the builder treats missing labels
  * as "unknown cardinality".
+ *
+ * `label_stats` is a SignalDB extension not yet in the OpenAPI document
+ * (deferred — see openspec change `mcp-server` design D9), so this one call
+ * stays on raw `fetch` until it is annotated.
  */
 export async function promLabelStats(
   range: ResolvedRange,
