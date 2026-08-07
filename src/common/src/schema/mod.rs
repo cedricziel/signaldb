@@ -99,8 +99,9 @@ pub const BLOOM_FILTER_TRACE_ID_NDV: &str = "50000";
 /// `write.parquet.bloom-filter-ndv.column.trace_id` (see
 /// [`BLOOM_FILTER_TRACE_ID_NDV`]) — standard Iceberg properties the pinned
 /// iceberg-rust Parquet writer honors per column. Set at table creation for
-/// [`schemas::TableSchema::Traces`] so every new file (ingest and compaction
-/// output) carries the filters.
+/// both [`schemas::TableSchema::Traces`] and [`schemas::TableSchema::Logs`]
+/// (see [`bloom_filter_properties_for_table`]) so every new file (ingest and
+/// compaction output) carries the filters.
 pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
     use iceberg_rust::spec::table_metadata::{
         WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX,
@@ -129,6 +130,35 @@ pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
             properties
         })
         .collect()
+}
+
+/// Assembles every Parquet bloom-filter table property for a table's
+/// columns, dispatching by table type and its materialized labels.
+///
+/// [`schemas::TableSchema::Logs`] gets a filter over the derived
+/// `attr_tokens` column (for `key=value` containment checks) in addition to
+/// every materialized label; both `Logs` and `Traces` get the `trace_id`/
+/// `span_id` point-lookup filters ([`bloom_filter_properties_for_trace_columns`])
+/// since `logs.v1` carries those same columns (optional, but named
+/// identically) for logs-for-a-trace correlation. Other table types get
+/// only the materialized-label filters.
+pub fn bloom_filter_properties_for_table(
+    table_schema: &crate::iceberg::schemas::TableSchema,
+    materialized_labels: &[String],
+) -> Vec<(String, String)> {
+    let mut properties = bloom_filter_properties_for_labels(materialized_labels);
+
+    if matches!(table_schema, crate::iceberg::schemas::TableSchema::Logs) {
+        properties.push(bloom_filter_property_for_attr_tokens());
+    }
+    if matches!(
+        table_schema,
+        crate::iceberg::schemas::TableSchema::Traces | crate::iceberg::schemas::TableSchema::Logs
+    ) {
+        properties.extend(bloom_filter_properties_for_trace_columns());
+    }
+
+    properties
 }
 
 /// Parquet compression properties recorded on every table.
@@ -468,6 +498,55 @@ mod tests {
                 .any(|(key, _)| key == "write.parquet.bloom-filter-ndv.column.span_id"),
             "span_id must not override parquet-rs's default ndv"
         );
+    }
+
+    /// `logs.v1` carries `trace_id`/`span_id` for logs-for-a-trace
+    /// correlation, the same point-lookup problem traces has, so logs must
+    /// get the same filters. It must also keep its `attr_tokens` filter.
+    /// Traces has no `attr_tokens` column and must not get one.
+    #[test]
+    fn logs_and_traces_get_trace_columns_but_only_logs_gets_attr_tokens() {
+        use crate::iceberg::schemas::TableSchema;
+
+        let logs = bloom_filter_properties_for_table(&TableSchema::Logs, &[]);
+        for column in BLOOM_FILTER_TRACE_COLUMNS {
+            assert!(
+                logs.contains(&(
+                    format!("write.parquet.bloom-filter-enabled.column.{column}"),
+                    "true".to_string()
+                )),
+                "logs must have a bloom filter on {column}"
+            );
+        }
+        let (attr_tokens_key, attr_tokens_value) = bloom_filter_property_for_attr_tokens();
+        assert!(
+            logs.contains(&(attr_tokens_key, attr_tokens_value)),
+            "logs must keep its attr_tokens filter"
+        );
+
+        let traces = bloom_filter_properties_for_table(&TableSchema::Traces, &[]);
+        for column in BLOOM_FILTER_TRACE_COLUMNS {
+            assert!(
+                traces.contains(&(
+                    format!("write.parquet.bloom-filter-enabled.column.{column}"),
+                    "true".to_string()
+                )),
+                "traces must have a bloom filter on {column}"
+            );
+        }
+        assert!(
+            !traces.iter().any(|(key, _)| key.contains("attr_tokens")),
+            "traces has no attr_tokens column and must not get a filter for one"
+        );
+    }
+
+    /// A table type with no point-lookup id columns and no materialized
+    /// labels gets no bloom filter properties at all.
+    #[test]
+    fn a_metrics_table_gets_no_bloom_filter_properties() {
+        use crate::iceberg::schemas::TableSchema;
+
+        assert!(bloom_filter_properties_for_table(&TableSchema::MetricsGauge, &[]).is_empty());
     }
 
     /// The writer wrote zstd level 1 while table metadata claimed level 3. Now
