@@ -564,6 +564,14 @@ impl Default for WalConfig {
 /// Type alias for WAL buffer entries (entry_id, operation, data, optional_metadata)
 type WalBuffer = Arc<RwLock<VecDeque<(Uuid, WalOperation, Vec<u8>, Option<String>)>>>;
 
+/// WAL directory identities (`writer.id`) whose recovered backlog has already
+/// been seeded into `signaldb.wal.entries_pending` by this process.
+///
+/// Process-global because the gauge is: see [`Wal::claim_pending_seed`].
+static PENDING_SEED_CLAIMS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(Default::default);
+
 /// Write-Ahead Log implementation for durability
 pub struct Wal {
     config: WalConfig,
@@ -660,13 +668,17 @@ impl Wal {
         // (a pending count below zero is impossible by construction, which
         // makes the metric useless as a backlog alarm).
         //
-        // This assumes a WAL directory is opened once per process, which is
-        // how services use it; reopening the same directory in one process
-        // would count its backlog twice.
+        // Seeding is once per WAL directory per process, keyed on the
+        // directory's stable `writer_id`. Only the first open can encounter
+        // entries this process did not count: anything still pending at a
+        // later open was either seeded by that first open or incremented by an
+        // `append` here, so seeding again would double-count it.
         let mut recovered_pending: usize = 0;
-        for segment_arc in &all_segments {
-            let segment = segment_arc.lock().await;
-            recovered_pending += segment.entries.iter().filter(|e| !e.processed).count();
+        if Self::claim_pending_seed(&writer_id) {
+            for segment_arc in &all_segments {
+                let segment = segment_arc.lock().await;
+                recovered_pending += segment.entries.iter().filter(|e| !e.processed).count();
+            }
         }
         if recovered_pending > 0 {
             tracing::info!(
@@ -690,6 +702,38 @@ impl Wal {
         };
 
         Ok(wal)
+    }
+
+    /// Claim the one-time pending-gauge seed for a WAL directory identity,
+    /// returning whether this caller won it.
+    ///
+    /// `signaldb.wal.entries_pending` is process-global while a WAL directory
+    /// may be opened more than once per process (`WalManager::clear_cache`
+    /// drops cached WALs and they are rebuilt on next access). Only the first
+    /// open can see entries this process never counted, so the seed is claimed
+    /// once per identity: a later open finds entries that were either seeded
+    /// by the first open or incremented by an `append` here, and seeding them
+    /// again would double-count.
+    fn claim_pending_seed(writer_id: &str) -> bool {
+        PENDING_SEED_CLAIMS
+            .lock()
+            .map(|mut claimed| claimed.insert(writer_id.to_string()))
+            // A poisoned lock means another thread panicked mid-claim. Skipping
+            // the seed under-counts; it never double-counts.
+            .unwrap_or(false)
+    }
+
+    /// Forget every claimed pending-gauge seed, so the next `Wal::new` seeds as
+    /// if it were the first open in a fresh process.
+    ///
+    /// Test-only: exists so a single test process can exercise the restart path
+    /// that seeding is *for*, which is otherwise unreachable without actually
+    /// restarting.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn reset_pending_seed_claims_for_test() {
+        if let Ok(mut claimed) = PENDING_SEED_CLAIMS.lock() {
+            claimed.clear();
+        }
     }
 
     /// Stable identity of this WAL directory (see the `writer_id` field).

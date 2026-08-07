@@ -93,13 +93,15 @@ async fn pending_gauge_returns_to_zero_after_entries_recovered_from_disk_are_pro
 
     // Second process: recover the same directory and drain the backlog.
     //
-    // The assertion is on this phase's *net* effect. A real restart zeroes the
-    // counter, so only what the recovering process contributes is observable;
-    // running both phases in one process is what lets the test see it at all.
+    // A real restart zeroes the process-global counter and clears the
+    // seed claims. Only the latter is reachable from a test, so the assertion
+    // is on this phase's *net* effect rather than the absolute value.
     // Recovering N entries and processing all N must net to zero — without the
     // recovery seed it nets to -N, and on a real restart that is exactly the
     // negative reading the gauge drifts to.
-    let wal = Wal::new(wal_config(wal_dir)).await.unwrap();
+    Wal::reset_pending_seed_claims_for_test();
+
+    let wal = Wal::new(wal_config(wal_dir.clone())).await.unwrap();
     let recovered = wal.get_unprocessed_entries().await.unwrap();
     assert_eq!(
         recovered.len(),
@@ -117,5 +119,38 @@ async fn pending_gauge_returns_to_zero_after_entries_recovered_from_disk_are_pro
         "recovering {ENTRY_COUNT} entries and processing all of them must net to \
          zero, got {net}: entries recovered from disk decrement the gauge without \
          a matching increment, so the pending count drifts negative after a restart"
+    );
+    drop(wal);
+
+    // Reopening the same directory *without* a restart must not seed again:
+    // the backlog it finds was already counted, once by `append` and once more
+    // if the seed were repeated. `WalManager::clear_cache` makes this reachable
+    // in production, so the absolute value is what matters here.
+    let wal = Wal::new(wal_config(wal_dir.clone())).await.unwrap();
+    for i in 0..ENTRY_COUNT {
+        wal.append(
+            WalOperation::WriteTraces,
+            format!("second-round-{i}").into_bytes(),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    wal.flush().await.unwrap();
+    drop(wal);
+
+    let reopened = Wal::new(wal_config(wal_dir)).await.unwrap();
+    let pending_entries = reopened.get_unprocessed_entries().await.unwrap();
+    let ids: Vec<_> = pending_entries.iter().map(|e| e.id).collect();
+    reopened.mark_processed_many(&ids).await.unwrap();
+
+    provider.force_flush().unwrap();
+    let pending = pending_gauge_value(&exporter);
+    assert_eq!(
+        pending,
+        before_restart,
+        "reopening a WAL directory in the same process must not re-seed its \
+         backlog; the gauge drifted by {} against a fully-drained WAL",
+        pending - before_restart
     );
 }
