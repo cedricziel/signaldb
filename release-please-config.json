@@ -328,7 +328,7 @@
     "src/signaldb-bin": {
       "release-type": "rust",
       "component": "signaldb-bin",
-      "include-component-in-tag": false,
+      "include-component-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
