@@ -630,6 +630,11 @@ async fn execute_ticket<S: RouterState>(
 
 /// Group the projected log rows into Loki streams by their label set,
 /// preserving row order (the querier already sorts by direction).
+///
+/// `trace_id`/`span_id` ride along as each entry's structured metadata
+/// rather than a stream label: their value varies line to line, so putting
+/// them in the label set would fragment every trace into its own stream
+/// instead of grouping by something stable like `service_name`.
 fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
     // Preserve first-seen label-set order for stable output.
     let mut order: Vec<String> = Vec::new();
@@ -642,6 +647,8 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
         let body = str_col(batch, "body");
         let service = str_col(batch, "service_name");
         let severity = str_col(batch, "severity_text");
+        let trace_id = str_col(batch, "trace_id");
+        let span_id = str_col(batch, "span_id");
 
         for i in 0..batch.num_rows() {
             let mut label_set: HashMap<String, String> = HashMap::new();
@@ -652,13 +659,23 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
                 label_set.insert("level".to_string(), v);
             }
             let key = label_key(&label_set);
-            let entry = LogEntry::new(
+
+            let mut metadata: HashMap<String, String> = HashMap::new();
+            if let Some(v) = value_at(&trace_id, i) {
+                metadata.insert("trace_id".to_string(), v);
+            }
+            if let Some(v) = value_at(&span_id, i) {
+                metadata.insert("span_id".to_string(), v);
+            }
+
+            let entry = LogEntry::with_metadata(
                 if timestamps.is_null(i) {
                     0
                 } else {
                     timestamps.value(i)
                 },
                 value_at(&body, i).unwrap_or_default(),
+                metadata,
             );
             streams
                 .entry(key.clone())
@@ -940,6 +957,68 @@ mod tests {
                 .find(|s| s.stream.get("service_name") == Some(&"web".to_string()))
                 .unwrap();
             assert_eq!(web.values, vec![loki_api::LogEntry::new(300, "c")]);
+        }
+
+        /// `trace_id`/`span_id` ride as per-entry structured metadata, not
+        /// stream labels: two entries with different trace ids stay in the
+        /// same stream instead of fragmenting into one stream each.
+        #[test]
+        fn trace_and_span_id_become_structured_metadata_not_labels() {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(
+                    "timestamp",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new("body", DataType::Utf8, true),
+                Field::new("service_name", DataType::Utf8, true),
+                Field::new("severity_text", DataType::Utf8, true),
+                Field::new("trace_id", DataType::Utf8, true),
+                Field::new("span_id", DataType::Utf8, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(TimestampNanosecondArray::from(vec![100, 200])),
+                    Arc::new(StringArray::from(vec!["a", "b"])),
+                    Arc::new(StringArray::from(vec!["api", "api"])),
+                    Arc::new(StringArray::from(vec!["error", "error"])),
+                    Arc::new(StringArray::from(vec![Some("trace-1"), Some("trace-2")])),
+                    Arc::new(StringArray::from(vec![Some("span-1"), None])),
+                ],
+            )
+            .unwrap();
+
+            let streams = batches_to_streams(&[batch]);
+            assert_eq!(streams.len(), 1, "one label set must stay one stream");
+            assert!(
+                !streams[0].stream.contains_key("trace_id"),
+                "trace_id must not become a stream label"
+            );
+
+            assert_eq!(
+                streams[0].values[0],
+                loki_api::LogEntry::with_metadata(
+                    100,
+                    "a",
+                    std::collections::HashMap::from([
+                        ("trace_id".to_string(), "trace-1".to_string()),
+                        ("span_id".to_string(), "span-1".to_string()),
+                    ])
+                )
+            );
+            // A null span_id must not appear in metadata at all.
+            assert_eq!(
+                streams[0].values[1],
+                loki_api::LogEntry::with_metadata(
+                    200,
+                    "b",
+                    std::collections::HashMap::from([(
+                        "trace_id".to_string(),
+                        "trace-2".to_string()
+                    )])
+                )
+            );
         }
 
         #[test]
