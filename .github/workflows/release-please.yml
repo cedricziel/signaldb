@@ -17,8 +17,13 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs['src/signaldb-bin--release_created'] }}
-      tag_name: ${{ steps.release.outputs['src/signaldb-bin--tag_name'] }}
+      # The repo-root "." package (release-type: simple, tracked via
+      # version.txt) owns the unprefixed vX.Y.Z tag lineage and is linked
+      # into the signaldb-core group in signaldb-bin's place — see
+      # openspec/changes/align-core-component-versions/design.md. Root-path
+      # outputs are unprefixed per release-please-action's own convention.
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
       grafana-plugin--release_created: ${{ steps.release.outputs['src/grafana-plugin--release_created'] }}
       grafana-plugin--tag_name: ${{ steps.release.outputs['src/grafana-plugin--tag_name'] }}
       grafana-plugin--version: ${{ steps.release.outputs['src/grafana-plugin--version'] }}

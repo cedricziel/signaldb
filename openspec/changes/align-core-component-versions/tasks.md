@@ -12,11 +12,23 @@
 
 ## 3. Validate against a real release-please run
 
-- [ ] 3.1 Merge the config/manifest change to `main`.
-- [ ] 3.2 Inspect the next auto-generated release-please PR: confirm all 8 linked packages show the identical target version, confirm `signal-producer` and all independent packages (tempo-api, loki-api, prometheus-api, pyroscope-api, signaldb-sdk, signaldb-api, mcp-server, ui, grafana-plugin) are unaffected.
-- [ ] 3.3 Confirm the PR's diff touches only the expected `Cargo.toml`/`CHANGELOG.md`/manifest files for the 8 linked packages plus whatever independent package(s) actually had commits.
-- [ ] 3.4 Merge that release-please PR and confirm `build-release`/`build-musl-*` jobs trigger correctly off the resulting tag(s).
+- [x] 3.1 Merge the config/manifest change to `main`. Merged via PR #1043 (`2efecc39`), plus a same-day follow-up fix commit (`ad18a5d5`) for the CodeRabbit-caught manifest issue.
+- [x] 3.2 Inspect the next auto-generated release-please PR: confirm all 8 linked packages show the identical target version, confirm `signal-producer` and all independent packages (tempo-api, loki-api, prometheus-api, pyroscope-api, signaldb-sdk, signaldb-api, mcp-server, ui, grafana-plugin) are unaffected. **Partial pass, bug found**: PR #841 updated within a minute of merge. `acceptor`/`common`/`compactor`/`querier`/`router`/`writer` and `signaldb-cli` all aligned correctly to `0.3.0`; `signal-producer` and every independent package moved on their own, unaffected — but `signaldb-bin` diverged (`0.1.4`, not `0.3.0`). Root cause investigated and fixed — see section 5 below.
+- [ ] 3.3 Confirm the PR's diff touches only the expected `Cargo.toml`/`CHANGELOG.md`/manifest files for the 8 (now 9, incl. `.`) linked packages plus whatever independent package(s) actually had commits — re-verify after section 5 lands and PR #841 (or its successor) recomputes.
+- [ ] 3.4 Merge that release-please PR and confirm `build-release`/`build-musl-*` jobs trigger correctly off the resulting tag(s) — blocked on 3.3.
 
 ## 4. Document
 
-- [ ] 4.1 Add a short note to the merged release's notes/CHANGELOG entry (for `signaldb-bin` and `signaldb-cli`) explaining the one-time version-line jump from `0.1.x` to `0.2.x`+, per proposal.md's BREAKING callout.
+- [ ] 4.1 Add a short note to the merged release's notes/CHANGELOG entry (for `signaldb-bin` and `signaldb-cli`) explaining the one-time version-line jump from `0.1.x` to `0.2.x`+/`0.3.x`+, per proposal.md's BREAKING callout.
+
+## 5. Fix signaldb-bin's linked-versions divergence (root-package split)
+
+- [x] 5.1 Create root `version.txt` containing `0.1.3` (matches the existing `v0.1.3` tag).
+- [x] 5.2 In `release-please-config.json`, add a `"."` package: `release-type: "simple"`, `component: "signaldb"`, `include-component-in-tag: false`.
+- [x] 5.3 In `release-please-config.json`, update the `signaldb-core` `linked-versions` group's `components`: remove `"signaldb-bin"`, add `"signaldb"`.
+- [x] 5.4 In `release-please-config.json`, flip `src/signaldb-bin`'s `include-component-in-tag` to `true`.
+- [x] 5.5 In `.release-please-manifest.json`, add `"." : "0.1.3"` (replacing the stale, disconnected `"0.1.0"`).
+- [x] 5.6 In `.github/workflows/release-please.yml`, switch the top-level `release_created`/`tag_name` outputs from `steps.release.outputs['src/signaldb-bin--release_created']`/`['src/signaldb-bin--tag_name']` to the root package's unprefixed `steps.release.outputs.release_created`/`.tag_name`.
+- [x] 5.7 Add a one-line comment to `version.txt` context (README or adjacent doc note) clarifying it's release-please bookkeeping for the aggregate project version, not a build input.
+- [x] 5.8 Validate both JSON config files are well-formed; commit and push.
+- [ ] 5.9 Observe the next release-please PR: confirm `.` appears, tags unprefixed, aligns with the rest of `signaldb-core`; confirm `signaldb-bin` now tags `signaldb-bin-vX.Y.Z` and also aligns; confirm Docker image tagging / GitHub Release creation still resolve a valid tag from the new output source.

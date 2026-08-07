@@ -161,6 +161,10 @@ Prerequisites: stable Rust (edition 2024) and the Protocol Buffers
 compiler. See [CLAUDE.md](CLAUDE.md) and
 [docs/contributing/rust.md](docs/contributing/rust.md) for conventions.
 
+`version.txt` at the repo root is release-please bookkeeping for the
+aggregate project version (the `vX.Y.Z` release tag) — it isn't read by
+any build step.
+
 ## License
 
 [AGPL-3.0](LICENSE)

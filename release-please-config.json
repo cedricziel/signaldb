@@ -8,7 +8,7 @@
       "type": "linked-versions",
       "groupName": "signaldb-core",
       "components": [
-        "signaldb-bin",
+        "signaldb",
         "signaldb-cli",
         "acceptor",
         "router",
@@ -20,6 +20,57 @@
     }
   ],
   "packages": {
+    ".": {
+      "release-type": "simple",
+      "component": "signaldb",
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "changelog-sections": [
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
+      ]
+    },
     "src/acceptor": {
       "release-type": "rust",
       "component": "acceptor",
@@ -328,7 +379,7 @@
     "src/signaldb-bin": {
       "release-type": "rust",
       "component": "signaldb-bin",
-      "include-component-in-tag": false,
+      "include-component-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
