@@ -94,7 +94,7 @@ jobs:
       - name: Lint
         run: pnpm --filter signaldb-ui lint
 
-      - name: Test (coverage gate: 80%)
+      - name: "Test (coverage gate: 80%)"
         run: pnpm --filter signaldb-ui test:coverage
 
       - name: Build
