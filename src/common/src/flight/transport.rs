@@ -22,6 +22,43 @@ pub enum ServiceCapability {
     StorageMaintenance,
 }
 
+impl ServiceCapability {
+    /// Every variant, so round-trip coverage stays exhaustive as variants are
+    /// added.
+    pub const ALL: &'static [ServiceCapability] = &[
+        ServiceCapability::TraceIngestion,
+        ServiceCapability::QueryExecution,
+        ServiceCapability::Routing,
+        ServiceCapability::Storage,
+        ServiceCapability::KafkaIngestion,
+        ServiceCapability::StorageMaintenance,
+    ];
+
+    /// Name used to persist this capability in the catalog.
+    ///
+    /// The match is exhaustive on purpose: a new variant cannot be added
+    /// without giving it a name here and in [`Self::ALL`], which is what keeps
+    /// the catalog's write and read sides from drifting apart.
+    pub fn catalog_name(&self) -> &'static str {
+        match self {
+            ServiceCapability::TraceIngestion => "TraceIngestion",
+            ServiceCapability::QueryExecution => "QueryExecution",
+            ServiceCapability::Routing => "Routing",
+            ServiceCapability::Storage => "Storage",
+            ServiceCapability::KafkaIngestion => "KafkaIngestion",
+            ServiceCapability::StorageMaintenance => "StorageMaintenance",
+        }
+    }
+
+    /// Parse a capability persisted by [`Self::catalog_name`].
+    pub fn from_catalog_name(s: &str) -> Option<ServiceCapability> {
+        ServiceCapability::ALL
+            .iter()
+            .find(|c| c.catalog_name() == s)
+            .cloned()
+    }
+}
+
 /// Metadata about a registered Flight service
 #[derive(Debug, Clone)]
 pub struct FlightServiceMetadata {
@@ -275,7 +312,7 @@ impl InMemoryFlightTransport {
                 {
                     let metadata = FlightServiceMetadata::new(
                         ingester.id,
-                        ingester.service_type.clone(),
+                        ingester.service_type,
                         ingester.address.clone(),
                         port,
                         ingester.capabilities.clone(),

@@ -105,10 +105,18 @@ async fn do_compactor_action<S: RouterState>(
         .service_registry()
         .get_flight_client_for_capability(ServiceCapability::StorageMaintenance)
         .await
-        .map_err(|_| {
+        .map_err(|e| {
+            // Discovery collapses "nothing registered with the capability" and
+            // "registered but unreachable" into one failure. Both surface as
+            // 503, so the cause only survives if it is carried out here.
+            tracing::warn!(
+                error = %e,
+                action = action_type,
+                "No compactor reachable for StorageMaintenance"
+            );
             ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "no compactor service is reachable",
+                format!("no compactor service is reachable: {e}"),
             )
         })?;
 

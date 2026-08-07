@@ -729,10 +729,10 @@ impl Catalog {
             Catalog::Sqlite(pool) => {
                 let now = Utc::now().to_rfc3339();
                 let id_str = id.to_string();
-                let service_type_str = format!("{service_type:?}");
+                let service_type_str = service_type.catalog_name();
                 let capabilities_str = capabilities
                     .iter()
-                    .map(|c| format!("{c:?}"))
+                    .map(|c| c.catalog_name())
                     .collect::<Vec<_>>()
                     .join(",");
 
@@ -746,7 +746,7 @@ impl Catalog {
                     .bind(&id_str)
                     .bind(address)
                     .bind(&now)
-                    .bind(&service_type_str)
+                    .bind(service_type_str)
                     .bind(&capabilities_str)
                     .execute(pool)
                     .await;
@@ -760,7 +760,7 @@ impl Catalog {
                     query(update_stmt)
                         .bind(address)
                         .bind(&now)
-                        .bind(&service_type_str)
+                        .bind(service_type_str)
                         .bind(&capabilities_str)
                         .bind(&id_str)
                         .execute(pool)
@@ -768,10 +768,10 @@ impl Catalog {
                 }
             }
             Catalog::Postgres(pool) => {
-                let service_type_str = format!("{service_type:?}");
+                let service_type_str = service_type.catalog_name();
                 let capabilities_str = capabilities
                     .iter()
-                    .map(|c| format!("{c:?}"))
+                    .map(|c| c.catalog_name())
                     .collect::<Vec<_>>()
                     .join(",");
 
@@ -784,7 +784,7 @@ impl Catalog {
                 query(stmt)
                     .bind(id)
                     .bind(address)
-                    .bind(&service_type_str)
+                    .bind(service_type_str)
                     .bind(&capabilities_str)
                     .execute(pool)
                     .await?;
@@ -1240,13 +1240,13 @@ pub struct ShardOwner {
 
 /// Helper function to parse service type from string
 fn parse_service_type(s: &str) -> ServiceType {
-    match s {
-        "Acceptor" => ServiceType::Acceptor,
-        "Router" => ServiceType::Router,
-        "Writer" => ServiceType::Writer,
-        "Querier" => ServiceType::Querier,
-        _ => ServiceType::Writer, // Default fallback
-    }
+    ServiceType::from_catalog_name(s).unwrap_or_else(|| {
+        // Only reachable on version skew: a peer running a newer binary
+        // registered a type this one has no name for. Warn rather than
+        // mislabel it silently.
+        tracing::warn!("Unknown service type {s:?} in catalog, treating as writer");
+        ServiceType::Writer
+    })
 }
 
 /// Helper function to parse capabilities from comma-separated string
@@ -1256,13 +1256,14 @@ fn parse_capabilities(s: &str) -> Vec<ServiceCapability> {
     }
 
     s.split(',')
-        .filter_map(|cap| match cap.trim() {
-            "TraceIngestion" => Some(ServiceCapability::TraceIngestion),
-            "QueryExecution" => Some(ServiceCapability::QueryExecution),
-            "Routing" => Some(ServiceCapability::Routing),
-            "Storage" => Some(ServiceCapability::Storage),
-            "KafkaIngestion" => Some(ServiceCapability::KafkaIngestion),
-            _ => None,
+        .filter_map(|cap| {
+            let cap = cap.trim();
+            ServiceCapability::from_catalog_name(cap).or_else(|| {
+                // A dropped capability makes the service invisible to
+                // capability-based routing, so make the loss audible.
+                tracing::warn!("Unknown service capability {cap:?} in catalog, ignoring");
+                None
+            })
         })
         .collect()
 }

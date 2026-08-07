@@ -27,6 +27,12 @@ Services register with specific capabilities for automatic routing:
 `TraceIngestion`, `QueryExecution`, `Routing`, `Storage`, `KafkaIngestion`,
 `StorageMaintenance`.
 
+Both `ServiceCapability` and `ServiceType` persist through the catalog as
+their `catalog_name()` string and parse back via `from_catalog_name`. Adding a
+variant means adding it to `ALL` and `catalog_name()` (exhaustive match, so
+the compiler forces it) — a capability that does not parse back makes the
+service invisible to that capability's discovery without any error.
+
 ## ServiceBootstrap Pattern
 
 Every service uses `ServiceBootstrap` at startup:
