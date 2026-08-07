@@ -649,6 +649,35 @@ impl Wal {
                 .clone()
         };
 
+        // Seed the pending gauge with the backlog recovered from disk.
+        //
+        // `signaldb.wal.entries_pending` is an UpDownCounter: `append`
+        // increments as an entry enters the pending set, `mark_processed_many`
+        // decrements as it leaves. The pending set outlives the process, but
+        // the counter does not — entries already on disk were incremented by a
+        // previous process, so without this their eventual processing
+        // decrements with no matching increment and the gauge drifts negative
+        // (a pending count below zero is impossible by construction, which
+        // makes the metric useless as a backlog alarm).
+        //
+        // This assumes a WAL directory is opened once per process, which is
+        // how services use it; reopening the same directory in one process
+        // would count its backlog twice.
+        let mut recovered_pending: usize = 0;
+        for segment_arc in &all_segments {
+            let segment = segment_arc.lock().await;
+            recovered_pending += segment.entries.iter().filter(|e| !e.processed).count();
+        }
+        if recovered_pending > 0 {
+            tracing::info!(
+                signaldb.wal.recovered_pending = recovered_pending as i64,
+                "Recovered unprocessed WAL entries from disk"
+            );
+            crate::self_monitoring::app_metrics()
+                .wal_entries_pending
+                .add(recovered_pending as i64, &[]);
+        }
+
         let wal = Self {
             config: config.clone(),
             current_segment,
