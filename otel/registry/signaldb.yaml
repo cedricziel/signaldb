@@ -111,6 +111,12 @@ groups:
         type: int
         stability: development
         brief: Number of WAL entries in a writer batch.
+      - id: signaldb.wal.recovered_pending
+        type: int
+        stability: development
+        brief: >
+          Number of unprocessed WAL entries recovered from disk at startup,
+          seeded into signaldb.wal.entries_pending.
 
   - id: registry.signaldb.query
     type: attribute_group

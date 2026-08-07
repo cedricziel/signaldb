@@ -22,6 +22,43 @@ pub enum ServiceCapability {
     StorageMaintenance,
 }
 
+impl ServiceCapability {
+    /// Every variant, so round-trip coverage stays exhaustive as variants are
+    /// added.
+    pub const ALL: &'static [ServiceCapability] = &[
+        ServiceCapability::TraceIngestion,
+        ServiceCapability::QueryExecution,
+        ServiceCapability::Routing,
+        ServiceCapability::Storage,
+        ServiceCapability::KafkaIngestion,
+        ServiceCapability::StorageMaintenance,
+    ];
+
+    /// Name used to persist this capability in the catalog.
+    ///
+    /// The match is exhaustive on purpose: a new variant cannot be added
+    /// without giving it a name here and in [`Self::ALL`], which is what keeps
+    /// the catalog's write and read sides from drifting apart.
+    pub fn catalog_name(&self) -> &'static str {
+        match self {
+            ServiceCapability::TraceIngestion => "TraceIngestion",
+            ServiceCapability::QueryExecution => "QueryExecution",
+            ServiceCapability::Routing => "Routing",
+            ServiceCapability::Storage => "Storage",
+            ServiceCapability::KafkaIngestion => "KafkaIngestion",
+            ServiceCapability::StorageMaintenance => "StorageMaintenance",
+        }
+    }
+
+    /// Parse a capability persisted by [`Self::catalog_name`].
+    pub fn from_catalog_name(s: &str) -> Option<ServiceCapability> {
+        ServiceCapability::ALL
+            .iter()
+            .find(|c| c.catalog_name() == s)
+            .cloned()
+    }
+}
+
 /// Metadata about a registered Flight service
 #[derive(Debug, Clone)]
 pub struct FlightServiceMetadata {
@@ -222,18 +259,36 @@ impl InMemoryFlightTransport {
         &self,
         capability: ServiceCapability,
     ) -> Vec<FlightServiceMetadata> {
+        self.discover_services_by_capability_checked(capability)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to discover services from catalog");
+                Vec::new()
+            })
+    }
+
+    /// [`Self::discover_services_by_capability`], keeping the catalog error.
+    ///
+    /// An unreachable catalog and an empty registry both yield "no services"
+    /// otherwise, which is the difference between an outage and a service that
+    /// was never deployed — callers that surface a failure to an operator want
+    /// to tell those apart.
+    async fn discover_services_by_capability_checked(
+        &self,
+        capability: ServiceCapability,
+    ) -> anyhow::Result<Vec<FlightServiceMetadata>> {
         {
             let cache = self.discovery_cache.read().await;
             if let Some(entry) = cache.get(&capability)
                 && entry.discovered_at.elapsed() < self.discovery_cache_ttl
             {
-                return entry.services.clone();
+                return Ok(entry.services.clone());
             }
         }
 
         let services = self
             .discover_services_by_capability_uncached(&capability)
-            .await;
+            .await?;
 
         if !services.is_empty() {
             let mut cache = self.discovery_cache.write().await;
@@ -246,7 +301,7 @@ impl InMemoryFlightTransport {
             );
         }
 
-        services
+        Ok(services)
     }
 
     /// Drop the cached discovery result for a capability so the next lookup
@@ -259,42 +314,42 @@ impl InMemoryFlightTransport {
     async fn discover_services_by_capability_uncached(
         &self,
         capability: &ServiceCapability,
-    ) -> Vec<FlightServiceMetadata> {
+    ) -> anyhow::Result<Vec<FlightServiceMetadata>> {
         // Use catalog-based discovery only
-        if let Ok(ingesters) = self
+        let ingesters = self
             .bootstrap
             .discover_services_by_capability(capability.clone())
             .await
-        {
-            let mut services = Vec::new();
+            // Flattened with `{e:#}` rather than `.context(..)`: this error is
+            // rendered into an HTTP response body several layers up, by which
+            // point only the outermost line of a context chain would survive.
+            .map_err(|e| anyhow::anyhow!("catalog discovery failed for {capability:?}: {e:#}"))?;
 
-            for ingester in ingesters {
-                let parts: Vec<&str> = ingester.address.split(':').collect();
-                if parts.len() == 2
-                    && let Ok(port) = parts[1].parse::<u16>()
-                {
-                    let metadata = FlightServiceMetadata::new(
-                        ingester.id,
-                        ingester.service_type.clone(),
-                        ingester.address.clone(),
-                        port,
-                        ingester.capabilities.clone(),
-                    );
-                    services.push(metadata);
-                }
+        let mut services = Vec::new();
+
+        for ingester in ingesters {
+            let parts: Vec<&str> = ingester.address.split(':').collect();
+            if parts.len() == 2
+                && let Ok(port) = parts[1].parse::<u16>()
+            {
+                let metadata = FlightServiceMetadata::new(
+                    ingester.id,
+                    ingester.service_type,
+                    ingester.address.clone(),
+                    port,
+                    ingester.capabilities.clone(),
+                );
+                services.push(metadata);
             }
-
-            tracing::debug!(
-                "Discovered {} services with capability {:?} from catalog",
-                services.len(),
-                capability
-            );
-
-            services
-        } else {
-            tracing::warn!("Failed to discover services from catalog");
-            Vec::new()
         }
+
+        tracing::debug!(
+            "Discovered {} services with capability {:?} from catalog",
+            services.len(),
+            capability
+        );
+
+        Ok(services)
     }
 
     /// Get a Flight client for the specified service
@@ -439,9 +494,12 @@ impl InMemoryFlightTransport {
         &self,
         capability: ServiceCapability,
     ) -> Result<FlightServiceClient<Channel>, Box<dyn std::error::Error + Send + Sync>> {
+        // Use the error-preserving path: a caller that turns this into an
+        // operator-facing failure needs to distinguish an unreachable catalog
+        // from a capability nobody registered.
         let services = self
-            .discover_services_by_capability(capability.clone())
-            .await;
+            .discover_services_by_capability_checked(capability.clone())
+            .await?;
 
         if services.is_empty() {
             return Err("No services found with required capability".into());
@@ -612,6 +670,40 @@ mod tests {
             transport.request_timeout > query_timeout,
             "request timeout {:?} must exceed querier query_timeout {query_timeout:?}",
             transport.request_timeout,
+        );
+    }
+
+    /// A failing catalog and an empty registry are different operational
+    /// situations — an outage versus a service nobody deployed — and callers
+    /// render this error to operators. Collapsing a catalog failure into an
+    /// empty result makes the two indistinguishable at the HTTP boundary.
+    #[tokio::test]
+    async fn catalog_failure_surfaces_instead_of_reading_as_no_services() {
+        let transport = create_test_transport().await;
+
+        // Break the catalog underneath the transport the bluntest way that
+        // still produces a genuine query error rather than a mocked one.
+        let crate::catalog::Catalog::Sqlite(pool) = transport.bootstrap.catalog() else {
+            panic!("test catalog is sqlite");
+        };
+        sqlx::query("DROP TABLE ingesters")
+            .execute(pool)
+            .await
+            .expect("dropped ingesters table");
+
+        let err = transport
+            .get_client_for_capability(ServiceCapability::StorageMaintenance)
+            .await
+            .expect_err("a broken catalog cannot yield a client")
+            .to_string();
+
+        assert!(
+            err.contains("catalog discovery failed"),
+            "the catalog error must reach the caller, got: {err}"
+        );
+        assert!(
+            !err.contains("No services found"),
+            "a catalog failure must not be reported as an empty registry, got: {err}"
         );
     }
 

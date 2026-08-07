@@ -222,6 +222,14 @@ On service restart:
 2. **Automatic replay**: Reprocess unprocessed entries
 3. **Resume normal operation**: Continue with new data
 
+The recovered backlog is logged at startup
+(`signaldb.wal.recovered_pending`) and seeded into
+`signaldb.wal.entries_pending`, so the pending gauge counts entries carried
+over from the previous process as well as ones appended by this one. Without
+that seed the gauge drifts negative after every restart that recovers a
+backlog, since those entries are decremented when processed but were
+incremented by a process that is gone.
+
 ### Write Integrity
 
 Each entry records the byte offset of its payload in the segment's `.data`
@@ -342,7 +350,7 @@ find /data/wal -name 'wal-*.log' | wc -l
 find /data/wal -path '*/dead-letter/*' | wc -l
 ```
 
-When `[self_monitoring]` is enabled, services also export `signaldb.wal.*` metrics (entries written/processed/pending, flush duration) via OTLP into SignalDB itself.
+When `[self_monitoring]` is enabled, services also export `signaldb.wal.*` metrics (entries written/processed/pending, flush duration) via OTLP into SignalDB itself. `signaldb.wal.entries_pending` is the backlog signal: it is process-local (a restart resets it, then re-seeds it from the recovered backlog) and must never read below zero — a negative value means increments and decrements have gone out of balance and the metric cannot be trusted until that is fixed.
 
 ### Example Prometheus Alerts
 

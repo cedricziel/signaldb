@@ -9,13 +9,47 @@ use crate::catalog::{Catalog, Ingester};
 use crate::config::Configuration;
 
 /// Service types that can be bootstrapped
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ServiceType {
     Acceptor,
     Writer,
     Router,
     Querier,
     Compactor,
+}
+
+impl ServiceType {
+    /// Every variant, so round-trip coverage stays exhaustive as variants are
+    /// added.
+    pub const ALL: &'static [ServiceType] = &[
+        ServiceType::Acceptor,
+        ServiceType::Writer,
+        ServiceType::Router,
+        ServiceType::Querier,
+        ServiceType::Compactor,
+    ];
+
+    /// Name used to persist this service type in the catalog.
+    ///
+    /// Distinct from [`Display`](std::fmt::Display), which is lowercase and
+    /// meant for humans: this is a stored encoding, so it must stay stable.
+    pub fn catalog_name(&self) -> &'static str {
+        match self {
+            ServiceType::Acceptor => "Acceptor",
+            ServiceType::Writer => "Writer",
+            ServiceType::Router => "Router",
+            ServiceType::Querier => "Querier",
+            ServiceType::Compactor => "Compactor",
+        }
+    }
+
+    /// Parse a service type persisted by [`Self::catalog_name`].
+    pub fn from_catalog_name(s: &str) -> Option<ServiceType> {
+        ServiceType::ALL
+            .iter()
+            .find(|t| t.catalog_name() == s)
+            .copied()
+    }
 }
 
 impl std::fmt::Display for ServiceType {
@@ -82,7 +116,7 @@ impl ServiceBootstrap {
 
         // Register as ingester with service type and capabilities
         catalog
-            .register_ingester(service_id, &address, service_type.clone(), &capabilities)
+            .register_ingester(service_id, &address, service_type, &capabilities)
             .await?;
 
         // Start heartbeat if discovery config is available
@@ -380,7 +414,7 @@ impl ServiceBootstrap {
         let capabilities = Self::get_default_capabilities(&service_type);
 
         catalog
-            .register_ingester(service_id, address, service_type.clone(), &capabilities)
+            .register_ingester(service_id, address, service_type, &capabilities)
             .await?;
 
         Ok(ServiceBootstrap {

@@ -194,6 +194,78 @@ async fn test_discover_services_by_capability_sqlite() {
     assert_eq!(storage_services[0].id, writer_id);
 }
 
+/// Every `ServiceType` and `ServiceCapability` variant must survive a catalog
+/// round-trip. A registration whose capability does not parse back is invisible
+/// to capability discovery, which silently disables whatever routes on it —
+/// how the compactor's `StorageMaintenance` control surface stayed unreachable.
+#[tokio::test]
+async fn every_service_type_and_capability_survives_a_catalog_round_trip() {
+    let catalog = Catalog::new_in_memory()
+        .await
+        .expect("Failed to create in-memory catalog");
+
+    for (index, service_type) in ServiceType::ALL.iter().enumerate() {
+        let id = Uuid::new_v4();
+        catalog
+            .register_ingester(
+                id,
+                &format!("127.0.0.1:{}", 9500 + index),
+                *service_type,
+                ServiceCapability::ALL,
+            )
+            .await
+            .expect("Failed to register service");
+
+        let ingester = catalog
+            .list_ingesters()
+            .await
+            .expect("Failed to list ingesters")
+            .into_iter()
+            .find(|i| i.id == id)
+            .expect("registered service is missing from the catalog");
+
+        assert_eq!(
+            ingester.service_type, *service_type,
+            "service type {service_type:?} did not survive the round-trip"
+        );
+        for capability in ServiceCapability::ALL {
+            assert!(
+                ingester.capabilities.contains(capability),
+                "capability {capability:?} did not survive the round-trip"
+            );
+        }
+    }
+}
+
+/// The compactor's control surface (router `/api/v1/ops/*`) is reachable only
+/// if its registration is discoverable by `StorageMaintenance`.
+#[tokio::test]
+async fn compactor_is_discoverable_by_storage_maintenance_capability() {
+    let catalog = Catalog::new_in_memory()
+        .await
+        .expect("Failed to create in-memory catalog");
+
+    let compactor_id = Uuid::new_v4();
+    catalog
+        .register_ingester(
+            compactor_id,
+            "127.0.0.1:50055",
+            ServiceType::Compactor,
+            &[ServiceCapability::StorageMaintenance],
+        )
+        .await
+        .expect("Failed to register compactor");
+
+    let services = catalog
+        .discover_services_by_capability(ServiceCapability::StorageMaintenance)
+        .await
+        .expect("Failed to discover services");
+
+    assert_eq!(services.len(), 1);
+    assert_eq!(services[0].id, compactor_id);
+    assert_eq!(services[0].service_type, ServiceType::Compactor);
+}
+
 #[tokio::test]
 async fn test_deregister_ingester_sqlite() {
     let catalog = Catalog::new_in_memory()

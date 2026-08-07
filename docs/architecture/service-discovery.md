@@ -63,6 +63,17 @@ CREATE TABLE shard_owners (
 );
 ```
 
+`service_type` and `capabilities` are stored as their `catalog_name()`
+spelling (`ServiceType`, `ServiceCapability`), and parsed back with the
+matching `from_catalog_name`. Both sides must stay in step: a capability that
+does not parse back leaves the row discoverable by every _other_ capability
+but invisible to that one, which disables whatever routes on it. The loss is
+not silent — `parse_capabilities` logs a warning naming the value it dropped
+— but it is not an error either: discovery succeeds and returns an empty
+list, so the caller sees "no such service" and only the warning explains why.
+Add new variants to `ALL` and `catalog_name()` together — `catalog_name`'s
+match is exhaustive so the compiler forces it.
+
 The same catalog database also holds the multi-tenancy tables (`tenants`,
 `api_keys`, `datasets`), the user-identity tables (`users`,
 `tenant_memberships`, `user_sessions` — see the users-tenant-membership
