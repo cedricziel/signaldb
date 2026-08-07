@@ -741,6 +741,62 @@ impl Wal {
         &self.writer_id
     }
 
+    /// Retire an entry whose payload cannot be read at all.
+    ///
+    /// [`Self::dead_letter`] re-reads the payload before preserving it, which
+    /// is exactly the operation that fails when an entry's recorded byte range
+    /// is unreadable (truncated segment, offset past EOF). Using it there would
+    /// leave the entry pending forever, pinning its segment against
+    /// reclamation — the failure this path exists to avoid.
+    ///
+    /// There is nothing to preserve, so record what *is* known — the entry's
+    /// identity, byte range, and why the read failed — as
+    /// `<wal_dir>/dead-letter/<entry_id>.unreadable.json` (fsynced), then mark
+    /// the entry processed. The marker is deliberately not a `.bin`: it must
+    /// not be mistaken for a replayable payload.
+    ///
+    /// Returns the marker file path.
+    pub async fn dead_letter_unreadable(&self, entry_id: Uuid, reason: &str) -> Result<PathBuf> {
+        let entry = self
+            .get_entries()
+            .await?
+            .into_iter()
+            .find(|e| e.id == entry_id)
+            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))?;
+
+        let dir = self.config.wal_dir.join("dead-letter");
+        create_dir_all(&dir).await?;
+        let path = dir.join(format!("{}.unreadable.json", entry_id.simple()));
+
+        let marker = serde_json::json!({
+            "entry_id": entry_id.to_string(),
+            "tenant_id": entry.tenant_id,
+            "dataset_id": entry.dataset_id,
+            "operation": format!("{:?}", entry.operation),
+            "timestamp": entry.timestamp,
+            "data_offset": entry.data_offset,
+            "data_size": entry.data_size,
+            "reason": reason,
+            "note": "payload was unreadable; no bytes could be preserved",
+        });
+        let body = serde_json::to_vec_pretty(&marker)?;
+
+        let mut file = File::create(&path).await.with_context(|| {
+            format!(
+                "Failed to create unreadable-entry marker {}",
+                path.display()
+            )
+        })?;
+        file.write_all(&body).await?;
+        file.flush().await?;
+        file.sync_all()
+            .await
+            .context("Failed to fsync unreadable-entry marker")?;
+
+        self.mark_processed(entry_id).await?;
+        Ok(path)
+    }
+
     /// Move a poison entry aside: persist its raw payload to
     /// `<wal_dir>/dead-letter/<entry_id>.bin` (fsynced) and mark the
     /// entry processed so it stops blocking the processing loop. The

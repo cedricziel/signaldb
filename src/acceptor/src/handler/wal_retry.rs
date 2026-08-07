@@ -160,7 +160,8 @@ impl WalRetryConsumer {
                             error = %e,
                             "Failed to read WAL entry data; skipping"
                         );
-                        self.record_poison_failure(&wal, entry.id, &mut stats).await;
+                        self.record_unreadable_entry(&wal, entry.id, &e.to_string(), &mut stats)
+                            .await;
                         continue;
                     }
                 };
@@ -203,12 +204,12 @@ impl WalRetryConsumer {
         Ok(stats)
     }
 
-    /// Retire an entry whose payload cannot be read or deserialized.
+    /// Retire an entry whose payload could be read but is not a valid batch.
     ///
-    /// Both failures are deterministic — a truncated or misframed payload does
-    /// not become readable on a later attempt — so there is nothing to gain
-    /// from counting attempts. Retrying only keeps the entry in the pending
-    /// set, which forces every subsequent pass to walk it again and pins its
+    /// The failure is deterministic — misframed bytes do not become a valid
+    /// Arrow IPC frame on a later attempt — so there is nothing to gain from
+    /// counting attempts. Retrying only keeps the entry in the pending set,
+    /// which forces every subsequent pass to walk it again and pins its
     /// segment against reclamation. Dead-letter it immediately: the raw bytes
     /// are preserved under `<wal_dir>/dead-letter/` and the entry is marked
     /// processed.
@@ -218,7 +219,7 @@ impl WalRetryConsumer {
                 tracing::error!(
                     entry_id = %entry_id,
                     path = %path.display(),
-                    "WAL entry payload is unreadable; preserved in the dead-letter directory and marked processed"
+                    "WAL entry payload could not be deserialized; raw bytes preserved in the dead-letter directory and entry marked processed"
                 );
                 stats.dead_lettered += 1;
             }
@@ -227,6 +228,41 @@ impl WalRetryConsumer {
                     entry_id = %entry_id,
                     error = %e,
                     "Failed to dead-letter WAL entry; it will be retried"
+                );
+                stats.failed += 1;
+            }
+        }
+    }
+
+    /// Retire an entry whose payload cannot be read at all.
+    ///
+    /// [`Wal::dead_letter`] cannot be used here: it re-reads the payload before
+    /// preserving it, so the same read that already failed fails again and the
+    /// entry would stay pending, pinning its segment forever. Record the
+    /// entry's identity, byte range, and the read error as a marker instead,
+    /// then mark it processed. No bytes are recoverable, and the message says
+    /// so rather than promising a replayable payload.
+    async fn record_unreadable_entry(
+        &mut self,
+        wal: &Wal,
+        entry_id: Uuid,
+        reason: &str,
+        stats: &mut RetryStats,
+    ) {
+        match wal.dead_letter_unreadable(entry_id, reason).await {
+            Ok(path) => {
+                tracing::error!(
+                    entry_id = %entry_id,
+                    path = %path.display(),
+                    "WAL entry payload is unreadable and cannot be recovered; metadata recorded in the dead-letter directory and entry marked processed"
+                );
+                stats.dead_lettered += 1;
+            }
+            Err(e) => {
+                tracing::error!(
+                    entry_id = %entry_id,
+                    error = %e,
+                    "Failed to retire unreadable WAL entry; it will be retried"
                 );
                 stats.failed += 1;
             }
@@ -342,6 +378,74 @@ mod tests {
         let file = files.next_entry().await.unwrap().unwrap();
         let preserved = tokio::fs::read(file.path()).await.unwrap();
         assert_eq!(preserved, b"not-a-batch");
+    }
+
+    #[tokio::test]
+    async fn unreadable_entry_is_retired_without_re_reading_its_payload() {
+        // `dead_letter` re-reads the payload before preserving it, which is
+        // precisely what fails when the recorded byte range is unreadable. An
+        // entry in that state must still leave the pending set, or it pins its
+        // segment forever — the failure mode this whole change exists to end.
+        let temp_dir = TempDir::new().unwrap();
+        let manager = Arc::new(test_manager(temp_dir.path()));
+        append_entry(&manager).await;
+
+        // Truncate the segment's data file so the entry's recorded
+        // [data_offset, data_offset + data_size) range is out of bounds.
+        let data_path = temp_dir
+            .path()
+            .join("acme")
+            .join("production")
+            .join("traces")
+            .join("wal-0000000000.data");
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&data_path)
+            .await
+            .unwrap()
+            .set_len(0)
+            .await
+            .unwrap();
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), test_transport().await)
+            .with_timing(Duration::from_secs(1), Duration::ZERO);
+
+        let stats = consumer.run_once().await.unwrap();
+        assert_eq!(
+            stats.dead_lettered, 1,
+            "an unreadable entry must still be retired"
+        );
+        assert_eq!(stats.failed, 0);
+
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "unreadable entry must not stay pending and pin its segment"
+        );
+
+        // Nothing to preserve, so a marker recording what was known about the
+        // entry stands in for the payload.
+        let dead_letter_dir = temp_dir
+            .path()
+            .join("acme")
+            .join("production")
+            .join("traces")
+            .join("dead-letter");
+        let mut files = tokio::fs::read_dir(&dead_letter_dir).await.unwrap();
+        let file = files.next_entry().await.unwrap().unwrap();
+        let name = file.file_name().to_string_lossy().to_string();
+        assert!(
+            name.ends_with(".unreadable.json"),
+            "expected an unreadable marker, got {name}"
+        );
+        let marker = tokio::fs::read_to_string(file.path()).await.unwrap();
+        assert!(
+            marker.contains("out of bounds"),
+            "marker must record why the payload could not be read: {marker}"
+        );
     }
 
     #[tokio::test]
