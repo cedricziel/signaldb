@@ -2,7 +2,7 @@
 
 - [x] 1.1 In `release-please-config.json`, add a `linked-versions` plugin entry: group name `signaldb-core`, components `src/signaldb-bin`, `src/signaldb-cli`, `src/acceptor`, `src/router`, `src/writer`, `src/querier`, `src/compactor`, `src/common`.
 - [x] 1.2 In `release-please-config.json`, scope the existing `cargo-workspace` plugin to `"merge": false` for the same 8 packages, per design.md's plugin-interaction decision.
-- [x] 1.3 In `.release-please-manifest.json`, set all 8 grouped package entries to `0.2.2` (current group maximum).
+- [x] 1.3 ~~In `.release-please-manifest.json`, set all 8 grouped package entries to `0.2.2` (current group maximum).~~ **Corrected in review (CodeRabbit)**: verified against real repo tags that only `router-v0.2.2` actually exists — `acceptor-v0.2.2`/`common-v0.2.2`/`compactor-v0.2.2`/`querier-v0.2.2`/`writer-v0.2.2`/`signaldb-cli-v0.2.2`/`v0.2.2` do not. Writing `0.2.2` for those 7 would point release-please's previous-release tag lookup at tags that don't exist. Manifest now left untouched — every grouped entry stays at its real last-tagged version; `linked-versions` computes the actual alignment on the next real commit to any group member instead. See design.md's updated Decisions/Migration Plan.
 - [x] 1.4 Confirm `signal-producer`'s manifest/config entries are untouched (stays independently versioned, not added to the linked group).
 
 ## 2. Verify workflow compatibility
