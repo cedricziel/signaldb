@@ -24,6 +24,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use common::error::format_error_chain;
 use common::flight::transport::InMemoryFlightTransport;
 use common::wal::{Wal, WalOperation, bytes_to_record_batch};
 use uuid::Uuid;
@@ -184,16 +185,20 @@ impl WalRetryConsumer {
                         stats.retried += 1;
                     }
                     Err(e) => {
+                        // The cause chain is the whole diagnostic value here:
+                        // "Flight do_put failed" alone cannot distinguish a
+                        // dead writer from a batch the writer rejects, and the
+                        // two demand opposite responses.
                         tracing::warn!(
                             tenant_id = %tenant,
                             dataset_id = %dataset,
                             signal = %signal,
                             entry_id = %entry.id,
-                            error = %e,
-                            "Failed to re-forward WAL entry; writer may be unavailable"
+                            error = %format_error_chain(&e),
+                            "Failed to re-forward WAL entry"
                         );
                         stats.failed += 1;
-                        // Writer is likely down — don't hammer it with the
+                        // Writer may be down — don't hammer it with the
                         // remaining entries of this WAL in the same pass.
                         break;
                     }

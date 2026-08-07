@@ -6,6 +6,7 @@ pub mod catalog_manager;
 pub mod cli;
 pub mod config;
 pub mod dataset;
+pub mod error;
 pub mod flight;
 pub mod iceberg;
 pub mod model;
