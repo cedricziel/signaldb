@@ -11,7 +11,7 @@
 
 - [ ] 2.1 Add or extend `promql.rs` handler tests asserting `labels`/`label_values`/`label_stats` response shapes.
 - [ ] 2.2 Add `ToSchema` to `prometheus-api`'s response types (query/query_range, label list, `label_stats`).
-- [ ] 2.3 Verify (or retrofit, if it shares Loki's `serde_json::Value` pattern) `promql::query`/`query_range` declare real response schemas.
+- [ ] 2.3 Retrofit `promql::query` and `promql::query_range` (confirmed to share Loki's `serde_json::Value` gap) to declare `body = prometheus_api::QueryResponse` instead.
 - [ ] 2.4 Add `#[utoipa::path]` to `promql::labels`, `promql::label_values`, `promql::label_stats`.
 - [ ] 2.5 Register all three in `openapi.rs` and their DTOs in `components(schemas(...))`.
 - [ ] 2.6 `UPDATE_OPENAPI=1 cargo test -p router`; review the diff.
@@ -28,7 +28,7 @@
 
 - [ ] 4.1 Add or extend `session.rs` handler tests asserting `POST`/`DELETE /ui/session` and `GET /api/v1/whoami` response shapes (several already exist; confirm coverage of the memberships-pending-selection and error paths).
 - [ ] 4.2 Add `ToSchema` to `CreateSessionRequest`, `SessionMembership`, `WhoamiResponse`, `WhoamiTenant`, `WhoamiDataset`, `WhoamiUser`, `WhoamiMembership`.
-- [ ] 4.3 Add `#[utoipa::path]` to `create_session`, `delete_session`, `whoami`, with `security(())` overrides on the first two.
+- [ ] 4.3 Add `#[utoipa::path]` to `create_session`, `delete_session`, `whoami`: `create_session` with `security(())`, `200 OK` response, and a documented `Set-Cookie` response header (session cookie); `delete_session` with `security(("cookieAuth" = []), ())` (optional cookie), `204 No Content` response, and a documented `Set-Cookie` response header (clearing cookie); `whoami` inheriting the default security.
 - [ ] 4.4 Register all three in `openapi.rs` and their DTOs in `components(schemas(...))`.
 - [ ] 4.5 `UPDATE_OPENAPI=1 cargo test -p router`; review the diff.
 
@@ -36,7 +36,8 @@
 
 - [ ] 5.1 Add the `cookieAuth` (`SecurityScheme::ApiKey(ApiKey::Cookie(...))`, naming the `signaldb_session` cookie) scheme in `SecurityAddon`.
 - [ ] 5.2 Change the global default security requirement from `[{bearerAuth: []}]` to `[{bearerAuth: []}, {cookieAuth: []}]` (alternatives).
-- [ ] 5.3 `UPDATE_OPENAPI=1 cargo test -p router`; review the full diff (every existing operation's security metadata changes here — confirm nothing else moved).
+- [ ] 5.3 Fix `oauth::authorize_decision` and `oauth::consent_context` (`src/router/src/endpoints/oauth.rs`), currently `security(())`, to `security(("cookieAuth" = []))` — they read the session cookie directly (`session_token_from_headers`) with no bearer fallback, so the global bearer-OR-cookie default doesn't fit; they need their own override.
+- [ ] 5.4 `UPDATE_OPENAPI=1 cargo test -p router`; review the full diff (every existing operation's security metadata changes here, plus the two oauth operations flipping from public to cookie-required — confirm nothing else moved).
 
 ## 6. Regenerate downstream clients
 

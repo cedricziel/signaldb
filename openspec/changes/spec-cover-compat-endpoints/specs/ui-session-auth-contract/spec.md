@@ -21,13 +21,22 @@ session), including their request and response schemas and the
   response schema describing the resolved tenant, dataset, and membership
   list
 
-#### Scenario: Login and logout require no bearer/cookie credential
+#### Scenario: Login requires no bearer/cookie credential
 
-- **WHEN** the published document is inspected for the security requirements
-  of `POST /ui/session` and `DELETE /ui/session`
-- **THEN** neither operation declares `bearerAuth` or `cookieAuth` as
-  required, matching that login is a credential exchange and logout accepts
-  an optionally-absent cookie
+- **WHEN** the published document is inspected for the security requirement
+  of `POST /ui/session`
+- **THEN** it declares an empty security requirement (no `bearerAuth` or
+  `cookieAuth`), matching that login is itself a credential exchange
+
+#### Scenario: Logout advertises the cookie as optional, not required
+
+- **WHEN** the published document is inspected for the security requirement
+  of `DELETE /ui/session`
+- **THEN** it declares `cookieAuth` as one alternative among others that
+  together make the credential optional (satisfied by `cookieAuth` OR by no
+  credential at all) — not a bare empty requirement that omits `cookieAuth`
+  entirely — matching that logout accepts an absent or invalid cookie as a
+  no-op rather than rejecting the request
 
 ### Requirement: whoami endpoint is documented
 
@@ -64,3 +73,21 @@ uniformly.
   any operation the document marks as requiring `bearerAuth`
 - **THEN** the request succeeds, consistent with the document's declared
   `cookieAuth` alternative
+
+### Requirement: OAuth consent operations are documented as cookie-only
+
+`POST /oauth/authorize/decision` and `GET /oauth/consent/context` authenticate
+the consenting user's browser session exclusively via the `signaldb_session`
+cookie (no bearer fallback — they read the cookie directly, not through the
+dual-credential extractor every other authenticated operation uses) but
+currently declare an empty security requirement, documenting them as public.
+The OpenAPI document SHALL declare their security requirement as `cookieAuth`
+alone, distinct from the `bearerAuth`-OR-`cookieAuth` pattern every other
+authenticated operation uses.
+
+#### Scenario: OAuth consent operation requires the cookie, not bearer
+
+- **WHEN** the published document is inspected for the security requirement
+  of `POST /oauth/authorize/decision` or `GET /oauth/consent/context`
+- **THEN** the requirement is `cookieAuth` only — not `bearerAuth`, and not
+  the empty requirement the document declares today

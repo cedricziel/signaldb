@@ -37,17 +37,26 @@ path, query parameters, and response schema.
 
 ### Requirement: Query-compat response bodies use real, typed schemas
 
-Every Loki-, Prometheus-, and Pyroscope-compatible operation in the document —
-including `query` and `query_range`, which predate this capability — SHALL
-declare its actual response DTO as the response schema. An operation SHALL NOT
-declare an untyped `serde_json::Value`/arbitrary-JSON schema when a typed
-response DTO exists for what the handler returns.
+Every Loki-, Prometheus-, and Pyroscope-compatible operation the router
+serves — including `logql::query`, `logql::query_range`, `promql::query`, and
+`promql::query_range`, all of which predate this capability and all of which
+currently declare an untyped `serde_json::Value` body — SHALL declare its
+actual response DTO as the response schema, unconditionally. An operation
+SHALL NOT declare an untyped `serde_json::Value`/arbitrary-JSON schema when a
+typed response DTO exists for what the handler returns.
 
 #### Scenario: Loki instant query has a typed response
 
 - **WHEN** the published document is inspected for `GET /loki/api/v1/query`
 - **THEN** the response schema is the Loki query-response DTO's generated
   schema, not an untyped/arbitrary-object schema
+
+#### Scenario: Prometheus range query has a typed response
+
+- **WHEN** the published document is inspected for
+  `GET /prometheus/api/v1/query_range`
+- **THEN** the response schema is the Prometheus query-response DTO's
+  generated schema, not an untyped/arbitrary-object schema
 
 #### Scenario: A generated client reflects the real shape
 

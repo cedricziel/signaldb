@@ -25,17 +25,25 @@ to migrate the UI's remaining hand-written fetch clients onto.
   - `pyroscope::render`, `render_diff`, `label_names`, `label_values`,
     `profile_types`, `profiles_by_trace`
   - `session::create_session`, `session::delete_session`, `session::whoami`
-- Retrofit `logql::query` and `logql::query_range` (and the equivalent
-  `promql` operations, if they share the pattern) to reference their real
-  response DTOs instead of `serde_json::Value`.
+- Retrofit `logql::query`, `logql::query_range`, `promql::query`, and
+  `promql::query_range` — confirmed to all share the same
+  `body = serde_json::Value` gap — to reference their real response DTOs
+  instead.
 - Add `ToSchema` derives to the DTOs these operations use, in `loki-api`,
-  `prometheus-api`, `pyroscope-api`, and the router's local session types.
+  `prometheus-api`, `pyroscope-api`, `tempo-api` (`ProfileSummary`, used by
+  `profiles_by_trace`), and the router's local session types.
 - Add a `cookieAuth` (`ApiKey::Cookie`) security scheme and change the
   document's default security requirement from `[bearerAuth]` to
   `[bearerAuth] OR [cookieAuth]`, matching what the middleware has always
   accepted. `POST /ui/session` (login) is documented with no security
   requirement (credential exchange); `DELETE /ui/session` (logout) is
-  documented as accepting an optional cookie.
+  documented as accepting an optional cookie (`[cookieAuth] OR []`, not a
+  bare empty requirement, so the spec still advertises the cookie).
+- Fix `oauth::authorize_decision` and `oauth::consent_context` — a
+  pre-existing inaccuracy independent of the global-default gap above: both
+  handlers require the session cookie exclusively (`session_token_from_headers`,
+  no bearer fallback) but currently declare `security(())`, documenting them
+  as public. Change both to `security(("cookieAuth" = []))`.
 - Regenerate `api/signaldb-api.json` (the golden test in `router::openapi`),
   the Rust SDK (`signaldb-sdk`), and the TypeScript client
   (`src/ui/src/api/gen`) — the UI itself keeps using its hand-written fetch
@@ -70,9 +78,10 @@ spec describe behavior that already exists.
 - **router**: `src/router/src/openapi.rs` (security scheme, `paths()`
   registration), `src/router/src/endpoints/logql.rs`,
   `src/router/src/endpoints/promql.rs`, `src/router/src/endpoints/pyroscope.rs`,
-  `src/router/src/endpoints/session.rs`.
-- **loki-api**, **prometheus-api**, **pyroscope-api**: `ToSchema` derives on
-  response/request DTOs.
+  `src/router/src/endpoints/session.rs`, `src/router/src/endpoints/oauth.rs`
+  (security annotation fix only — no behavior change).
+- **loki-api**, **prometheus-api**, **pyroscope-api**, **tempo-api**:
+  `ToSchema` derives on response/request DTOs.
 - **signaldb-sdk**: regenerated from the updated spec (progenitor).
 - **src/ui**: `src/api/gen/*` regenerated (not yet consumed — see
   `ui-migrate-to-generated-sdk`).
