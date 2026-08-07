@@ -11,10 +11,16 @@ interface Props {
   onOpenTrace: (traceId: string) => void;
 }
 
-/** Labels that identify a linked trace when present on a log row. */
+/**
+ * Fallback label spellings, kept for rows from a source that promoted a
+ * `trace_id`-named attribute to a label rather than sending it as
+ * structured metadata.
+ */
 const TRACE_LABELS = ["trace_id", "traceID", "traceId"];
 
 export function traceIdOf(row: LogRow): string | null {
+  const metadataTraceId = row.metadata["trace_id"];
+  if (metadataTraceId) return metadataTraceId;
   for (const key of TRACE_LABELS) {
     const v = row.labels[key];
     if (v) return v;

@@ -9,11 +9,26 @@ const row = (over: Partial<LogRow>): LogRow => ({
   tsMs: 1000,
   line: "hello",
   labels: {},
+  metadata: {},
   ...over,
 });
 
 describe("traceIdOf", () => {
-  it("finds trace ids under common label spellings", () => {
+  it("prefers structured metadata over any label", () => {
+    expect(traceIdOf(row({ metadata: { trace_id: "meta-id" } }))).toBe(
+      "meta-id",
+    );
+    expect(
+      traceIdOf(
+        row({
+          metadata: { trace_id: "meta-id" },
+          labels: { trace_id: "label-id" },
+        }),
+      ),
+    ).toBe("meta-id");
+  });
+
+  it("falls back to common label spellings when metadata is absent", () => {
     expect(traceIdOf(row({ labels: { trace_id: "abc" } }))).toBe("abc");
     expect(traceIdOf(row({ labels: { traceID: "def" } }))).toBe("def");
     expect(traceIdOf(row({ labels: {} }))).toBeNull();

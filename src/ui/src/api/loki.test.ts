@@ -37,6 +37,29 @@ describe("lokiQueryLogs", () => {
       level: "error",
     });
     expect(rows[0]?.tsMs).toBe(3000);
+    expect(rows[0]?.metadata).toEqual({});
+  });
+
+  it("attaches structured metadata when the entry carries a 3rd element", async () => {
+    stubApiFetch({
+      status: "success",
+      data: {
+        resultType: "streams",
+        result: [
+          {
+            stream: { service_name: "checkout" },
+            values: [
+              ["1000000000", "line", { trace_id: "abc123", span_id: "def456" }],
+            ],
+          },
+        ],
+      },
+    });
+    const rows = await lokiQueryLogs("{}", RANGE, 100);
+    expect(rows[0]?.metadata).toEqual({
+      trace_id: "abc123",
+      span_id: "def456",
+    });
   });
 
   it("attaches tenant headers from the current context", async () => {

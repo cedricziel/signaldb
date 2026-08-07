@@ -15,6 +15,12 @@ export interface LogRow {
   tsMs: number;
   line: string;
   labels: Record<string, string>;
+  /**
+   * Loki "structured metadata": per-line fields such as `trace_id`/`span_id`
+   * that vary line to line, unlike `labels`, which is constant for every
+   * row in the same stream.
+   */
+  metadata: Record<string, string>;
 }
 
 export interface HistogramSeries {
@@ -25,7 +31,8 @@ export interface HistogramSeries {
 
 interface LokiStreamResult {
   stream: Record<string, string>;
-  values: [string, string][];
+  // Loki 3.0 entries carry an optional 3rd element for structured metadata.
+  values: [string, string, Record<string, string>?][];
 }
 
 interface LokiMatrixResult {
@@ -77,8 +84,14 @@ export async function lokiQueryLogs(
   }
   const rows: LogRow[] = [];
   for (const stream of data.result) {
-    for (const [tsNs, line] of stream.values) {
-      rows.push({ tsNs, tsMs: nanosToMs(tsNs), line, labels: stream.stream });
+    for (const [tsNs, line, metadata] of stream.values) {
+      rows.push({
+        tsNs,
+        tsMs: nanosToMs(tsNs),
+        line,
+        labels: stream.stream,
+        metadata: metadata ?? {},
+      });
     }
   }
   // Streams arrive independently ordered; merge to newest-first.
