@@ -244,19 +244,28 @@ impl CatalogManager {
         tenant_id: &str,
         dataset_id: &str,
     ) -> DatasetProvisioningReport {
-        let schemas = crate::iceberg::schemas::TableSchema::all_from_config(
+        let names = self.enabled_table_names(tenant_id);
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.ensure_tables_named(tenant_id, dataset_id, &names)
+            .await
+    }
+
+    /// The signal tables enabled for a tenant, resolved from configuration
+    /// alone — no catalog traffic.
+    ///
+    /// `TableSchema::Custom` entries are excluded: they are a config-only
+    /// concept that [`Self::ensure_table`] cannot create.
+    pub fn enabled_table_names(&self, tenant_id: &str) -> Vec<String> {
+        crate::iceberg::schemas::TableSchema::all_from_config(
             &self
                 .config
                 .get_tenant_schema_config(tenant_id)
                 .default_schemas,
-        );
-        let names: Vec<&str> = schemas
-            .iter()
-            .filter(|schema| !matches!(schema, crate::iceberg::schemas::TableSchema::Custom(_)))
-            .map(|schema| schema.table_name())
-            .collect();
-        self.ensure_tables_named(tenant_id, dataset_id, &names)
-            .await
+        )
+        .iter()
+        .filter(|schema| !matches!(schema, crate::iceberg::schemas::TableSchema::Custom(_)))
+        .map(|schema| schema.table_name().to_string())
+        .collect()
     }
 
     /// Ensure the named tables exist for the dataset, isolating per-table

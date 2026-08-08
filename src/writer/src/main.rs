@@ -114,6 +114,12 @@ async fn main() -> anyhow::Result<()> {
             .await
             .context("Failed to initialize service bootstrap")?;
 
+    // Clone the SQL catalog out before the bootstrap is moved into the
+    // transport: the table reconciler needs it as a tenant source, otherwise
+    // `list_active_tenants` yields config tenants only and every admin-API
+    // tenant — the population reconciliation is for — is skipped.
+    let sql_catalog = Arc::new(service_bootstrap.catalog().clone());
+
     // Create Flight transport and register this writer's Flight service
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
 
@@ -133,11 +139,14 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(service_id = %service_id, "Writer Flight service registered");
 
-    // Create shared catalog manager
+    // Create shared catalog manager, attaching the SQL catalog as the tenant
+    // source so the table reconciler sees admin-API (database) tenants
+    // alongside config-defined ones.
     let catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
-            .context("Failed to create catalog manager")?,
+            .context("Failed to create catalog manager")?
+            .with_tenant_source(sql_catalog),
     );
 
     // Initialize object store from configuration
@@ -170,6 +179,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = flight_service.start_background_processing();
+
+    // Converge every registered tenant/dataset on its enabled signal tables.
+    let reconciler_handle = flight_service.start_table_reconciler();
 
     tracing::info!(address = %flight_addr, "Starting Flight ingest service");
     // The writer's Flight surface is service-to-service only: when the
@@ -238,6 +250,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Stopping background WAL processing task");
     writer_bg_handle.abort();
     let _ = writer_bg_handle.await;
+    reconciler_handle.abort();
+    let _ = reconciler_handle.await;
 
     if let Some(telemetry) = _telemetry {
         telemetry.shutdown();

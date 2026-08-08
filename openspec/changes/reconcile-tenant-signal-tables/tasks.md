@@ -31,15 +31,15 @@ to #972's description.
 
 ## 4. Reconcile loop (writer)
 
-- [ ] 4.1 Write a failing test in `src/writer` asserting the reconciler sees database-created tenants, not only config-defined ones (`cargo test -p writer`)
-- [ ] 4.2 Attach a tenant source to the writer's `CatalogManager` (`src/writer/src/main.rs:138`), cloning `bootstrap.catalog()` before `ServiceBootstrap` is moved into `InMemoryFlightTransport` at `:118`. Without this `list_active_tenants` returns config tenants only (`src/common/src/catalog_manager.rs:329-331`)
-- [ ] 4.3 Write a failing test asserting a tenant whose `default_dataset` has no dataset row still gets that dataset provisioned
-- [ ] 4.4 Write a failing test asserting a dataset that appears in the registry after startup is provisioned by a later pass, with no restart
-- [ ] 4.5 Write a failing test asserting a failing pass (catalog unreachable) neither fails startup nor aborts the remaining tenants, and that the next pass retries
-- [ ] 4.6 Implement the reconciler as `start_table_reconciler()` on `IcebergWriterFlightService`, mirroring `start_background_processing()`: startup pass over the registry (datasets plus each tenant's unrecorded `default_dataset`), then a periodic task on the configured interval
-- [ ] 4.7 Call `start_table_reconciler()` from both `src/writer/src/main.rs` and `src/signaldb-bin/src/main.rs` — they are independent wirings with no shared startup path, so monolithic mode does not inherit it automatically
-- [ ] 4.8 Write a failing test asserting a converged deployment issues no catalog calls on subsequent passes, then implement the process-local already-ensured `(tenant, dataset, table)` set
-- [ ] 4.9 Add tracing (tenant/dataset/table fields, warn on failure, info on creation) and counter metrics for tables created and provisioning failures
+- [x] 4.1 Write a failing test in `src/writer` asserting the reconciler sees database-created tenants, not only config-defined ones (`cargo test -p writer`)
+- [x] 4.2 Attach a tenant source to the writer's `CatalogManager` (`src/writer/src/main.rs:138`), cloning `bootstrap.catalog()` before `ServiceBootstrap` is moved into `InMemoryFlightTransport` at `:118`. Without this `list_active_tenants` returns config tenants only (`src/common/src/catalog_manager.rs:329-331`)
+- [x] 4.3 Write a failing test asserting a tenant whose `default_dataset` has no dataset row still gets that dataset provisioned
+- [x] 4.4 Write a failing test asserting a dataset that appears in the registry after startup is provisioned by a later pass, with no restart
+- [x] 4.5 Write a failing test asserting a failing pass (catalog unreachable) neither fails startup nor aborts the remaining tenants, and that the next pass retries
+- [x] 4.6 Implement the reconciler as `start_table_reconciler()` on `IcebergWriterFlightService`, mirroring `start_background_processing()`: startup pass over the registry (datasets plus each tenant's unrecorded `default_dataset`), then a periodic task on the configured interval
+- [x] 4.7 Call `start_table_reconciler()` from both `src/writer/src/main.rs` and `src/signaldb-bin/src/main.rs` — they are independent wirings with no shared startup path, so monolithic mode does not inherit it automatically
+- [x] 4.8 Write a failing test asserting a converged deployment issues no catalog calls on subsequent passes, then implement the process-local already-ensured `(tenant, dataset, table)` set
+- [x] 4.9 Add tracing (tenant/dataset/table fields, warn on failure, info on creation) and counter metrics for tables created and provisioning failures
 
 ## 5. Admin endpoint and compactor fix
 
