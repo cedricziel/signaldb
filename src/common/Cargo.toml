@@ -103,6 +103,14 @@ harness = false
 required-features = ["benchmarks"]
 
 [dev-dependencies]
+# Self-dependency enabling this crate's own `testing` feature for its tests.
+# Integration tests under `tests/` link against the library built *without*
+# `cfg(test)`, so a `#[cfg(any(test, feature = "testing"))]` helper is
+# reachable from them only through the feature. Without this line
+# `cargo test -p common` fails to compile `tests/wal_pending_gauge.rs`, and
+# only passes when some other crate in the build graph (querier, writer,
+# tests-integration) happens to turn the feature on through unification.
+common = { path = ".", features = ["testing"] }
 tokio = { workspace = true, features = ["test-util"] }
 testcontainers-modules.workspace = true
 testcontainers.workspace = true
