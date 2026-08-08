@@ -42,6 +42,22 @@ export function scaleFraction(
 }
 
 /**
+ * Inverse of {@link scaleFraction}: the value a gridline at `fraction` of the
+ * plot height represents. Axis labels must go through this — on a log plot the
+ * halfway gridline is nowhere near half the maximum, so labelling it `max / 2`
+ * misstates the axis.
+ */
+export function valueAtFraction(
+  fraction: number,
+  max: number,
+  scale: Scale,
+): number {
+  if (max <= 0 || fraction <= 0) return 0;
+  if (scale === "log") return Math.expm1(fraction * Math.log1p(max));
+  return fraction * max;
+}
+
+/**
  * Rendered height in pixels for one bucket. A non-empty bucket never falls
  * below {@link MIN_BAR_PX}, so low-volume buckets stay visible without the
  * floor swamping the values just above it.

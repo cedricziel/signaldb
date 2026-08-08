@@ -106,18 +106,20 @@ the full plot height, independent of the bar's rendered height.
 - **WHEN** a user moves through the chart with the keyboard
 - **THEN** each bucket can take focus and reveals the same detail as hovering
 
-### Requirement: The traces tab presents trace volume
+### Requirement: The traces tab presents span volume
 
-The traces tab SHALL render a volume chart for the selected window, stacked by
-span status, subject to every requirement above.
+The traces tab SHALL render a volume chart for the selected window, counting
+spans and stacked by span status, subject to every requirement above. The
+chart SHALL name its unit accurately: the aggregate counts span rows, not
+distinct traces.
 
-#### Scenario: Trace volume is stacked by status
+#### Scenario: Span volume is stacked by status
 
 - **WHEN** the traces tab loads with a selected window
 - **THEN** a volume chart renders with one stacked series per span status
 - **AND** failing and non-failing volume are separately visible
 
-#### Scenario: Trace volume is independent of the trace list
+#### Scenario: Span volume is independent of the trace list
 
 - **WHEN** the trace list is truncated by its row limit
 - **THEN** the volume chart still reflects every trace in the window

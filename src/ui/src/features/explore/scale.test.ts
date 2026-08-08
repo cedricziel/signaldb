@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { barHeight, isScale, scaleFraction, splitSegments } from "./scale";
+import {
+  barHeight,
+  isScale,
+  scaleFraction,
+  splitSegments,
+  valueAtFraction,
+} from "./scale";
 
 describe("scaleFraction", () => {
   it("maps linearly against the maximum", () => {
@@ -92,5 +98,28 @@ describe("isScale", () => {
     expect(isScale("log")).toBe(true);
     expect(isScale("logarithmic")).toBe(false);
     expect(isScale("")).toBe(false);
+  });
+});
+
+describe("valueAtFraction", () => {
+  it("inverts the linear mapping", () => {
+    expect(valueAtFraction(0.5, 400, "linear")).toBe(200);
+    expect(valueAtFraction(1, 400, "linear")).toBe(400);
+    expect(valueAtFraction(0, 400, "linear")).toBe(0);
+  });
+
+  // The gridline halfway up a log plot is nowhere near half the maximum;
+  // labelling it max/2 made the axis lie in log mode.
+  it("inverts the log mapping", () => {
+    expect(valueAtFraction(1, 373_329, "log")).toBeCloseTo(373_329, 0);
+    expect(valueAtFraction(0.5, 373_329, "log")).toBeCloseTo(610, 0);
+    expect(valueAtFraction(0, 373_329, "log")).toBe(0);
+  });
+
+  it("round-trips against scaleFraction", () => {
+    for (const scale of ["linear", "log"] as const) {
+      const v = valueAtFraction(0.5, 373_329, scale);
+      expect(scaleFraction(v, 373_329, scale)).toBeCloseTo(0.5, 6);
+    }
   });
 });

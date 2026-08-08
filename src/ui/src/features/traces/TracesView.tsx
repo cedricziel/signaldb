@@ -156,8 +156,8 @@ function TraceSearch({ state, update }: Props) {
             rangeMs={resolvedForStep}
             stepMs={(durationToSeconds(step) ?? 60) * 1000}
             scale={state.scale}
-            unit="traces"
-            label="Trace volume over time by status"
+            unit="spans"
+            label="Span volume over time by status"
             onScaleChange={(scale) => update({ scale })}
           />
         </div>

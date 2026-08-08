@@ -66,10 +66,10 @@ working against a live deployment: a Query IR `series` document over the
 - **Hover**: a full-plot-height transparent hit zone per bucket, a hover
   highlight, and a styled tooltip listing every series' value and the bucket
   total — replacing the native `title` attribute.
-- **Traces**: the traces tab renders a volume chart driven by a Query IR
+- **Traces**: the traces tab renders a span-volume chart driven by a Query IR
   `series` document (`from: "traces"`, `aggregate` with `step`), stacked by
   `status.code`, covering the full selected window independently of the trace
-  row limit.
+  row limit. The aggregate counts span rows, so the chart is labelled in spans.
 - **Limit badge**: the row-count/limit indicator moves out of the chart
   container so it no longer reads as a statement about the chart.
 

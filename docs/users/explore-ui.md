@@ -24,7 +24,7 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
 - **Logs** — filter chips compiled to LogQL (with an "edit as text" escape
   hatch), a per-level volume histogram, a virtualized log list with
   per-attribute filter/exclude actions, a fields sidebar, and live tail.
-- **Traces** — a trace-volume chart stacked by span status sits above a
+- **Traces** — a span-volume chart stacked by span status sits above a
   group-first view: recent traces arrive grouped by root
   span name (or by service, any observed root-span/resource attribute, or
   two dimensions combined via "Then by"), with per-group trace count,
@@ -58,7 +58,7 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
 ### Reading the volume charts
 
 The logs and traces tabs both open with a stacked volume chart — logs by
-severity level, traces by span status.
+severity level, traces by span status (span rows, not distinct traces).
 
 Both charts are server-side aggregates over the whole selected window. They are
 **not** derived from the rows in the list below them, so the row limit never

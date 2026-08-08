@@ -418,26 +418,26 @@ const VOLUME_BODY = {
   ],
 };
 
-describe("TracesView volume chart", () => {
+describe("TracesView span-volume chart", () => {
   const routes = [
     { match: "/tempo/api/search", body: SEARCH_BODY },
     { match: "/api/v1/query", body: VOLUME_BODY },
   ];
 
-  it("renders trace volume stacked by status", async () => {
+  it("renders span volume stacked by status", async () => {
     stubFetchRoutes(routes);
     renderView();
-    await screen.findByRole("img", { name: /trace volume/i });
+    await screen.findByRole("img", { name: /span volume/i });
     const cols = screen.getAllByTestId("svol-col");
     expect(cols.length).toBeGreaterThan(1);
     // 2018 unset, then 41 unset + 7 error.
-    expect(cols[0]).toHaveAccessibleName(/2,018 traces/);
+    expect(cols[0]).toHaveAccessibleName(/2,018 spans/);
   });
 
   it("asks for the volume aggregate without a row limit", async () => {
     stubFetchRoutes(routes);
     renderView({ limit: 25 });
-    await screen.findByRole("img", { name: /trace volume/i });
+    await screen.findByRole("img", { name: /span volume/i });
     const body = vi
       .mocked(globalThis.fetch)
       .mock.calls.map(([input]) => input)
@@ -458,7 +458,7 @@ describe("TracesView volume chart", () => {
       { match: "/api/v1/query", body: VOLUME_BODY },
     ]);
     renderView();
-    await screen.findByRole("img", { name: /trace volume/i });
+    await screen.findByRole("img", { name: /span volume/i });
     expect(
       screen.getByText(/no traces in this time range/i),
     ).toBeInTheDocument();

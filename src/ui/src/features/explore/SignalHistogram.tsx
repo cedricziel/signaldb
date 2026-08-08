@@ -9,7 +9,12 @@
  */
 import { useState } from "react";
 import { axisLabelFormatter } from "../../lib/time";
-import { barHeight, splitSegments, type Scale } from "./scale";
+import {
+  barHeight,
+  splitSegments,
+  valueAtFraction,
+  type Scale,
+} from "./scale";
 
 /** A series of `[timestampMs, value]` points, ascending or not. */
 export interface VolumeSeries {
@@ -122,7 +127,9 @@ export function SignalHistogram({
           <span className="svol-ymax" data-testid="svol-ymax">
             {NUM.format(max)}
           </span>
-          <span className="svol-ymid">{NUM.format(Math.round(max / 2))}</span>
+          <span className="svol-ymid">
+            {NUM.format(Math.round(valueAtFraction(0.5, max, scale)))}
+          </span>
           <span className="svol-yzero">0</span>
         </div>
         <div className="svol-bars" role="img" aria-label={label}>

@@ -253,3 +253,29 @@ describe("SignalHistogram scale control", () => {
     expect(onScaleChange).toHaveBeenCalledWith("linear");
   });
 });
+
+describe("SignalHistogram y-axis", () => {
+  const series: VolumeSeries[] = [
+    { key: "info", points: [[60_000, 1], [120_000, 373_329]] },
+  ];
+
+  it("labels the midpoint gridline for the active scale", () => {
+    const { rerender } = renderChart(series);
+    expect(screen.getByText("186,665")).toBeInTheDocument();
+    rerender(
+      <SignalHistogram
+        series={series}
+        order={ORDER}
+        colors={COLORS}
+        rangeMs={{ fromMs: 0, toMs: 300_000 }}
+        stepMs={60_000}
+        scale="log"
+        unit="lines"
+        label="Log volume"
+      />,
+    );
+    // Halfway up a log plot is ~610, not half the maximum.
+    expect(screen.queryByText("186,665")).toBeNull();
+    expect(screen.getByText("610")).toBeInTheDocument();
+  });
+});
