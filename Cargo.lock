@@ -1338,6 +1338,7 @@ version = "0.2.1"
 dependencies = [
  "anyhow",
  "arrow-flight",
+ "async-stream",
  "axum",
  "bytes",
  "chrono",

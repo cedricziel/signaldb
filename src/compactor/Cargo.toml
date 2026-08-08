@@ -36,6 +36,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # Phase 4 dependencies (multi-instance safety + Flight endpoints)
 arrow-flight.workspace = true
 bytes.workspace = true
+async-stream.workspace = true
 futures.workspace = true
 tonic.workspace = true
 

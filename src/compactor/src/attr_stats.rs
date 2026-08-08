@@ -61,15 +61,27 @@ pub struct AttrFieldStats {
     pub capped: bool,
 }
 
-/// Analyze the attribute columns of the given batches, returning per-key
-/// statistics plus the total row count scanned.
-pub fn analyze_batches(batches: &[RecordBatch]) -> (BTreeMap<String, AttrFieldStats>, u64) {
-    let mut stats: BTreeMap<String, AttrFieldStats> = BTreeMap::new();
-    let mut values: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut total_rows: u64 = 0;
+/// Incremental accumulator for the attribute-statistics pass.
+///
+/// The rewrite streams its partition rather than collecting it, so the
+/// stats pass has to fold over batches as they go by instead of taking a
+/// materialized slice. State is per-key and bounded by
+/// [`CARDINALITY_CAP`], so it does not grow with the partition's size.
+#[derive(Debug, Default)]
+pub struct AttrStatsAccumulator {
+    stats: BTreeMap<String, AttrFieldStats>,
+    values: BTreeMap<String, BTreeSet<String>>,
+    total_rows: u64,
+}
 
-    for batch in batches {
-        total_rows += batch.num_rows() as u64;
+impl AttrStatsAccumulator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fold one batch into the running statistics.
+    pub fn push_batch(&mut self, batch: &RecordBatch) {
+        self.total_rows += batch.num_rows() as u64;
         for column in ATTR_COLUMNS {
             let Some(array) = batch.column_by_name(column) else {
                 continue;
@@ -77,9 +89,9 @@ pub fn analyze_batches(batches: &[RecordBatch]) -> (BTreeMap<String, AttrFieldSt
             for doc in attr_documents(array.as_ref()) {
                 let Some(doc) = doc else { continue };
                 for (key, value) in doc {
-                    let entry = stats.entry(key.clone()).or_default();
+                    let entry = self.stats.entry(key.clone()).or_default();
                     entry.present_rows += 1;
-                    let set = values.entry(key).or_default();
+                    let set = self.values.entry(key).or_default();
                     if entry.capped {
                         continue;
                     }
@@ -91,12 +103,26 @@ pub fn analyze_batches(batches: &[RecordBatch]) -> (BTreeMap<String, AttrFieldSt
             }
         }
     }
-    for (key, set) in values {
-        if let Some(entry) = stats.get_mut(&key) {
-            entry.distinct = set.len();
+
+    /// Finalize into per-key statistics plus the total row count scanned.
+    pub fn finish(mut self) -> (BTreeMap<String, AttrFieldStats>, u64) {
+        for (key, set) in self.values {
+            if let Some(entry) = self.stats.get_mut(&key) {
+                entry.distinct = set.len();
+            }
         }
+        (self.stats, self.total_rows)
     }
-    (stats, total_rows)
+}
+
+/// Analyze the attribute columns of the given batches, returning per-key
+/// statistics plus the total row count scanned.
+pub fn analyze_batches(batches: &[RecordBatch]) -> (BTreeMap<String, AttrFieldStats>, u64) {
+    let mut acc = AttrStatsAccumulator::new();
+    for batch in batches {
+        acc.push_batch(batch);
+    }
+    acc.finish()
 }
 
 /// Log the promotion candidates for a table: keys that clear the presence
@@ -252,6 +278,51 @@ mod tests {
         assert!(!ns.capped);
         assert_eq!(stats["pod"].present_rows, 2);
         assert_eq!(stats["pod"].distinct, 2);
+    }
+
+    /// Folding batch-by-batch must produce exactly what analyzing them all
+    /// at once does — otherwise streaming the rewrite would silently
+    /// change which attributes get promoted.
+    #[test]
+    fn accumulating_batch_by_batch_matches_analyzing_them_together() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "log_attributes",
+            DataType::Utf8,
+            true,
+        )]));
+        let make = |rows: Vec<Option<&str>>| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(StringArray::from(
+                    rows.into_iter()
+                        .map(|r| r.map(|s| s.to_string()))
+                        .collect::<Vec<_>>(),
+                ))],
+            )
+            .unwrap()
+        };
+
+        let first = make(vec![
+            Some(r#"{"namespace":"prod","pod":"a"}"#),
+            Some(r#"{"namespace":"prod","pod":"b"}"#),
+        ]);
+        let second = make(vec![Some(r#"{"namespace":"staging"}"#), None]);
+
+        let (batched, batched_rows) = analyze_batches(&[first.clone(), second.clone()]);
+
+        let mut acc = AttrStatsAccumulator::new();
+        acc.push_batch(&first);
+        acc.push_batch(&second);
+        let (streamed, streamed_rows) = acc.finish();
+
+        assert_eq!(streamed_rows, batched_rows);
+        assert_eq!(streamed.len(), batched.len());
+        for (key, expected) in &batched {
+            let actual = &streamed[key];
+            assert_eq!(actual.present_rows, expected.present_rows, "key {key}");
+            assert_eq!(actual.distinct, expected.distinct, "key {key}");
+            assert_eq!(actual.capped, expected.capped, "key {key}");
+        }
     }
 
     #[test]
