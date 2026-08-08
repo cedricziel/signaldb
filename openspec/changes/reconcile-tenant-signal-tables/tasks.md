@@ -16,18 +16,18 @@ to #972's description.
 
 ## 2. Reconcile entry point (common)
 
-- [ ] 2.1 Write a failing test in `src/common` asserting `ensure_dataset_tables` creates exactly the tables enabled for the tenant on a fresh tenant/dataset (`cargo test -p common`)
-- [ ] 2.2 Write a failing test asserting a per-tenant schema override that disables a signal narrows the set for that tenant while another tenant still gets it
-- [ ] 2.3 Write a failing test asserting globally disabled signal types produce no tables, and that `TableSchema::Custom` entries from `custom_schemas` are skipped rather than attempted (`ensure_table` rejects them by name, `src/common/src/iceberg/table_manager.rs:117-127`)
-- [ ] 2.4 Write a failing test asserting a second pass over an already-provisioned, already-property-backfilled dataset commits no new table version, snapshot, or data file
-- [ ] 2.5 Write a failing test asserting concurrent `ensure_dataset_tables` calls for the same dataset both succeed and yield one table per signal
-- [ ] 2.6 Implement `CatalogManager::ensure_dataset_tables(tenant_id, dataset_id)`: resolve the enabled set via the tenant's schema config, skip `Custom`, delegate per table to `ensure_table`, return a report of created / already-present / failed tables
-- [ ] 2.7 Write a failing test asserting one table's failure does not abort its siblings, then implement per-table error isolation in the report
+- [x] 2.1 Write a failing test in `src/common` asserting `ensure_dataset_tables` creates exactly the tables enabled for the tenant on a fresh tenant/dataset (`cargo test -p common`)
+- [x] 2.2 Write a failing test asserting a per-tenant schema override that disables a signal narrows the set for that tenant while another tenant still gets it
+- [x] 2.3 Write a failing test asserting globally disabled signal types produce no tables, and that `TableSchema::Custom` entries from `custom_schemas` are skipped rather than attempted (`ensure_table` rejects them by name, `src/common/src/iceberg/table_manager.rs:117-127`)
+- [x] 2.4 Write a failing test asserting a second pass over an already-provisioned, already-property-backfilled dataset commits no new table version, snapshot, or data file
+- [x] 2.5 Write a failing test asserting concurrent `ensure_dataset_tables` calls for the same dataset both succeed and yield one table per signal
+- [x] 2.6 Implement `CatalogManager::ensure_dataset_tables(tenant_id, dataset_id)`: resolve the enabled set via the tenant's schema config, skip `Custom`, delegate per table to `ensure_table`, return a report of created / already-present / failed tables
+- [x] 2.7 Write a failing test asserting one table's failure does not abort its siblings, then implement per-table error isolation in the report
 
 ## 3. Configuration
 
-- [ ] 3.1 Write a failing test in `src/common` for the new `[writer]` reconcile-interval key: default value, explicit override, and the disable value parsing to "no periodic passes" (`cargo test -p common`). It belongs under `[writer]`, not `[schema]` — `SchemaConfig` is tenant-overridable wholesale, which would make a per-tenant reconcile interval meaningless
-- [ ] 3.2 Add the key to the writer config struct with its default, and add it to `signaldb.dist.toml` with a comment
+- [x] 3.1 Write a failing test in `src/common` for the new `[writer]` reconcile-interval key: default value, explicit override, and the disable value parsing to "no periodic passes" (`cargo test -p common`). It belongs under `[writer]`, not `[schema]` — `SchemaConfig` is tenant-overridable wholesale, which would make a per-tenant reconcile interval meaningless
+- [x] 3.2 Add the key to the writer config struct with its default, and add it to `signaldb.dist.toml` with a comment
 
 ## 4. Reconcile loop (writer)
 

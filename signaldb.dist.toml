@@ -282,6 +282,17 @@ max_uncommitted_rows = 100000
 # (write.metadata.previous-versions-max). Older metadata files are deleted on
 # commit, bounding on-disk metadata growth under continuous ingestion.
 metadata_previous_versions_max = 100
+#
+# How often the writer re-runs the signal-table reconciler over the tenant
+# registry. Every registered tenant/dataset gets a table for each signal type
+# enabled for it, so a dataset is queryable from the moment it exists rather
+# than only after telemetry arrives for each signal.
+#
+# A pass always runs at startup; this governs only the periodic re-run, which
+# is what picks up tenants and datasets created while the writer was running.
+# Set to "0s" to disable periodic passes (tables then appear on first write,
+# as before).
+table_reconcile_interval = "5m"
 
 [compactor]
 # Compactor Service Configuration

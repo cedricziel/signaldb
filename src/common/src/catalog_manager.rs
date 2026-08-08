@@ -47,6 +47,22 @@ pub struct ResolvedTenant {
     pub datasets: Vec<ResolvedDataset>,
 }
 
+/// Outcome of one dataset provisioning pass.
+///
+/// Per-table failures are isolated: a table that could not be created is
+/// recorded here rather than aborting its siblings, and the next pass retries
+/// it. A persistently failing table degrades to the prior
+/// create-on-first-write behavior, never to data loss.
+#[derive(Debug, Default, Clone)]
+pub struct DatasetProvisioningReport {
+    /// Tables this pass created.
+    pub created: Vec<String>,
+    /// Tables that already existed.
+    pub already_present: Vec<String>,
+    /// Tables that could not be provisioned, with the reason.
+    pub failed: Vec<(String, String)>,
+}
+
 /// Global catalog manager holding the shared Iceberg catalog instance.
 ///
 /// This ensures all SignalDB components use the same catalog for:
@@ -205,6 +221,95 @@ impl CatalogManager {
         self.table_manager
             .ensure_table(&tenant_slug, &dataset_slug, table_name, &labels)
             .await
+    }
+
+    /// Ensure the dataset holds a table for every signal type enabled **for
+    /// its tenant**, creating whatever is missing.
+    ///
+    /// The set comes from the tenant's own schema configuration when it has
+    /// one, otherwise from the deployment default — so a tenant that disabled
+    /// metrics does not get five empty metrics tables. `TableSchema::Custom`
+    /// entries are skipped: `all_from_config` emits one per `custom_schemas`
+    /// key, and [`Self::ensure_table`] rejects them by name.
+    ///
+    /// Idempotent and safe to run concurrently with ingest: it delegates per
+    /// table to the same load-or-create [`Self::ensure_table`] the write path
+    /// uses, so provisioned tables are indistinguishable from ones a first
+    /// write would have created.
+    ///
+    /// A failure on one table does not abort its siblings — it is recorded in
+    /// [`DatasetProvisioningReport::failed`] and retried by the next pass.
+    pub async fn ensure_dataset_tables(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> DatasetProvisioningReport {
+        let schemas = crate::iceberg::schemas::TableSchema::all_from_config(
+            &self
+                .config
+                .get_tenant_schema_config(tenant_id)
+                .default_schemas,
+        );
+        let names: Vec<&str> = schemas
+            .iter()
+            .filter(|schema| !matches!(schema, crate::iceberg::schemas::TableSchema::Custom(_)))
+            .map(|schema| schema.table_name())
+            .collect();
+        self.ensure_tables_named(tenant_id, dataset_id, &names)
+            .await
+    }
+
+    /// Ensure the named tables exist for the dataset, isolating per-table
+    /// failures. Backs [`Self::ensure_dataset_tables`].
+    async fn ensure_tables_named(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        tables: &[&str],
+    ) -> DatasetProvisioningReport {
+        // One listing per dataset tells created from already-present without
+        // a second round-trip per table.
+        let existing: std::collections::HashSet<String> =
+            match self.build_namespace(tenant_id, dataset_id) {
+                Ok(namespace) => self
+                    .catalog()
+                    .list_tabulars(&namespace)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|identifier| identifier.name().to_string())
+                    .collect(),
+                Err(_) => std::collections::HashSet::new(),
+            };
+
+        let mut report = DatasetProvisioningReport::default();
+        for table in tables {
+            match self.ensure_table(tenant_id, dataset_id, table).await {
+                Ok(_) if existing.contains(*table) => {
+                    report.already_present.push((*table).to_string());
+                }
+                Ok(_) => {
+                    tracing::info!(
+                        tenant_id = %tenant_id,
+                        dataset = %dataset_id,
+                        table = %table,
+                        "Provisioned signal table"
+                    );
+                    report.created.push((*table).to_string());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        tenant_id = %tenant_id,
+                        dataset = %dataset_id,
+                        table = %table,
+                        error = %e,
+                        "Failed to provision signal table; will retry on the next pass"
+                    );
+                    report.failed.push(((*table).to_string(), e.to_string()));
+                }
+            }
+        }
+        report
     }
 
     /// Get all enabled tenants.
@@ -787,5 +892,248 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(resolved.id, "team-a");
+    }
+
+    // ---- ensure_dataset_tables (dataset-table-provisioning) ----
+
+    /// Table names present in a dataset's Iceberg namespace, sorted.
+    async fn tables_in(manager: &CatalogManager, tenant_id: &str, dataset_id: &str) -> Vec<String> {
+        let namespace = manager.build_namespace(tenant_id, dataset_id).unwrap();
+        let mut names: Vec<String> = manager
+            .catalog()
+            .list_tabulars(&namespace)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|ident| ident.name().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn all_signal_tables() -> Vec<String> {
+        let mut names: Vec<String> = crate::iceberg::schemas::TableSchema::all()
+            .iter()
+            .map(|t| t.table_name().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A manager over a fresh in-memory catalog whose config carries `tenants`.
+    async fn provisioning_manager(tenants: Vec<TenantConfig>) -> CatalogManager {
+        let mut config = Configuration::default();
+        config.schema.catalog_uri = format!(
+            "sqlite:file:signaldb_ensure_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        config.auth.tenants = tenants;
+        config.tenants.tenants = Default::default();
+        CatalogManager::new(config).await.unwrap()
+    }
+
+    fn provisioning_tenant(id: &str) -> TenantConfig {
+        TenantConfig {
+            id: id.to_string(),
+            slug: id.to_string(),
+            name: id.to_string(),
+            default_dataset: Some("production".to_string()),
+            datasets: vec![DatasetConfig {
+                id: "production".to_string(),
+                slug: "production".to_string(),
+                is_default: true,
+                storage: None,
+            }],
+            api_keys: vec![],
+            schema_config: None,
+            limits: None,
+        }
+    }
+
+    // Task 2.1
+    #[tokio::test]
+    async fn ensure_dataset_tables_creates_the_enabled_set() {
+        let manager = provisioning_manager(vec![provisioning_tenant("acme")]).await;
+
+        let report = manager.ensure_dataset_tables("acme", "production").await;
+
+        assert_eq!(
+            tables_in(&manager, "acme", "production").await,
+            all_signal_tables()
+        );
+        assert_eq!(report.created.len(), all_signal_tables().len());
+        assert!(report.already_present.is_empty());
+        assert!(report.failed.is_empty());
+    }
+
+    // Task 2.2
+    #[tokio::test]
+    async fn tenant_override_narrows_the_set_for_that_tenant_only() {
+        let mut narrowed = provisioning_tenant("narrow");
+        let mut schema = crate::config::SchemaConfig::default();
+        schema.default_schemas.metrics_enabled = false;
+        schema.default_schemas.profiles_enabled = false;
+        narrowed.schema_config = Some(crate::config::TenantSchemaConfig {
+            schema: Some(schema.clone()),
+            custom_schemas: None,
+            enabled: true,
+        });
+
+        let mut config = Configuration::default();
+        config.schema.catalog_uri = format!(
+            "sqlite:file:signaldb_ensure_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        config.auth.tenants = vec![narrowed.clone(), provisioning_tenant("wide")];
+        // The per-tenant lookup reads `config.tenants.tenants`.
+        config.tenants.tenants.insert(
+            "narrow".to_string(),
+            crate::config::TenantSchemaConfig {
+                schema: Some(schema),
+                custom_schemas: None,
+                enabled: true,
+            },
+        );
+        let manager = CatalogManager::new(config).await.unwrap();
+
+        manager.ensure_dataset_tables("narrow", "production").await;
+        manager.ensure_dataset_tables("wide", "production").await;
+
+        assert_eq!(
+            tables_in(&manager, "narrow", "production").await,
+            vec!["logs".to_string(), "traces".to_string()]
+        );
+        assert_eq!(
+            tables_in(&manager, "wide", "production").await,
+            all_signal_tables()
+        );
+    }
+
+    // Task 2.3
+    #[tokio::test]
+    async fn globally_disabled_signals_and_custom_schemas_are_skipped() {
+        let mut config = Configuration::default();
+        config.schema.catalog_uri = format!(
+            "sqlite:file:signaldb_ensure_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        config.auth.tenants = vec![provisioning_tenant("acme")];
+        config.tenants.tenants = Default::default();
+        config.schema.default_schemas.traces_enabled = false;
+        config.schema.default_schemas.metrics_enabled = false;
+        // `all_from_config` appends a `Custom` entry per key; `ensure_table`
+        // rejects it by name, so provisioning must skip it, not fail on it.
+        config
+            .schema
+            .default_schemas
+            .custom_schemas
+            .insert("my_custom".to_string(), serde_json::json!({}));
+        let manager = CatalogManager::new(config).await.unwrap();
+
+        let report = manager.ensure_dataset_tables("acme", "production").await;
+
+        assert_eq!(
+            tables_in(&manager, "acme", "production").await,
+            vec!["logs".to_string(), "profiles".to_string()]
+        );
+        assert!(
+            report.failed.is_empty(),
+            "custom schemas must not fail: {:?}",
+            report.failed
+        );
+        assert!(!report.created.iter().any(|t| t == "my_custom"));
+    }
+
+    // Task 2.4
+    #[tokio::test]
+    async fn a_second_pass_creates_nothing_new() {
+        let manager = provisioning_manager(vec![provisioning_tenant("acme")]).await;
+
+        // First pass creates the tables and backfills their pruning
+        // properties, so the second pass is over already-backfilled tables.
+        manager.ensure_dataset_tables("acme", "production").await;
+        let before: Vec<_> = table_versions(&manager, "acme", "production").await;
+
+        let report = manager.ensure_dataset_tables("acme", "production").await;
+
+        assert!(report.created.is_empty(), "created: {:?}", report.created);
+        assert_eq!(report.already_present.len(), all_signal_tables().len());
+        assert_eq!(
+            table_versions(&manager, "acme", "production").await,
+            before,
+            "a repeat pass must not commit a new table version or snapshot"
+        );
+    }
+
+    /// (table name, last-sequence-number, current-snapshot-id) per table.
+    async fn table_versions(
+        manager: &CatalogManager,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> Vec<(String, i64, Option<i64>)> {
+        let mut out = Vec::new();
+        for name in tables_in(manager, tenant_id, dataset_id).await {
+            let table = manager
+                .ensure_table(tenant_id, dataset_id, &name)
+                .await
+                .unwrap();
+            let metadata = table.metadata();
+            out.push((
+                name,
+                metadata.last_sequence_number,
+                metadata.current_snapshot_id,
+            ));
+        }
+        out
+    }
+
+    // Task 2.5
+    #[tokio::test]
+    async fn concurrent_passes_converge_on_one_table_per_signal() {
+        let manager = Arc::new(provisioning_manager(vec![provisioning_tenant("acme")]).await);
+
+        let a = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.ensure_dataset_tables("acme", "production").await })
+        };
+        let b = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.ensure_dataset_tables("acme", "production").await })
+        };
+        let (a, b) = (a.await.unwrap(), b.await.unwrap());
+        assert!(a.failed.is_empty(), "{:?}", a.failed);
+        assert!(b.failed.is_empty(), "{:?}", b.failed);
+
+        assert_eq!(
+            tables_in(&manager, "acme", "production").await,
+            all_signal_tables()
+        );
+    }
+
+    // Task 2.7
+    #[tokio::test]
+    async fn one_tables_failure_does_not_abort_its_siblings() {
+        let manager = provisioning_manager(vec![provisioning_tenant("acme")]).await;
+
+        // `ensure_table` rejects an unknown table name. Its siblings must
+        // still be provisioned, and the failure reported for it alone.
+        let report = manager
+            .ensure_tables_named(
+                "acme",
+                "production",
+                &["logs", "definitely_not_a_signal", "profiles"],
+            )
+            .await;
+
+        assert_eq!(
+            report.created,
+            vec!["logs".to_string(), "profiles".to_string()]
+        );
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].0, "definitely_not_a_signal");
+        assert_eq!(
+            tables_in(&manager, "acme", "production").await,
+            vec!["logs".to_string(), "profiles".to_string()]
+        );
     }
 }

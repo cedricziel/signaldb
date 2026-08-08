@@ -1271,6 +1271,26 @@ pub struct WriterConfig {
     /// bounding on-disk metadata growth under continuous ingestion. Applied at
     /// table creation.
     pub metadata_previous_versions_max: usize,
+    /// How often the writer re-runs the signal-table reconciler over the
+    /// tenant registry, so datasets created while it was down and datasets
+    /// added at runtime converge without a restart.
+    ///
+    /// A pass always runs at startup; this governs only the periodic re-run.
+    /// Set to `0s` to disable periodic passes.
+    ///
+    /// Lives under `[writer]` rather than `[schema]` on purpose: a tenant's
+    /// `SchemaConfig` overrides the global one wholesale, which would make a
+    /// per-tenant reconcile interval meaningless.
+    #[serde(with = "humantime_serde")]
+    pub table_reconcile_interval: Duration,
+}
+
+impl WriterConfig {
+    /// Whether the writer should run periodic reconcile passes after the
+    /// startup one.
+    pub fn periodic_table_reconcile_enabled(&self) -> bool {
+        !self.table_reconcile_interval.is_zero()
+    }
 }
 
 impl Default for WriterConfig {
@@ -1279,6 +1299,7 @@ impl Default for WriterConfig {
             commit_interval: Duration::from_secs(5),
             max_uncommitted_rows: 100_000,
             metadata_previous_versions_max: 100,
+            table_reconcile_interval: Duration::from_secs(300),
         }
     }
 }
@@ -2068,6 +2089,53 @@ mod tests {
             assert_eq!(config.writer.commit_interval, Duration::from_secs(30));
             assert_eq!(config.writer.max_uncommitted_rows, 250_000);
 
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn table_reconcile_interval_defaults_overrides_and_disables() {
+        // Default: a periodic pass every 5 minutes.
+        assert_eq!(
+            WriterConfig::default().table_reconcile_interval,
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            Configuration::default().writer.table_reconcile_interval,
+            Duration::from_secs(300)
+        );
+        assert!(
+            Configuration::default()
+                .writer
+                .periodic_table_reconcile_enabled()
+        );
+
+        // Explicit override.
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__WRITER__TABLE_RECONCILE_INTERVAL", "90s");
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract::<Configuration>()
+                .unwrap();
+            assert_eq!(
+                config.writer.table_reconcile_interval,
+                Duration::from_secs(90)
+            );
+            assert!(config.writer.periodic_table_reconcile_enabled());
+            Ok(())
+        });
+
+        // Zero disables the periodic pass (the startup pass still runs).
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__WRITER__TABLE_RECONCILE_INTERVAL", "0s");
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract::<Configuration>()
+                .unwrap();
+            assert_eq!(config.writer.table_reconcile_interval, Duration::ZERO);
+            assert!(!config.writer.periodic_table_reconcile_enabled());
             Ok(())
         });
     }
