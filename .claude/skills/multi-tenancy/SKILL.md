@@ -34,7 +34,8 @@ Tenant (e.g., "acme", slug: "acme")
    - Database-backed keys second (from service catalog)
 3. Validates tenant_id matches key's tenant (403 on mismatch)
 4. Resolves dataset: explicit header -> tenant default_dataset -> first `is_default` -> 400 error
-5. Returns `TenantContext { tenant_id, dataset_id, tenant_slug, dataset_slug }`
+5. For a database tenant, the resolved dataset must have a `datasets` row — `resolve_database_tenant` fails closed with `403 Dataset '<name>' not found for tenant '<id>'`. Tenant creation (admin API, management API, config sync) therefore **materializes the `default_dataset` as a real row**, and `Catalog::backfill_default_datasets` converges tenants created before that at router/monolith boot (#1066). Use the idempotent `Catalog::ensure_dataset` on any path that may run twice; `create_dataset` is a bare INSERT and errors on a duplicate
+6. Returns `TenantContext { tenant_id, dataset_id, tenant_slug, dataset_slug }`
 
 ### Session-Cookie Fallback (Embedded UI)
 
@@ -168,15 +169,15 @@ Mounted at `/api/v1/admin`, requires `admin_api_key` (`src/router/src/lib.rs`):
 
 Mounted at `/api/v1` with tenant auth (`src/router/src/endpoints/tenant.rs`):
 
-| Endpoint                             | Methods | Description                                                                                 |
-| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------- |
-| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`) |
-| `/api/v1/tenants`                    | GET     | List tenants visible to the caller                                                          |
-| `/api/v1/tenants/{id}`               | GET     | Tenant details                                                                              |
-| `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables                                                                          |
+| Endpoint                             | Methods | Description                                                                                                                                                   |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`)                                                                   |
+| `/api/v1/tenants`                    | GET     | List tenants visible to the caller                                                                                                                            |
+| `/api/v1/tenants/{id}`               | GET     | Tenant details                                                                                                                                                |
+| `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables                                                                                                                                            |
 | `/api/v1/tenants/{id}/tables/create` | POST    | Provision the tenant's enabled signal tables across its datasets, before returning `201`. Manual trigger for what the writer's reconciler does on an interval |
-| `/api/v1/tenants/{id}/schemas`       | GET     | List tenant schemas                                                                         |
-| `/api/v1/schemas/available`          | GET     | List available schema definitions                                                           |
+| `/api/v1/tenants/{id}/schemas`       | GET     | List tenant schemas                                                                                                                                           |
+| `/api/v1/schemas/available`          | GET     | List available schema definitions                                                                                                                             |
 
 ## CLI Tool
 
