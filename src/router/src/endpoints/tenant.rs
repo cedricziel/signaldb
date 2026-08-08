@@ -385,6 +385,12 @@ mod tests {
         };
         config.schema.catalog_uri = catalog_uri.clone();
 
+        // A named shared-cache in-memory SQLite database lives only as long as
+        // some connection to it is open, and the handler builds and drops its
+        // own catalog pool. Open the verifying manager first and hold it for
+        // the whole test, or the database can be torn down before we read it.
+        let manager = common::CatalogManager::new(config.clone()).await.unwrap();
+
         let app = create_router(RouterAppState::new(catalog, config.clone()));
         let request = Request::builder()
             .method("POST")
@@ -399,7 +405,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CREATED);
 
         // ...and the tables are really there.
-        let manager = common::CatalogManager::new(config).await.unwrap();
         let namespace = manager.build_namespace("acme", "production").unwrap();
         let mut tables: Vec<String> = manager
             .catalog()
@@ -439,6 +444,10 @@ mod tests {
         );
         // Deliberately empty: the tenant is registered only in the catalog.
         config.auth.tenants = vec![];
+
+        // Held open for the whole test so the named shared-cache in-memory
+        // database survives the handler's own catalog pool being dropped.
+        let manager = common::CatalogManager::new(config.clone()).await.unwrap();
 
         catalog
             .upsert_tenant("dbonly", "DB Only", Some("production"), "database")
@@ -481,7 +490,6 @@ mod tests {
             String::from_utf8_lossy(&body)
         );
 
-        let manager = common::CatalogManager::new(config).await.unwrap();
         let namespace = manager.build_namespace("dbonly", "production").unwrap();
         assert_eq!(
             manager

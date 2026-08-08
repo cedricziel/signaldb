@@ -972,6 +972,13 @@ traces = ["http.method"]
         }];
         let mut registry = TenantSchemaRegistry::new(config.clone());
 
+        // A named shared-cache in-memory SQLite database lives only as long as
+        // some connection to it is open, and `create_default_tables_for_tenant`
+        // builds and drops its own catalog pool. Open the verifying manager
+        // first and hold it for the whole test, or the database can be torn
+        // down before we read it.
+        let manager = crate::CatalogManager::new(config).await.unwrap();
+
         registry
             .create_default_tables_for_tenant("acme")
             .await
@@ -979,7 +986,6 @@ traces = ["http.method"]
 
         // The tables are really there — this used to only log
         // "Would create table ...".
-        let manager = crate::CatalogManager::new(config).await.unwrap();
         let namespace = manager.build_namespace("acme", "production").unwrap();
         let tables = manager.catalog().list_tabulars(&namespace).await.unwrap();
         assert_eq!(tables.len(), 8, "{tables:?}");
@@ -1019,6 +1025,11 @@ traces = ["http.method"]
         let mut registry =
             TenantSchemaRegistry::new(config.clone()).with_tenant_source(source.clone());
 
+        // Held open for the whole test so the named shared-cache in-memory
+        // database survives provisioning's own pool: a torn-down database
+        // would read as empty and pass the assertion below for free.
+        let manager = crate::CatalogManager::new(config).await.unwrap();
+
         let err = registry
             .create_default_tables_for_tenant("shared")
             .await
@@ -1029,7 +1040,6 @@ traces = ["http.method"]
         );
 
         // Nothing was created under either tenant's namespace.
-        let manager = crate::CatalogManager::new(config).await.unwrap();
         for (tenant, dataset) in [("shared", "team-a-private"), ("shared", "shared-default")] {
             let namespace = manager.build_namespace(tenant, dataset).unwrap();
             assert!(
