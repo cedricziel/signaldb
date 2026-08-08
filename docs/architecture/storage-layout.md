@@ -257,7 +257,14 @@ At startup, the Querier registers a `TenantCatalog` per enabled tenant, named by
 
 ## Table Types
 
-SignalDB creates up to 7 table types per tenant-dataset combination. Table creation is controlled by the `[schema.default_schemas]` config and happens lazily on first write.
+SignalDB creates up to 8 table types per tenant-dataset combination, controlled by the `[schema.default_schemas]` config (resolved per tenant, so a tenant override narrows the set).
+
+Tables reach a dataset two ways, both through the same load-or-create `CatalogManager::ensure_table`:
+
+- **Provisioned ahead of ingest** by the writer's reconciler (`src/writer/src/reconcile.rs`) — a pass at startup and one every `[writer].table_reconcile_interval` over the tenant registry, so a dataset holds its enabled tables (empty, no snapshot) from the moment it is registered. See [Signal table provisioning](../operations/table-provisioning.md).
+- **On first write**, as before, when the writer's `IcebergTableWriter` opens a table the reconciler has not reached yet.
+
+Because both paths call the same constructor, a provisioned table is indistinguishable from one a first write created, and a failing reconciler degrades to create-on-first-write.
 
 ### Signal Type to Table Mapping
 
@@ -385,8 +392,8 @@ logs = ["team", "region"]
   schema override replaces the global set wholesale (no merging) — both
   where tables are created (`CatalogManager::ensure_table`) and in the
   writer's transforms.
-- **When it applies**: tables are created lazily and carry the columns from
-  their configured set at creation time; existing tables can gain further
+- **When it applies**: a table carries the columns from its configured set at
+  creation time — whether provisioning or a first write created it; existing tables can gain further
   `label_<key>` columns post-creation through
   [schema evolution](#label-columns-can-be-added-to-existing-tables). A table
   that predates a label (and has not been evolved) keeps matching it through

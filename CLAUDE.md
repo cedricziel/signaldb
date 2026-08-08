@@ -140,6 +140,8 @@ name = "Production Key"
 
 **Isolation**: WAL organized by tenant/dataset (`.wal/{tenant}/{dataset}/{signal}/`), Iceberg tables namespaced per tenant.
 
+**Table lifecycle**: the writer runs a signal-table reconciler (startup pass plus every `[writer].table_reconcile_interval`, default 5m) that ensures every registered tenant/dataset holds a table for each signal type enabled for that tenant, so a dataset is queryable before its first write. The ingest path still load-or-creates on demand, so a failing reconciler degrades to create-on-first-write. `POST /api/v1/tenants/{id}/tables/create` is the manual trigger. Queries against a signal with no table return an empty result, never an error. See `docs/operations/table-provisioning.md`.
+
 ## Storage Configuration
 
 ```toml

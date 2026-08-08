@@ -60,11 +60,11 @@ keeps its route, request shape, and response contract — only its effect change
 so the OpenAPI document, the generated Rust SDK, and the generated TypeScript
 client need no regeneration. Confirm that during 5.2 and note it in the PR.
 
-- [ ] 7.1 Document the reconcile-interval configuration key and the provisioning behavior, routing placement through the docs skill (operations audience)
-- [ ] 7.2 Correct `docs/users/authentication.md:143` and `.claude/skills/multi-tenancy/SKILL.md:177` where they describe the table-create endpoint, now that it does what it claims
-- [ ] 7.3 Update the `configuration` skill with the new `[writer]` key
-- [ ] 7.4 Update the `storage-layout` skill where it describes tables as appearing on first write
-- [ ] 7.5 Update `CLAUDE.md` if the tenant/table lifecycle description it carries becomes inaccurate
+- [x] 7.1 Document the reconcile-interval configuration key and the provisioning behavior, routing placement through the docs skill (operations audience)
+- [x] 7.2 Correct `docs/users/authentication.md:143` and `.claude/skills/multi-tenancy/SKILL.md:177` where they describe the table-create endpoint, now that it does what it claims
+- [x] 7.3 Update the `configuration` skill with the new `[writer]` key
+- [x] 7.4 Update the `storage-layout` skill where it describes tables as appearing on first write
+- [x] 7.5 Update `CLAUDE.md` if the tenant/table lifecycle description it carries becomes inaccurate
 
 ## 8. Ship
 

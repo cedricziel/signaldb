@@ -174,7 +174,7 @@ Mounted at `/api/v1` with tenant auth (`src/router/src/endpoints/tenant.rs`):
 | `/api/v1/tenants`                    | GET     | List tenants visible to the caller                                                          |
 | `/api/v1/tenants/{id}`               | GET     | Tenant details                                                                              |
 | `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables                                                                          |
-| `/api/v1/tenants/{id}/tables/create` | POST    | Create tenant tables                                                                        |
+| `/api/v1/tenants/{id}/tables/create` | POST    | Provision the tenant's enabled signal tables across its datasets, before returning `201`. Manual trigger for what the writer's reconciler does on an interval |
 | `/api/v1/tenants/{id}/schemas`       | GET     | List tenant schemas                                                                         |
 | `/api/v1/schemas/available`          | GET     | List available schema definitions                                                           |
 
