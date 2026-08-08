@@ -18,7 +18,7 @@ Orphan detection SHALL derive the live-file set from the manifests reachable fro
 #### Scenario: Idle table loses nothing
 
 - **WHEN** a table has received no commits for longer than any configured age window and orphan cleanup runs
-- **THEN** the live set equals the table's current content, zero files are classified as orphans, and the table remains fully queryable
+- **THEN** the live set equals the table's current content, no file the current snapshot references is classified as an orphan, and the table remains fully queryable (files the table genuinely no longer references stay eligible — idleness protects live data, it does not suspend reclamation)
 
 #### Scenario: Genuinely orphaned files are found
 
