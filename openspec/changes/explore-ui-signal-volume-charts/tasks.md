@@ -15,18 +15,18 @@
 
 ## 3. Shared `SignalHistogram` component
 
-- [ ] 3.1 Write failing tests for `SignalHistogram`: generic
+- [x] 3.1 Write failing tests for `SignalHistogram`: generic
       `{labels, points}` series in milliseconds, caller-supplied series order
       and colours, epoch-grid zero-padding across the full window, a vertical
       axis carrying the maximum, and an empty state.
-- [ ] 3.2 Implement `src/ui/src/features/explore/SignalHistogram.tsx` to make
+- [x] 3.2 Implement `src/ui/src/features/explore/SignalHistogram.tsx` to make
       3.1 pass, consuming `scale.ts` and the axis formatter.
-- [ ] 3.3 Write failing tests for interaction: a full-plot-height hit zone per
+- [x] 3.3 Write failing tests for interaction: a full-plot-height hit zone per
       bucket, a tooltip listing every series plus the total, hover highlight,
       and keyboard focus reaching the same detail.
-- [ ] 3.4 Implement the interaction layer to make 3.3 pass; remove the native
+- [x] 3.4 Implement the interaction layer to make 3.3 pass; remove the native
       `title` attribute.
-- [ ] 3.5 Add axis, tooltip, hover-highlight, and focus-ring styles to
+- [x] 3.5 Add axis, tooltip, hover-highlight, and focus-ring styles to
       `src/ui/src/features/explore/explore.css`.
 
 ## 4. Scale toggle in explore state
