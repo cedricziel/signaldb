@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.3.0](https://github.com/cedricziel/signaldb/compare/querier-v0.2.1...querier-v0.3.0) (2026-08-08)
+
+
+### Features
+
+* DB client spans, query stage spans, compactor job spans ([#906](https://github.com/cedricziel/signaldb/issues/906)) ([04a4c4e](https://github.com/cedricziel/signaldb/commit/04a4c4e5788cf6531e0421b50b523b04ac4db38b))
+* **model:** add span events to the Span model ([#847](https://github.com/cedricziel/signaldb/issues/847)) ([0dbd6e8](https://github.com/cedricziel/signaldb/commit/0dbd6e8a0701cea0ce9e46c4fc9456d1562e7d31))
+* native Query IR — versioned structured query surface (query-ir-core) ([#882](https://github.com/cedricziel/signaldb/issues/882)) ([8774ac0](https://github.com/cedricziel/signaldb/commit/8774ac0fbbe4686cb7aa8b0bba73dbc25f185689))
+* **querier,router:** surface span events on the single-trace path ([#848](https://github.com/cedricziel/signaldb/issues/848)) ([5b344e9](https://github.com/cedricziel/signaldb/commit/5b344e98b6e787aeca35d68bf18ca5ca92657454))
+* **querier:** record every do_get failure as a span exception ([#878](https://github.com/cedricziel/signaldb/issues/878)) ([39d76bd](https://github.com/cedricziel/signaldb/commit/39d76bd13a9e92b08b8b55c8dabf62f58863fab7))
+* record Flight query failures as span exceptions + surface reasons ([#846](https://github.com/cedricziel/signaldb/issues/846)) ([20d89f5](https://github.com/cedricziel/signaldb/commit/20d89f51eee05ff25ddfa523053dad7ebc8ea6e2))
+* semconv CLIENT spans on Flight call sites ([#905](https://github.com/cedricziel/signaldb/issues/905)) ([3047cbb](https://github.com/cedricziel/signaldb/commit/3047cbbc68f03e7d586d4a2caabaa2bd7c660ca1))
+* semconv RPC server spans on Flight boundaries ([#904](https://github.com/cedricziel/signaldb/issues/904)) ([a791f45](https://github.com/cedricziel/signaldb/commit/a791f45edf5b1650cc9091d1acf481175060628a))
+* source-agnostic tenant registry (admin-API tenants queryable without restart) ([#853](https://github.com/cedricziel/signaldb/issues/853)) ([c685935](https://github.com/cedricziel/signaldb/commit/c6859353a739fefcdc45f56cc0c7899193a6086a))
+
+
+### Bug Fixes
+
+* address CodeRabbit review on the tenant registry ([#853](https://github.com/cedricziel/signaldb/issues/853) follow-up) ([#855](https://github.com/cedricziel/signaldb/issues/855)) ([d5011ec](https://github.com/cedricziel/signaldb/commit/d5011ecc4a6101c8a51d5944a9480dff8b19d6a8))
+* **compactor:** use a FairSpillPool for compaction and queries ([#1068](https://github.com/cedricziel/signaldb/issues/1068)) ([6b7bd13](https://github.com/cedricziel/signaldb/commit/6b7bd1368ac4444f785be14b8c29d92629295ee2))
+* **model:** stop flattening trace hierarchies to root + direct children ([#1018](https://github.com/cedricziel/signaldb/issues/1018)) ([5fee337](https://github.com/cedricziel/signaldb/commit/5fee33711628bf3f041c436c34f363f114ed93fb))
+* provision signal tables for every registered dataset, and read an absent one as empty ([#1074](https://github.com/cedricziel/signaldb/issues/1074)) ([9a50ffa](https://github.com/cedricziel/signaldb/commit/9a50ffaa7e404a96cb80d7d3b0cc0850ede00f49))
+* **querier:** bound, order, and project the trace search scan ([#928](https://github.com/cedricziel/signaldb/issues/928)) ([#985](https://github.com/cedricziel/signaldb/issues/985)) ([b3c94d8](https://github.com/cedricziel/signaldb/commit/b3c94d8a62c06f7f9bca455c7e73e9a24b38f9e6))
+* **querier:** reject out-of-range time bounds instead of saturating to a sentinel ([#920](https://github.com/cedricziel/signaldb/issues/920)) ([dc6990e](https://github.com/cedricziel/signaldb/commit/dc6990eb72d99cb23185faf2a373b2a22e403a93))
+
+
+### Performance Improvements
+
+* CPU target features and jemalloc allocator for release builds ([#970](https://github.com/cedricziel/signaldb/issues/970)) ([766e2d1](https://github.com/cedricziel/signaldb/commit/766e2d1c82dad65a674184edaf2e8d67cb4083dd))
+* **flight,wal:** compress Flight IPC payloads and WAL entries ([#945](https://github.com/cedricziel/signaldb/issues/945)) ([#998](https://github.com/cedricziel/signaldb/issues/998)) ([efb5ef4](https://github.com/cedricziel/signaldb/commit/efb5ef4bc85e2e77483f4546255b50c564015827))
+* **querier:** cache per-tenant session state keyed by (tenant, dataset) ([#1001](https://github.com/cedricziel/signaldb/issues/1001)) ([7964f8e](https://github.com/cedricziel/signaldb/commit/7964f8ef6cd52c7755bb7089ddca673d56c04af8))
+* **querier:** enable statistics-based file grouping and Parquet filter pushdown ([#937](https://github.com/cedricziel/signaldb/issues/937)) ([#987](https://github.com/cedricziel/signaldb/issues/987)) ([7d4aefb](https://github.com/cedricziel/signaldb/commit/7d4aefb855061ea2a07c6536eee28385a49a6722))
+* **querier:** guard PromQL group cardinality and hoist histogram bounds parsing ([#1000](https://github.com/cedricziel/signaldb/issues/1000)) ([eb50c04](https://github.com/cedricziel/signaldb/commit/eb50c04791cddd8253a3e30b10ee9a0b05a36e12))
+* **querier:** handle scalar args and Utf8View bodies in ir_extract UDF ([#1003](https://github.com/cedricziel/signaldb/issues/1003)) ([7304140](https://github.com/cedricziel/signaldb/commit/7304140b065017c2d41804886502cf13764a143d))
+* **querier:** hoist column downcasts out of trace assembly row loops ([#999](https://github.com/cedricziel/signaldb/issues/999)) ([7b1c9e0](https://github.com/cedricziel/signaldb/commit/7b1c9e03ba0d501713a616d8d5c3f78128642edc))
+
+
+### Documentation
+
+* flight-communication.md read path now describes the CLIENT hop. ([3047cbb](https://github.com/cedricziel/signaldb/commit/3047cbbc68f03e7d586d4a2caabaa2bd7c660ca1))
+
+
+### Code Refactoring
+
+* **logging:** forbid log:: macros in favor of tracing:: ([#1006](https://github.com/cedricziel/signaldb/issues/1006)) ([071ebb4](https://github.com/cedricziel/signaldb/commit/071ebb47d02f2d6e43ccfb60380c00e3be929248))
+
+
+### Tests
+
+* polish medium/low audit findings across the workspace ([#969](https://github.com/cedricziel/signaldb/issues/969)) ([8962f6d](https://github.com/cedricziel/signaldb/commit/8962f6d1d22c8a176d4a1d99376d61b42b1da258))
+
 ## [0.2.1](https://github.com/cedricziel/signaldb/compare/querier-v0.2.0...querier-v0.2.1) (2026-07-30)
 
 

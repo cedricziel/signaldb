@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/cedricziel/signaldb/compare/loki-api-v0.1.1...loki-api-v0.1.2) (2026-08-08)
+
+
+### Features
+
+* **logs:** surface trace_id/span_id in log query responses ([#1048](https://github.com/cedricziel/signaldb/issues/1048)) ([5a84a04](https://github.com/cedricziel/signaldb/commit/5a84a04b3582befd76ea5f231b887f2cbed253ea))
+
 ## [0.1.1](https://github.com/cedricziel/signaldb/compare/loki-api-v0.1.0...loki-api-v0.1.1) (2026-07-30)
 
 
