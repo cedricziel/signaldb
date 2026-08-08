@@ -140,3 +140,32 @@ describe("fetchTraceVolume", () => {
     spy.mockRestore();
   });
 });
+
+describe("buildTraceVolumeDoc filtering", () => {
+  const range = { fromMs: 0, toMs: 3600_000 };
+
+  it("applies active filters so the chart matches the list", () => {
+    const doc = buildTraceVolumeDoc(range, "1h", [
+      { field: "service.name", value: "signaldb-ui" },
+    ]);
+    expect(doc.pipeline?.[0]).toEqual({
+      where: { field: "service.name", op: "eq", value: "signaldb-ui" },
+    });
+    // The aggregate still follows.
+    expect(JSON.stringify(doc.pipeline?.[1])).toContain("aggregate");
+  });
+
+  it("is unfiltered when nothing is selected", () => {
+    const doc = buildTraceVolumeDoc(range, "1h", []);
+    expect(JSON.stringify(doc.pipeline)).not.toContain("where");
+  });
+
+  it("maps a facet field onto its IR field", () => {
+    const doc = buildTraceVolumeDoc(range, "1h", [
+      { field: "name", value: "GET /x" },
+    ]);
+    expect(doc.pipeline?.[0]).toEqual({
+      where: { field: "span.name", op: "eq", value: "GET /x" },
+    });
+  });
+});

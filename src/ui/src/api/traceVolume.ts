@@ -10,6 +10,7 @@
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
+import { facetField, type TraceFilter } from "../lib/traceFilters";
 import type { VolumeSeries } from "../features/explore/SignalHistogram";
 
 /** Stacking order, bottom to top. */
@@ -40,7 +41,17 @@ export function normalizeStatus(value: string): string {
 export function buildTraceVolumeDoc(
   range: ResolvedRange,
   step: string,
+  filters: TraceFilter[] = [],
 ): QueryIrRequest {
+  // The chart must describe the same traces the list shows, so the active
+  // filters narrow it too.
+  const where = filters.flatMap((f) => {
+    const facet = facetField(f.field);
+    if (!facet) return [];
+    return [
+      { where: { field: facet.irField, op: "eq", value: f.value } },
+    ] as Record<string, unknown>[];
+  });
   return {
     irVersion: 1,
     from: "traces",
@@ -50,6 +61,7 @@ export function buildTraceVolumeDoc(
     },
     result: "series",
     pipeline: [
+      ...where,
       {
         aggregate: {
           by: ["status.code"],
@@ -85,8 +97,9 @@ export function seriesFromIrResponse(res: QueryIrResponse): VolumeSeries[] {
 export async function fetchTraceVolume(
   range: ResolvedRange,
   step: string,
+  filters: TraceFilter[] = [],
 ): Promise<VolumeSeries[]> {
   return seriesFromIrResponse(
-    await runIrQuery(buildTraceVolumeDoc(range, step)),
+    await runIrQuery(buildTraceVolumeDoc(range, step, filters)),
   );
 }

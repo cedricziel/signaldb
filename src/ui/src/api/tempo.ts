@@ -175,12 +175,15 @@ export async function tempoGetTrace(
 export async function tempoSearch(
   range: ResolvedRange,
   limit: number,
+  /** TraceQL selector; omitted from the request when empty. */
+  query = "",
 ): Promise<TraceSummary[]> {
   const params = new URLSearchParams({
     start: String(Math.floor(range.fromMs / 1000)),
     end: String(Math.ceil(range.toMs / 1000)),
     limit: String(limit),
   });
+  if (query !== "") params.set("q", query);
   const wire = await tempoFetch<{ traces?: WireTrace[] }>("search", params);
   return (wire.traces ?? []).map((t) => {
     const root = rootSpan(

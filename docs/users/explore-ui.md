@@ -24,8 +24,8 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
 - **Logs** — filter chips compiled to LogQL (with an "edit as text" escape
   hatch), a per-level volume histogram, a virtualized log list with
   per-attribute filter/exclude actions, a fields sidebar, and live tail.
-- **Traces** — a span-volume chart stacked by span status sits above a
-  group-first view: recent traces arrive grouped by root
+- **Traces** — a facet sidebar and a span-volume chart stacked by span status
+  sit above a group-first view: recent traces arrive grouped by root
   span name (or by service, any observed root-span/resource attribute, or
   two dimensions combined via "Then by"), with per-group trace count,
   request rate, error rate, p50/p95 latency, and last-seen columns —
@@ -54,6 +54,20 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   in query parameters alongside it — so views are separately navigable and
   can be bookmarked, shared, and revisited with the browser back/forward
   buttons. Tenant/dataset administration lives at `/manage`.
+
+### Narrowing traces
+
+The traces tab has a facet sidebar. Expanding a facet lists its values with the
+number of matching spans **across the whole selected window** — not just the
+traces the list happened to fetch — most frequent first. Selecting a value adds
+a filter; filters appear as removable chips and narrow the trace list, the group
+table, and the volume chart together, so the chart always describes what the
+table shows. Filters live in the URL, so a narrowed view is shareable.
+
+Facets currently cover `service.name`, `span.name`, and `status`. These are the
+fields the query API can enumerate exactly today; attribute facets follow once
+[#1073](https://github.com/cedricziel/signaldb/issues/1073) lands, and will
+appear in the same sidebar without changing how it works.
 
 ### Reading the volume charts
 

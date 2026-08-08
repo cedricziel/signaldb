@@ -6,6 +6,11 @@ import { useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { DEFAULT_SCALE, isScale, type Scale } from "../features/explore/scale";
 import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
+import {
+  traceFilterFromParam,
+  traceFilterToParam,
+  type TraceFilter,
+} from "./traceFilters";
 import { DEFAULT_GROUP_BY } from "./traceGroups";
 import {
   DEFAULT_RANGE,
@@ -29,6 +34,8 @@ export interface ExploreState {
   scale: Scale;
   /** Chart bucket width; "" means pick one automatically for the range. */
   step: string;
+  /** Facet selections on the traces tab, compiled to a TraceQL selector. */
+  traceFilters: TraceFilter[];
   /** Selected trace id — opens the trace view. */
   trace: string;
   /** Selected trace group value — dives into that group's trace list. */
@@ -59,6 +66,7 @@ export const DEFAULT_STATE: ExploreState = {
   live: false,
   scale: DEFAULT_SCALE,
   step: "",
+  traceFilters: [],
   trace: "",
   group: "",
   groupBy: DEFAULT_GROUP_BY,
@@ -104,6 +112,10 @@ export function parseExploreState(search: string): ExploreState {
     live: p.get("live") === "1",
     scale: scaleFromParam(p.get("scale")),
     step: stepFromParam(p.get("step")),
+    traceFilters: p
+      .getAll("tf")
+      .map(traceFilterFromParam)
+      .filter((f): f is TraceFilter => f !== null),
     trace: p.get("trace") ?? "",
     group: p.get("group") ?? "",
     groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
@@ -137,6 +149,7 @@ export function buildSearch(state: ExploreState): string {
   if (state.live) p.set("live", "1");
   if (state.scale !== DEFAULT_SCALE) p.set("scale", state.scale);
   if (state.step !== "") p.set("step", state.step);
+  for (const f of state.traceFilters) p.append("tf", traceFilterToParam(f));
   if (state.trace) p.set("trace", state.trace);
   if (state.group) p.set("group", state.group);
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);

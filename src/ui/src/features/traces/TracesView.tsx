@@ -13,6 +13,12 @@ import {
   fetchTraceVolume,
 } from "../../api/traceVolume";
 import { SignalHistogram } from "../explore/SignalHistogram";
+import { TraceFacets } from "./TraceFacets";
+import {
+  compileTraceQL,
+  upsertTraceFilter,
+  type TraceFilter,
+} from "../../lib/traceFilters";
 import {
   durationToSeconds,
   formatTimestamp,
@@ -130,21 +136,34 @@ export function TracesView({ state, update }: Props) {
 
 function TraceSearch({ state, update }: Props) {
   const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const filters = state.traceFilters;
+  const traceql = compileTraceQL(filters);
   const search = useQuery({
-    queryKey: ["tempo-search", rangeKey, state.limit],
+    queryKey: ["tempo-search", rangeKey, state.limit, traceql],
     queryFn: () =>
-      tempoSearch(resolveRange(state.range, Date.now()), state.limit),
+      tempoSearch(resolveRange(state.range, Date.now()), state.limit, traceql),
   });
 
   const resolvedForStep = resolveRange(state.range, Date.now());
   const step = resolveStep(resolvedForStep, state.step);
   // Deliberately keyed without `state.limit`: the volume aggregate covers the
-  // whole window and must not move when the trace list's limit changes.
+  // whole window and must not move when the trace list's limit changes. It
+  // does follow the filters, so the chart describes what the table shows.
   const volume = useQuery({
-    queryKey: ["trace-volume", rangeKey, step],
+    queryKey: ["trace-volume", rangeKey, step, traceql],
     queryFn: () =>
-      fetchTraceVolume(resolveRange(state.range, Date.now()), step),
+      fetchTraceVolume(resolveRange(state.range, Date.now()), step, filters),
   });
+
+  const addFilter = (f: TraceFilter) =>
+    update({ traceFilters: upsertTraceFilter(filters, f), group: "" });
+  const removeFilter = (f: TraceFilter) =>
+    update({
+      traceFilters: filters.filter(
+        (x) => !(x.field === f.field && x.value === f.value),
+      ),
+      group: "",
+    });
 
   return (
     <div className="traces-search">
@@ -166,50 +185,77 @@ function TraceSearch({ state, update }: Props) {
           />
         </div>
       )}
-      <div className="traces-toolbar">
-        <form
-          className="trace-id-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const id = new FormData(e.currentTarget).get("traceId");
-            if (typeof id === "string" && id.trim() !== "") {
-              update({ trace: id.trim() });
-            }
-          }}
-        >
-          <input
-            name="traceId"
-            aria-label="Trace ID"
-            placeholder="Open trace by ID…"
-          />
-          <button type="submit">Open</button>
-        </form>
-        {state.group === "" && (
-          <DimensionPickers
-            traces={search.data ?? []}
-            groupBy={state.groupBy}
-            update={update}
-          />
-        )}
-      </div>
-
-      {search.isError && (
-        <div className="query-error" role="alert">
-          Search failed: {(search.error as Error).message}
+      {filters.length > 0 && (
+        <div className="trace-chips" aria-label="Active filters">
+          {filters.map((f) => (
+            <button
+              className="chip"
+              key={`${f.field}|${f.value}`}
+              aria-label={`Remove filter ${f.field} = ${f.value}`}
+              onClick={() => removeFilter(f)}
+            >
+              <span className="chip-k">{f.field}</span>
+              <span className="chip-v">{f.value}</span>
+              <span className="chip-x">×</span>
+            </button>
+          ))}
         </div>
       )}
-      {search.isPending && <div className="traces-note">Loading…</div>}
-      {search.data &&
-        (state.group === "" ? (
-          <GroupList
-            traces={search.data}
-            dims={parseGroupBy(state.groupBy)}
-            rangeSeconds={rangeSeconds(state)}
-            update={update}
-          />
-        ) : (
-          <GroupDetail state={state} traces={search.data} update={update} />
-        ))}
+      <div className="traces-body">
+        <TraceFacets
+          range={resolvedForStep}
+          rangeKey={rangeKey}
+          filters={filters}
+          onAddFilter={addFilter}
+          onRemoveFilter={removeFilter}
+        />
+        <div className="traces-main">
+          <div className="traces-toolbar">
+            <form
+              className="trace-id-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const id = new FormData(e.currentTarget).get("traceId");
+                if (typeof id === "string" && id.trim() !== "") {
+                  update({ trace: id.trim() });
+                }
+              }}
+            >
+              <input
+                name="traceId"
+                aria-label="Trace ID"
+                placeholder="Open trace by ID…"
+              />
+              <button type="submit">Open</button>
+            </form>
+            {state.group === "" && (
+              <DimensionPickers
+                traces={search.data ?? []}
+                groupBy={state.groupBy}
+                update={update}
+              />
+            )}
+          </div>
+
+          {search.isError && (
+            <div className="query-error" role="alert">
+              Search failed: {(search.error as Error).message}
+            </div>
+          )}
+          {search.isPending && <div className="traces-note">Loading…</div>}
+          {search.data &&
+            (state.group === "" ? (
+              <GroupList
+                traces={search.data}
+                dims={parseGroupBy(state.groupBy)}
+                rangeSeconds={rangeSeconds(state)}
+                update={update}
+              />
+            ) : (
+              <GroupDetail state={state} traces={search.data} update={update} />
+            ))}
+        </div>
+      </div>
     </div>
   );
 }
