@@ -196,6 +196,10 @@ name = "default_lifecycle_e2e"
 path = "tests/compactor/default_lifecycle_e2e.rs"
 
 [[test]]
+name = "default_config_safety_windows"
+path = "tests/compactor/default_config_safety_windows.rs"
+
+[[test]]
 name = "trace_bloom_pruning"
 path = "tests/querier/trace_bloom_pruning.rs"
 
