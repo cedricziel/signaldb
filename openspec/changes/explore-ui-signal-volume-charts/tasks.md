@@ -8,10 +8,10 @@
 
 ## 2. Time-axis formatting
 
-- [ ] 2.1 Write failing tests in `src/ui/src/lib/time.test.ts` for an axis
+- [x] 2.1 Write failing tests in `src/ui/src/lib/time.test.ts` for an axis
       formatter that includes the date when a window spans more than one
       calendar day and stays time-only otherwise.
-- [ ] 2.2 Implement the formatter in `src/ui/src/lib/time.ts`.
+- [x] 2.2 Implement the formatter in `src/ui/src/lib/time.ts`.
 
 ## 3. Shared `SignalHistogram` component
 

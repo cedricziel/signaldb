@@ -108,6 +108,46 @@ export function formatTimestamp(ms: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
+const DAY_MS = 86_400_000;
+
+/**
+ * Build a chart-axis label formatter sized to the window it labels.
+ *
+ * `formatTimestamp` is always time-of-day, which makes both ends of a 24h
+ * window render as the same string. The granularity here follows the window:
+ * time-only inside one calendar day, date + time once it crosses midnight,
+ * and date-only past a couple of days where the time of day is noise.
+ */
+export function axisLabelFormatter(
+  fromMs: number,
+  toMs: number,
+): (ms: number) => string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const date = (d: Date) => `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const time = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+  const from = new Date(fromMs);
+  const to = new Date(toMs);
+  const sameDay =
+    from.getFullYear() === to.getFullYear() &&
+    from.getMonth() === to.getMonth() &&
+    from.getDate() === to.getDate();
+
+  if (sameDay) {
+    return (ms) => {
+      const d = new Date(ms);
+      return `${time(d)}:${pad(d.getSeconds())}`;
+    };
+  }
+  if (toMs - fromMs > 2 * DAY_MS) {
+    return (ms) => date(new Date(ms));
+  }
+  return (ms) => {
+    const d = new Date(ms);
+    return `${date(d)} ${time(d)}`;
+  };
+}
+
 export function formatRangeLabel(range: TimeRange): string {
   if (range.type === "relative") {
     const preset = RANGE_PRESETS.find((p) => p.seconds === range.seconds);

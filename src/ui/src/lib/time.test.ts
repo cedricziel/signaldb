@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  axisLabelFormatter,
   DEFAULT_RANGE,
   durationToSeconds,
   formatRangeLabel,
@@ -98,5 +99,38 @@ describe("formatRangeLabel", () => {
     expect(formatRangeLabel({ type: "relative", seconds: 120 })).toBe(
       "Last 2m",
     );
+  });
+});
+
+describe("axisLabelFormatter", () => {
+  // Local time, so build the fixtures from Date parts rather than epoch
+  // literals — the assertions must hold in any TZ the suite runs in.
+  const at = (y: number, mo: number, d: number, h: number, mi = 0) =>
+    new Date(y, mo - 1, d, h, mi).getTime();
+
+  it("stays time-only within a single calendar day", () => {
+    const fmt = axisLabelFormatter(at(2026, 8, 8, 9), at(2026, 8, 8, 17));
+    expect(fmt(at(2026, 8, 8, 9))).toBe("09:00:00");
+    expect(fmt(at(2026, 8, 8, 17))).toBe("17:00:00");
+  });
+
+  it("includes the date once the window crosses midnight", () => {
+    const fmt = axisLabelFormatter(at(2026, 8, 7, 22), at(2026, 8, 8, 6));
+    expect(fmt(at(2026, 8, 7, 22))).toBe("08-07 22:00");
+    expect(fmt(at(2026, 8, 8, 6))).toBe("08-08 06:00");
+  });
+
+  // The reported defect: a 24h window labelled both ends "09:00:00.000".
+  it("gives a 24h window distinct labels at each end", () => {
+    const from = at(2026, 8, 7, 9);
+    const to = at(2026, 8, 8, 9);
+    const fmt = axisLabelFormatter(from, to);
+    expect(fmt(from)).not.toBe(fmt(to));
+  });
+
+  it("drops to date-only for windows spanning many days", () => {
+    const fmt = axisLabelFormatter(at(2026, 8, 1, 0), at(2026, 8, 8, 0));
+    expect(fmt(at(2026, 8, 1, 0))).toBe("08-01");
+    expect(fmt(at(2026, 8, 8, 0))).toBe("08-08");
   });
 });
