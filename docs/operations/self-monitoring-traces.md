@@ -63,7 +63,19 @@ flowchart LR
   `orphan_cleanup` root INTERNAL spans with `signaldb.tenant.id` /
   `signaldb.dataset.id` / `signaldb.table` and affected-object counts
   (`signaldb.job.partitions_dropped`, `…snapshots_expired`,
-  `…files_deleted`).
+  `…files_deleted`, `…bytes_reclaimed`).
+
+  Orphan cleanup carries enough to reconstruct a pass without reading the
+  source: why it declined a table (`signaldb.job.skip_reason`,
+  `…estimated_live_files` against `…live_files_threshold`), what it saw
+  (`…live_files`, `…total_files`, `…scanned_metadata_files`,
+  `…candidates`, `…grace_period_hours`), and what it did
+  (`…files_deleted`, `…bytes_reclaimed`, `…deletion_failures`,
+  `…dry_run`). Counts are emitted as `i64` — the registry types them as
+  `int`, and `usize`/`u64` would otherwise bridge to OpenTelemetry as
+  strings and break numeric queries. Per-file deletion detail stays in
+  plain logs: a path per file is unbounded cardinality and does not belong
+  in span attributes.
 - **WAL fan-in**: the writer's batch span **links** to every distinct
   source ingest trace (one link per origin, never a parent).
 
