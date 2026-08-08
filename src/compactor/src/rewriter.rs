@@ -216,16 +216,27 @@ impl ParquetRewriter {
         // A schema evolution is metadata-only (AddSchema/SetCurrentSchema),
         // so the reloaded table references the same data files — but the
         // second pass must both project and write under the new schema.
-        let reloaded_table;
-        let write_table: &Table = if promotion.evolved {
-            reloaded_table = self
-                .load_fresh_by_identifier(table.identifier())
+        let mut write_table: Table = if promotion.evolved {
+            self.load_fresh_by_identifier(table.identifier())
                 .await
-                .context("Failed to reload table after schema evolution")?;
-            &reloaded_table
+                .context("Failed to reload table after schema evolution")?
         } else {
-            table
+            table.clone()
         };
+
+        // Roll output files on the writer's real bytes-written feedback
+        // against *this* target (openspec task 5.4, design D4). The pinned
+        // writer only rolls against the `write.target-file-size-bytes`
+        // table property, and `ensure_table` never sets it, so without this
+        // every table would roll at the writer's unset-property 512 MiB
+        // fallback no matter what `target_file_size_bytes` says — one
+        // output file per partition, in practice, since no partition here
+        // gets near 512 MiB.
+        common::iceberg::table_manager::ensure_target_file_size_property(
+            &mut write_table,
+            target_file_size_bytes,
+        )
+        .await;
 
         let backfill: Vec<(String, String)> = if promotion.backfill.is_empty() {
             vec![]
@@ -267,7 +278,7 @@ impl ParquetRewriter {
         );
 
         let new_files =
-            iceberg_rust::arrow::write::write_parquet_partitioned(write_table, output, None)
+            iceberg_rust::arrow::write::write_parquet_partitioned(&write_table, output, None)
                 .await
                 .context("Failed to write compacted Parquet files")?;
 
@@ -303,14 +314,35 @@ impl ParquetRewriter {
     /// re-chunking toward the target file size — all lazily, so no more
     /// than the batches in flight are resident.
     ///
-    /// Chunking accumulates input batches until they reach
-    /// `target_file_size_bytes` and emits one concatenated batch. That is
-    /// a hint, not a guarantee of one file per batch:
-    /// `write_parquet_partitioned` may combine yielded batches and rolls
-    /// files by the table's own `write.target-file-size-bytes`. What the
-    /// chunking *does* guarantee is the property this pass exists for —
-    /// the accumulator is bounded by the target size rather than by the
-    /// partition.
+    /// This chunking is a *memory* bound, not the file-size control.
+    /// `target_file_size_bytes` here measures `get_array_memory_size()` —
+    /// decoded, in-memory bytes — so the accumulator caps how much unwritten
+    /// data this pass can hold at once (proportional to one output file's
+    /// worth, never to the partition); it says nothing by itself about how
+    /// large the resulting Parquet file is, since decoded and encoded
+    /// (compressed) bytes diverge by roughly 5–10x. The actual
+    /// roll-to-a-new-file decision is made downstream by
+    /// `write_parquet_partitioned`, which tracks its own real bytes-written
+    /// and rolls against the table's `write.target-file-size-bytes`
+    /// property — set to this same `target_file_size_bytes` by
+    /// [`common::iceberg::table_manager::ensure_target_file_size_property`]
+    /// before the write starts (openspec task 5.4, design D4).
+    ///
+    /// The writer only rolls *between* incoming batches — it never splits
+    /// one — so this pass must never hand it a single unit larger than the
+    /// target, or the writer gets no chance to roll at all. A whole-batch
+    /// chunker would do exactly that for a partition small enough that
+    /// DataFusion returns it as one `RecordBatch` (routine for a
+    /// freshly-closed hour): that one batch already exceeds target on its
+    /// own, so it would be the *only* batch the writer ever sees. Instead
+    /// this pass slices every incoming batch into row ranges sized to
+    /// `target_file_size_bytes` (via `RecordBatch::slice`, using the
+    /// batch's own average row size), and accumulates slices toward the
+    /// target exactly as it would whole small batches — so a single
+    /// oversized source batch still becomes several target-sized units, and
+    /// several small ones still coalesce into one. Encoded size is what the
+    /// file boundary tracks; this pass only bounds memory and shapes the
+    /// units the writer gets to check against.
     fn rewrite_stream(
         mut stream: datafusion::execution::SendableRecordBatchStream,
         dropped_columns: Vec<String>,
@@ -357,19 +389,83 @@ impl ParquetRewriter {
                     }
                 };
 
-                pending_bytes += batch.get_array_memory_size() as u64;
-                pending.push(batch);
+                // Split an *oversized* batch into target-sized row windows;
+                // a batch that already fits stays whole.
+                //
+                // Slicing at all is what makes the downstream roll work.
+                // The writer rolls only *between* the batches it is handed,
+                // never inside one, so a single batch bigger than the target
+                // gives it no roll opportunity — and that is the common
+                // case, since DataFusion returns a freshly-closed hour's
+                // whole scan as one `RecordBatch`. A whole-batch-only
+                // chunker therefore emits that one oversized unit and the
+                // writer puts everything in one file, whatever
+                // `write.target-file-size-bytes` says (openspec task 5.4).
+                //
+                // Slicing only the oversized ones is what keeps the
+                // accounting honest. `bytes_per_row` is derived per batch
+                // from `get_array_memory_size()`, which includes fixed
+                // per-batch overhead — so the same data costs more per row
+                // in a small batch than a large one. Slicing every batch to
+                // top the accumulator up to exactly the target would cut
+                // small batches in two over that inconsistency alone,
+                // stranding tiny remainder chunks. Whole batches accumulate
+                // as they always did; only a batch that cannot fit is cut.
+                let batch_rows = batch.num_rows();
+                let batch_bytes = batch.get_array_memory_size() as u64;
+                let bytes_per_row = (batch_bytes / batch_rows as u64).max(1);
 
-                if pending_bytes >= target_file_size_bytes {
-                    match Self::concat(&pending) {
-                        Ok(merged) => yield Ok(merged),
-                        Err(e) => {
-                            yield Err(datafusion::arrow::error::ArrowError::ExternalError(e.into()));
-                            return;
+                let fits_whole = batch_bytes <= target_file_size_bytes;
+
+                let mut offset = 0usize;
+                while offset < batch_rows {
+                    let take_rows = if fits_whole {
+                        batch_rows
+                    } else {
+                        ((target_file_size_bytes / bytes_per_row).max(1) as usize)
+                            .min(batch_rows - offset)
+                    };
+
+                    // An unsliced batch is charged its exact measured size:
+                    // `bytes_per_row` is a truncating integer division, so
+                    // re-deriving a whole batch's size from it would
+                    // undercount by up to one row's worth per batch, and
+                    // that error accumulates across a stream into flushes
+                    // that come too late.
+                    //
+                    // For a slice, that per-row estimate is the best
+                    // available — and deliberately not
+                    // `slice.get_array_memory_size()`: a slice shares
+                    // its parent's buffers, so Arrow reports the *parent's*
+                    // full buffer capacity for any sub-range slice, not a
+                    // prorated share (`arrow-data`'s `get_slice_memory_size`
+                    // is the method that would prorate; `get_array_memory_size`
+                    // does not). Using it here would overcount every partial
+                    // slice by the whole batch's size, forcing a flush after
+                    // the very first slice regardless of how small it is —
+                    // silently defeating the coalescing this loop exists to
+                    // do. `take_rows * bytes_per_row` is the slice's actual
+                    // share, computed from the same per-row estimate that
+                    // sized it.
+                    pending_bytes += if fits_whole {
+                        batch_bytes
+                    } else {
+                        take_rows as u64 * bytes_per_row
+                    };
+                    pending.push(batch.slice(offset, take_rows));
+                    offset += take_rows;
+
+                    if pending_bytes >= target_file_size_bytes {
+                        match Self::concat(&pending) {
+                            Ok(merged) => yield Ok(merged),
+                            Err(e) => {
+                                yield Err(datafusion::arrow::error::ArrowError::ExternalError(e.into()));
+                                return;
+                            }
                         }
+                        pending.clear();
+                        pending_bytes = 0;
                     }
-                    pending.clear();
-                    pending_bytes = 0;
                 }
             }
 
@@ -936,6 +1032,114 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].num_rows(), 10);
+    }
+
+    /// A single incoming batch already larger than the target must still be
+    /// split into several chunks, not pushed and flushed whole.
+    ///
+    /// This is the case a whole-batch-only chunker gets wrong: DataFusion
+    /// hands back a small partition's entire scan as one `RecordBatch`, so
+    /// "accumulate whole batches up to target" degenerates to "one chunk,
+    /// however large" — which then gives the downstream Parquet writer only
+    /// one incoming unit to roll a new file between, defeating the real
+    /// encoded-size roll regardless of what `write.target-file-size-bytes`
+    /// says (openspec task 5.4; reproduced end-to-end in
+    /// `tests-integration/tests/compactor/target_encoded_file_size.rs`
+    /// before this test was added).
+    #[tokio::test]
+    async fn chunking_splits_a_single_oversized_incoming_batch() {
+        let batch = int_batch(100, 0);
+        let bytes_per_row = batch.get_array_memory_size() as u64 / 100;
+        // A target well under the batch's own size forces multiple slices
+        // out of this one incoming batch.
+        let target = bytes_per_row * 10;
+
+        let out = drain(chunk(vec![batch], target)).await;
+
+        assert!(
+            out.len() > 1,
+            "a single 100-row batch at a ~10-row target must still split into several chunks, got {}",
+            out.len()
+        );
+        let ids: Vec<i64> = out
+            .iter()
+            .flat_map(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            (0..100).collect::<Vec<i64>>(),
+            "splitting must preserve every row, in order, exactly once"
+        );
+    }
+
+    /// A trailing slice of an oversized batch must still coalesce with
+    /// following small batches, exactly as whole small batches coalesce
+    /// with each other.
+    ///
+    /// This pins the specific accounting bug the split fix above does not:
+    /// `RecordBatch::slice` shares its parent's buffers, so
+    /// `get_array_memory_size()` on a sub-range slice reports the *parent
+    /// batch's* full size, not the slice's share. Using that to accumulate
+    /// `pending_bytes` overcounts every partial slice, so the tail slice of
+    /// an oversized batch always looks like it alone exceeds the target and
+    /// gets flushed on its own -- even when its real share is small enough
+    /// that it should keep accumulating with what follows, same as any
+    /// other undersized chunk. The row-preservation assertions in
+    /// `chunking_splits_a_single_oversized_incoming_batch` pass under that
+    /// bug too (no row is lost or duplicated either way); only the chunk
+    /// *count* and the tail chunk's size expose it.
+    #[tokio::test]
+    async fn chunking_coalesces_an_oversized_batchs_tail_with_following_small_batches() {
+        // 105 rows at a ~50-row target: two full windows (rows 0-49,
+        // 50-99) plus a 5-row remainder that must NOT become its own
+        // chunk -- it has to wait for and merge with what follows.
+        let huge = int_batch(105, 0);
+        let bytes_per_row = huge.get_array_memory_size() as u64 / 105;
+        let target = bytes_per_row * 50;
+
+        // Two more small batches, together with the 5-row remainder still
+        // comfortably under the target, so all three must land in one
+        // final chunk when the stream ends.
+        let small1 = int_batch(20, 105);
+        let small2 = int_batch(20, 125);
+
+        let out = drain(chunk(vec![huge, small1, small2], target)).await;
+
+        assert_eq!(
+            out.len(),
+            3,
+            "expected 2 full windows from the huge batch plus 1 merged tail, got {} chunks: {:?}",
+            out.len(),
+            out.iter().map(|b| b.num_rows()).collect::<Vec<_>>()
+        );
+        let last = out.last().expect("at least one chunk");
+        assert_eq!(
+            last.num_rows(),
+            45,
+            "the huge batch's 5-row tail must merge with both 20-row batches into one 45-row \
+             chunk, not be flushed alone (got {} rows in the final chunk)",
+            last.num_rows()
+        );
+
+        let ids: Vec<i64> = out
+            .iter()
+            .flat_map(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(ids, (0..145).collect::<Vec<i64>>());
     }
 
     /// The three memory knobs interact, and a bad combination is not

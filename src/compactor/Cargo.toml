@@ -15,6 +15,7 @@ tokio.workspace = true
 tokio-stream.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+dashmap.workspace = true
 
 # Phase 2 dependencies
 datafusion.workspace = true

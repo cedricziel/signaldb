@@ -1,11 +1,8 @@
-# Lifecycle Reclamation Delta Spec
+# lifecycle-reclamation Specification
 
 ## Purpose
-
 Defines what retention enforcement and orphan-file cleanup must guarantee: logically expired or superseded data is eventually physically reclaimed, live data is never deleted, and both properties hold under default configuration.
-
-## ADDED Requirements
-
+## Requirements
 ### Requirement: Live-file determination is derived from current table metadata, never snapshot age
 
 Orphan detection SHALL derive the live-file set from the manifests reachable from the table's current snapshot, unioned with the manifests of every retained snapshot. Snapshot creation time MUST NOT be used to exclude a reachable manifest or file from the live set. A file SHALL be classified an orphan candidate only if no retained snapshot references it.
@@ -18,7 +15,7 @@ Orphan detection SHALL derive the live-file set from the manifests reachable fro
 #### Scenario: Idle table loses nothing
 
 - **WHEN** a table has received no commits for longer than any configured age window and orphan cleanup runs
-- **THEN** the live set equals the table's current content, zero files are classified as orphans, and the table remains fully queryable
+- **THEN** the live set equals the table's current content, no file the current snapshot references is classified as an orphan, and the table remains fully queryable (files the table genuinely no longer references stay eligible — idleness protects live data, it does not suspend reclamation)
 
 #### Scenario: Genuinely orphaned files are found
 
@@ -67,6 +64,3 @@ Physical deletion SHALL respect a configurable grace period covering query execu
 - **WHEN** a query pinned to a retained snapshot is executing while cleanup runs
 - **THEN** every file that query's snapshot references is excluded from deletion
 
-## REMOVED Requirements
-
-_None — no prior lifecycle spec exists; current behavior (age-derived live set, disabled-by-default cleanup, path-parsed partitions) is unspecified legacy._

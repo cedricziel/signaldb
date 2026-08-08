@@ -243,6 +243,36 @@ retention_check_interval = "24h"  # Won't run often
 
 **Solution:** Reduce interval for more frequent checks or wait longer.
 
+4. **Waiting Behind a Compaction Job on the Same Table:**
+
+Compaction, retention drops, and snapshot expiration take turns per table
+within a compactor process, so a rewrite in progress defers that table's
+retention pass until it completes. Retention on _other_ tables is unaffected,
+which is the signature to look for: some tables progress while one lags.
+
+```bash
+# Is a rewrite in flight on the LAGGING table specifically? Without the
+# tenant/dataset/table filter this matches every concurrent rewrite, which
+# cannot tell you whether this table is the one holding the lock.
+TENANT=acme; DATASET=prod; TABLE=traces
+journalctl -u signaldb-compactor \
+  | grep -E "Starting compaction job|Rewrote table data" \
+  | grep -E "$TENANT/$DATASET/$TABLE|table=$TABLE"
+```
+
+The compaction job log line carries `tenant/dataset/table`; the rewrite
+completion line carries `table=`, so match either.
+
+**Solution:** None needed — the pass is deferred, not skipped, and runs as soon
+as the rewrite finishes. The wait is bounded by the compaction job, not by a
+timer: a job that hits commit conflicts redoes the whole rewrite, up to three
+attempts, so the worst case is three rewrite durations rather than one. If the
+delay is persistent rather than occasional, the rewrite itself is the problem to
+chase: see
+[Issue 13](#issue-13-rewrites-fail-with-resources-exhausted-instead-of-spilling)
+and the `max_partition_input_mb` guidance in
+[configuration.md](configuration.md).
+
 ### Issue 4: Snapshot Expiration Not Working
 
 **Symptoms:**
@@ -511,7 +541,7 @@ If many partitions exist, consider implementing partition pruning in the query p
 > is roughly `memory_limit_mb` (the DataFusion pool, which spills past it) plus
 > one `target_file_size_mb` of output accumulation. Neither term grows with the
 > partition. If rewrite memory looks proportional to how much data an hour
-> holds, that is a bug, not tuning. If a *sort* fails outright with
+> holds, that is a bug, not tuning. If a _sort_ fails outright with
 > `Resources exhausted` instead of spilling, see
 > [Issue 13](#issue-13-rewrites-fail-with-resources-exhausted-instead-of-spilling).
 
@@ -561,7 +591,7 @@ services:
 - The job fails in `read_and_merge` — no commit is ever attempted, so nothing is corrupted; the partition is simply never compacted
 
 **What it means:** the memory pool is being exhausted by the sort's own
-*concurrency*, not by one oversized partition. Every DataFusion partition gets
+_concurrency_, not by one oversized partition. Every DataFusion partition gets
 its own sorter plus an unspillable merge reservation, and they all divide the
 single `memory_limit_mb` budget.
 

@@ -30,6 +30,7 @@ pub mod retention;
 pub mod rewriter;
 pub mod scheduler;
 pub mod service;
+pub mod table_lock;
 
 // Re-export commonly used types
 pub use commit::{CommitError, DataFileChange, IcebergCommitter, is_conflict_error};
@@ -56,3 +57,4 @@ pub use retention::{
 };
 pub use rewriter::ParquetRewriter;
 pub use service::CompactorService;
+pub use table_lock::TableLockRegistry;

@@ -8,6 +8,7 @@ use crate::iceberg::ManifestReader;
 use crate::metrics::CompactionMetrics;
 use crate::planner::{CompactionCandidate, PlannerConfig};
 use crate::rewriter::ParquetRewriter;
+use crate::table_lock::TableLockRegistry;
 use anyhow::{Context, Result};
 use common::CatalogManager;
 use std::collections::{HashMap, HashSet};
@@ -105,6 +106,13 @@ pub struct CompactionExecutor {
     rewriter: ParquetRewriter,
     metrics: CompactionMetrics,
     config: ExecutorConfig,
+    /// Serializes this table's compaction commits against retention drops
+    /// and snapshot expiration on the same table (D6). Defaults to a
+    /// private registry via [`Self::new`]; [`Self::with_table_locks`] shares
+    /// one registry with the retention enforcer so the two actors actually
+    /// gate each other — `CompactorService::new` does this for the
+    /// long-running compactor process.
+    table_locks: TableLockRegistry,
 }
 
 impl CompactionExecutor {
@@ -127,6 +135,7 @@ impl CompactionExecutor {
             rewriter,
             metrics,
             config,
+            table_locks: TableLockRegistry::new(),
         }
     }
 
@@ -134,6 +143,15 @@ impl CompactionExecutor {
     /// catalog (epic #737, #733).
     pub fn with_service_catalog(mut self, catalog: Arc<common::catalog::Catalog>) -> Self {
         self.rewriter.set_service_catalog(catalog);
+        self
+    }
+
+    /// Share a [`TableLockRegistry`] with other lifecycle actors (retention,
+    /// snapshot expiration) so compaction commits on a table serialize
+    /// against them (D6). Without this call the executor gates only against
+    /// itself.
+    pub fn with_table_locks(mut self, table_locks: TableLockRegistry) -> Self {
+        self.table_locks = table_locks;
         self
     }
 
@@ -150,6 +168,26 @@ impl CompactionExecutor {
         );
 
         async {
+            // Serialize against retention drops and snapshot expiration on
+            // this same table (D6). Both real entry points into compaction
+            // — the background lifecycle loop (`lifecycle::CompactionCycle`)
+            // and the Flight `compact_now` action
+            // (`CompactorFlightService::do_action`) — call this method on
+            // the same shared `Arc<CompactionExecutor>`, so acquiring the
+            // guard here covers both without duplicating it at each call
+            // site. Held across the whole retry loop below (bounded by
+            // `config.max_retries` with exponential backoff, never an
+            // unbounded wait) so a retry cannot interleave with a retention
+            // pass either.
+            let _table_guard = self
+                .table_locks
+                .lock(
+                    &candidate.tenant_id,
+                    &candidate.dataset_id,
+                    &candidate.table_name,
+                )
+                .await;
+
             // Create a compaction job from the candidate
             let job = self.create_job(candidate).await?;
 

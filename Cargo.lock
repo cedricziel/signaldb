@@ -1345,6 +1345,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "common",
+ "dashmap",
  "datafusion",
  "datafusion_iceberg",
  "futures",

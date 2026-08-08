@@ -492,6 +492,131 @@ async fn oversized_partition_stays_within_its_memory_budget() -> Result<()> {
     Ok(())
 }
 
+/// An unspillable reservation that exceeds the whole pool must fail the job
+/// with an attributable resource error (openspec task 5.1, spec sentence
+/// "Exceeding the budget SHALL fail the job with a resource error rather
+/// than exhausting host memory").
+///
+/// `oversized_partition_stays_within_its_memory_budget` above pins the
+/// success side of that guarantee — a spillable `ExternalSorter` degrades
+/// to disk instead of failing — but never exercises the failure side,
+/// because with the default `target_partitions = 1` a single sorter has
+/// the whole pool to itself and this data volume always fits after
+/// spilling.
+///
+/// `FairSpillPool` only fair-shares *spillable* consumers
+/// (`common::datafusion_runtime`, "What it does not cover"). Raising
+/// `target_partitions` gives the sort plan per-partition `ExternalSorter`s
+/// feeding a `SortPreservingMergeExec`, plus one `ExternalSorterMerge` per
+/// sorter to read its own spilled runs back — all unspillable and all
+/// competing first-come-first-served for whatever the pool has left. With
+/// an 8-way fan-out over a 1 MB pool, those unspillable reservations
+/// exceed the pool before any single one of them can grow, and DataFusion
+/// returns `ResourcesExhausted` naming the losing consumer rather than
+/// growing the heap. This is a real operator configuration
+/// (`compactor.target_partitions`), not a test-only code path.
+#[tokio::test]
+async fn unspillable_reservation_over_budget_fails_with_attributable_resource_error() -> Result<()>
+{
+    let mut config = common::testing::TestConfigBuilder::new()
+        .in_memory()
+        .with_tenant("test-tenant", "test-dataset")
+        .build();
+    // 1 MB total budget, fanned out 8 ways: the per-partition sorters' own
+    // unspillable merge-back reservations already exceed the pool, so the
+    // job must fail with a resource error rather than growing the heap.
+    config.compactor.memory_limit_mb = 1;
+    config.compactor.target_partitions = 8;
+
+    let catalog_manager = Arc::new(CatalogManager::new(config).await?);
+    let object_store = Arc::new(InMemory::new());
+
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let table_name = "traces";
+
+    let mut writer = IcebergTableWriter::new(
+        &catalog_manager,
+        object_store.clone(),
+        tenant_id.to_string(),
+        dataset_id.to_string(),
+        table_name.to_string(),
+    )
+    .await
+    .context("Failed to create writer")?;
+
+    generators::generate_traces(
+        &mut writer,
+        &DataGeneratorConfig {
+            partition_count: 1,
+            files_per_partition: 20,
+            rows_per_file: 500,
+            base_timestamp: aligned_hour_start(5),
+            partition_granularity: PartitionGranularity::Hour,
+        },
+    )
+    .await
+    .context("Failed to generate trace data")?;
+
+    let before =
+        live_files_by_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
+    let target = *before.keys().next().expect("one partition");
+
+    let metrics = CompactionMetrics::new();
+    let executor = CompactionExecutor::new(
+        catalog_manager.clone(),
+        ExecutorConfig::default(),
+        metrics.clone(),
+    );
+
+    let result = executor
+        .execute_candidate(CompactionCandidate {
+            tenant_id: tenant_id.to_string(),
+            dataset_id: dataset_id.to_string(),
+            table_name: table_name.to_string(),
+            partition_id: target.to_string(),
+            stats: PartitionStats {
+                file_count: before[&target].len(),
+                total_size_bytes: 20 * 1024,
+                avg_file_size_bytes: 1024,
+            },
+        })
+        .await
+        .context("Compaction execution returned a hard error")?;
+
+    assert_eq!(
+        result.status,
+        CompactionStatus::Failed,
+        "an unspillable reservation over budget must fail the job outright, \
+         not succeed or hit the unrelated conflict path"
+    );
+
+    let error = result
+        .error
+        .expect("a Failed outcome must carry an error to be attributable");
+    assert!(
+        error.contains("Resources exhausted"),
+        "the failure must be DataFusion's own resource-exhaustion error, not \
+         some other failure mode, got: {error}"
+    );
+    assert!(
+        error.contains("top memory consumers"),
+        "the error must name the consumer via TrackConsumersPool, so an \
+         operator can attribute the failure, got: {error}"
+    );
+
+    // A failed job must leave the table exactly as it was — no partial
+    // commit, no corruption.
+    let after =
+        live_files_by_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
+    assert_eq!(
+        after, before,
+        "a failed rewrite must not mutate the table's live file set"
+    );
+
+    Ok(())
+}
+
 /// A delta commit whose inputs were mutated underneath it must abort as a
 /// conflict, and must leave no snapshot behind (openspec task 6.1).
 ///
