@@ -65,7 +65,7 @@
 
 - [x] 7.1 `pnpm --filter ... test` (or the repo's UI test script) green; run
       `pnpm lint` and `pnpm format` per the UI toolchain. Use pnpm, never npm.
-- [ ] 7.2 Regression check against a deployment with a spiky window: confirm
+- [x] 7.2 Regression check against a deployment with a spiky window: confirm
       the body of the distribution is legible, the tooltip resolves on a
       minimum-height bar, and the 24h axis labels differ at each end.
 - [x] 7.3 Confirm no Rust crate changed and no OpenAPI/SDK regeneration was
