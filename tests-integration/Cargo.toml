@@ -140,6 +140,10 @@ name = "basic_compaction"
 path = "tests/compactor/basic_compaction.rs"
 
 [[test]]
+name = "target_encoded_file_size"
+path = "tests/compactor/target_encoded_file_size.rs"
+
+[[test]]
 name = "concurrent_writes"
 path = "tests/compactor/concurrent_writes.rs"
 
