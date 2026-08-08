@@ -183,6 +183,14 @@ The properties are applied at table creation, and `ensure_table` backfills any t
 
 These are honored by the SQL catalog's delete-after-commit support (contributed upstream as [JanKaul/iceberg-rust#382](https://github.com/JanKaul/iceberg-rust/pull/382); SignalDB is temporarily pinned to a fork commit carrying it — see the note in `Cargo.toml`). This is safe because SignalDB queries only current snapshots (no metadata time-travel), and snapshot history is separately bounded by the compactor's snapshot expiration.
 
+### Output file size
+
+The Parquet writer rolls to a new data file when the file it is building reaches `write.target-file-size-bytes`, measured as **real encoded bytes** — what it has already flushed plus the row group still in hand — rather than an in-memory estimate. Decoded and encoded sizes diverge by roughly 5–10×, so rolling on a memory estimate produces files far under target.
+
+SignalDB does not set this property at table creation. Compaction reconciles it instead, immediately before each rewrite: if the table's value differs from `[compactor].target_file_size_mb`, a metadata-only `update_properties` commit sets it (`common::iceberg::table_manager::ensure_target_file_size_property`). Setting it once at creation would be simpler but would drift the moment an operator changed the config — and a planner that treats files below `target_file_size_mb` as compaction inputs, paired with a writer rolling at some older value, never converges: it would re-select the same partition forever. Reconciling from the compaction path keeps the two definitions of "target" the same number by construction. The commit is a no-op once the value matches, and a commit lost to a concurrent-writer race is logged, not fatal — that cycle's output rolls at the table's previous target and the next cycle retries.
+
+Left unset — on a table no compaction has touched yet — the writer falls back to its own 512 MiB default, which no ingest flush approaches, so ingest files are unaffected either way.
+
 ### Column statistics
 
 Iceberg stores each column's value counts and min/max bounds inline in the **manifest entry of every data file**, so a bound is a per-file cost paid on every query plan, forever. Two controls keep that cost proportionate:

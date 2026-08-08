@@ -143,6 +143,14 @@ materialized_labels` is applied when a table is created; `ensure_table`
   tables are not stuck: the compactor's attribute-promotion pass can add
   `label_<key>` columns to them — see
   [label columns can be added to existing tables](../architecture/storage-layout.md#label-columns-can-be-added-to-existing-tables).
+- **Not every table property is set at creation.** Provisioning applies the
+  bloom-filter, column-statistics, compression and metadata-pruning
+  properties, but deliberately not `write.target-file-size-bytes`: compaction
+  reconciles that one against `[compactor].target_file_size_mb` before each
+  rewrite, so it cannot drift when an operator retunes the target. A
+  provisioned table therefore shows no such property until its first
+  compaction — see
+  [output file size](../architecture/storage-layout.md#output-file-size).
 
 ## Related
 

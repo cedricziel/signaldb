@@ -32,6 +32,8 @@ The compactor provides automatic data lifecycle management through:
 
 Compaction, retention and snapshot expiration are Iceberg metadata commits and respect its transactional guarantees and snapshot isolation. Orphan cleanup is different in kind: it deletes objects from storage outside any commit. It is snapshot-aware (a file is a candidate only when no retained snapshot references it), bounded by a grace period, and re-validated against a freshly rebuilt live set immediately before each deletion batch — but it is not atomic, and a deletion cannot be rolled back by a snapshot.
 
+Within one compactor process, the three committing actors take turns per table: compaction, retention partition drops, and snapshot expiration each acquire that table's lock before doing their work, so they cannot interleave on the same table. Different tables never wait on each other. This covers both ways compaction is triggered — the background cycle and the `compact_now` Flight action, which an admin can fire at any moment — so a manually triggered compaction cannot land in the middle of a retention pass. It is an in-process ordering only: across multiple compactor instances, safety still rests on Iceberg catalog CAS and on compaction validating that its own input files are still live at commit time. The practical consequence to know about is that a long rewrite delays that table's next retention pass until it finishes; the pass is deferred, never skipped.
+
 > **Compaction is partition-scoped.** A job operates on exactly one closed
 > `timestamp_hour` partition and commits a _delta_ — its input files are removed
 > and the compacted outputs added in a single snapshot, leaving every other
@@ -42,11 +44,11 @@ Compaction, retention and snapshot expiration are Iceberg metadata commits and r
 > has elapsed — the partition still receiving writes is the one whose files
 > would change under a running rewrite, so it is deliberately left alone.
 > Rewrites run their **DataFusion operators** under a `[compactor]
-> memory_limit_mb` budget (default 512 MB), spilling to disk past it. The
+memory_limit_mb` budget (default 512 MB), spilling to disk past it. The
 > rewrite streams the partition in two passes rather than collecting it, so
 > what sits outside that budget is bounded by one output file rather than by
 > the partition. The rewrite sorts with a fan-out of `[compactor]
-> target_partitions` (default `1`): the sorters share the one budget, so
+target_partitions` (default `1`): the sorters share the one budget, so
 > raising the fan-out divides it and can exhaust the pool on concurrency
 > alone. The compactor warns at startup when these settings cannot work
 > together — a target file size at or above the pool, or a per-sorter share

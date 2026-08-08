@@ -46,34 +46,41 @@ Compactor lifecycle configuration is located in the `[compactor]` section of `si
 
 Controls compaction planning: which files are merged into larger ones and when a table qualifies.
 
-| Field                      | Type            | Default          | Description                                                                                                                                                                         |
-| -------------------------- | --------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                  | `bool`          | `true`           | Enable the compactor service                                                                                                                                                        |
-| `tick_interval`            | duration string | `"5m"`           | Interval between compaction planning cycles                                                                                                                                         |
-| `target_file_size_mb`      | integer (MB)    | `128`            | Target output file size after compaction                                                                                                                                            |
-| `file_count_threshold`     | integer         | `10`             | Minimum number of _small_ files (see below) required to trigger compaction                                                                                                          |
-| `max_input_file_size_kb`   | integer (KB)    | `65536` (64 MB)  | Maximum input file size considered for compaction. Files at or above this size are treated as already compacted and are left alone                                                  |
-| `partition_lateness`       | duration string | `"10m"`          | How long an hour partition stays open for late-arriving data after its hour ends; only closed partitions are compacted                                                              |
-| `memory_limit_mb`          | integer (MB)    | `512`            | Budget for the rewrite's **DataFusion operators** (the sort above all), which spill to disk past it. Not a total: see the caveat below                                              |
-| `target_partitions`        | integer         | `1`              | DataFusion partition fan-out for the rewrite (`0` = available parallelism). Each partition sorts independently and they share `memory_limit_mb`, so raising this divides the budget |
+| Field                      | Type            | Default          | Description                                                                                                                                                                                    |
+| -------------------------- | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                  | `bool`          | `true`           | Enable the compactor service                                                                                                                                                                   |
+| `tick_interval`            | duration string | `"5m"`           | Interval between compaction planning cycles                                                                                                                                                    |
+| `target_file_size_mb`      | integer (MB)    | `128`            | Target output file size after compaction                                                                                                                                                       |
+| `file_count_threshold`     | integer         | `10`             | Minimum number of _small_ files (see below) required to trigger compaction                                                                                                                     |
+| `max_input_file_size_kb`   | integer (KB)    | `65536` (64 MB)  | Maximum input file size considered for compaction. Files at or above this size are treated as already compacted and are left alone                                                             |
+| `partition_lateness`       | duration string | `"10m"`          | How long an hour partition stays open for late-arriving data after its hour ends; only closed partitions are compacted                                                                         |
+| `memory_limit_mb`          | integer (MB)    | `512`            | Budget for the rewrite's **DataFusion operators** (the sort above all), which spill to disk past it. Not a total: see the caveat below                                                         |
+| `target_partitions`        | integer         | `1`              | DataFusion partition fan-out for the rewrite (`0` = available parallelism). Each partition sorts independently and they share `memory_limit_mb`, so raising this divides the budget            |
 | `max_partition_input_mb`   | integer (MB)    | `2048`           | Upper bound on the summed size of a partition's eligible input files. Partitions above it are declined with a warning and counted, rather than attempted and failed every cycle (`0` = no cap) |
-| `max_candidates_per_cycle` | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                                                                 |
-| `max_per_tenant`           | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                                                                           |
-| `lease_ttl_seconds`        | integer         | `300`            | How long a compaction lease stays valid without renewal                                                                                                                             |
-| `metrics_addr`             | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled)                                                                                                                                       |
+| `max_candidates_per_cycle` | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                                                                            |
+| `max_per_tenant`           | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                                                                                      |
+| `lease_ttl_seconds`        | integer         | `300`            | How long a compaction lease stays valid without renewal                                                                                                                                        |
+| `metrics_addr`             | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled)                                                                                                                                                  |
 
 **How the cadences interact:** each lifecycle cycle runs on its own task, so
 these intervals are independent of one another — a compaction pass that runs
 long does not postpone retention, orphan cleanup, or the 30s stale-lease sweep
 (the sweep cadence is fixed and not configurable; `lease_ttl_seconds` controls
 only how long a lease survives without renewal). Two consequences worth
-knowing: retention and compaction can commit against the same table at the same
-time, which shows up as Iceberg commit conflicts that both paths retry
-(`compactor_conflicts_detected_total`, `compactor_retries_attempted_total`);
-and a cycle disabled with `enabled = false` gets no task at all rather than a
-task that wakes up and returns.
+knowing. First, independent cadences do not mean independent access to a table:
+within one compactor process, compaction commits, retention partition drops and
+snapshot expiration take a per-table lock, so on any one table they take turns
+rather than commit concurrently — a long rewrite defers that table's next
+retention pass, and other tables are unaffected. Across _separate_ compactor
+instances there is no such lock, so those commits can still race; that shows up
+as Iceberg commit conflicts which both paths retry
+(`compactor_conflicts_detected_total`, `compactor_retries_attempted_total`).
+Second, a cycle disabled with `enabled = false` gets no task at all rather than
+a task that wakes up and returns.
 
 **How file selection works:** compaction exists to merge many small ingest files into few large ones. Only files **smaller than** `max_input_file_size_kb` count as compaction inputs; when at least `file_count_threshold` such files exist, the table becomes a candidate and its small files are rewritten toward `target_file_size_mb`. Files at or above the maximum are considered "already big" — re-reading and rewriting them buys nothing, so they never trigger compaction on their own. The default of 64 MB is half the default 128 MB target output size, which keeps freshly ingested files (typically tens to hundreds of KB) always eligible.
+
+**How the output target is enforced:** `target_file_size_mb` bounds the real, Parquet-encoded (compressed) size of each output file, not an in-memory estimate. Before writing, compaction sets the table's `write.target-file-size-bytes` property to the configured target if it differs — a metadata-only commit, a no-op once the value already matches — so the Parquet writer's own bytes-written tracking decides where to roll to a new file. This reconciliation runs on every rewrite, so changing `target_file_size_mb` takes effect on the next compaction cycle without recreating tables.
 
 **How compaction is scoped:** a compaction job operates on exactly one `timestamp_hour` partition and commits a **delta** — the input files are removed and the compacted outputs added in a single snapshot, leaving every other partition referenced as it was. Two consequences matter operationally:
 
@@ -97,7 +104,7 @@ The compactor logs a warning at startup for either incoherent combination rather
 
 The defaults (512 MB pool, 128 MB target, fan-out 1) put peak job memory around 640 MB with the full pool behind one sorter. Raise `memory_limit_mb` to spill less on large partitions; lower it if the compactor shares a process with the other services (monolithic mode) and you would rather trade speed for footprint.
 
-**Why partitions can be declined for size:** the planner gates on file *count* and per-file size, never on the total, so a partition too large to rewrite within `memory_limit_mb` would be selected every cycle, fail after a full read-and-sort, and be selected again — spending compaction capacity entirely on work that cannot currently succeed. `max_partition_input_mb` declines those up front. A declined partition stays uncompacted until the cap is raised or the rewrite can handle it, so watch `compactor_oversized_partitions_skipped_total`: a non-zero and growing value means real work is being turned away, not that nothing needs doing.
+**Why partitions can be declined for size:** the planner gates on file _count_ and per-file size, never on the total, so a partition too large to rewrite within `memory_limit_mb` would be selected every cycle, fail after a full read-and-sort, and be selected again — spending compaction capacity entirely on work that cannot currently succeed. `max_partition_input_mb` declines those up front. A declined partition stays uncompacted until the cap is raised or the rewrite can handle it, so watch `compactor_oversized_partitions_skipped_total`: a non-zero and growing value means real work is being turned away, not that nothing needs doing.
 
 **What `memory_limit_mb` actually bounds:** the pool covers the rewrite's **DataFusion operators** — the partition sort above all — which spill to disk rather than growing past it. The rewrite streams its partition rather than collecting it, so the memory outside the pool is bounded too: the chunker holds at most one output file's worth of batches, and the attribute-statistics pass holds per-key state capped by cardinality. Neither grows with the size of the partition. Peak process memory for a job is therefore roughly the pool plus one `target_file_size_mb`, not the pool plus the whole partition.
 

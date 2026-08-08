@@ -1148,3 +1148,203 @@ async fn a_gzipped_current_metadata_file_is_never_flagged() -> Result<()> {
     );
     Ok(())
 }
+
+/// Reproduces the spec scenario "Concurrent commit rescues a candidate"
+/// (`openspec/specs/lifecycle-reclamation/spec.md`, requirement "Reclamation
+/// is safe against in-flight work") end to end, in the real detect -> commit
+/// -> delete order.
+///
+/// `revalidation_skips_live_files_and_deletes_orphans` above feeds a file
+/// that is already live straight into `delete_orphans_batch`, so it never
+/// exercises the ordering the requirement actually describes: a file that is
+/// an orphan *candidate* at detection time and becomes referenced by a
+/// commit that lands before deletion runs. This test drives that ordering
+/// directly: detect while the file is unreferenced, commit it into the
+/// table, then delete using the stale (pre-commit) candidate list.
+#[tokio::test]
+async fn concurrent_commit_rescues_candidate_between_detection_and_deletion() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+
+    use iceberg_rust::spec::manifest::{Content, DataFile, FileFormat};
+    use iceberg_rust::spec::values::{Struct, Value};
+
+    let ctx = RetentionTestContext::new_in_memory().await?;
+
+    let tenant_id = "test-tenant";
+    let dataset_id = "test-dataset";
+    let table_name = "traces";
+    let mut writer = ctx.create_table(tenant_id, dataset_id, table_name).await?;
+
+    // One committed file, purely to harvest real DataFile metadata (size,
+    // record count, partition value) that the "about to be committed" file
+    // below can reuse for its own, separate append.
+    let config = DataGeneratorConfig {
+        partition_count: 1,
+        files_per_partition: 1,
+        rows_per_file: 20,
+        base_timestamp: Utc::now().timestamp_millis() - (60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    generators::generate_traces(&mut writer, &config).await?;
+
+    let table_identifier = ctx
+        .catalog_manager()
+        .build_table_identifier(tenant_id, dataset_id, table_name);
+    let (table_store, seed_file) = match ctx
+        .catalog_manager()
+        .catalog()
+        .load_tabular(&table_identifier)
+        .await?
+    {
+        Tabular::Table(t) => {
+            let files = compactor::iceberg::ManifestReader::new()
+                .get_snapshot_files(&t)
+                .await?;
+            let seed = files.first().cloned().expect("table has a live file");
+            (t.object_store(), seed)
+        }
+        _ => anyhow::bail!("expected a table"),
+    };
+
+    // Duplicate the seed file's bytes at a new path: a real, well-formed
+    // Parquet file already sitting in storage but referenced by no snapshot
+    // yet -- exactly the state of a file mid-write, about to be committed.
+    let rescued_path =
+        format!("{tenant_id}/{dataset_id}/{table_name}/data/about-to-be-committed.parquet");
+    let seed_bytes = table_store
+        .get(&ObjectPath::from(seed_file.file_path.as_str()))
+        .await?
+        .bytes()
+        .await?;
+    table_store
+        .put(
+            &ObjectPath::from(rescued_path.as_str()),
+            seed_bytes.clone().into(),
+        )
+        .await?;
+
+    // A genuine orphan: unreferenced now and forever.
+    let genuine_orphan_path =
+        format!("{tenant_id}/{dataset_id}/{table_name}/data/genuinely-unreferenced.parquet");
+    table_store
+        .put(
+            &ObjectPath::from(genuine_orphan_path.as_str()),
+            bytes::Bytes::from(vec![0u8; 256]).into(),
+        )
+        .await?;
+
+    let cleanup_config = OrphanCleanupConfig {
+        enabled: true,
+        grace_period_hours: 0,
+        batch_size: 100,
+        dry_run: false,
+        cleanup_interval_hours: 24,
+        max_live_files_threshold: 500_000,
+    };
+    let detector = Arc::new(OrphanDetector::new(
+        cleanup_config.clone(),
+        ctx.catalog_manager().clone(),
+        table_store.clone(),
+    ));
+
+    // Detection runs FIRST, while both files are unreferenced -- this is the
+    // stale candidate set a real cleanup cycle would carry forward to the
+    // deletion step below.
+    let stale_candidates = detector
+        .identify_orphan_candidates(tenant_id, dataset_id, table_name)
+        .await?;
+    let stale_paths: std::collections::HashSet<String> =
+        stale_candidates.iter().map(|c| c.path.clone()).collect();
+    assert!(
+        stale_paths.contains(&rescued_path),
+        "the file about to be committed must be a candidate at detection time, got {stale_paths:?}"
+    );
+    assert!(
+        stale_paths.contains(&genuine_orphan_path),
+        "the genuine orphan must be a candidate at detection time, got {stale_paths:?}"
+    );
+
+    // BETWEEN detection and deletion: a real commit lands, referencing the
+    // rescued file from a newly retained snapshot -- the race the spec
+    // scenario "Concurrent commit rescues a candidate" describes.
+    let hours = seed_file
+        .partition_hours
+        .expect("seed file must carry a timestamp_hour partition value");
+    let partition = Struct::from_iter([(
+        compactor::iceberg::partition::TIMESTAMP_HOUR_FIELD.to_string(),
+        Some(Value::Int(hours as i32)),
+    )]);
+    let rescued_data_file = DataFile::builder()
+        .with_content(Content::Data)
+        .with_file_path(rescued_path.clone())
+        .with_file_format(FileFormat::Parquet)
+        .with_partition(partition)
+        .with_record_count(seed_file.record_count as i64)
+        .with_file_size_in_bytes(seed_bytes.len() as i64)
+        .with_column_sizes(None)
+        .with_value_counts(None)
+        .with_null_value_counts(None)
+        .with_nan_value_counts(None)
+        .with_distinct_counts(None)
+        .with_lower_bounds(None)
+        .with_upper_bounds(None)
+        .build()
+        .map_err(|e| anyhow::anyhow!("failed to build rescued DataFile: {e}"))?;
+
+    let mut table = match ctx
+        .catalog_manager()
+        .catalog()
+        .load_tabular(&table_identifier)
+        .await?
+    {
+        Tabular::Table(t) => t,
+        _ => anyhow::bail!("expected a table"),
+    };
+    table
+        .new_transaction(None)
+        .append_data(vec![rescued_data_file])
+        .commit()
+        .await
+        .map_err(|e| anyhow::anyhow!("commit of the rescued file failed: {e}"))?;
+
+    // Sanity check the commit actually landed: the rescued path must now be
+    // in the live set, independent of the cleaner's own revalidation logic.
+    let live_after_commit = detector
+        .live_file_set_for_table(tenant_id, dataset_id, table_name)
+        .await?;
+    assert!(
+        live_after_commit.contains(&rescued_path),
+        "commit must have made the rescued file live before deletion runs"
+    );
+
+    // Deletion runs against the STALE candidate set captured before the
+    // commit -- this is the detect -> commit -> delete ordering the finding
+    // says the existing test never exercised.
+    let cleaner =
+        OrphanCleaner::with_detector(cleanup_config, table_store.clone(), detector.clone());
+    let result = cleaner.delete_orphans_batch(stale_candidates).await?;
+
+    assert_eq!(
+        result.deleted_count, 1,
+        "only the genuine orphan may be deleted; the rescued file must be skipped"
+    );
+    assert!(
+        table_store
+            .get(&ObjectPath::from(rescued_path.as_str()))
+            .await
+            .is_ok(),
+        "the file committed between detection and deletion must survive revalidation"
+    );
+    assert!(
+        table_store
+            .get(&ObjectPath::from(genuine_orphan_path.as_str()))
+            .await
+            .is_err(),
+        "the genuine orphan must be deleted"
+    );
+
+    Ok(())
+}

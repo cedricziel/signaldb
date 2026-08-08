@@ -249,3 +249,60 @@ impl IcebergTableManager {
         Ok(table)
     }
 }
+
+/// Reconcile a table's `write.target-file-size-bytes` property with the
+/// caller's compaction target, committing only when they differ.
+///
+/// The pinned iceberg-rust Parquet writer rolls output files on its own real
+/// bytes-written feedback (JanKaul/iceberg-rust#388), but only against this
+/// standard Iceberg property -- [`IcebergTableManager::ensure_table`] never
+/// sets it, so every table rolls at the writer's unset-property fallback
+/// (512 MiB) no matter what `[compactor].target_file_size_mb` says. Setting
+/// it once at table creation would still drift the moment an operator
+/// changes that config, so this reconciles it from the compaction path
+/// itself, immediately before the write that depends on it, every cycle.
+///
+/// Same idiom as [`IcebergTableManager::backfill_metadata_pruning_properties`]:
+/// a metadata-only `update_properties` commit, a no-op once the value
+/// matches, and a failed commit (e.g. losing a CAS race to a concurrent
+/// writer) is logged and skipped rather than failing the caller -- the
+/// rewrite proceeds under whatever target the table already has, and the
+/// next cycle retries the reconciliation.
+pub async fn ensure_target_file_size_property(table: &mut Table, target_file_size_bytes: u64) {
+    use iceberg_rust::spec::table_metadata::WRITE_TARGET_FILE_SIZE_BYTES;
+
+    let desired = target_file_size_bytes.to_string();
+    if table
+        .metadata()
+        .properties
+        .get(WRITE_TARGET_FILE_SIZE_BYTES)
+        == Some(&desired)
+    {
+        return;
+    }
+
+    let ident = table.identifier().clone();
+    match table
+        .new_transaction(None)
+        .update_properties(vec![(WRITE_TARGET_FILE_SIZE_BYTES.to_string(), desired)])
+        .commit()
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(
+                table = %ident,
+                target_file_size_bytes,
+                "Updated write.target-file-size-bytes to match the configured compaction target"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                table = %ident,
+                target_file_size_bytes,
+                "Failed to update write.target-file-size-bytes; compaction output will roll \
+                 at the table's previous target this cycle"
+            );
+        }
+    }
+}

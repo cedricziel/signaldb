@@ -140,6 +140,10 @@ name = "basic_compaction"
 path = "tests/compactor/basic_compaction.rs"
 
 [[test]]
+name = "target_encoded_file_size"
+path = "tests/compactor/target_encoded_file_size.rs"
+
+[[test]]
 name = "concurrent_writes"
 path = "tests/compactor/concurrent_writes.rs"
 
@@ -186,6 +190,14 @@ path = "tests/compactor/attr_promotion_rewrite.rs"
 [[test]]
 name = "attr_demotion_rewrite"
 path = "tests/compactor/attr_demotion_rewrite.rs"
+
+[[test]]
+name = "default_lifecycle_e2e"
+path = "tests/compactor/default_lifecycle_e2e.rs"
+
+[[test]]
+name = "default_config_safety_windows"
+path = "tests/compactor/default_config_safety_windows.rs"
 
 [[test]]
 name = "trace_bloom_pruning"
