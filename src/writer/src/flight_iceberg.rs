@@ -335,7 +335,17 @@ impl FlightService for IcebergWriterFlightService {
                             transformed.push(transformed_batch);
                         }
                         Err(e) => {
-                            return Err(Status::internal(format!(
+                            // The batch cannot be shaped into the target
+                            // table — a fault in what was sent, not in this
+                            // writer, and one that recurs identically on
+                            // every retry. It must not be reported as
+                            // `internal`, which this service also returns for
+                            // its own recoverable WAL failures: the acceptor
+                            // classifies forward failures by status code to
+                            // decide whether retrying can ever succeed
+                            // (#1060), and conflating the two either wedges
+                            // the WAL forever or discards good batches.
+                            return Err(Status::invalid_argument(format!(
                                 "Schema transformation failed: {e}"
                             )));
                         }

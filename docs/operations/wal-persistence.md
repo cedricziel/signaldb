@@ -194,8 +194,10 @@ The acceptor keeps one WAL per tenant/dataset/signal combination; the writer kee
             ├── wal-0000000000.data   # Segment payload bytes
             ├── wal-0000000000.index  # Processed-entry index
             ├── writer.id             # Stable identity of this WAL directory
-            └── dead-letter/          # Entries that repeatedly failed processing
-                └── <entry_id>.bin
+            └── dead-letter/          # Entries retired so they stop blocking
+                ├── <entry_id>.bin              # Preserved payload
+                ├── <entry_id>.rejected.json    # Why the writer refused it
+                └── <entry_id>.unreadable.json  # Marker; no bytes recoverable
 ```
 
 ### Data Flow with WAL
@@ -267,6 +269,46 @@ three steps:
 A growing dead-letter directory or a spike in these error logs indicates
 corrupt or legacy-format WAL segments; inspect the preserved payloads and,
 if a whole segment is unreadable, remove it so replay stops retrying it.
+
+### Entries the Writer Refuses
+
+The acceptor's retry consumer faces a different failure: an entry that reads
+and deserializes cleanly, but that the writer will not accept — a batch that
+cannot be shaped into its target table, such as a null in a column the table
+declares non-nullable. The verdict is a property of the bytes, so it is
+identical on every retry.
+
+The consumer classifies each forward failure before deciding:
+
+- **The writer refused the batch** (`InvalidArgument`, `FailedPrecondition`,
+  `OutOfRange`, `Unimplemented`) — the entry is dead-lettered and the pass
+  continues to the entries behind it.
+- **Anything else**, including `Internal` and an unreachable writer, is
+  treated as transient: the pass stops for this WAL and retries next cycle,
+  and nothing is discarded.
+
+The default is deliberately asymmetric. A rejection misread as transient only
+costs retries; a transient failure misread as a rejection discards data the
+writer would have accepted.
+
+Retiring the entry matters as much as preserving it: until it is marked
+processed it stays in the unprocessed set, every later pass walks it again,
+and its segment can never be reclaimed. One refused entry blocking a pass is
+enough to stop a WAL draining entirely.
+
+Rejected payloads are intact and replayable once the underlying cause is
+fixed, so they are preserved as `<entry_id>.bin` alongside an
+`<entry_id>.rejected.json` marker recording the entry's identity and the
+writer's reason. That marker is what distinguishes them from unparseable
+payloads in the same directory — check it before replaying anything:
+
+```bash
+# Why entries were refused, newest first
+cat /data/wal/*/*/*/dead-letter/*.rejected.json | jq -r '.reason'
+```
+
+A recurring reason across many entries points at a systematic conversion or
+schema fault rather than isolated corruption.
 
 ## Permissions
 
