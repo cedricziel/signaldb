@@ -111,20 +111,13 @@ impl TableReconciler {
     }
 }
 
-/// The datasets to provision for a tenant: its recorded datasets, plus its
-/// `default_dataset` when that name has no dataset record.
+/// The datasets to provision for a tenant.
 ///
-/// Admin-API tenant creation stores `default_dataset` as a column on the
-/// tenant row and writes no dataset row, so recorded datasets alone would
-/// provision nothing for a freshly created tenant — the headline case.
+/// The registry guarantees a tenant's `default_dataset` is among its resolved
+/// datasets even when no dataset row names it — the state admin-API tenant
+/// creation leaves behind — so this is a plain projection.
 fn datasets_of(tenant: &common::catalog_manager::ResolvedTenant) -> Vec<String> {
-    let mut datasets: Vec<String> = tenant.datasets.iter().map(|d| d.id.clone()).collect();
-    if let Some(default) = &tenant.default_dataset
-        && !datasets.iter().any(|d| d == default)
-    {
-        datasets.push(default.clone());
-    }
-    datasets
+    tenant.datasets.iter().map(|d| d.id.clone()).collect()
 }
 
 fn record_provisioning_metrics(
