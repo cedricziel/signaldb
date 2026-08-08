@@ -151,9 +151,12 @@ pub(crate) async fn create_tenant<S: RouterState>(
             return error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create tenant");
         }
     }
+    // Tenant row and default dataset row in one transaction: a tenant whose
+    // `default_dataset` has no row fails authentication closed, and creation
+    // rejects an existing id with 409, so a retry could not repair it.
     if let Err(catalog_error) = state
         .catalog()
-        .upsert_tenant(
+        .upsert_tenant_with_default_dataset(
             &tenant_id,
             request.name.trim(),
             default_dataset.as_deref(),
@@ -163,15 +166,6 @@ pub(crate) async fn create_tenant<S: RouterState>(
     {
         tracing::error!(error = %catalog_error, tenant_id, "tenant creation failed");
         return error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create tenant");
-    }
-    if let Some(dataset) = &default_dataset
-        && let Err(catalog_error) = state.catalog().ensure_dataset(&tenant_id, dataset).await
-    {
-        tracing::error!(error = %catalog_error, tenant_id, dataset, "default dataset creation failed");
-        return error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Tenant was created but its default dataset could not be created",
-        );
     }
     if let Some(user_id) = &ctx.user_id
         && let Err(catalog_error) = state

@@ -117,10 +117,15 @@ pub async fn create_tenant<S: RouterState>(
         }
     }
 
-    // Create tenant in database
+    // Create the tenant and materialize its default dataset together. Without
+    // a dataset row the tenant cannot authenticate — `resolve_database_tenant`
+    // requires one and fails closed — and it is invisible to everything that
+    // enumerates dataset rows (issue #1066). One transaction, so a failure
+    // cannot leave a tenant that a retry could not repair: creation rejects an
+    // existing id with 409.
     if let Err(e) = state
         .catalog()
-        .upsert_tenant(
+        .upsert_tenant_with_default_dataset(
             &request.id,
             &request.name,
             request.default_dataset.as_deref(),
@@ -128,39 +133,15 @@ pub async fn create_tenant<S: RouterState>(
         )
         .await
     {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::to_value(ApiError::new("internal_error", e.to_string())).unwrap()),
-        )
-            .into_response();
-    }
-
-    // Materialize the default dataset as a row of its own. Without it the
-    // tenant cannot authenticate — `resolve_database_tenant` requires a
-    // matching row and fails closed — and it is invisible to everything that
-    // enumerates dataset rows (issue #1066). The management API's tenant
-    // creation already does this; the two now agree.
-    if let Some(dataset) = request.default_dataset.as_deref()
-        && let Err(e) = state.catalog().ensure_dataset(&request.id, dataset).await
-    {
         tracing::error!(
             tenant_id = %request.id,
-            dataset = %dataset,
+            default_dataset = ?request.default_dataset,
             error = %e,
-            "Default dataset creation failed"
+            "Tenant creation failed"
         );
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(
-                serde_json::to_value(ApiError::new(
-                    "internal_error",
-                    format!(
-                        "Tenant '{}' was created but its default dataset could not be created: {e}",
-                        request.id
-                    ),
-                ))
-                .unwrap(),
-            ),
+            Json(serde_json::to_value(ApiError::new("internal_error", e.to_string())).unwrap()),
         )
             .into_response();
     }
@@ -313,39 +294,23 @@ pub async fn update_tenant<S: RouterState>(
         None => existing.default_dataset.as_deref(),
     };
 
+    // Repointing the default at a dataset with no row would recreate the state
+    // creation avoids, so materialize it in the same transaction. The previous
+    // default is deliberately left in place — it may hold data.
     if let Err(e) = state
         .catalog()
-        .upsert_tenant(&tenant_id, name, default_dataset, "database")
+        .upsert_tenant_with_default_dataset(&tenant_id, name, default_dataset, "database")
         .await
-    {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::to_value(ApiError::new("internal_error", e.to_string())).unwrap()),
-        )
-            .into_response();
-    }
-
-    // Repointing the default at a dataset with no row would recreate the
-    // state creation avoids, so materialize it here too. The previous default
-    // is deliberately left in place — it may hold data.
-    if let Some(dataset) = default_dataset
-        && let Err(e) = state.catalog().ensure_dataset(&tenant_id, dataset).await
     {
         tracing::error!(
             tenant_id = %tenant_id,
-            dataset = %dataset,
+            default_dataset = ?default_dataset,
             error = %e,
-            "Default dataset creation failed"
+            "Tenant update failed"
         );
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(
-                serde_json::to_value(ApiError::new(
-                    "internal_error",
-                    format!("Tenant was updated but its default dataset could not be created: {e}"),
-                ))
-                .unwrap(),
-            ),
+            Json(serde_json::to_value(ApiError::new("internal_error", e.to_string())).unwrap()),
         )
             .into_response();
     }

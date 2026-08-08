@@ -2123,6 +2123,112 @@ impl Catalog {
         Ok(dataset_id)
     }
 
+    /// Upsert a tenant and materialize its `default_dataset` in one
+    /// transaction, so the two rows land together or not at all.
+    ///
+    /// Writing them separately can strand a tenant: if the dataset insert
+    /// fails after the tenant row commits, the tenant exists with a
+    /// `default_dataset` that has no row, which fails authentication closed
+    /// (`resolve_database_tenant`). Creation rejects an existing id with 409,
+    /// so a retry cannot repair it either — the tenant would stay broken
+    /// until the next [`Catalog::backfill_default_datasets`] at boot.
+    ///
+    /// `default_dataset` of `None` writes only the tenant row. Repointing an
+    /// existing tenant's default materializes the new dataset and leaves the
+    /// previous one in place, since it may still hold data.
+    pub async fn upsert_tenant_with_default_dataset(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        default_dataset: Option<&str>,
+        source: &str,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now = Utc::now().to_rfc3339();
+                let mut tx = pool.begin().await?;
+
+                query(
+                    r#"
+                    INSERT INTO tenants (id, name, default_dataset, created_at, updated_at, source)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (id) DO UPDATE SET
+                        name = excluded.name,
+                        default_dataset = excluded.default_dataset,
+                        updated_at = excluded.updated_at,
+                        source = excluded.source
+                    "#,
+                )
+                .bind(tenant_id)
+                .bind(name)
+                .bind(default_dataset)
+                .bind(&now)
+                .bind(&now)
+                .bind(source)
+                .execute(&mut *tx)
+                .await?;
+
+                if let Some(dataset_name) = default_dataset {
+                    query(
+                        r#"
+                        INSERT INTO datasets (id, tenant_id, name, created_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT (tenant_id, name) DO NOTHING
+                        "#,
+                    )
+                    .bind(Uuid::new_v4().to_string())
+                    .bind(tenant_id)
+                    .bind(dataset_name)
+                    .bind(&now)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+
+                tx.commit().await?;
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+
+                query(
+                    r#"
+                    INSERT INTO tenants (id, name, default_dataset, source)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        default_dataset = EXCLUDED.default_dataset,
+                        updated_at = NOW(),
+                        source = EXCLUDED.source
+                    "#,
+                )
+                .bind(tenant_id)
+                .bind(name)
+                .bind(default_dataset)
+                .bind(source)
+                .execute(&mut *tx)
+                .await?;
+
+                if let Some(dataset_name) = default_dataset {
+                    query(
+                        r#"
+                        INSERT INTO datasets (id, tenant_id, name)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (tenant_id, name) DO NOTHING
+                        "#,
+                    )
+                    .bind(Uuid::new_v4().to_string())
+                    .bind(tenant_id)
+                    .bind(dataset_name)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+
+                tx.commit().await?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Idempotently ensure a tenant has a dataset by this name, returning its
     /// id — the existing one when the row is already there.
     ///
@@ -3962,9 +4068,81 @@ mod multi_tenancy_tests {
         assert_eq!(record.created_by_user_id.as_deref(), Some("user-1"));
     }
 
-    /// `create_dataset` is a bare INSERT against a `UNIQUE(tenant_id, name)`
-    /// table, so it cannot be used on a convergence path. `ensure_dataset` is
-    /// the idempotent form the materialization and backfill paths need.
+    /// The tenant row and its default dataset row must land together. A
+    /// half-written tenant fails authentication closed, and — because
+    /// creation rejects an existing id with 409 — a retry cannot repair it,
+    /// so it would stay broken until the next boot backfill.
+    #[tokio::test]
+    async fn upsert_tenant_with_default_dataset_writes_both_rows() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        catalog
+            .upsert_tenant_with_default_dataset("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            catalog.get_tenant("acme").await.unwrap().unwrap().id,
+            "acme"
+        );
+        assert_eq!(
+            catalog
+                .get_datasets("acme")
+                .await
+                .unwrap()
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["production"],
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_tenant_with_default_dataset_handles_no_default_and_repeats() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        catalog
+            .upsert_tenant_with_default_dataset("acme", "Acme", None, "database")
+            .await
+            .unwrap();
+        assert!(catalog.get_datasets("acme").await.unwrap().is_empty());
+
+        // Repointing the default (the update path) materializes the new one
+        // and leaves the old in place; repeats stay idempotent.
+        catalog
+            .upsert_tenant_with_default_dataset("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_with_default_dataset("acme", "Acme", Some("staging"), "database")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_with_default_dataset("acme", "Acme", Some("staging"), "database")
+            .await
+            .unwrap();
+
+        let mut names: Vec<String> = catalog
+            .get_datasets("acme")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["production", "staging"]);
+        assert_eq!(
+            catalog
+                .get_tenant("acme")
+                .await
+                .unwrap()
+                .unwrap()
+                .default_dataset
+                .as_deref(),
+            Some("staging"),
+        );
+    }
+
     #[tokio::test]
     async fn ensure_dataset_is_idempotent() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
