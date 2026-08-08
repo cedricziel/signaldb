@@ -4,6 +4,7 @@
 
 import { useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
+import { DEFAULT_SCALE, isScale, type Scale } from "../features/explore/scale";
 import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
 import { DEFAULT_GROUP_BY } from "./traceGroups";
 import {
@@ -23,6 +24,8 @@ export interface ExploreState {
   raw: string;
   limit: number;
   live: boolean;
+  /** Vertical scale for the volume charts. */
+  scale: Scale;
   /** Selected trace id — opens the trace view. */
   trace: string;
   /** Selected trace group value — dives into that group's trace list. */
@@ -51,6 +54,7 @@ export const DEFAULT_STATE: ExploreState = {
   raw: "",
   limit: 500,
   live: false,
+  scale: DEFAULT_SCALE,
   trace: "",
   group: "",
   groupBy: DEFAULT_GROUP_BY,
@@ -94,6 +98,7 @@ export function parseExploreState(search: string): ExploreState {
     raw: p.get("raw") ?? "",
     limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 5000) : 500,
     live: p.get("live") === "1",
+    scale: scaleFromParam(p.get("scale")),
     trace: p.get("trace") ?? "",
     group: p.get("group") ?? "",
     groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
@@ -105,6 +110,11 @@ export function parseExploreState(search: string): ExploreState {
   };
 }
 
+/** Unknown values fall back to the default rather than rejecting the URL. */
+function scaleFromParam(value: string | null): Scale {
+  return value !== null && isScale(value) ? value : DEFAULT_SCALE;
+}
+
 export function buildSearch(state: ExploreState): string {
   const p = new URLSearchParams();
   const rangeParam = rangeToParam(state.range);
@@ -114,6 +124,7 @@ export function buildSearch(state: ExploreState): string {
   if (state.raw) p.set("raw", state.raw);
   if (state.limit !== 500) p.set("limit", String(state.limit));
   if (state.live) p.set("live", "1");
+  if (state.scale !== DEFAULT_SCALE) p.set("scale", state.scale);
   if (state.trace) p.set("trace", state.trace);
   if (state.group) p.set("group", state.group);
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);

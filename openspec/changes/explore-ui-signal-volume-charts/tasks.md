@@ -31,11 +31,11 @@
 
 ## 4. Scale toggle in explore state
 
-- [ ] 4.1 Write failing tests in `src/ui/src/lib/urlState.test.ts` for a
+- [x] 4.1 Write failing tests in `src/ui/src/lib/urlState.test.ts` for a
       `scale` param that round-trips, defaults to linear when absent, and
       rejects unknown values.
-- [ ] 4.2 Implement the `scale` field in `src/ui/src/lib/urlState.ts`.
-- [ ] 4.3 Write a failing test that the chart renders a scale control and that
+- [x] 4.2 Implement the `scale` field in `src/ui/src/lib/urlState.ts`.
+- [x] 4.3 Write a failing test that the chart renders a scale control and that
       toggling it updates explore state; implement the control.
 
 ## 5. Logs tab on the shared component

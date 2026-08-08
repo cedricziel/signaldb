@@ -81,6 +81,8 @@ interface Props {
   /** Accessible name for the plot. */
   label: string;
   height?: number;
+  /** Supplied when the caller persists the scale; omit to hide the control. */
+  onScaleChange?: (scale: Scale) => void;
 }
 
 export function SignalHistogram({
@@ -93,6 +95,7 @@ export function SignalHistogram({
   unit,
   label,
   height = 84,
+  onScaleChange,
 }: Props) {
   const [active, setActive] = useState<number | null>(null);
 
@@ -165,6 +168,17 @@ export function SignalHistogram({
       </div>
       <div className="svol-xaxis" data-testid="svol-xaxis">
         <span role="presentation">{fmtAxis(buckets[0]!.tMs)}</span>
+        {onScaleChange && (
+          <button
+            type="button"
+            className="svol-scale"
+            aria-pressed={scale === "log"}
+            title="Compress the vertical range so low buckets stay readable next to a spike"
+            onClick={() => onScaleChange(scale === "log" ? "linear" : "log")}
+          >
+            log scale
+          </button>
+        )}
         <span role="presentation">
           {fmtAxis(buckets[buckets.length - 1]!.tMs)}
         </span>

@@ -117,3 +117,26 @@ describe("buildSearch", () => {
     expect(state.dataset).toBe("prod");
   });
 });
+
+describe("chart scale", () => {
+  it("defaults to linear when absent", () => {
+    expect(parseExploreState("").scale).toBe("linear");
+  });
+
+  it("round-trips a selected scale", () => {
+    expect(parseExploreState("?scale=log").scale).toBe("log");
+    expect(buildSearch({ ...DEFAULT_STATE, scale: "log" })).toContain(
+      "scale=log",
+    );
+  });
+
+  it("omits the default from the serialized search", () => {
+    expect(buildSearch({ ...DEFAULT_STATE, scale: "linear" })).not.toContain(
+      "scale",
+    );
+  });
+
+  it("falls back to linear for an unknown scale", () => {
+    expect(parseExploreState("?scale=logarithmic").scale).toBe("linear");
+  });
+});

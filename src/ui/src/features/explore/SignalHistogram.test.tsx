@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   bucketizeSeries,
   padBuckets,
@@ -220,5 +220,34 @@ describe("SignalHistogram interaction", () => {
     expect(
       screen.getAllByTestId("svol-col")[1],
     ).toHaveAccessibleName(/537 lines/);
+  });
+});
+
+describe("SignalHistogram scale control", () => {
+  const series: VolumeSeries[] = [{ key: "info", points: [[60_000, 5]] }];
+
+  it("is absent unless the caller can handle a change", () => {
+    renderChart(series);
+    expect(screen.queryByRole("button", { name: /log scale/i })).toBeNull();
+  });
+
+  it("reports the active scale and toggles it", async () => {
+    const user = userEvent.setup();
+    const onScaleChange = vi.fn();
+    renderChart(series, { onScaleChange });
+    const toggle = screen.getByRole("button", { name: /log scale/i });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await user.click(toggle);
+    expect(onScaleChange).toHaveBeenCalledWith("log");
+  });
+
+  it("toggles back to linear when already logarithmic", async () => {
+    const user = userEvent.setup();
+    const onScaleChange = vi.fn();
+    renderChart(series, { onScaleChange, scale: "log" });
+    const toggle = screen.getByRole("button", { name: /log scale/i });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await user.click(toggle);
+    expect(onScaleChange).toHaveBeenCalledWith("linear");
   });
 });
