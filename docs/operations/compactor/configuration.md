@@ -46,19 +46,20 @@ Compactor lifecycle configuration is located in the `[compactor]` section of `si
 
 Controls compaction planning: which files are merged into larger ones and when a table qualifies.
 
-| Field                      | Type            | Default          | Description                                                                                                                        |
-| -------------------------- | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                  | `bool`          | `true`           | Enable the compactor service                                                                                                       |
-| `tick_interval`            | duration string | `"5m"`           | Interval between compaction planning cycles                                                                                        |
-| `target_file_size_mb`      | integer (MB)    | `128`            | Target output file size after compaction                                                                                           |
-| `file_count_threshold`     | integer         | `10`             | Minimum number of _small_ files (see below) required to trigger compaction                                                         |
-| `max_input_file_size_kb`   | integer (KB)    | `65536` (64 MB)  | Maximum input file size considered for compaction. Files at or above this size are treated as already compacted and are left alone |
-| `partition_lateness`       | duration string | `"10m"`          | How long an hour partition stays open for late-arriving data after its hour ends; only closed partitions are compacted            |
-| `memory_limit_mb`          | integer (MB)    | `512`            | Memory budget for a single rewrite; larger partitions spill to disk rather than growing the process heap                          |
-| `max_candidates_per_cycle` | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                |
-| `max_per_tenant`           | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                          |
-| `lease_ttl_seconds`        | integer         | `300`            | How long a compaction lease stays valid without renewal                                                                            |
-| `metrics_addr`             | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled)                                                                                      |
+| Field                      | Type            | Default          | Description                                                                                                                                                                         |
+| -------------------------- | --------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                  | `bool`          | `true`           | Enable the compactor service                                                                                                                                                        |
+| `tick_interval`            | duration string | `"5m"`           | Interval between compaction planning cycles                                                                                                                                         |
+| `target_file_size_mb`      | integer (MB)    | `128`            | Target output file size after compaction                                                                                                                                            |
+| `file_count_threshold`     | integer         | `10`             | Minimum number of _small_ files (see below) required to trigger compaction                                                                                                          |
+| `max_input_file_size_kb`   | integer (KB)    | `65536` (64 MB)  | Maximum input file size considered for compaction. Files at or above this size are treated as already compacted and are left alone                                                  |
+| `partition_lateness`       | duration string | `"10m"`          | How long an hour partition stays open for late-arriving data after its hour ends; only closed partitions are compacted                                                              |
+| `memory_limit_mb`          | integer (MB)    | `512`            | Memory budget for a single rewrite; larger partitions spill to disk rather than growing the process heap                                                                            |
+| `target_partitions`        | integer         | `1`              | DataFusion partition fan-out for the rewrite (`0` = available parallelism). Each partition sorts independently and they share `memory_limit_mb`, so raising this divides the budget |
+| `max_candidates_per_cycle` | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                                                                 |
+| `max_per_tenant`           | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                                                                           |
+| `lease_ttl_seconds`        | integer         | `300`            | How long a compaction lease stays valid without renewal                                                                                                                             |
+| `metrics_addr`             | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled)                                                                                                                                       |
 
 **How the cadences interact:** each lifecycle cycle runs on its own task, so
 these intervals are independent of one another — a compaction pass that runs
@@ -362,9 +363,9 @@ cleanup_interval_hours = 24  # Run once per day
 
 #### Safety Settings
 
-| Field                      | Type   | Default | Description                                  |
-| -------------------------- | ------ | ------- | -------------------------------------------- |
-| `grace_period_hours`       | `u64`  | `24`    | Don't delete files younger than this (hours) |
+| Field                | Type  | Default | Description                                  |
+| -------------------- | ----- | ------- | -------------------------------------------- |
+| `grace_period_hours` | `u64` | `24`    | Don't delete files younger than this (hours) |
 
 **Example:**
 

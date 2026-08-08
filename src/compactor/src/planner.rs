@@ -528,6 +528,7 @@ mod tests {
             max_input_file_size_kb: 65536,
             partition_lateness: std::time::Duration::from_secs(600),
             memory_limit_mb: 512,
+            target_partitions: 1,
             retention: Default::default(),
             orphan_cleanup: Default::default(),
             attr_promotion: Default::default(),

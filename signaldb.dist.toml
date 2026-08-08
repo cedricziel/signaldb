@@ -305,6 +305,10 @@ partition_lateness = "10m"            # How long a partition stays open for late
                                       # are compacted
 memory_limit_mb = 512                 # Memory budget for one rewrite; larger partitions
                                       # spill to disk instead of growing the heap
+target_partitions = 1                 # DataFusion fan-out for the rewrite (0 = core count).
+                                      # Each partition sorts independently and they share
+                                      # memory_limit_mb, so raising this divides the budget
+                                      # and can exhaust it on concurrency alone
 
 # Phase 4: Multi-Instance Safety + Scheduling
 # Multiple compactor instances coordinate through distributed leases in the
