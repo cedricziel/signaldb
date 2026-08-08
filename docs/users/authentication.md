@@ -140,6 +140,19 @@ table-creation endpoint):
 | GET    | `/api/v1/tenants`                           | All configured tenants                                                           |
 | GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   |
 | GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's tables                                                              |
-| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables                                               |
+| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                   |
 | GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's schema configuration                                                |
 | GET    | `/api/v1/schemas/available`                 | Available schema definitions                                                     |
+
+### Creating a tenant's signal tables
+
+`POST /api/v1/tenants/{tenant_id}/tables/create` provisions an Iceberg table
+for every signal type enabled for the tenant, across all of its datasets,
+before returning `201`. It requires tenant-administrator privileges and
+returns `500` if any table could not be created.
+
+You rarely need it: SignalDB provisions those tables on its own, shortly after
+a tenant or dataset is created, and a query against a dataset with no tables
+yet returns an empty result rather than an error. Use the endpoint when you
+want the tables to exist *now* — see
+[Signal table provisioning](../operations/table-provisioning.md).

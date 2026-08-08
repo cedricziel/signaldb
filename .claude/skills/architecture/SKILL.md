@@ -49,6 +49,8 @@ Key details:
 4. Writer's `do_put` acks after its WAL flush (it does NOT commit synchronously); WalProcessor reads WAL entries every 5s (exponential backoff on failure) and writes Parquet via DataFusion, coalescing commits per `(tenant, dataset, table)` (`[writer].commit_interval` / `max_uncommitted_rows`) to cap the Iceberg/catalog write rate. Data is queryable once committed; `do_action("flush")` forces an immediate commit (read-your-writes)
 5. Processed WAL entries are marked and cleaned up
 
+Alongside the WAL loop the writer runs a **table reconciler** (`src/writer/src/reconcile.rs`): a startup pass plus one every `[writer].table_reconcile_interval` (default 5m, `0s` = startup only) over the tenant registry, ensuring every registered tenant/dataset holds a table for each signal type enabled for that tenant — including a tenant's `default_dataset` when no dataset row exists, which is what admin-API tenant creation leaves behind. It needs a tenant source on the writer's `CatalogManager` (attached in both `writer/src/main.rs` and `signaldb-bin/src/main.rs`, which start the loop independently). Provisioning goes through the same `CatalogManager::ensure_table` the write path uses, so failures are warn-level and degrade to create-on-first-write. Correspondingly, the querier reads a missing signal table as empty rather than erroring (`query/table_lookup.rs`).
+
 ## Query Path
 
 ```

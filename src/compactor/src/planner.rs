@@ -296,6 +296,10 @@ impl CompactionPlanner {
     /// excluded: they are left untouched rather than swept into some other
     /// partition's rewrite, where the delta commit would remove them without
     /// their rows being present in the output.
+    ///
+    /// A table with no current snapshot yields no partitions at all rather
+    /// than an error, so provisioned-but-never-written tables are simply
+    /// empty instead of warning on every cycle.
     async fn group_files_by_partition(
         &self,
         table: &iceberg_rust::catalog::tabular::Tabular,
@@ -308,11 +312,17 @@ impl CompactionPlanner {
             }
         };
 
-        // Get current snapshot
-        let snapshot_id = table
-            .metadata()
-            .current_snapshot_id
-            .ok_or_else(|| anyhow::anyhow!("Table has no current snapshot"))?;
+        // A table with no current snapshot holds no data files — a freshly
+        // provisioned table, or one whose data has all been dropped. Zero
+        // candidates, not an error: the caller logs analysis failures at
+        // warn level, which would mean one warning per empty table per cycle.
+        let Some(snapshot_id) = table.metadata().current_snapshot_id else {
+            tracing::debug!(
+                "Table {} has no current snapshot; no compaction candidates",
+                table.identifier()
+            );
+            return Ok(HashMap::new());
+        };
 
         tracing::debug!(
             "Reading manifests for table {} (snapshot {})",
@@ -985,5 +995,34 @@ mod tests {
             .plan()
             .await
             .expect("planning over a database tenant should succeed");
+    }
+
+    /// A freshly provisioned table has no snapshot at all. That is zero
+    /// compaction candidates, not an error — otherwise every reconciled
+    /// dataset warns once per table per cycle (roughly eight warnings per
+    /// dataset in steady state).
+    #[tokio::test]
+    async fn snapshotless_table_yields_no_candidates_without_warning() {
+        let config = PlannerConfig {
+            file_count_threshold: 10,
+            max_input_file_size_bytes: 64 * 1024 * 1024,
+            target_file_size_bytes: 128 * 1024 * 1024,
+            partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 4 * 1024 * 1024 * 1024,
+        };
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+
+        // Provision the dataset's tables ahead of any write — none of them
+        // has a snapshot.
+        catalog_manager
+            .ensure_dataset_tables("default", "default")
+            .await;
+
+        let planner = CompactionPlanner::new(catalog_manager, config);
+        let candidates = planner
+            .analyze_table("default", "default", "logs")
+            .await
+            .expect("a snapshot-less table must not error");
+        assert!(candidates.is_empty());
     }
 }

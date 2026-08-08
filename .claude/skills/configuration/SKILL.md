@@ -240,6 +240,7 @@ max_concurrent_queries_per_tenant = 8 # Unset = unlimited
 commit_interval = "5s"        # Max wait before a table's rows are committed (liveness). "0s" = commit every tick
 max_uncommitted_rows = 100000 # Row ceiling that triggers an earlier commit for bursts (a cap, never a minimum)
 metadata_previous_versions_max = 100 # Previous metadata.json versions retained per table (older deleted on commit)
+table_reconcile_interval = "5m"      # How often to re-run the signal-table reconciler over the tenant registry; "0s" = startup pass only
 ```
 
 The writer commits ingested data to Iceberg asynchronously via its background
@@ -249,6 +250,12 @@ whichever comes first. This caps the Iceberg snapshot / catalog-metadata write
 rate independent of ingest rate. Ingested data becomes queryable once committed
 (bounded by `commit_interval`); a client needing read-your-writes forces an
 immediate commit with the writer Flight `do_action("flush")`.
+
+The writer also runs the signal-table reconciler: a pass at startup, then one
+every `table_reconcile_interval`, ensuring every registered tenant/dataset holds
+a table for each signal type enabled for that tenant. `"0s"` keeps the startup
+pass and disables the periodic re-run. See
+`docs/operations/table-provisioning.md`.
 
 ### MCP (Model Context Protocol server)
 

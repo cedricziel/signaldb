@@ -34,7 +34,7 @@ use super::promql::{
     MatchKind, MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql,
     plan_query,
 };
-use super::{error::QuerierError, table_ref::build_table_reference};
+use super::{error::QuerierError, table_lookup::optional_table};
 use common::schema::materialized_column_name;
 
 /// The metrics tables a PromQL query scans (gauge + sum cover counters
@@ -284,7 +284,9 @@ impl MetricsService {
             }
         }
 
-        let df = self.scan_union(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         // The materialized `label_<key>` columns of the scanned tables widen
         // the natural series identity and are groupable like `service_name`.
         let materialized = super::logs::materialized_columns_of(&df);
@@ -1066,10 +1068,15 @@ impl MetricsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        let table_ref = build_table_reference(tenant_slug, dataset_slug, "metrics_histogram")
-            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-        // No histogram table yet → empty result, not an error.
-        let Ok(df) = self.session_context.table(table_ref).await else {
+        // No histogram table yet → empty result. A catalog failure still errors.
+        let Some(df) = optional_table(
+            &self.session_context,
+            tenant_slug,
+            dataset_slug,
+            "metrics_histogram",
+        )
+        .await?
+        else {
             return Ok(vec![]);
         };
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
@@ -1225,10 +1232,15 @@ impl MetricsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        let table_ref = build_table_reference(tenant_slug, dataset_slug, "metrics_histogram")
-            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-        // No histogram table yet → empty result, not an error.
-        let Ok(df) = self.session_context.table(table_ref).await else {
+        // No histogram table yet → empty result. A catalog failure still errors.
+        let Some(df) = optional_table(
+            &self.session_context,
+            tenant_slug,
+            dataset_slug,
+            "metrics_histogram",
+        )
+        .await?
+        else {
             return Ok(vec![]);
         };
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
@@ -1274,7 +1286,9 @@ impl MetricsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        let df = self.scan_union(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
         let batches = df
             .select(vec![
@@ -1424,18 +1438,21 @@ impl MetricsService {
     /// (null-filled where a table lacks the column, so the union schemas
     /// line up). Keeping the label columns in the scan is what lets
     /// matchers and grouping use them.
+    ///
+    /// Returns `None` when the dataset holds none of them — a dataset that has
+    /// never received metrics, or a deployment with the signal disabled.
     async fn scan_union(
         &self,
         tenant_slug: &str,
         dataset_slug: &str,
-    ) -> Result<DataFrame, QuerierError> {
+    ) -> Result<Option<DataFrame>, QuerierError> {
         let mut tables: Vec<DataFrame> = Vec::with_capacity(METRIC_TABLES.len());
         for table in METRIC_TABLES {
-            let table_ref = build_table_reference(tenant_slug, dataset_slug, table)
-                .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
             // A missing table (e.g. no sum metrics ingested yet) is not an
-            // error — skip it.
-            let Ok(df) = self.session_context.table(table_ref).await else {
+            // error — skip it. A catalog failure still is.
+            let Some(df) =
+                optional_table(&self.session_context, tenant_slug, dataset_slug, table).await?
+            else {
                 continue;
             };
             tables.push(df);
@@ -1463,9 +1480,7 @@ impl MetricsService {
                     .map_err(QuerierError::QueryFailed)?,
             });
         }
-        union.ok_or_else(|| {
-            QuerierError::InvalidInput("no metrics tables available for this dataset".to_string())
-        })
+        Ok(union)
     }
 
     /// List the Prometheus label names present in the window: the
@@ -1480,7 +1495,9 @@ impl MetricsService {
     ) -> Result<Vec<String>, QuerierError> {
         let mut labels: BTreeSet<String> =
             ["__name__", "job"].iter().map(|s| s.to_string()).collect();
-        let df = self.scan_union(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let df = window(df, start, end)?;
         let df = df
             .select_columns(&[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES])
@@ -1525,7 +1542,9 @@ impl MetricsService {
                 "label name must not be empty".to_string(),
             ));
         }
-        let df = self.scan_union(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let df = window(df, start, end)?;
 
         // `__name__` → metric_name; other known labels → their column.
@@ -1587,7 +1606,9 @@ impl MetricsService {
         dataset_slug: &str,
     ) -> Result<Vec<BTreeMap<String, String>>, QuerierError> {
         let plan = plan_promql(selector.trim())?;
-        let df = self.scan_union(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let df = apply_filters(df, &plan, start, end)?;
 
         let batches = df
@@ -3775,5 +3796,140 @@ mod tests {
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.get("[1,2,4]"), Some(&vec![1.0, 2.0, 4.0]));
         assert_eq!(cache.get("[0.5,1.5]"), Some(&vec![0.5, 1.5]));
+    }
+
+    // ---- Absent metrics tables read as empty (issue #972) ----
+
+    /// A `t.d` dataset registered in the catalog but holding no tables.
+    fn service_without_metrics_tables() -> MetricsService {
+        let ctx = SessionContext::new();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog
+            .register_schema("d", Arc::new(MemorySchemaProvider::new()))
+            .unwrap();
+        ctx.register_catalog("t", catalog);
+        MetricsService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn metrics_reads_on_absent_tables_are_empty() {
+        let service = service_without_metrics_tables();
+
+        assert!(
+            service
+                .get_labels(0, i64::MAX, "t", "d")
+                .await
+                .expect("get_labels")
+                .is_empty()
+        );
+        assert!(
+            service
+                .get_label_values("__name__", 0, i64::MAX, "t", "d")
+                .await
+                .expect("get_label_values")
+                .is_empty()
+        );
+        assert!(
+            service
+                .get_series("up", 0, i64::MAX, "t", "d")
+                .await
+                .expect("get_series")
+                .is_empty()
+        );
+        assert!(
+            service
+                .query_range("up", 0, 10_000_000_000, 1_000_000_000, "t", "d")
+                .await
+                .expect("query_range")
+                .is_empty()
+        );
+        assert!(
+            service
+                .query_range(
+                    "histogram_quantile(0.9, rate(latency_bucket[1m]))",
+                    0,
+                    10_000_000_000,
+                    1_000_000_000,
+                    "t",
+                    "d",
+                )
+                .await
+                .expect("histogram_quantile")
+                .is_empty()
+        );
+        assert!(
+            service
+                .query_range("idelta(up[1m])", 0, 10_000_000_000, 1_000_000_000, "t", "d",)
+                .await
+                .expect("sequence query")
+                .is_empty()
+        );
+    }
+
+    // ---- Negative cases: absence must not swallow real errors (task 1.7) ----
+
+    #[tokio::test]
+    async fn unknown_tenant_still_errors_on_metrics() {
+        let service = service_without_metrics_tables();
+        assert!(
+            service
+                .get_labels(0, i64::MAX, "nosuchtenant", "d")
+                .await
+                .is_err(),
+            "unknown tenant must not read as empty"
+        );
+        assert!(
+            service
+                .query_range("up", 0, 10_000_000_000, 1_000_000_000, "nosuchtenant", "d")
+                .await
+                .is_err(),
+            "unknown tenant must not read as empty"
+        );
+        assert!(
+            service
+                .query_range(
+                    "histogram_quantile(0.9, rate(latency_bucket[1m]))",
+                    0,
+                    10_000_000_000,
+                    1_000_000_000,
+                    "nosuchtenant",
+                    "d",
+                )
+                .await
+                .is_err(),
+            "unknown tenant must not read as empty on the histogram path"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_promql_still_errors_when_tables_are_absent() {
+        let service = service_without_metrics_tables();
+        assert!(
+            service
+                .query_range("this is ((not promql", 0, 10, 1, "t", "d")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn planning_failure_on_existing_tables_still_errors() {
+        // Grouping by a label with neither a dedicated nor a materialized
+        // column cannot be lowered — that must surface, not read as empty.
+        let service = service_with_data();
+        assert!(
+            service
+                .query_range(
+                    "sum by (nonmaterialized_attr) (up)",
+                    0,
+                    10_000_000_000,
+                    1_000_000_000,
+                    "t",
+                    "d",
+                )
+                .await
+                .is_err(),
+            "planning failure on existing tables must not read as empty"
+        );
     }
 }

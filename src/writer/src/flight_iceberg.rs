@@ -84,6 +84,8 @@ pub struct IcebergWriterFlightService {
     wal: Arc<Wal>,
     #[allow(dead_code)]
     schemas: FlightSchemas,
+    reconciler: Arc<crate::reconcile::TableReconciler>,
+    table_reconcile_interval: std::time::Duration,
 }
 
 impl IcebergWriterFlightService {
@@ -97,14 +99,73 @@ impl IcebergWriterFlightService {
         wal: Arc<Wal>,
         writer_config: &WriterConfig,
     ) -> Self {
-        let processor =
-            WalProcessor::with_config(wal.clone(), catalog_manager, object_store, writer_config);
+        let processor = WalProcessor::with_config(
+            wal.clone(),
+            catalog_manager.clone(),
+            object_store,
+            writer_config,
+        );
 
         Self {
             processor: Arc::new(Mutex::new(processor)),
             wal,
             schemas: FlightSchemas::new(),
+            reconciler: Arc::new(crate::reconcile::TableReconciler::new(catalog_manager)),
+            table_reconcile_interval: writer_config.table_reconcile_interval,
         }
+    }
+
+    /// Start the signal-table reconciler: one pass now, then a pass every
+    /// `[writer].table_reconcile_interval` (zero disables the periodic run).
+    ///
+    /// Mirrors [`Self::start_background_processing`] so the standalone binary
+    /// and monolithic mode share one wiring. Failures are logged, never fatal:
+    /// the ingest path still creates any table it needs, so a broken pass
+    /// degrades to create-on-first-write.
+    ///
+    /// The caller must `abort()` the returned handle during shutdown.
+    pub fn start_table_reconciler(&self) -> tokio::task::JoinHandle<()> {
+        let reconciler = self.reconciler.clone();
+        let interval = self.table_reconcile_interval;
+
+        let handle = tokio::spawn(async move {
+            loop {
+                match reconciler.run_pass().await {
+                    Ok(summary) => {
+                        if summary.tables_created > 0 || summary.tables_failed > 0 {
+                            tracing::info!(
+                                datasets_checked = summary.datasets_checked,
+                                datasets_skipped = summary.datasets_skipped,
+                                tables_created = summary.tables_created,
+                                tables_failed = summary.tables_failed,
+                                "Signal-table reconcile pass complete"
+                            );
+                        } else {
+                            tracing::debug!(
+                                datasets_checked = summary.datasets_checked,
+                                datasets_skipped = summary.datasets_skipped,
+                                "Signal-table reconcile pass complete (converged)"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "Signal-table reconcile pass failed; retrying next interval"
+                    ),
+                }
+
+                if interval.is_zero() {
+                    tracing::info!(
+                        "Periodic signal-table reconciliation disabled; startup pass only"
+                    );
+                    return;
+                }
+                tokio::time::sleep(interval).await;
+            }
+        });
+
+        tracing::info!("Started signal-table reconciler");
+        handle
     }
 
     /// Start the background WAL processing loop.

@@ -62,6 +62,12 @@ pub struct AppMetrics {
     // processing cycle. A sustained non-zero value alongside rising
     // `signaldb.wal.entries_pending` indicates the commit path is stalling.
     pub writer_groups_deferred: Gauge<u64>,
+
+    // Signal-table reconciliation: tables the writer provisioned ahead of a
+    // first write, and provisioning attempts that failed. A rising failure
+    // count means the deployment has degraded to create-on-first-write.
+    pub writer_tables_provisioned: Counter<u64>,
+    pub writer_table_provisioning_failures: Counter<u64>,
 }
 
 static APP_METRICS: OnceLock<AppMetrics> = OnceLock::new();
@@ -207,6 +213,16 @@ impl AppMetrics {
                     "Writer groups deferred by the commit-coalescing floor last cycle",
                 )
                 .with_unit("{group}")
+                .build(),
+            writer_tables_provisioned: meter
+                .u64_counter("signaldb.writer.tables_provisioned")
+                .with_description("Signal tables created by the table reconciler")
+                .with_unit("{table}")
+                .build(),
+            writer_table_provisioning_failures: meter
+                .u64_counter("signaldb.writer.table_provisioning_failures")
+                .with_description("Signal tables the reconciler could not create")
+                .with_unit("{table}")
                 .build(),
         }
     }

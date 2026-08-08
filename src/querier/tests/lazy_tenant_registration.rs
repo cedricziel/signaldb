@@ -4,6 +4,10 @@
 //! this change every query for such a tenant failed with
 //! `failed to resolve catalog: <tenant>`; the querier now resolves and registers
 //! the tenant's catalog on demand from the tenant registry.
+//!
+//! It also pins issue #972: such a dataset has no signal tables until its first
+//! write, and a metadata query over it returns an empty result rather than
+//! `Internal: No table named 'logs'`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,8 +17,10 @@ use arrow_flight::flight_service_server::FlightService;
 use common::CatalogManager;
 use common::catalog::Catalog;
 use common::config::{Configuration, DatabaseConfig, DiscoveryConfig, QuerierConfig};
+use common::flight::decode::flight_data_vec_to_batches;
 use common::flight::transport::InMemoryFlightTransport;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+use futures::StreamExt;
 use querier::QuerierFlightService;
 use tonic::Request;
 
@@ -73,37 +79,38 @@ async fn database_tenant_is_queryable_without_restart() {
         .unwrap();
 
     // A well-formed logs label-names ticket for the freshly-created tenant.
-    // The logs path resolves the `matter-survey` catalog (it has no early
-    // "no tables" guard), so before the fix this failed with
-    // `failed to resolve catalog: matter-survey`.
+    // The logs path resolves the `matter-survey` catalog, so before the #853
+    // fix this failed with `failed to resolve catalog: matter-survey`.
     let ticket = Ticket::new("query_logs_labels:matter-survey:production:0:100000000000");
-    let result = service.do_get(Request::new(ticket)).await;
 
-    // The #853 invariant: resolution MUST NOT fail with `resolve catalog` —
-    // on-demand registration finds the tenant.
-    //
-    // KNOWN-ISSUE(#972): registration resolves the catalog but does not
-    // create the dataset's default tables, so the labels query for a fresh
-    // (never-written) dataset currently fails with "No table named 'logs'"
-    // instead of returning an empty result. Pin that behavior narrowly so
-    // this test goes red — and gets upgraded to assert an empty label batch —
-    // when #972 is fixed.
-    let status = match result {
-        Ok(_) => panic!(
-            "KNOWN-ISSUE(#972): fresh-dataset label query currently errors; \
-             if this now succeeds, #972 is fixed — assert an empty label batch instead"
-        ),
-        Err(status) => status,
-    };
-    assert!(
-        !status.message().contains("resolve catalog"),
-        "database tenant query must not fail catalog resolution: {}",
-        status.message()
-    );
-    assert!(
-        status.message().contains("No table named"),
-        "expected the #972 missing-table failure, got: {}",
-        status.message()
+    // Two invariants at once:
+    //  - #853: resolution MUST NOT fail with `resolve catalog` — on-demand
+    //    registration finds the tenant.
+    //  - #972: a dataset that has never been written to has no `logs` table,
+    //    and that reads as an empty label set rather than
+    //    `Internal: No table named 'logs'`.
+    let stream = service
+        .do_get(Request::new(ticket))
+        .await
+        .unwrap_or_else(|status| {
+            panic!(
+                "fresh-dataset label query must succeed with an empty result, got: {}",
+                status.message()
+            )
+        })
+        .into_inner();
+
+    let flight_data: Vec<_> = stream
+        .map(|data| data.expect("label stream must not error"))
+        .collect()
+        .await;
+    let batches = flight_data_vec_to_batches(flight_data)
+        .await
+        .expect("label result decodes");
+    let label_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(
+        label_rows, 0,
+        "a dataset with no ingested logs must report no labels"
     );
 
     // Negative control: a tenant that was never created must still fail catalog

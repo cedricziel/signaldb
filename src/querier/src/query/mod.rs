@@ -7,6 +7,7 @@ pub mod metrics;
 pub mod profile;
 pub mod promql;
 pub mod search_filter;
+pub mod table_lookup;
 pub mod table_ref;
 pub mod trace;
 

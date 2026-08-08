@@ -201,6 +201,11 @@ async fn main() -> Result<()> {
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = writer_flight_service.start_background_processing();
 
+    // Converge every registered tenant/dataset on its enabled signal tables.
+    // The standalone writer binary and this one are independent wirings, so
+    // monolithic mode does not inherit this for free.
+    let writer_reconciler_handle = writer_flight_service.start_table_reconciler();
+
     // Initialize Writer service bootstrap for catalog-based discovery
     // This registers the Writer with Storage capability so the Acceptor can discover it
     let writer_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50051));
@@ -639,6 +644,8 @@ async fn main() -> Result<()> {
     tracing::info!("Stopping background WAL processing task");
     writer_bg_handle.abort();
     let _ = writer_bg_handle.await;
+    writer_reconciler_handle.abort();
+    let _ = writer_reconciler_handle.await;
 
     if let Ok(wal) = Arc::try_unwrap(writer_wal) {
         wal.shutdown()

@@ -263,6 +263,9 @@ pub static SCHEMA_DEFINITIONS: Lazy<SchemaDefinitions> = Lazy::new(|| {
 pub struct TenantSchemaRegistry {
     pub(crate) config: Configuration,
     catalogs: HashMap<String, Arc<dyn IcebergCatalog>>,
+    /// Optional database catalog used as an additional tenant source, so
+    /// admin-API tenants resolve alongside config-defined ones.
+    tenant_source: Option<Arc<crate::catalog::Catalog>>,
 }
 
 impl TenantSchemaRegistry {
@@ -271,7 +274,14 @@ impl TenantSchemaRegistry {
         Self {
             config,
             catalogs: HashMap::new(),
+            tenant_source: None,
         }
+    }
+
+    /// Attach a database catalog as an additional tenant source.
+    pub fn with_tenant_source(mut self, tenant_source: Arc<crate::catalog::Catalog>) -> Self {
+        self.tenant_source = Some(tenant_source);
+        self
     }
 
     /// Get or create a catalog for the specified tenant
@@ -390,43 +400,100 @@ impl TenantSchemaRegistry {
         Ok(partition_specs)
     }
 
-    /// Create default tables for a tenant
+    /// Provision every signal table enabled for a tenant, across all of its
+    /// datasets, before returning.
+    ///
+    /// The manual counterpart to the writer's periodic reconciler: it gives an
+    /// operator an immediate trigger rather than waiting for the next pass.
+    /// Both go through [`CatalogManager::ensure_dataset_tables`], so a table
+    /// created here is what the write path would have created.
+    ///
+    /// Errors if any table could not be provisioned — reporting success
+    /// without having created them is not permitted.
     pub async fn create_default_tables_for_tenant(&mut self, tenant_id: &str) -> Result<()> {
-        // Get the catalog
-        let _ = self.get_catalog_for_tenant(tenant_id).await?;
+        let manager = self.catalog_manager().await?;
 
-        // For now, log that we would create tables
-        // TODO: Implement table creation
-        tracing::info!(
-            "Would create default tables for tenant '{tenant_id}' using Iceberg catalog"
-        );
-
-        // Get the default schemas configuration
-        let default_schemas = &self.config.schema.default_schemas;
-
-        // Create tables based on configuration
-        for table_schema in iceberg_schemas::TableSchema::all_from_config(default_schemas) {
-            let table_name = table_schema.table_name();
-
-            // For catalog operations, we'll need to use writer's catalog module
-            match &table_schema {
-                iceberg_schemas::TableSchema::Custom(name) => {
-                    tracing::info!(
-                        "Would create custom table '{name}' from configuration for tenant {tenant_id}"
-                    );
-                }
-                _ => {
-                    let _schema = table_schema.schema()?;
-                    let _partition_spec = table_schema.partition_spec()?;
-
-                    tracing::info!(
-                        "Would create table {table_name} with schema for tenant {tenant_id}"
-                    );
-                }
-            }
+        let datasets = self.datasets_for_tenant(&manager, tenant_id).await?;
+        if datasets.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Tenant '{tenant_id}' has no datasets to provision"
+            ));
         }
 
+        let mut failures: Vec<String> = Vec::new();
+        for dataset in &datasets {
+            let report = manager.ensure_dataset_tables(tenant_id, dataset).await;
+            tracing::info!(
+                tenant_id = %tenant_id,
+                dataset = %dataset,
+                created = report.created.len(),
+                already_present = report.already_present.len(),
+                failed = report.failed.len(),
+                "Provisioned tenant tables on request"
+            );
+            failures.extend(
+                report
+                    .failed
+                    .iter()
+                    .map(|(table, reason)| format!("{dataset}.{table}: {reason}")),
+            );
+        }
+
+        if !failures.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Failed to create tables for tenant '{tenant_id}': {}",
+                failures.join("; ")
+            ));
+        }
         Ok(())
+    }
+
+    /// The datasets to provision for a tenant: everything the registry knows
+    /// about it, falling back to its `default_dataset`.
+    ///
+    /// A tenant created through the admin API carries `default_dataset` as a
+    /// column on its tenant row and no dataset row at all, so the fallback is
+    /// the common case rather than the exception.
+    async fn datasets_for_tenant(
+        &self,
+        manager: &crate::CatalogManager,
+        tenant_id: &str,
+    ) -> Result<Vec<String>> {
+        let slug = manager.get_tenant_slug(tenant_id);
+        let Some(tenant) = manager.resolve_tenant_by_slug(&slug).await? else {
+            return Err(anyhow::anyhow!("Tenant '{tenant_id}' is not registered"));
+        };
+        // The id -> slug -> tenant round-trip is not identity-preserving:
+        // `resolve_tenant_by_slug` matches config tenants first, so a database
+        // tenant whose id equals a different config tenant's slug resolves to
+        // that config tenant. Provisioning its dataset names under this
+        // tenant's namespace would breach tenant isolation.
+        if tenant.id != tenant_id {
+            return Err(anyhow::anyhow!(
+                "Tenant '{tenant_id}' resolves to a different tenant ('{}') by slug '{slug}'; \
+                 refusing to provision across tenants",
+                tenant.id
+            ));
+        }
+
+        let mut datasets: Vec<String> = tenant.datasets.iter().map(|d| d.id.clone()).collect();
+        if let Some(default) = &tenant.default_dataset
+            && !datasets.iter().any(|d| d == default)
+        {
+            datasets.push(default.clone());
+        }
+        Ok(datasets)
+    }
+
+    /// Build a `CatalogManager` over this registry's configuration, carrying
+    /// the tenant source when one is attached so database-created tenants
+    /// resolve alongside config-defined ones.
+    async fn catalog_manager(&self) -> Result<crate::CatalogManager> {
+        let manager = crate::CatalogManager::new(self.config.clone()).await?;
+        Ok(match &self.tenant_source {
+            Some(source) => manager.with_tenant_source(source.clone()),
+            None => manager,
+        })
     }
 
     /// List all tables for a tenant
@@ -888,15 +955,105 @@ traces = ["http.method"]
 
     #[tokio::test]
     async fn test_create_default_tables_for_tenant() {
-        let config = Configuration::default();
-        let mut registry = TenantSchemaRegistry::new(config);
+        let mut config = Configuration::default();
+        config.schema.catalog_uri = format!(
+            "sqlite:file:signaldb_registry_tables_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        config.auth.tenants = vec![crate::config::TenantConfig {
+            id: "acme".to_string(),
+            slug: "acme".to_string(),
+            name: "Acme".to_string(),
+            default_dataset: Some("production".to_string()),
+            datasets: vec![],
+            api_keys: vec![],
+            schema_config: None,
+            limits: None,
+        }];
+        let mut registry = TenantSchemaRegistry::new(config.clone());
 
-        // Create default tables for the default tenant
-        let result = registry.create_default_tables_for_tenant("default").await;
-        assert!(result.is_ok());
+        registry
+            .create_default_tables_for_tenant("acme")
+            .await
+            .expect("provisioning must succeed");
 
-        // For now, just verify the call succeeds
-        // TODO: Add verification once table creation API is implemented
+        // The tables are really there — this used to only log
+        // "Would create table ...".
+        let manager = crate::CatalogManager::new(config).await.unwrap();
+        let namespace = manager.build_namespace("acme", "production").unwrap();
+        let tables = manager.catalog().list_tabulars(&namespace).await.unwrap();
+        assert_eq!(tables.len(), 8, "{tables:?}");
+    }
+
+    /// Tenant isolation: `resolve_tenant_by_slug` matches config tenants
+    /// first, so a database tenant whose id equals a *different* config
+    /// tenant's slug resolves to that config tenant. Provisioning must not
+    /// then create tables under one tenant's namespace using another
+    /// tenant's dataset names.
+    #[tokio::test]
+    async fn create_default_tables_refuses_a_cross_tenant_slug_collision() {
+        let mut config = Configuration::default();
+        config.schema.catalog_uri = format!(
+            "sqlite:file:signaldb_collision_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        // Config tenant `team-a` owns slug `shared`.
+        config.auth.tenants = vec![crate::config::TenantConfig {
+            id: "team-a".to_string(),
+            slug: "shared".to_string(),
+            name: "Team A".to_string(),
+            default_dataset: Some("team-a-private".to_string()),
+            datasets: vec![],
+            api_keys: vec![],
+            schema_config: None,
+            limits: None,
+        }];
+
+        // A database-only tenant whose *id* is `shared`.
+        let source = Arc::new(crate::catalog::Catalog::new_in_memory().await.unwrap());
+        source
+            .upsert_tenant("shared", "Shared", Some("shared-default"), "database")
+            .await
+            .unwrap();
+
+        let mut registry =
+            TenantSchemaRegistry::new(config.clone()).with_tenant_source(source.clone());
+
+        let err = registry
+            .create_default_tables_for_tenant("shared")
+            .await
+            .expect_err("must refuse to provision across tenants");
+        assert!(
+            err.to_string().contains("different tenant"),
+            "unexpected error: {err}"
+        );
+
+        // Nothing was created under either tenant's namespace.
+        let manager = crate::CatalogManager::new(config).await.unwrap();
+        for (tenant, dataset) in [("shared", "team-a-private"), ("shared", "shared-default")] {
+            let namespace = manager.build_namespace(tenant, dataset).unwrap();
+            assert!(
+                manager
+                    .catalog()
+                    .list_tabulars(&namespace)
+                    .await
+                    .unwrap_or_default()
+                    .is_empty(),
+                "{tenant}/{dataset} must hold no tables"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn create_default_tables_for_an_unregistered_tenant_errors() {
+        // Reporting success without having created anything is not permitted.
+        let mut registry = TenantSchemaRegistry::new(Configuration::default());
+        assert!(
+            registry
+                .create_default_tables_for_tenant("nosuchtenant")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

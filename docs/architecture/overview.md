@@ -183,7 +183,7 @@ flowchart LR
 - Transforms v1 Flight schema to v2 Iceberg schema before WAL write
 - `WalProcessor`: Background task (5s interval, exponential backoff on failure) that reads WAL entries and writes to Iceberg tables
 - Caches `IcebergTableWriter` instances per `{tenant}:{dataset}:{table}` combination
-- Creates Iceberg tables on first write with schema and partition spec from `iceberg_schemas`
+- Creates Iceberg tables with schema and partition spec from `iceberg_schemas` — on first write, and ahead of it via the table reconciler (`reconcile.rs`): a startup pass plus one every `[writer].table_reconcile_interval` over the tenant registry, so every registered tenant/dataset holds a table for each signal type enabled for it before any telemetry arrives. Both paths go through the same load-or-create `CatalogManager::ensure_table`, so a failing reconciler degrades to create-on-first-write. See [Signal table provisioning](../operations/table-provisioning.md)
 
 ### Router
 
@@ -365,7 +365,11 @@ subsystem resolves through, mirroring the merged auth resolver above:
 - The **querier** registers a DataFusion catalog for every registry tenant at
   startup and lazily registers a tenant's catalog on its first query, so an
   admin-API tenant is queryable the moment it is created — no restart and no
-  `[[auth.tenants]]` block required.
+  `[[auth.tenants]]` block required. A signal whose table does not exist for
+  that dataset — not provisioned yet, or a signal type the deployment
+  disabled — reads as an empty result rather than an error.
+- The **writer** reconciles the registry onto its signal tables, so a
+  registered dataset is complete before its first write.
 - The **compactor** enumerates the registry for planning, retention, and
   orphan cleanup, so database tenants receive the same lifecycle management as
   config tenants.
