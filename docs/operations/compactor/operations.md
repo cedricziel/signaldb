@@ -33,7 +33,7 @@ The compactor provides automatic data lifecycle management through:
 Compaction, retention and snapshot expiration are Iceberg metadata commits and respect its transactional guarantees and snapshot isolation. Orphan cleanup is different in kind: it deletes objects from storage outside any commit. It is snapshot-aware (a file is a candidate only when no retained snapshot references it), bounded by a grace period, and re-validated against a freshly rebuilt live set immediately before each deletion batch — but it is not atomic, and a deletion cannot be rolled back by a snapshot.
 
 > **Compaction is partition-scoped.** A job operates on exactly one closed
-> `timestamp_hour` partition and commits a *delta* — its input files are removed
+> `timestamp_hour` partition and commits a _delta_ — its input files are removed
 > and the compacted outputs added in a single snapshot, leaving every other
 > partition referenced as it was. Two consequences matter operationally: cost is
 > proportional to the partition being compacted rather than to the table, and
@@ -42,7 +42,10 @@ Compaction, retention and snapshot expiration are Iceberg metadata commits and r
 > has elapsed — the partition still receiving writes is the one whose files
 > would change under a running rewrite, so it is deliberately left alone.
 > Rewrites run under a `[compactor] memory_limit_mb` budget (default 512 MB) and
-> spill to disk past it rather than growing the process heap.
+> spill to disk past it rather than growing the process heap. The rewrite sorts
+> with a fan-out of `[compactor] target_partitions` (default `1`): the sorters
+> share the one budget, so raising the fan-out divides it and can exhaust the
+> pool on concurrency alone.
 >
 > **Default behavior:** The compactor and retention enforcement are **enabled by default** with `dry_run = false` and a 30-day retention period for traces, logs, metrics, and profiles. A default deployment deletes data older than 30 days. To keep data indefinitely, set `[compactor.retention].enabled = false`; to keep it longer, raise the per-signal durations. Orphan cleanup is also **enabled by default** with `dry_run = false` and physically reclaims files no retained snapshot references — data Parquet and unreferenced metadata files (old metadata.json versions, expired snapshots' manifests) alike; set `[compactor.orphan_cleanup].enabled = false` to opt out or `dry_run = true` to observe first.
 
@@ -795,7 +798,7 @@ export AWS_S3_USE_ACCELERATE_ENDPOINT=true
 With [`[compactor.attr_promotion]`](configuration.md#attribute-promotion-configuration) enabled and `dry_run = false`, the compactor promotes qualifying attribute keys to materialized `label_<key>` columns as part of a normal compaction rewrite. Each acted-on promotion makes two commits per table:
 
 1. **Schema flip** (before the rewrite): a metadata-only `AddSchema` + `SetCurrentSchema` commit adds the promoted columns. No data files change; readers null-fill the new columns until the rewrite lands.
-2. **Rewrite/delta commit** (the normal compaction commit): every row *in the partition being compacted* is rewritten with the label values backfilled from its attributes (resource, then scope, then record attributes). Existing label columns are recomputed too, healing rows the writer left null during the transition window. Because compaction is partition-scoped, backfill reaches a table's older rows as their partitions are compacted, not all at once.
+2. **Rewrite/delta commit** (the normal compaction commit): every row _in the partition being compacted_ is rewritten with the label values backfilled from its attributes (resource, then scope, then record attributes). Existing label columns are recomputed too, healing rows the writer left null during the transition window. Because compaction is partition-scoped, backfill reaches a table's older rows as their partitions are compacted, not all at once.
 
 A schema-evolution failure is logged as a warning and the compaction continues under the old schema — promotion never fails a rewrite.
 

@@ -495,27 +495,53 @@ impl ParquetRewriter {
     /// via `execute_stream` (openspec task 5.2), which is blocked on making
     /// the attribute-stats pass incremental (epic #737).
     ///
+    /// The fan-out is bounded too (`compactor.target_partitions`, default
+    /// 1). Left at DataFusion's default the plan gets one `ExternalSorter`
+    /// *per core*, each with its own unspillable merge reservation, and
+    /// they divide the single pool between them — so the budget is
+    /// exhausted by the sort's own concurrency rather than by any
+    /// oversized partition (#1064). One sorter owning the whole budget
+    /// spills within it instead, and makes the ceiling independent of the
+    /// host's core count. Compaction is a background job, so the lost
+    /// parallelism is a good trade.
+    ///
     /// A runtime that fails to build falls back to an unbounded context
     /// rather than failing the cycle, which is logged.
     fn compaction_context(&self) -> SessionContext {
-        let memory_limit_mb = self.catalog_manager.config().compactor.memory_limit_mb;
+        let compactor = &self.catalog_manager.config().compactor;
+        let memory_limit_mb = compactor.memory_limit_mb;
+        let session_config = Self::compaction_session_config(compactor.target_partitions);
         let builder = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
             .with_memory_limit(memory_limit_mb * 1024 * 1024, 1.0);
         match builder.build() {
             Ok(runtime_env) => {
-                tracing::debug!(memory_limit_mb, "Compaction memory pool configured");
-                SessionContext::new_with_config_rt(
-                    datafusion::prelude::SessionConfig::new(),
-                    Arc::new(runtime_env),
-                )
+                tracing::debug!(
+                    memory_limit_mb,
+                    target_partitions = session_config.target_partitions(),
+                    "Compaction memory pool configured"
+                );
+                SessionContext::new_with_config_rt(session_config, Arc::new(runtime_env))
             }
             Err(e) => {
                 tracing::error!(
                     error = %e,
                     "Failed to build limited RuntimeEnv for compaction; falling back to unlimited memory"
                 );
-                SessionContext::new()
+                SessionContext::new_with_config(session_config)
             }
+        }
+    }
+
+    /// `SessionConfig` for the rewrite, with the partition fan-out pinned.
+    ///
+    /// `0` means "use DataFusion's default" — `with_target_partitions`
+    /// rejects zero, so the knob is simply not applied.
+    fn compaction_session_config(target_partitions: usize) -> datafusion::prelude::SessionConfig {
+        let config = datafusion::prelude::SessionConfig::new();
+        if target_partitions == 0 {
+            config
+        } else {
+            config.with_target_partitions(target_partitions)
         }
     }
 
@@ -736,5 +762,55 @@ mod tests {
         // Total rows should be preserved
         let total_rows: usize = split.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 100);
+    }
+
+    /// Build a rewriter whose config has been tweaked by `f`.
+    async fn rewriter_with_config(
+        f: impl FnOnce(&mut common::config::Configuration),
+    ) -> ParquetRewriter {
+        let mut config = common::config::Configuration::default();
+        config.schema.catalog_uri = "sqlite::memory:".to_string();
+        f(&mut config);
+        let catalog_manager = CatalogManager::new(config).await.unwrap();
+        ParquetRewriter::new(Arc::new(catalog_manager))
+    }
+
+    /// The rewrite must not fan out to the core count: each DataFusion
+    /// partition gets its own `ExternalSorter` plus an unspillable merge
+    /// reservation, and N of them divide the single `memory_limit_mb`
+    /// pool — which is how a 512 MB budget is exhausted by concurrency
+    /// alone rather than by any oversized partition (#1064).
+    #[tokio::test]
+    async fn compaction_context_does_not_fan_out_to_core_count() {
+        let rewriter = rewriter_with_config(|_| {}).await;
+        let ctx = rewriter.compaction_context();
+
+        assert_eq!(
+            ctx.state().config().target_partitions(),
+            1,
+            "compaction must default to a single sorter owning the whole memory budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_context_honors_configured_target_partitions() {
+        let rewriter = rewriter_with_config(|c| c.compactor.target_partitions = 3).await;
+        let ctx = rewriter.compaction_context();
+
+        assert_eq!(ctx.state().config().target_partitions(), 3);
+    }
+
+    /// `0` is the documented escape hatch back to DataFusion's own
+    /// default. It must not reach `with_target_partitions`, which panics
+    /// on zero.
+    #[tokio::test]
+    async fn compaction_context_treats_zero_target_partitions_as_auto() {
+        let rewriter = rewriter_with_config(|c| c.compactor.target_partitions = 0).await;
+        let ctx = rewriter.compaction_context();
+
+        assert!(
+            ctx.state().config().target_partitions() >= 1,
+            "zero must fall back to DataFusion's available-parallelism default"
+        );
     }
 }

@@ -227,6 +227,10 @@ fn default_compactor_memory_limit_mb() -> usize {
     512
 }
 
+fn default_compactor_target_partitions() -> usize {
+    1
+}
+
 fn default_max_per_tenant() -> usize {
     5
 }
@@ -418,6 +422,26 @@ pub struct CompactorConfig {
     #[serde(default = "default_compactor_memory_limit_mb")]
     pub memory_limit_mb: usize,
 
+    /// DataFusion partition fan-out for the compaction rewrite.
+    ///
+    /// Left unset, DataFusion fans out to the core count, and each partition
+    /// gets its own `ExternalSorter` plus an *unspillable* merge reservation.
+    /// Those N sorters divide the single `memory_limit_mb` pool between them,
+    /// so the rewrite can exhaust its budget on concurrency alone rather than
+    /// on any one oversized partition — the failure mode in issue #1064,
+    /// observed with six sorters against a 512 MB pool.
+    ///
+    /// Compaction is a background job whose latency does not matter much, so
+    /// the default trades fan-out for a predictable, core-count-independent
+    /// ceiling: one sorter owning the whole budget, spilling within it.
+    ///
+    /// `0` restores DataFusion's default (available parallelism).
+    ///
+    /// Default: 1.
+    /// Env: SIGNALDB__COMPACTOR__TARGET_PARTITIONS
+    #[serde(default = "default_compactor_target_partitions")]
+    pub target_partitions: usize,
+
     /// Retention enforcement configuration (Phase 3)
     /// Env: SIGNALDB__COMPACTOR__RETENTION__*
     #[serde(default)]
@@ -489,6 +513,7 @@ impl Default for CompactorConfig {
             max_input_file_size_kb: 65536, // 64MB (half the default target size)
             partition_lateness: default_partition_lateness(),
             memory_limit_mb: default_compactor_memory_limit_mb(),
+            target_partitions: default_compactor_target_partitions(),
             retention: RetentionConfig::default(),
             orphan_cleanup: OrphanCleanupConfig::default(),
             attr_promotion: AttrPromotionConfig::default(),
@@ -1935,6 +1960,7 @@ mod tests {
             jail.set_env("SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB", "256");
             jail.set_env("SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD", "20");
             jail.set_env("SIGNALDB__COMPACTOR__MAX_INPUT_FILE_SIZE_KB", "2048");
+            jail.set_env("SIGNALDB__COMPACTOR__TARGET_PARTITIONS", "4");
 
             let config = Figment::from(Serialized::defaults(Configuration::default()))
                 .merge(Env::prefixed("SIGNALDB_").split("_"))
@@ -1947,9 +1973,19 @@ mod tests {
             assert_eq!(config.compactor.target_file_size_mb, 256);
             assert_eq!(config.compactor.file_count_threshold, 20);
             assert_eq!(config.compactor.max_input_file_size_kb, 2048);
+            assert_eq!(config.compactor.target_partitions, 4);
 
             Ok(())
         });
+    }
+
+    /// Compaction must not inherit DataFusion's core-count fan-out: N
+    /// sorters dividing one `memory_limit_mb` pool is what exhausts the
+    /// budget on concurrency alone (#1064).
+    #[test]
+    fn compactor_target_partitions_defaults_to_one() {
+        let config = CompactorConfig::default();
+        assert_eq!(config.target_partitions, 1);
     }
 
     #[test]
