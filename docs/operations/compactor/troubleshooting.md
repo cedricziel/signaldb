@@ -595,6 +595,11 @@ target_partitions = 1
 memory_limit_mb = 1024
 ```
 
+3. **Check the startup warnings.** The compactor logs an explicit warning when
+   `target_file_size_mb` is at or above `memory_limit_mb`, or when the
+   per-sorter share is below the spill floor. Both combinations produce this
+   failure and neither is visible from any single setting.
+
 ## Data Integrity Issues
 
 ### Issue 10: Queries Failing After Retention

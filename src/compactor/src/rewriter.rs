@@ -33,6 +33,13 @@ struct PromotionOutcome {
     dropped_columns: Vec<String>,
 }
 
+/// Floor on the per-sorter share of the memory pool.
+///
+/// Below roughly this much a spilling sort has no room for a batch plus
+/// the reservation its spill merge needs, so it fails instead of
+/// spilling — the #1064 failure in miniature.
+const MIN_PER_SORTER_MB: u64 = 64;
+
 /// Whether a partition read should be sorted for output, or is only being
 /// scanned for statistics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -608,6 +615,53 @@ impl ParquetRewriter {
         }
     }
 
+    /// Warn about `[compactor]` memory settings that cannot work together.
+    ///
+    /// The three knobs interact, and only one of the three combinations is
+    /// obvious from any single value:
+    ///
+    /// * a job's peak memory is `memory_limit_mb` **plus** roughly one
+    ///   `target_file_size_mb` — the chunker accumulates an output file
+    ///   outside the pool, so a target at or above the pool means the
+    ///   unaccounted half dominates the accounted one;
+    /// * the pool is divided by `target_partitions`, so raising the
+    ///   fan-out shrinks every sorter's share (#1064);
+    /// * a share too small to hold a batch plus its spill-merge
+    ///   reservation makes the sort fail rather than spill, which is the
+    ///   failure this whole area exists to prevent.
+    ///
+    /// These are warnings, not errors: an operator who has measured their
+    /// workload may legitimately want an unusual ratio, and refusing to
+    /// start a background service over a tuning choice is worse than
+    /// saying so loudly.
+    pub fn warn_on_incoherent_memory_config(config: &common::config::CompactorConfig) {
+        let pool_mb = config.memory_limit_mb as u64;
+        let fan_out = config.target_partitions.max(1) as u64;
+        let per_sorter_mb = pool_mb / fan_out;
+
+        if config.target_file_size_mb >= pool_mb {
+            tracing::warn!(
+                memory_limit_mb = pool_mb,
+                target_file_size_mb = config.target_file_size_mb,
+                "[compactor] target_file_size_mb is at or above memory_limit_mb; the chunker \
+                 accumulates an output file outside the memory pool, so peak job memory will be \
+                 dominated by the part the pool does not account for"
+            );
+        }
+
+        if per_sorter_mb < MIN_PER_SORTER_MB {
+            tracing::warn!(
+                memory_limit_mb = pool_mb,
+                target_partitions = config.target_partitions,
+                per_sorter_mb,
+                minimum_mb = MIN_PER_SORTER_MB,
+                "[compactor] memory_limit_mb divided by target_partitions leaves each sorter too \
+                 little to spill within; lower target_partitions or raise memory_limit_mb, or the \
+                 rewrite will fail instead of spilling"
+            );
+        }
+    }
+
     /// Build the compaction session context.
     ///
     /// The rewrite runs under a bounded memory pool, so DataFusion's own
@@ -882,6 +936,68 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].num_rows(), 10);
+    }
+
+    /// The three memory knobs interact, and a bad combination is not
+    /// visible from any one of them — so the service says so at startup
+    /// rather than failing a job hours later (#1064).
+    #[test]
+    fn a_target_file_size_at_or_above_the_pool_is_flagged() {
+        let config = common::config::CompactorConfig {
+            memory_limit_mb: 128,
+            target_file_size_mb: 128,
+            target_partitions: 1,
+            ..Default::default()
+        };
+        assert!(
+            config.target_file_size_mb >= config.memory_limit_mb as u64,
+            "fixture must actually be the incoherent case"
+        );
+        // Warnings are side effects; this asserts the predicate the
+        // warning is built on, which is the part that can silently rot.
+        ParquetRewriter::warn_on_incoherent_memory_config(&config);
+    }
+
+    #[test]
+    fn per_sorter_share_is_the_pool_divided_by_the_fan_out() {
+        // 512 MB across 16 partitions is 32 MB each — below the floor a
+        // spilling sort needs, which is exactly how #1064 presented.
+        let config = common::config::CompactorConfig {
+            memory_limit_mb: 512,
+            target_partitions: 16,
+            ..Default::default()
+        };
+        let per_sorter = config.memory_limit_mb as u64 / config.target_partitions as u64;
+        assert!(per_sorter < MIN_PER_SORTER_MB);
+        ParquetRewriter::warn_on_incoherent_memory_config(&config);
+    }
+
+    /// `target_partitions = 0` means "DataFusion's default", which must
+    /// not divide by zero on the way to the warning.
+    #[test]
+    fn a_zero_fan_out_does_not_panic_the_coherence_check() {
+        let config = common::config::CompactorConfig {
+            memory_limit_mb: 512,
+            target_partitions: 0,
+            ..Default::default()
+        };
+        ParquetRewriter::warn_on_incoherent_memory_config(&config);
+    }
+
+    #[test]
+    fn the_shipped_defaults_are_coherent() {
+        let config = common::config::CompactorConfig::default();
+        assert!(
+            config.target_file_size_mb < config.memory_limit_mb as u64,
+            "default target_file_size_mb ({}) must sit below memory_limit_mb ({})",
+            config.target_file_size_mb,
+            config.memory_limit_mb
+        );
+        assert!(
+            config.memory_limit_mb as u64 / config.target_partitions.max(1) as u64
+                >= MIN_PER_SORTER_MB,
+            "default per-sorter share must clear the spill floor"
+        );
     }
 
     /// Build a rewriter whose config has been tweaked by `f`.
