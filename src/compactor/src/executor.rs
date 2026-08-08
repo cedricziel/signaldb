@@ -179,15 +179,14 @@ impl CompactionExecutor {
             // `config.max_retries` with exponential backoff, never an
             // unbounded wait) so a retry cannot interleave with a retention
             // pass either.
-            // TEMP-DISABLED-FOR-RED-CHECK
-            // let _table_guard = self
-            //     .table_locks
-            //     .lock(
-            //         &candidate.tenant_id,
-            //         &candidate.dataset_id,
-            //         &candidate.table_name,
-            //     )
-            //     .await;
+            let _table_guard = self
+                .table_locks
+                .lock(
+                    &candidate.tenant_id,
+                    &candidate.dataset_id,
+                    &candidate.table_name,
+                )
+                .await;
 
             // Create a compaction job from the candidate
             let job = self.create_job(candidate).await?;

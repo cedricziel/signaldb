@@ -852,16 +852,23 @@ mod tests {
         // genuinely stuck, not merely slow, so a generous bound is fine.
         const DEADLOCK_BACKSTOP: TokioDuration = TokioDuration::from_secs(30);
 
-        // Give the spawned task real scheduling turns to run its
-        // non-contended work (e.g. listing tables) up to the point where it
-        // blocks on the table lock, if it is going to. Purely to make the
-        // "did not finish" assertion meaningful rather than vacuous — the
-        // assertion itself does not depend on this count being "enough".
-        async fn let_spawned_task_run() {
-            for _ in 0..256 {
-                tokio::task::yield_now().await;
-            }
-        }
+        // How long a blocked task is given to prove it is blocked.
+        //
+        // This is deliberately a real wait, and it is safe in the direction
+        // that matters: a task blocked on a held mutex can *never* complete,
+        // so this assertion cannot fail spuriously no matter how loaded the
+        // machine is. The bound only has to be long enough that an
+        // *unguarded* run would finish inside it — both entry points here
+        // work against an in-memory catalog and complete in milliseconds, so
+        // two seconds is orders of magnitude of headroom.
+        //
+        // An earlier version yielded on the *test's* task and then checked
+        // `JoinHandle::is_finished()`. That was vacuous: the spawned task
+        // runs on another worker doing real catalog I/O, so it had not
+        // finished yet either way, and the assertion held whether or not the
+        // guard existed — it failed to catch the lock being commented out
+        // entirely.
+        const BLOCKED_PROOF: TokioDuration = TokioDuration::from_secs(2);
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         catalog_manager
@@ -905,11 +912,10 @@ mod tests {
         timeout(DEADLOCK_BACKSTOP, started.notified())
             .await
             .expect("spawned retention task never started");
-        let_spawned_task_run().await;
 
         assert!(
-            !retention_pass.is_finished(),
-            "retention ran while compaction held the table lock"
+            timeout(BLOCKED_PROOF, &mut retention_pass).await.is_err(),
+            "retention ran to completion while compaction held the table lock"
         );
 
         drop(held);
@@ -951,11 +957,10 @@ mod tests {
         timeout(DEADLOCK_BACKSTOP, started.notified())
             .await
             .expect("spawned compaction task never started");
-        let_spawned_task_run().await;
 
         assert!(
-            !compaction_pass.is_finished(),
-            "compaction ran while retention held the table lock"
+            timeout(BLOCKED_PROOF, &mut compaction_pass).await.is_err(),
+            "compaction ran to completion while retention held the table lock"
         );
 
         drop(held);
