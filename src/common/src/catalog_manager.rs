@@ -358,12 +358,14 @@ impl CatalogManager {
                 is_default: d.is_default,
             })
             .collect();
-        ResolvedTenant {
+        let mut descriptor = ResolvedTenant {
             id: tenant.id.clone(),
             slug: tenant.slug.clone(),
             default_dataset: tenant.default_dataset.clone(),
             datasets,
-        }
+        };
+        self.ensure_default_dataset(&mut descriptor);
+        descriptor
     }
 
     /// Build a source-agnostic descriptor for a database-created tenant.
@@ -390,12 +392,47 @@ impl CatalogManager {
                 is_default: record.default_dataset.as_deref() == Some(d.name.as_str()),
             })
             .collect();
-        ResolvedTenant {
+        let mut descriptor = ResolvedTenant {
             id: record.id.clone(),
             slug: self.get_tenant_slug(&record.id),
             default_dataset: record.default_dataset.clone(),
             datasets: resolved,
+        };
+        self.ensure_default_dataset(&mut descriptor);
+        descriptor
+    }
+
+    /// Guarantee the invariant that a tenant's `default_dataset`, when set, is
+    /// always present in its resolved dataset list.
+    ///
+    /// A dataset can be named as a tenant's default without having a row of
+    /// its own: admin-API tenant creation stores `default_dataset` as a column
+    /// on the tenant row and writes no `datasets` row, and a config tenant may
+    /// declare `default_dataset` with no matching `[[auth.tenants.datasets]]`
+    /// block. Without this, such a tenant resolves with an empty dataset list
+    /// and every consumer that enumerates datasets — compaction planning,
+    /// retention enforcement, orphan cleanup, table reconciliation — skips it
+    /// silently, because the loop body simply never executes.
+    ///
+    /// Normalizing here rather than at each consumer keeps the fallback in one
+    /// place: a descriptor is the single point every registry consumer goes
+    /// through.
+    fn ensure_default_dataset(&self, descriptor: &mut ResolvedTenant) {
+        let Some(default) = descriptor.default_dataset.clone() else {
+            return;
+        };
+        if descriptor.datasets.iter().any(|d| d.id == default) {
+            return;
         }
+        descriptor.datasets.push(ResolvedDataset {
+            slug: self.get_dataset_slug(&descriptor.id, &default),
+            storage_dsn: self
+                .get_dataset_storage_config(&descriptor.id, &default)
+                .dsn
+                .clone(),
+            id: default,
+            is_default: true,
+        });
     }
 
     /// Merge database-only datasets (those added to a tenant at runtime, e.g.
@@ -867,6 +904,101 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(resolved.datasets.iter().any(|d| d.id == "staging"));
+    }
+
+    /// A tenant created through the admin API stores `default_dataset` as a
+    /// column on the tenant row and writes no `datasets` row, so its resolved
+    /// dataset list would otherwise be empty — and every consumer that
+    /// enumerates datasets (compaction, retention, orphan cleanup) would skip
+    /// it silently.
+    #[tokio::test]
+    async fn database_tenant_with_only_a_default_dataset_resolves_it() {
+        let source = Arc::new(Catalog::new_in_memory().await.unwrap());
+        source
+            .upsert_tenant("gamma", "Gamma", Some("production"), "database")
+            .await
+            .unwrap();
+        // Deliberately no `create_dataset` — this is what `create_tenant` leaves.
+        let manager = manager_with(vec![], source).await;
+
+        let tenants = manager.list_active_tenants().await.unwrap();
+        let gamma = tenants.iter().find(|t| t.id == "gamma").unwrap();
+        assert_eq!(
+            gamma
+                .datasets
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["production"],
+        );
+        assert!(gamma.datasets[0].is_default);
+
+        // Same via the lazy per-request path.
+        let resolved = manager
+            .resolve_tenant_by_slug("gamma")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(resolved.datasets.iter().any(|d| d.id == "production"));
+    }
+
+    /// The same gap exists for a config tenant that declares `default_dataset`
+    /// without a matching `[[auth.tenants.datasets]]` block: auth survives
+    /// (the config branch resolves without consulting dataset rows) but
+    /// lifecycle enumeration skips it.
+    #[tokio::test]
+    async fn config_tenant_with_only_a_default_dataset_resolves_it() {
+        let source = Arc::new(Catalog::new_in_memory().await.unwrap());
+        let mut delta = tenant("delta", "delta", true);
+        delta.datasets = vec![];
+        let manager = manager_with(vec![delta], source).await;
+
+        let tenants = manager.list_active_tenants().await.unwrap();
+        let delta = tenants.iter().find(|t| t.id == "delta").unwrap();
+        assert_eq!(
+            delta
+                .datasets
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["production"],
+        );
+        assert!(delta.datasets[0].is_default);
+    }
+
+    /// Normalization must not double-count: the overwhelmingly common case is
+    /// a default dataset that *does* have a record.
+    #[tokio::test]
+    async fn a_default_dataset_with_a_record_is_not_duplicated() {
+        let source = Arc::new(Catalog::new_in_memory().await.unwrap());
+        source
+            .upsert_tenant("gamma", "Gamma", Some("production"), "database")
+            .await
+            .unwrap();
+        source.create_dataset("gamma", "production").await.unwrap();
+        let manager = manager_with(vec![tenant("acme", "acme", true)], source).await;
+
+        let tenants = manager.list_active_tenants().await.unwrap();
+        let gamma = tenants.iter().find(|t| t.id == "gamma").unwrap();
+        assert_eq!(
+            gamma
+                .datasets
+                .iter()
+                .filter(|d| d.id == "production")
+                .count(),
+            1,
+        );
+
+        // And a config tenant whose default is declared keeps its explicit
+        // slug rather than gaining a second, derived entry.
+        let acme = tenants.iter().find(|t| t.id == "acme").unwrap();
+        assert_eq!(
+            acme.datasets
+                .iter()
+                .filter(|d| d.id == "production")
+                .count(),
+            1,
+        );
     }
 
     #[tokio::test]

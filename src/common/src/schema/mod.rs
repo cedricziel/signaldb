@@ -476,13 +476,10 @@ impl TenantSchemaRegistry {
             ));
         }
 
-        let mut datasets: Vec<String> = tenant.datasets.iter().map(|d| d.id.clone()).collect();
-        if let Some(default) = &tenant.default_dataset
-            && !datasets.iter().any(|d| d == default)
-        {
-            datasets.push(default.clone());
-        }
-        Ok(datasets)
+        // The registry guarantees `default_dataset` is among the resolved
+        // datasets even when no dataset row names it, so this is a plain
+        // projection.
+        Ok(tenant.datasets.iter().map(|d| d.id.clone()).collect())
     }
 
     /// Build a `CatalogManager` over this registry's configuration, carrying
