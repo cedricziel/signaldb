@@ -123,3 +123,51 @@ describe("valueAtFraction", () => {
     }
   });
 });
+
+describe("splitSegments minimum visibility", () => {
+  // A 0.03% error share must not vanish: on live data 6 errors against
+  // 18,600 unset spans rounded to sub-pixel and disappeared entirely.
+  it("keeps a tiny segment visible", () => {
+    const segs = splitSegments(
+      { unset: 18_600, error: 6 },
+      ["unset", "error"],
+      60,
+    );
+    const err = segs.find((s) => s.key === "error")!;
+    expect(err.px).toBeGreaterThanOrEqual(1);
+  });
+
+  it("takes the space from the largest segment, not from the bar", () => {
+    const bar = 60;
+    const segs = splitSegments(
+      { unset: 18_600, error: 6 },
+      ["unset", "error"],
+      bar,
+    );
+    expect(segs.reduce((a, s) => a + s.px, 0)).toBeCloseTo(bar, 6);
+  });
+
+  it("leaves comfortable segments proportional", () => {
+    const segs = splitSegments({ info: 75, error: 25 }, ["info", "error"], 40);
+    expect(segs).toEqual([
+      { key: "info", px: 30 },
+      { key: "error", px: 10 },
+    ]);
+  });
+
+  it("shares a bar too small for every series to meet the floor", () => {
+    const segs = splitSegments(
+      { debug: 1, info: 1, warn: 1, error: 1 },
+      ["debug", "info", "warn", "error"],
+      2,
+    );
+    expect(segs).toHaveLength(4);
+    expect(segs.reduce((a, s) => a + s.px, 0)).toBeCloseTo(2, 6);
+  });
+
+  it("still drops series absent from the bucket", () => {
+    const segs = splitSegments({ unset: 100 }, ["ok", "unset", "error"], 30);
+    expect(segs.map((s) => s.key)).toEqual(["unset"]);
+    expect(segs[0]!.px).toBeCloseTo(30, 6);
+  });
+});

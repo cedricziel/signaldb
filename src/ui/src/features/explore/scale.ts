@@ -78,19 +78,52 @@ export interface Segment {
   px: number;
 }
 
+/** Smallest rendered height for a series that is present in a bucket. */
+export const MIN_SEG_PX = 1;
+
 /**
  * Divide a bar's height across its series by each one's linear share of the
  * bucket total, in the caller's series order. Series absent from the bucket
- * are dropped. The returned heights sum to `barPx`.
+ * are dropped. The returned heights always sum to `barPx`.
+ *
+ * A series that *is* present never rounds away: a 0.03% error share (6 spans
+ * against 18,600) would otherwise render sub-pixel and vanish, hiding exactly
+ * the thing the stack exists to surface. Segments below {@link MIN_SEG_PX} are
+ * raised to it and the space is taken from the segments that have room —
+ * never by growing the bar, which would break comparison between buckets.
  */
 export function splitSegments(
   counts: Record<string, number>,
   order: string[],
   barPx: number,
 ): Segment[] {
-  const total = order.reduce((sum, key) => sum + (counts[key] ?? 0), 0);
+  const present = order.filter((key) => (counts[key] ?? 0) > 0);
+  const total = present.reduce((sum, key) => sum + (counts[key] ?? 0), 0);
   if (total <= 0 || barPx <= 0) return [];
-  return order
-    .filter((key) => (counts[key] ?? 0) > 0)
-    .map((key) => ({ key, px: barPx * ((counts[key] ?? 0) / total) }));
+
+  // Too short to give everyone the floor: share it out evenly instead.
+  if (barPx <= present.length * MIN_SEG_PX) {
+    const each = barPx / present.length;
+    return present.map((key) => ({ key, px: each }));
+  }
+
+  const raw = present.map((key) => ({
+    key,
+    px: barPx * ((counts[key] ?? 0) / total),
+  }));
+  const deficit = raw.reduce(
+    (sum, s) => sum + Math.max(0, MIN_SEG_PX - s.px),
+    0,
+  );
+  if (deficit === 0) return raw;
+
+  const surplus = raw.reduce(
+    (sum, s) => sum + Math.max(0, s.px - MIN_SEG_PX),
+    0,
+  );
+  return raw.map((s) =>
+    s.px < MIN_SEG_PX
+      ? { key: s.key, px: MIN_SEG_PX }
+      : { key: s.key, px: s.px - deficit * ((s.px - MIN_SEG_PX) / surplus) },
+  );
 }
