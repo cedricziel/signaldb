@@ -1,60 +1,73 @@
 ## 1. Read-path guard: absent table reads as empty (querier)
 
 Independent of reconciliation and closes issue #972's symptom on its own. Ship
-first.
+first. Note that no read path has such a guard today — including traces, contrary
+to #972's description.
 
 - [ ] 1.1 Write failing tests in `src/querier` for the logs metadata paths: with a registered tenant catalog whose dataset has no `logs` table, `get_labels` and `get_label_values` return empty results instead of an error (`cargo test -p querier`)
-- [ ] 1.2 Write failing tests in `src/querier` for the metrics and profiles metadata/search paths under the same missing-table condition
-- [ ] 1.3 Write failing tests in `src/querier` asserting the negative cases still error: an unknown tenant, an invalid query, and a planning failure against a table that _does_ exist must not be reported as empty
-- [ ] 1.4 Add a shared table-resolution helper in the querier that reports absence via `SessionContext::table_exist` on the resolved table reference (never by matching DataFusion error text) and returns `None` for an absent table
-- [ ] 1.5 Route the logs, metrics, and profiles metadata/label/search paths through the helper, yielding empty results on absence; leave data-plane errors from existing tables propagating unchanged
-- [ ] 1.6 Write a failing test pinning the per-signal error wrapper, then fix the Flight status mapping in `src/querier/src/flight.rs` so a logs failure is not reported as `"Profile query failed"`
-- [ ] 1.7 Upgrade the KNOWN-ISSUE pin in `src/querier/tests/lazy_tenant_registration.rs` from "any error except catalog-resolution" to asserting an empty label result, and drop the #972 marker
+- [ ] 1.2 Write failing tests in `src/querier` for the traces paths (`TraceService` query and search) under the same missing-table condition
+- [ ] 1.3 Write failing tests in `src/querier` for the metrics, profiles, and Query-IR (`ir_planner`) paths under the same condition
+- [ ] 1.4 Write failing tests in `src/querier` asserting the negative cases still error: an unknown tenant, an invalid query, and a planning failure against a table that _does_ exist must not be reported as empty
+- [ ] 1.5 Add a shared table-resolution helper in the querier keyed on the async lookup (`schema_for_ref(...)?.table(name).await` → `Ok(None)` means absent), never on `SessionContext::table_exist` (hardcoded `true` via `LiveIcebergSchema`, `src/querier/src/flight.rs:98-100`) and never on DataFusion error text
+- [ ] 1.6 Route the traces, logs, metrics, profiles, and Query-IR metadata/label/search paths through the helper, yielding empty results on absence; leave data-plane errors from existing tables propagating unchanged
+- [ ] 1.7 Tighten the metrics paths that currently swallow _all_ errors as empty (`src/querier/src/query/metrics.rs:1072`, `:1231`, `:1438`) so absence returns empty but real failures surface — a deliberate behavior change, covered by the 1.4 negative tests
+- [ ] 1.8 Write a failing test pinning per-signal error wrappers, then split the shared `querier_error_to_status` mapper (`src/querier/src/flight.rs:2252-2261`) so a logs or trace failure is not reported as `"Profile query failed"`
+- [ ] 1.9 Upgrade the KNOWN-ISSUE pin in `src/querier/tests/lazy_tenant_registration.rs` from "any error except catalog-resolution" to asserting an empty label result, and drop the #972 marker
 
 ## 2. Reconcile entry point (common)
 
-- [ ] 2.1 Write a failing test in `src/common` asserting `ensure_dataset_tables` creates exactly the tables enabled by `[schema.default_schemas]` for a fresh tenant/dataset (`cargo test -p common`)
-- [ ] 2.2 Write a failing test asserting disabled signal types (metrics off, profiles off) produce no tables while enabled ones are still created
-- [ ] 2.3 Write a failing test asserting a second `ensure_dataset_tables` pass over an already-provisioned dataset commits no new table version, snapshot, or data file
-- [ ] 2.4 Write a failing test asserting concurrent `ensure_dataset_tables` calls for the same dataset both succeed and yield one table per signal
-- [ ] 2.5 Implement `CatalogManager::ensure_dataset_tables(tenant_id, dataset_id)` over `TableSchema::all_from_config`, delegating per table to the existing `ensure_table`, and returning a report of created / already-present / failed tables
-- [ ] 2.6 Write a failing test asserting one table's failure does not abort the remaining tables in the same dataset, then implement per-table error isolation in the report
-- [ ] 2.7 Delete the dead `SchemaRegistry::create_default_tables_for_tenant` stub, its `TenantApi::create_default_tables` wrapper, and the test asserting the stub's placeholder behavior
+- [ ] 2.1 Write a failing test in `src/common` asserting `ensure_dataset_tables` creates exactly the tables enabled for the tenant on a fresh tenant/dataset (`cargo test -p common`)
+- [ ] 2.2 Write a failing test asserting a per-tenant schema override that disables a signal narrows the set for that tenant while another tenant still gets it
+- [ ] 2.3 Write a failing test asserting globally disabled signal types produce no tables, and that `TableSchema::Custom` entries from `custom_schemas` are skipped rather than attempted (`ensure_table` rejects them by name, `src/common/src/iceberg/table_manager.rs:117-127`)
+- [ ] 2.4 Write a failing test asserting a second pass over an already-provisioned, already-property-backfilled dataset commits no new table version, snapshot, or data file
+- [ ] 2.5 Write a failing test asserting concurrent `ensure_dataset_tables` calls for the same dataset both succeed and yield one table per signal
+- [ ] 2.6 Implement `CatalogManager::ensure_dataset_tables(tenant_id, dataset_id)`: resolve the enabled set via the tenant's schema config, skip `Custom`, delegate per table to `ensure_table`, return a report of created / already-present / failed tables
+- [ ] 2.7 Write a failing test asserting one table's failure does not abort its siblings, then implement per-table error isolation in the report
 
 ## 3. Configuration
 
-- [ ] 3.1 Write a failing test in `src/common` for the new `[schema]` reconcile-interval key: default value, explicit override, and the disable value parsing to "no periodic passes" (`cargo test -p common`)
-- [ ] 3.2 Add the key to the schema config struct with its default, and add it to `signaldb.dist.toml` with a comment
+- [ ] 3.1 Write a failing test in `src/common` for the new `[writer]` reconcile-interval key: default value, explicit override, and the disable value parsing to "no periodic passes" (`cargo test -p common`). It belongs under `[writer]`, not `[schema]` — `SchemaConfig` is tenant-overridable wholesale, which would make a per-tenant reconcile interval meaningless
+- [ ] 3.2 Add the key to the writer config struct with its default, and add it to `signaldb.dist.toml` with a comment
 
 ## 4. Reconcile loop (writer)
 
-- [ ] 4.1 Write a failing test in `src/writer` asserting a startup pass provisions every dataset returned by the tenant registry (`cargo test -p writer`)
-- [ ] 4.2 Write a failing test asserting a dataset that appears in the registry after startup is provisioned by a later pass, with no restart
-- [ ] 4.3 Write a failing test asserting a failing pass (catalog unreachable) neither fails startup nor aborts the remaining tenants, and that the next pass retries
-- [ ] 4.4 Implement the reconciler: startup pass over `list_active_tenants()` × datasets, then a periodic task on the configured interval, wired into `src/writer/src/main.rs` alongside the existing background WAL processing
-- [ ] 4.5 Write a failing test asserting a converged deployment issues no catalog calls on subsequent passes, then implement the process-local already-ensured `(tenant, dataset, table)` set
-- [ ] 4.6 Add tracing (tenant/dataset/table fields, warn on failure, info on creation) and a counter metric for tables created and provisioning failures
-- [ ] 4.7 Verify monolithic mode picks the reconciler up through the shared writer startup path (`cargo run --bin signaldb`), adding a task-spawn assertion if the wiring differs from the standalone binary
+- [ ] 4.1 Write a failing test in `src/writer` asserting the reconciler sees database-created tenants, not only config-defined ones (`cargo test -p writer`)
+- [ ] 4.2 Attach a tenant source to the writer's `CatalogManager` (`src/writer/src/main.rs:138`), cloning `bootstrap.catalog()` before `ServiceBootstrap` is moved into `InMemoryFlightTransport` at `:118`. Without this `list_active_tenants` returns config tenants only (`src/common/src/catalog_manager.rs:329-331`)
+- [ ] 4.3 Write a failing test asserting a tenant whose `default_dataset` has no dataset row still gets that dataset provisioned
+- [ ] 4.4 Write a failing test asserting a dataset that appears in the registry after startup is provisioned by a later pass, with no restart
+- [ ] 4.5 Write a failing test asserting a failing pass (catalog unreachable) neither fails startup nor aborts the remaining tenants, and that the next pass retries
+- [ ] 4.6 Implement the reconciler as `start_table_reconciler()` on `IcebergWriterFlightService`, mirroring `start_background_processing()`: startup pass over the registry (datasets plus each tenant's unrecorded `default_dataset`), then a periodic task on the configured interval
+- [ ] 4.7 Call `start_table_reconciler()` from both `src/writer/src/main.rs` and `src/signaldb-bin/src/main.rs` — they are independent wirings with no shared startup path, so monolithic mode does not inherit it automatically
+- [ ] 4.8 Write a failing test asserting a converged deployment issues no catalog calls on subsequent passes, then implement the process-local already-ensured `(tenant, dataset, table)` set
+- [ ] 4.9 Add tracing (tenant/dataset/table fields, warn on failure, info on creation) and counter metrics for tables created and provisioning failures
 
-## 5. Cross-service integration coverage
+## 5. Admin endpoint and compactor fix
 
-- [ ] 5.1 Add a `tests-integration` test: create a tenant through the admin API, ingest nothing, and assert log/trace/metric label queries return empty successfully (`cargo test -p tests-integration`)
-- [ ] 5.2 Add a `tests-integration` test asserting a reconciled dataset accepts a subsequent OTLP write into the pre-created tables — no duplicate table, no schema conflict, data queryable afterwards
-- [ ] 5.3 Add a `tests-integration` test asserting a dataset created after startup converges on a later pass and is then queryable
+- [ ] 5.1 Write a failing test asserting `POST /tenants/{tenant_id}/tables/create` actually creates the tenant's tables rather than returning `201` having created nothing (`cargo test -p router`)
+- [ ] 5.2 Reimplement `SchemaRegistry::create_default_tables_for_tenant` (`src/common/src/schema/mod.rs:394-420`) on top of `ensure_dataset_tables`, keeping the `TenantApi::create_default_tables` wrapper and the endpoint's route, request shape, and `201` response contract intact
+- [ ] 5.3 Write a failing test in `src/compactor` asserting a table with no current snapshot yields zero compaction candidates without warning (`cargo test -p compactor`), then fix `group_files_by_partition` (`src/compactor/src/planner.rs:306-310`) so newly provisioned empty tables do not warn every cycle
 
-## 6. Documentation
+## 6. Cross-service integration coverage
 
-No new user-facing API, CLI, or UI surface is introduced — the admin API,
-OpenAPI document, SDK, and UI client are unchanged (design.md, Decision 3), so
-no surface-parity or client-regeneration work applies.
+- [ ] 6.1 Add a `tests-integration` test: create a tenant through the admin API, ingest nothing, and assert log, trace, metric, and profile label queries return empty successfully (`cargo test -p tests-integration`)
+- [ ] 6.2 Add a `tests-integration` test asserting a reconciled dataset accepts a subsequent OTLP write into the pre-created tables — no duplicate table, no schema conflict, data queryable afterwards
+- [ ] 6.3 Add a `tests-integration` test asserting a dataset created after startup converges on a later pass and is then queryable
 
-- [ ] 6.1 Document the reconcile-interval configuration key and the provisioning behavior, routing placement through the docs skill (operations audience)
-- [ ] 6.2 Update the `configuration` skill with the new `[schema]` key
-- [ ] 6.3 Update the `multi-tenancy` and `storage-layout` skills where they describe tables as appearing on first write
-- [ ] 6.4 Update `CLAUDE.md` if the tenant/table lifecycle description it carries becomes inaccurate
+## 7. Documentation
 
-## 7. Ship
+No new user-facing API, CLI, or UI surface is introduced. The admin endpoint
+keeps its route, request shape, and response contract — only its effect changes —
+so the OpenAPI document, the generated Rust SDK, and the generated TypeScript
+client need no regeneration. Confirm that during 5.2 and note it in the PR.
 
-- [ ] 7.1 Run `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, and `cargo machete --with-metadata`
-- [ ] 7.2 Run the full workspace test suite and confirm the #972 KNOWN-ISSUE pin now passes in its upgraded form
-- [ ] 7.3 Split into the three semantic commits / PRs the design describes (read guard, reconcile entry point + config, writer loop), each independently revertible
+- [ ] 7.1 Document the reconcile-interval configuration key and the provisioning behavior, routing placement through the docs skill (operations audience)
+- [ ] 7.2 Correct `docs/users/authentication.md:143` and `.claude/skills/multi-tenancy/SKILL.md:177` where they describe the table-create endpoint, now that it does what it claims
+- [ ] 7.3 Update the `configuration` skill with the new `[writer]` key
+- [ ] 7.4 Update the `storage-layout` skill where it describes tables as appearing on first write
+- [ ] 7.5 Update `CLAUDE.md` if the tenant/table lifecycle description it carries becomes inaccurate
+
+## 8. Ship
+
+- [ ] 8.1 Run `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, and `cargo machete --with-metadata`
+- [ ] 8.2 Run the full workspace test suite and confirm the #972 KNOWN-ISSUE pin now passes in its upgraded form
+- [ ] 8.3 Split into semantic commits / PRs along the group boundaries (read guard; reconcile entry point + config; writer loop; endpoint + compactor fix), each independently revertible
