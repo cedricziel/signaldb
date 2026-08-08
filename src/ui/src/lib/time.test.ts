@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  axisLabelFormatter,
   DEFAULT_RANGE,
   durationToSeconds,
   formatRangeLabel,
@@ -8,8 +9,10 @@ import {
   parseRangeParam,
   rangeToParam,
   resolveRange,
+  resolveStep,
   secondsToDuration,
   stepForRange,
+  stepOptionsForRange,
 } from "./time";
 
 describe("resolveRange", () => {
@@ -98,5 +101,86 @@ describe("formatRangeLabel", () => {
     expect(formatRangeLabel({ type: "relative", seconds: 120 })).toBe(
       "Last 2m",
     );
+  });
+});
+
+describe("axisLabelFormatter", () => {
+  // Local time, so build the fixtures from Date parts rather than epoch
+  // literals — the assertions must hold in any TZ the suite runs in.
+  const at = (y: number, mo: number, d: number, h: number, mi = 0) =>
+    new Date(y, mo - 1, d, h, mi).getTime();
+
+  it("stays time-only within a single calendar day", () => {
+    const fmt = axisLabelFormatter(at(2026, 8, 8, 9), at(2026, 8, 8, 17));
+    expect(fmt(at(2026, 8, 8, 9))).toBe("09:00:00");
+    expect(fmt(at(2026, 8, 8, 17))).toBe("17:00:00");
+  });
+
+  it("includes the date once the window crosses midnight", () => {
+    const fmt = axisLabelFormatter(at(2026, 8, 7, 22), at(2026, 8, 8, 6));
+    expect(fmt(at(2026, 8, 7, 22))).toBe("08-07 22:00");
+    expect(fmt(at(2026, 8, 8, 6))).toBe("08-08 06:00");
+  });
+
+  // The reported defect: a 24h window labelled both ends "09:00:00.000".
+  it("gives a 24h window distinct labels at each end", () => {
+    const from = at(2026, 8, 7, 9);
+    const to = at(2026, 8, 8, 9);
+    const fmt = axisLabelFormatter(from, to);
+    expect(fmt(from)).not.toBe(fmt(to));
+  });
+
+  it("drops to date-only for windows spanning many days", () => {
+    const fmt = axisLabelFormatter(at(2026, 8, 1, 0), at(2026, 8, 8, 0));
+    expect(fmt(at(2026, 8, 1, 0))).toBe("08-01");
+    expect(fmt(at(2026, 8, 8, 0))).toBe("08-08");
+  });
+});
+
+describe("stepOptionsForRange", () => {
+  const hours = (n: number) => ({ fromMs: 0, toMs: n * 3600_000 });
+
+  it("offers only steps that yield a sane bucket count", () => {
+    const opts = stepOptionsForRange(hours(1));
+    // 1h: 1s would be 3600 buckets, 1h would be 1 — neither is offered.
+    expect(opts).not.toContain("1s");
+    expect(opts).not.toContain("1h");
+    expect(opts).toContain("1m");
+    expect(opts).toContain("5m");
+  });
+
+  it("scales its offers with the window", () => {
+    const opts = stepOptionsForRange(hours(24 * 7));
+    expect(opts).not.toContain("1m");
+    expect(opts).toContain("1h");
+    expect(opts).toContain("6h");
+  });
+
+  it("always offers something", () => {
+    expect(
+      stepOptionsForRange({ fromMs: 0, toMs: 1000 }).length,
+    ).toBeGreaterThan(0);
+  });
+});
+
+describe("resolveStep", () => {
+  const range = { fromMs: 0, toMs: 3600_000 };
+
+  it("falls back to the automatic step when unset", () => {
+    expect(resolveStep(range, "")).toBe(stepForRange(range));
+  });
+
+  it("honours an explicit step that fits the window", () => {
+    expect(resolveStep(range, "5m")).toBe("5m");
+  });
+
+  // Keeping a fine step across a range change would ask for 10,080 buckets.
+  it("falls back when the chosen step no longer fits the window", () => {
+    const week = { fromMs: 0, toMs: 7 * 24 * 3600_000 };
+    expect(resolveStep(week, "1m")).toBe(stepForRange(week));
+  });
+
+  it("falls back on a malformed step", () => {
+    expect(resolveStep(range, "banana")).toBe(stepForRange(range));
   });
 });

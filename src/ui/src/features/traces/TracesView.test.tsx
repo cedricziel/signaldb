@@ -395,3 +395,72 @@ describe("TracesView detail", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/404/);
   });
 });
+
+const VOLUME_BODY = {
+  result: "series",
+  window: {
+    start_ns: 1_700_000_000_000_000_000,
+    end_ns: 1_700_003_600_000_000_000,
+  },
+  step_ns: 300_000_000_000,
+  series: [
+    {
+      labels: { status_code: "Unspecified" },
+      points: [
+        [1_700_000_000_000_000_000, 2018],
+        [1_700_000_300_000_000_000, 41],
+      ],
+    },
+    {
+      labels: { status_code: "Error" },
+      points: [[1_700_000_300_000_000_000, 7]],
+    },
+  ],
+};
+
+describe("TracesView span-volume chart", () => {
+  const routes = [
+    { match: "/tempo/api/search", body: SEARCH_BODY },
+    { match: "/api/v1/query", body: VOLUME_BODY },
+  ];
+
+  it("renders span volume stacked by status", async () => {
+    stubFetchRoutes(routes);
+    renderView();
+    await screen.findByRole("img", { name: /span volume/i });
+    const cols = screen.getAllByTestId("svol-col");
+    expect(cols.length).toBeGreaterThan(1);
+    // 2018 unset, then 41 unset + 7 error.
+    expect(cols[0]).toHaveAccessibleName(/2,018 spans/);
+  });
+
+  it("asks for the volume aggregate without a row limit", async () => {
+    stubFetchRoutes(routes);
+    renderView({ limit: 25 });
+    await screen.findByRole("img", { name: /span volume/i });
+    const body = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.map(([input]) => input)
+      .find(
+        (i): i is Request =>
+          i instanceof Request && i.url.includes("/api/v1/query"),
+      );
+    expect(body).toBeDefined();
+    const doc = await body!.clone().json();
+    expect(doc.from).toBe("traces");
+    expect(doc.result).toBe("series");
+    expect(JSON.stringify(doc)).not.toContain("limit");
+  });
+
+  it("keeps the chart when the trace list is empty", async () => {
+    stubFetchRoutes([
+      { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
+      { match: "/api/v1/query", body: VOLUME_BODY },
+    ]);
+    renderView();
+    await screen.findByRole("img", { name: /span volume/i });
+    expect(
+      screen.getByText(/no traces in this time range/i),
+    ).toBeInTheDocument();
+  });
+});

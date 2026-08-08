@@ -117,3 +117,81 @@ describe("LogList", () => {
     expect(screen.getByText(/No log lines/)).toBeInTheDocument();
   });
 });
+
+describe("LogList structured metadata", () => {
+  const metaRow = row({
+    tsNs: "4000000000",
+    tsMs: 4000,
+    line: "checkout timed out",
+    labels: { level: "error", service_name: "checkout" },
+    metadata: { trace_id: "abc123", span_id: "def456" },
+  });
+
+  it("shows per-line metadata alongside stream labels", async () => {
+    render(
+      <LogList
+        rows={[metaRow]}
+        onAddFilter={() => {}}
+        onOpenTrace={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByText("checkout timed out"));
+    expect(screen.getByText("span_id")).toBeInTheDocument();
+    expect(screen.getByText("def456")).toBeInTheDocument();
+    expect(screen.getByText("abc123")).toBeInTheDocument();
+  });
+
+  it("marks metadata as per-line so it is not mistaken for a stream label", async () => {
+    render(
+      <LogList
+        rows={[metaRow]}
+        onAddFilter={() => {}}
+        onOpenTrace={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByText("checkout timed out"));
+    const spanRow = screen.getByText("span_id").closest(".attr-row");
+    expect(spanRow).toHaveAttribute("data-scope", "metadata");
+    expect(
+      screen.getByText("service_name").closest(".attr-row"),
+    ).toHaveAttribute("data-scope", "label");
+  });
+
+  // Structured metadata varies per line, so a stream selector cannot match it.
+  it("offers no stream-selector filter actions for metadata", async () => {
+    render(
+      <LogList
+        rows={[metaRow]}
+        onAddFilter={() => {}}
+        onOpenTrace={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByText("checkout timed out"));
+    expect(
+      screen.queryByRole("button", { name: "Filter for span_id = def456" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", {
+        name: "Filter for service_name = checkout",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("copies metadata as well as labels", async () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    render(
+      <LogList
+        rows={[metaRow]}
+        onAddFilter={() => {}}
+        onOpenTrace={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByText("checkout timed out"));
+    await userEvent.click(screen.getByRole("button", { name: "Copy JSON" }));
+    const copied = JSON.parse(writeText.mock.calls[0]![0] as string);
+    expect(copied.span_id).toBe("def456");
+    expect(copied.service_name).toBe("checkout");
+    vi.unstubAllGlobals();
+  });
+});

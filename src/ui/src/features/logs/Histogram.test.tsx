@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import { bucketize, Histogram, normalizeLevel, padBuckets } from "./Histogram";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import { Histogram, normalizeLevel, toVolumeSeries } from "./Histogram";
 
 describe("normalizeLevel", () => {
   it("maps synonyms onto canonical levels", () => {
@@ -14,85 +15,88 @@ describe("normalizeLevel", () => {
   });
 });
 
-describe("bucketize", () => {
-  it("merges series into time-sorted buckets with totals", () => {
-    const buckets = bucketize([
-      {
-        level: "error",
-        points: [
-          [2000, 3],
-          [1000, 1],
-        ],
-      },
-      { level: "INFO", points: [[1000, 10]] },
+describe("toVolumeSeries", () => {
+  it("keys each series by its canonical level", () => {
+    expect(
+      toVolumeSeries([
+        { level: "ERROR", points: [[1000, 3]] },
+        { level: "nonsense", points: [[1000, 1]] },
+      ]),
+    ).toEqual([
+      { key: "error", points: [[1000, 3]] },
+      { key: "other", points: [[1000, 1]] },
     ]);
-    expect(buckets).toEqual([
-      { tMs: 1000, counts: { error: 1, info: 10 }, total: 11 },
-      { tMs: 2000, counts: { error: 3 }, total: 3 },
-    ]);
-  });
-
-  it("collapses same-normalized levels into one count", () => {
-    const buckets = bucketize([
-      { level: "warn", points: [[1000, 2]] },
-      { level: "warning", points: [[1000, 5]] },
-    ]);
-    expect(buckets[0]?.counts).toEqual({ warn: 7 });
-  });
-});
-
-describe("padBuckets", () => {
-  it("fills the selected range with empty buckets on the step grid", () => {
-    const data = bucketize([{ level: "info", points: [[2000, 5]] }]);
-    const padded = padBuckets(data, 0, 4000, 1000);
-    expect(padded.map((b) => b.tMs)).toEqual([0, 1000, 2000, 3000, 4000]);
-    expect(padded.map((b) => b.total)).toEqual([0, 0, 5, 0, 0]);
-  });
-
-  it("keeps off-grid buckets and ignores degenerate steps", () => {
-    const data = bucketize([{ level: "info", points: [[1500, 2]] }]);
-    const padded = padBuckets(data, 1000, 3000, 1000);
-    expect(padded.map((b) => b.tMs)).toEqual([1000, 1500, 2000, 3000]);
-    expect(padBuckets(data, 1000, 3000, 0)).toEqual(data);
-  });
-
-  it("pads via the component when range and step are provided", () => {
-    render(
-      <Histogram
-        series={[{ level: "info", points: [[2000, 5]] }]}
-        rangeMs={{ fromMs: 0, toMs: 4000 }}
-        stepMs={1000}
-      />,
-    );
-    expect(screen.getAllByTestId("histo-bar")).toHaveLength(5);
   });
 });
 
 describe("Histogram", () => {
-  it("renders one bar per bucket with level segments", () => {
+  const rangeMs = { fromMs: 0, toMs: 300_000 };
+
+  it("stacks level series across the padded window", () => {
     render(
       <Histogram
         series={[
-          {
-            level: "error",
-            points: [
-              [1000, 2],
-              [2000, 4],
-            ],
-          },
-          { level: "info", points: [[1000, 6]] },
+          { level: "info", points: [[60_000, 10]] },
+          { level: "error", points: [[60_000, 2]] },
         ]}
+        rangeMs={rangeMs}
+        stepMs={60_000}
+        scale="linear"
       />,
     );
-    const bars = screen.getAllByTestId("histo-bar");
-    expect(bars).toHaveLength(2);
-    expect(bars[0]?.querySelector('[data-level="info"]')).toBeTruthy();
-    expect(bars[0]?.querySelector('[data-level="error"]')).toBeTruthy();
-    expect(bars[1]?.querySelector('[data-level="info"]')).toBeNull();
+    expect(screen.getAllByTestId("svol-col")).toHaveLength(6);
+    const segs = within(screen.getAllByTestId("svol-col")[1]!).getAllByTestId(
+      "svol-seg",
+    );
+    // Bottom-to-top: info below error.
+    expect(segs.map((s) => s.dataset["seriesKey"])).toEqual(["info", "error"]);
   });
 
-  it("shows an empty state without data", () => {
-    render(<Histogram series={[]} />);
-    expect(screen.getByText(/No log volume/)).toBeInTheDocument();
+  it("merges levels that normalize onto the same key", () => {
+    render(
+      <Histogram
+        series={[
+          { level: "warn", points: [[60_000, 2]] },
+          { level: "warning", points: [[60_000, 5]] },
+        ]}
+        rangeMs={rangeMs}
+        stepMs={60_000}
+        scale="linear"
+      />,
+    );
+    expect(screen.getAllByTestId("svol-col")[1]).toHaveAccessibleName(
+      /7 lines/,
+    );
+  });
+
+  it("reports an empty window", () => {
+    render(
+      <Histogram
+        series={[]}
+        rangeMs={rangeMs}
+        stepMs={60_000}
+        scale="linear"
+      />,
+    );
+    expect(screen.getByText(/no volume in range/i)).toBeInTheDocument();
+  });
+});
+
+describe("Histogram bucket control", () => {
+  it("forwards the bucket-width control to the shared chart", async () => {
+    const onStepChange = vi.fn();
+    render(
+      <Histogram
+        series={[{ level: "info", points: [[60_000, 10]] }]}
+        rangeMs={{ fromMs: 0, toMs: 300_000 }}
+        stepMs={60_000}
+        scale="linear"
+        step="1m"
+        stepOptions={["1m", "5m"]}
+        onStepChange={onStepChange}
+      />,
+    );
+    await userEvent.selectOptions(screen.getByLabelText(/bucket width/i), "5m");
+    expect(onStepChange).toHaveBeenCalledWith("5m");
   });
 });

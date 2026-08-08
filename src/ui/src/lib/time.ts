@@ -91,21 +91,93 @@ export function durationToSeconds(value: string): number | null {
  * Pick a histogram step that yields roughly `buckets` buckets, snapped to a
  * human-friendly duration.
  */
+const STEP_SECONDS = [
+  1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600,
+  43200, 86400,
+];
+
+/** Bucket counts a chart stays useful and affordable at. */
+const MIN_BUCKETS = 4;
+const MAX_BUCKETS = 480;
+
 export function stepForRange(range: ResolvedRange, buckets = 45): string {
   const spanSeconds = Math.max(1, (range.toMs - range.fromMs) / 1000);
   const raw = spanSeconds / buckets;
-  const steps = [
-    1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600,
-    43200, 86400,
-  ];
-  const step = steps.find((s) => s >= raw) ?? 86400;
+  const step = STEP_SECONDS.find((s) => s >= raw) ?? 86400;
   return secondsToDuration(step);
+}
+
+/**
+ * The step widths a user may pick for this window: those yielding between
+ * {@link MIN_BUCKETS} and {@link MAX_BUCKETS} buckets, so the chart is neither
+ * a single block nor thousands of sub-pixel columns backed by a needlessly
+ * expensive aggregate. Never empty — a very short window falls back to the
+ * finest step.
+ */
+export function stepOptionsForRange(range: ResolvedRange): string[] {
+  const spanSeconds = Math.max(1, (range.toMs - range.fromMs) / 1000);
+  const fits = STEP_SECONDS.filter((s) => {
+    const buckets = spanSeconds / s;
+    return buckets >= MIN_BUCKETS && buckets <= MAX_BUCKETS;
+  });
+  return (fits.length > 0 ? fits : [STEP_SECONDS[0]!]).map(secondsToDuration);
+}
+
+/**
+ * The effective step: the user's choice when it still fits the window,
+ * otherwise the automatic one. A step chosen for a narrow window would ask
+ * for thousands of buckets once the range widens, so it is not carried over.
+ */
+export function resolveStep(range: ResolvedRange, chosen: string): string {
+  return chosen !== "" && stepOptionsForRange(range).includes(chosen)
+    ? chosen
+    : stepForRange(range);
 }
 
 export function formatTimestamp(ms: number): string {
   const d = new Date(ms);
   const pad = (n: number, w = 2) => String(n).padStart(w, "0");
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Build a chart-axis label formatter sized to the window it labels.
+ *
+ * `formatTimestamp` is always time-of-day, which makes both ends of a 24h
+ * window render as the same string. The granularity here follows the window:
+ * time-only inside one calendar day, date + time once it crosses midnight,
+ * and date-only past a couple of days where the time of day is noise.
+ */
+export function axisLabelFormatter(
+  fromMs: number,
+  toMs: number,
+): (ms: number) => string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const date = (d: Date) => `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const time = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+  const from = new Date(fromMs);
+  const to = new Date(toMs);
+  const sameDay =
+    from.getFullYear() === to.getFullYear() &&
+    from.getMonth() === to.getMonth() &&
+    from.getDate() === to.getDate();
+
+  if (sameDay) {
+    return (ms) => {
+      const d = new Date(ms);
+      return `${time(d)}:${pad(d.getSeconds())}`;
+    };
+  }
+  if (toMs - fromMs > 2 * DAY_MS) {
+    return (ms) => date(new Date(ms));
+  }
+  return (ms) => {
+    const d = new Date(ms);
+    return `${date(d)} ${time(d)}`;
+  };
 }
 
 export function formatRangeLabel(range: TimeRange): string {

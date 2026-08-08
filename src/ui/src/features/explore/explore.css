@@ -364,58 +364,9 @@
   border-bottom: 1px solid var(--border);
 }
 
-.histo-head {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 4px;
-}
-
-.histo-total {
-  font-size: 12.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
 .histo-note {
   font-size: 11px;
   color: var(--faint);
-}
-
-.histo {
-  display: flex;
-  align-items: flex-end;
-  gap: 2px;
-}
-
-.histo-empty {
-  color: var(--faint);
-  font-size: 11.5px;
-  align-items: center;
-}
-
-.histo-bar {
-  flex: 1;
-  display: flex;
-  flex-direction: column-reverse;
-  border-radius: 2px 2px 0 0;
-  overflow: hidden;
-  min-width: 2px;
-}
-
-.histo-bar i {
-  display: block;
-  width: 100%;
-}
-
-.histo-axis {
-  display: flex;
-  justify-content: space-between;
-  font-size: 10px;
-  color: var(--faint);
-  font-variant-numeric: tabular-nums;
-  font-family: var(--mono);
-  padding: 3px 0 4px;
 }
 
 /* ---------- log list ---------- */
@@ -584,4 +535,216 @@ span.level-debug {
 .attr-actions button:hover {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* ---------- signal volume chart ---------- */
+
+.svol {
+  position: relative;
+}
+
+.svol-empty {
+  color: var(--faint);
+  font-size: 11.5px;
+  padding: 6px 0;
+}
+
+.svol-plot {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.svol-yaxis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  width: 70px;
+  flex: none;
+  font-size: 9.5px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+  /* Nudge the end labels onto their gridlines rather than past them. */
+  padding: 0 0 1px;
+  white-space: nowrap;
+}
+
+.svol-bars {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  /* Gridlines matching the y-axis labels: max, midpoint, zero. */
+  background-image: linear-gradient(
+    to bottom,
+    var(--border) 0 1px,
+    transparent 1px calc(50% - 1px),
+    var(--border) calc(50% - 1px) 50%,
+    transparent 50% calc(100% - 1px),
+    var(--border) calc(100% - 1px) 100%
+  );
+}
+
+.svol-col {
+  flex: 1;
+  min-width: 2px;
+  display: flex;
+  align-items: flex-end;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: default;
+}
+
+.svol-col:hover,
+.svol-col:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.svol-bar {
+  display: flex;
+  flex-direction: column-reverse;
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  overflow: hidden;
+}
+
+.svol-bar i {
+  display: block;
+  width: 100%;
+}
+
+.svol-xaxis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  padding: 3px 0 4px 78px;
+}
+
+.svol-tip {
+  /* Positioned from JS: follows the pointer, flipping side near the edge. */
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  /* Size to content rather than to the space left of the container edge,
+     which shrinks as the pointer moves right. */
+  width: max-content;
+  min-width: 132px;
+  max-width: 320px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.svol-tip-t {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-bottom: 3px;
+}
+
+.svol-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.svol-tip-row i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.svol-tip-row span {
+  flex: 1;
+  color: var(--dim);
+}
+
+.svol-tip-row b,
+.svol-tip-total b {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+  /* Set from JS to the widest value in the window, so every bucket's tooltip
+     is the same width and the numbers stay column-aligned. */
+  min-width: calc(var(--svol-val-ch, 10) * 1ch);
+  text-align: right;
+}
+
+.svol-tip-row span,
+.svol-tip-t {
+  white-space: nowrap;
+}
+
+.svol-tip-total {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+  color: var(--dim);
+}
+
+.svol-scale {
+  font-size: 10.5px;
+  color: var(--faint);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.svol-scale[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.logs-rowcount {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 16px 0;
+  font-size: 12.5px;
+}
+
+.logs-rowcount-n {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.attr-scope {
+  font-size: 10px;
+  color: var(--faint);
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.svol-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.svol-step {
+  font-size: 10.5px;
+  font-family: var(--ui);
+  color: var(--dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
 }

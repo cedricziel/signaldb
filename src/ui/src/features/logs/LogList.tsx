@@ -97,7 +97,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                       onClick={() =>
                         navigator.clipboard?.writeText(
                           JSON.stringify(
-                            { ...row.labels, line: row.line },
+                            { ...row.labels, ...row.metadata, line: row.line },
                             null,
                             2,
                           ),
@@ -109,7 +109,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                   </div>
                   <dl className="attr-grid">
                     {Object.entries(row.labels).map(([k, v]) => (
-                      <div className="attr-row" key={k}>
+                      <div className="attr-row" data-scope="label" key={k}>
                         <dt>{k}</dt>
                         <dd>{v}</dd>
                         <span className="attr-actions">
@@ -130,6 +130,16 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                             − exclude
                           </button>
                         </span>
+                      </div>
+                    ))}
+                    {/* Structured metadata varies line to line, so a stream
+                        selector cannot match on it — shown, but with no
+                        filter actions. */}
+                    {Object.entries(row.metadata).map(([k, v]) => (
+                      <div className="attr-row" data-scope="metadata" key={k}>
+                        <dt>{k}</dt>
+                        <dd>{v}</dd>
+                        <span className="attr-scope">per-line</span>
                       </div>
                     ))}
                   </dl>
