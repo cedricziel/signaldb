@@ -338,13 +338,19 @@ fn session_config_from(limits: &QuerierConfig) -> SessionConfig {
 /// limit (spilling operators use the default disk manager). Falls back to
 /// an unlimited-memory context if the runtime cannot be built, which is
 /// logged as an error and practically cannot happen with default settings.
+///
+/// The pool is the shared [`common::datafusion_runtime::bounded_memory_pool`]
+/// — a `FairSpillPool`, so one tenant's heavy sort cannot take the whole
+/// pool first-come and starve the rest (#941).
 fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
     let session_config = session_config_from(limits);
     let mut builder = RuntimeEnvBuilder::new();
     match limits.memory_limit_mb {
         Some(mb) => {
-            builder =
-                builder.with_memory_limit((mb as usize) * 1024 * 1024, limits.memory_pool_fraction);
+            builder = builder.with_memory_pool(common::datafusion_runtime::bounded_memory_pool(
+                (mb as usize) * 1024 * 1024,
+                limits.memory_pool_fraction,
+            ));
             tracing::info!(
                 memory_limit_mb = mb,
                 memory_pool_fraction = limits.memory_pool_fraction,
@@ -2581,6 +2587,33 @@ mod tests {
         let ctx = session_context_with_limits(&QuerierConfig::default());
         let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
         assert!(reservation.try_grow(10 * 1024 * 1024).is_ok());
+    }
+
+    /// A shared querier must not let one heavy sort take the whole pool
+    /// and starve every other tenant (#941) — the same greedy-pool shape
+    /// that broke compaction in #1064.
+    #[test]
+    fn memory_pool_fair_shares_between_spilling_consumers() {
+        use datafusion::execution::memory_pool::MemoryConsumer;
+
+        let ctx = session_context_with_limits(&QuerierConfig {
+            memory_limit_mb: Some(100),
+            memory_pool_fraction: 1.0,
+            ..QuerierConfig::default()
+        });
+        let pool = &ctx.runtime_env().memory_pool;
+
+        let heavy = MemoryConsumer::new("tenant-a-sort")
+            .with_can_spill(true)
+            .register(pool);
+        let _other = MemoryConsumer::new("tenant-b-sort")
+            .with_can_spill(true)
+            .register(pool);
+
+        assert!(
+            heavy.try_grow(90 * 1024 * 1024).is_err(),
+            "one tenant's sort must not take 90% of a pool shared with another"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

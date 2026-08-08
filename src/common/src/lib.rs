@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod catalog_manager;
 pub mod cli;
 pub mod config;
+pub mod datafusion_runtime;
 pub mod dataset;
 pub mod error;
 pub mod flight;

@@ -54,7 +54,7 @@ Controls compaction planning: which files are merged into larger ones and when a
 | `file_count_threshold`     | integer         | `10`             | Minimum number of _small_ files (see below) required to trigger compaction                                                                                                          |
 | `max_input_file_size_kb`   | integer (KB)    | `65536` (64 MB)  | Maximum input file size considered for compaction. Files at or above this size are treated as already compacted and are left alone                                                  |
 | `partition_lateness`       | duration string | `"10m"`          | How long an hour partition stays open for late-arriving data after its hour ends; only closed partitions are compacted                                                              |
-| `memory_limit_mb`          | integer (MB)    | `512`            | Memory budget for a single rewrite; larger partitions spill to disk rather than growing the process heap                                                                            |
+| `memory_limit_mb`          | integer (MB)    | `512`            | Budget for the rewrite's **DataFusion operators** (the sort above all), which spill to disk past it. Not a total: see the caveat below                                              |
 | `target_partitions`        | integer         | `1`              | DataFusion partition fan-out for the rewrite (`0` = available parallelism). Each partition sorts independently and they share `memory_limit_mb`, so raising this divides the budget |
 | `max_candidates_per_cycle` | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                                                                 |
 | `max_per_tenant`           | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                                                                           |
@@ -80,6 +80,8 @@ task that wakes up and returns.
 - Concurrent ingest does not invalidate the commit. Only a change to the job's own input files (retention dropping the partition, or a second compactor) is a conflict.
 
 Jobs are restricted to **closed** partitions: an hour partition becomes eligible once its hour has ended and `partition_lateness` has elapsed. The partition still receiving writes is exactly the one whose files would change under a running rewrite, so leaving it alone is what lets compaction and ingest coexist. Raise `partition_lateness` if your sources deliver data well after the fact; it is a late-data allowance, not a commit-cadence knob.
+
+**What `memory_limit_mb` actually bounds:** the pool covers the rewrite's **DataFusion operators** — the partition sort above all — which spill to disk rather than growing past it. It is **not** a bound on the rewrite's total heap. The rewrite still collects the sorted result into memory before attribute analysis, backfill, splitting, and writing, and those batches sit outside the pool's accounting for the whole of that work. Peak process memory for a job is therefore roughly the partition's in-memory size on top of the pool, not the pool alone. Size a compactor's container accordingly, and keep `target_partitions` low so the pool is not divided further.
 
 **Example:**
 
