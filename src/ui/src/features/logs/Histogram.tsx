@@ -1,8 +1,14 @@
-import { formatTimestamp } from "../../lib/time";
+/**
+ * Logs adapter over the shared volume chart: it owns the level vocabulary
+ * (normalisation, stacking order, colours) and nothing else. All rendering,
+ * scaling, and interaction lives in `SignalHistogram`.
+ */
 import type { HistogramSeries } from "../../api/loki";
+import type { Scale } from "../explore/scale";
+import { SignalHistogram, type VolumeSeries } from "../explore/SignalHistogram";
 
 /** Stacking order bottom-to-top; anything else lands in "other". */
-const LEVEL_ORDER = ["debug", "info", "warn", "error"] as const;
+const LEVEL_ORDER = ["debug", "info", "warn", "error", "other"];
 
 const LEVEL_VAR: Record<string, string> = {
   debug: "var(--debug-bar)",
@@ -21,112 +27,47 @@ export function normalizeLevel(level: string): string {
   return "other";
 }
 
-export interface HistogramBucket {
-  tMs: number;
-  counts: Record<string, number>;
-  total: number;
-}
-
-export function bucketize(series: HistogramSeries[]): HistogramBucket[] {
-  const byTime = new Map<number, Record<string, number>>();
-  for (const s of series) {
-    const level = normalizeLevel(s.level);
-    for (const [tMs, count] of s.points) {
-      const bucket = byTime.get(tMs) ?? {};
-      bucket[level] = (bucket[level] ?? 0) + count;
-      byTime.set(tMs, bucket);
-    }
-  }
-  return [...byTime.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([tMs, counts]) => ({
-      tMs,
-      counts,
-      total: Object.values(counts).reduce((a, b) => a + b, 0),
-    }));
-}
-
 /**
- * Fill the selected range with empty buckets so sparse data doesn't stretch
- * across the full width. Bucket alignment follows the backend's epoch-aligned
- * date_bin grid.
+ * Key each Loki series by its canonical level. Series that normalise onto the
+ * same level are merged downstream when the chart buckets them.
  */
-export function padBuckets(
-  buckets: HistogramBucket[],
-  fromMs: number,
-  toMs: number,
-  stepMs: number,
-): HistogramBucket[] {
-  if (stepMs <= 0 || toMs <= fromMs) return buckets;
-  const byTime = new Map(buckets.map((b) => [b.tMs, b]));
-  const start = Math.floor(fromMs / stepMs) * stepMs;
-  const out: HistogramBucket[] = [];
-  for (let t = start; t <= toMs; t += stepMs) {
-    out.push(byTime.get(t) ?? { tMs: t, counts: {}, total: 0 });
-  }
-  // Keep any buckets that fall outside the aligned grid (defensive).
-  for (const b of buckets) {
-    if (!out.some((o) => o.tMs === b.tMs)) out.push(b);
-  }
-  return out.sort((a, b) => a.tMs - b.tMs);
+export function toVolumeSeries(series: HistogramSeries[]): VolumeSeries[] {
+  return series.map((s) => ({
+    key: normalizeLevel(s.level),
+    points: s.points,
+  }));
 }
 
 interface Props {
   series: HistogramSeries[];
+  /** Selected time range; empty buckets pad the full range. */
+  rangeMs: { fromMs: number; toMs: number };
+  stepMs: number;
+  scale: Scale;
+  onScaleChange?: (scale: Scale) => void;
   height?: number;
-  /** Selected time range; when given, empty buckets pad the full range. */
-  rangeMs?: { fromMs: number; toMs: number };
-  stepMs?: number;
 }
 
-export function Histogram({ series, height = 72, rangeMs, stepMs }: Props) {
-  let buckets = bucketize(series);
-  if (rangeMs && stepMs && buckets.length > 0) {
-    buckets = padBuckets(buckets, rangeMs.fromMs, rangeMs.toMs, stepMs);
-  }
-  const max = Math.max(1, ...buckets.map((b) => b.total));
-  const levels = [...LEVEL_ORDER, "other"];
-
-  if (buckets.length === 0) {
-    return <div className="histo histo-empty">No log volume in range</div>;
-  }
-
+export function Histogram({
+  series,
+  rangeMs,
+  stepMs,
+  scale,
+  onScaleChange,
+  height,
+}: Props) {
   return (
-    <div>
-      <div
-        className="histo"
-        style={{ height }}
-        role="img"
-        aria-label="Log volume over time by level"
-      >
-        {buckets.map((b) => (
-          <div
-            className="histo-bar"
-            key={b.tMs}
-            data-testid="histo-bar"
-            title={`${formatTimestamp(b.tMs)} — ${b.total} lines`}
-          >
-            {levels.map((level) => {
-              const count = b.counts[level] ?? 0;
-              if (count === 0) return null;
-              return (
-                <i
-                  key={level}
-                  data-level={level}
-                  style={{
-                    height: `${Math.max(1, (count / max) * (height - 4))}px`,
-                    background: LEVEL_VAR[level],
-                  }}
-                />
-              );
-            })}
-          </div>
-        ))}
-      </div>
-      <div className="histo-axis">
-        <span>{formatTimestamp(buckets[0]!.tMs)}</span>
-        <span>{formatTimestamp(buckets[buckets.length - 1]!.tMs)}</span>
-      </div>
-    </div>
+    <SignalHistogram
+      series={toVolumeSeries(series)}
+      order={LEVEL_ORDER}
+      colors={LEVEL_VAR}
+      rangeMs={rangeMs}
+      stepMs={stepMs}
+      scale={scale}
+      unit="lines"
+      label="Log volume over time by level"
+      onScaleChange={onScaleChange}
+      {...(height === undefined ? {} : { height })}
+    />
   );
 }

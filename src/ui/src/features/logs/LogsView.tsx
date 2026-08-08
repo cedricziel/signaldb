@@ -154,26 +154,27 @@ export function LogsView({ state, update }: Props) {
           onAddFilter={addFilter}
         />
         <div className="logs-main">
-          {histogramQL !== null && (
+          {/* The row count describes the list below, not the chart: the
+              histogram is a separate unlimited aggregate, so keeping the two
+              in one box made a flat chart read as "truncated by the limit". */}
+          <div className="logs-rowcount">
+            <span className="logs-rowcount-n">
+              {logs.data ? `${logs.data.length} rows` : "…"}
+              {logs.data && logs.data.length === state.limit
+                ? ` (limit ${state.limit})`
+                : ""}
+            </span>
+            {logs.isFetching && <span className="histo-note">updating…</span>}
+          </div>
+          {histogramQL !== null && histogram.data && (
             <div className="histo-wrap">
-              <div className="histo-head">
-                <span className="histo-total">
-                  {logs.data ? `${logs.data.length} rows` : "…"}
-                  {logs.data && logs.data.length === state.limit
-                    ? ` (limit ${state.limit})`
-                    : ""}
-                </span>
-                {logs.isFetching && (
-                  <span className="histo-note">updating…</span>
-                )}
-              </div>
-              {histogram.data && (
-                <Histogram
-                  series={histogram.data}
-                  rangeMs={resolvedForStep}
-                  stepMs={(durationToSeconds(step) ?? 60) * 1000}
-                />
-              )}
+              <Histogram
+                series={histogram.data}
+                rangeMs={resolvedForStep}
+                stepMs={(durationToSeconds(step) ?? 60) * 1000}
+                scale={state.scale}
+                onScaleChange={(scale) => update({ scale })}
+              />
             </div>
           )}
           {logs.isError && (

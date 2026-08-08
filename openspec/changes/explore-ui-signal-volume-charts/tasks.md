@@ -40,13 +40,13 @@
 
 ## 5. Logs tab on the shared component
 
-- [ ] 5.1 Update `src/ui/src/features/logs/Histogram.test.tsx` for the new
+- [x] 5.1 Update `src/ui/src/features/logs/Histogram.test.tsx` for the new
       contract, keeping the `bucketize`/`padBuckets`/`normalizeLevel`
       coverage that still applies.
-- [ ] 5.2 Reduce `src/ui/src/features/logs/Histogram.tsx` to a logs adapter
+- [x] 5.2 Reduce `src/ui/src/features/logs/Histogram.tsx` to a logs adapter
       over `SignalHistogram` (level ordering, level colours, Loki
       seconds→milliseconds normalisation).
-- [ ] 5.3 Move the row-count/limit badge out of the chart container in
+- [x] 5.3 Move the row-count/limit badge out of the chart container in
       `src/ui/src/features/logs/LogsView.tsx`; update `LogsView.test.tsx`.
 
 ## 6. Traces volume chart
