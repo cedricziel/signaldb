@@ -104,15 +104,27 @@ name = "signal_decode"
 harness = false
 required-features = ["benchmarks"]
 
+# `wal_pending_gauge` reaches for `Wal::reset_pending_seed_claims_for_test`,
+# which is gated on `cfg(any(test, feature = "testing"))`. Integration tests
+# link the library built *without* `cfg(test)`, so the helper is reachable
+# only through the feature — declare that requirement rather than forcing the
+# feature on from a dev-dependency.
+#
+# The obvious alternative, a self dev-dependency
+# (`common = { path = ".", features = ["testing"] }`), is legal Cargo but
+# breaks two tools that walk the dependency graph: release-please aborts with
+# `found cycle in dependency graph: common -> common`
+# (googleapis/release-please#1662), and `cargo deny`'s `krates` panics on the
+# self-edge. Renaming the dependency dodges release-please but makes krates
+# panic harder, because the resolved name then disagrees with the manifest key.
+#
+# Cost of this approach: a bare `cargo test -p common` *skips* this test
+# instead of running it. CI runs `--all-features`, so it is still gated there.
+[[test]]
+name = "wal_pending_gauge"
+required-features = ["testing"]
+
 [dev-dependencies]
-# Self-dependency enabling this crate's own `testing` feature for its tests.
-# Integration tests under `tests/` link against the library built *without*
-# `cfg(test)`, so a `#[cfg(any(test, feature = "testing"))]` helper is
-# reachable from them only through the feature. Without this line
-# `cargo test -p common` fails to compile `tests/wal_pending_gauge.rs`, and
-# only passes when some other crate in the build graph (querier, writer,
-# tests-integration) happens to turn the feature on through unification.
-common = { path = ".", features = ["testing"] }
 tokio = { workspace = true, features = ["test-util"] }
 testcontainers-modules.workspace = true
 testcontainers.workspace = true
