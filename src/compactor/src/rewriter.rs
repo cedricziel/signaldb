@@ -495,6 +495,12 @@ impl ParquetRewriter {
     /// via `execute_stream` (openspec task 5.2), which is blocked on making
     /// the attribute-stats pass incremental (epic #737).
     ///
+    /// The pool is a `FairSpillPool` (see
+    /// [`common::datafusion_runtime`]), not DataFusion's greedy default:
+    /// a greedy pool grants memory first-come, so concurrent spilling
+    /// sorters exhaust it between them and one cannot obtain the
+    /// reservation it needs to spill while its peers hold the memory.
+    ///
     /// The fan-out is bounded too (`compactor.target_partitions`, default
     /// 1). Left at DataFusion's default the plan gets one `ExternalSorter`
     /// *per core*, each with its own unspillable merge reservation, and
@@ -511,8 +517,10 @@ impl ParquetRewriter {
         let compactor = &self.catalog_manager.config().compactor;
         let memory_limit_mb = compactor.memory_limit_mb;
         let session_config = Self::compaction_session_config(compactor.target_partitions);
-        let builder = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
-            .with_memory_limit(memory_limit_mb * 1024 * 1024, 1.0);
+        let builder =
+            datafusion::execution::runtime_env::RuntimeEnvBuilder::new().with_memory_pool(
+                common::datafusion_runtime::bounded_memory_pool(memory_limit_mb * 1024 * 1024, 1.0),
+            );
         match builder.build() {
             Ok(runtime_env) => {
                 tracing::debug!(
@@ -798,6 +806,35 @@ mod tests {
         let ctx = rewriter.compaction_context();
 
         assert_eq!(ctx.state().config().target_partitions(), 3);
+    }
+
+    /// The pool must be fair, not greedy: with two spilling consumers
+    /// registered, neither may take the whole budget and starve the other
+    /// into a failed allocation (#1064). Asserted behaviorally because
+    /// `TrackConsumersPool` reports its own name, not the inner pool's.
+    #[tokio::test]
+    async fn compaction_context_uses_a_fair_spill_pool() {
+        use datafusion::execution::memory_pool::MemoryConsumer;
+
+        let rewriter = rewriter_with_config(|c| c.compactor.memory_limit_mb = 100).await;
+        let pool = rewriter
+            .compaction_context()
+            .runtime_env()
+            .memory_pool
+            .clone();
+
+        let first = MemoryConsumer::new("ExternalSorter[0]")
+            .with_can_spill(true)
+            .register(&pool);
+        let _second = MemoryConsumer::new("ExternalSorter[1]")
+            .with_can_spill(true)
+            .register(&pool);
+
+        assert!(
+            first.try_grow(90 * 1024 * 1024).is_err(),
+            "one sorter must not be able to take 90% of the pool while a peer is registered — \
+             that is the greedy behavior that fails compaction"
+        );
     }
 
     /// `0` is the documented escape hatch back to DataFusion's own
