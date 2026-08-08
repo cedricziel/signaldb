@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.1.1...signaldb-api-v0.1.2) (2026-08-08)
+
+
+### Features
+
+* **api:** code-first OpenAPI — generate spec + Rust/TS clients from annotations ([#856](https://github.com/cedricziel/signaldb/issues/856)) ([e34fbfb](https://github.com/cedricziel/signaldb/commit/e34fbfbd094034416f78597c59b306975dd97271))
+
+
+### Code Refactoring
+
+* **cli:** make signaldb-cli depend only on the SDK (+ create_user API) ([#874](https://github.com/cedricziel/signaldb/issues/874)) ([8e5cce5](https://github.com/cedricziel/signaldb/commit/8e5cce56c821d69917b55cc8c21a9a2ef55864b7))
+
 ## [0.1.1](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.1.0...signaldb-api-v0.1.1) (2026-07-30)
 
 
