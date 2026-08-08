@@ -69,10 +69,10 @@ long a _newly created_ dataset waits.
 
 1. Enumerate the tenant registry — config-defined tenants **and** tenants
    created through the admin API.
-2. For each tenant, take its datasets plus its `default_dataset` when that
-   name has no separate dataset record. Admin-API tenant creation stores
-   `default_dataset` on the tenant row and writes no dataset row, so this
-   fallback is the common case for a freshly created tenant.
+2. For each tenant, take its datasets. The registry guarantees a tenant's
+   `default_dataset` is among them even when no dataset row names it, so a
+   tenant whose default exists only as a column on its tenant row is
+   provisioned like any other.
 3. For each dataset, load-or-create every enabled table.
 
 Datasets created while the writer was down, datasets predating this behavior,
@@ -136,7 +136,7 @@ A converged pass logs at `debug`.
   snapshots and no data files, so retention, orphan cleanup, storage
   accounting, and the compactor all treat them as no-ops.
 - **Materialized labels are fixed at creation time.** `[schema]
-  materialized_labels` is applied when a table is created; `ensure_table`
+materialized_labels` is applied when a table is created; `ensure_table`
   itself never evolves an existing table's schema. Provisioning means that
   now happens for every dataset, not only for ones that ingest, so prefer
   setting `materialized_labels` before a dataset is provisioned. Existing
