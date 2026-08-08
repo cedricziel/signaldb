@@ -828,6 +828,68 @@ impl Wal {
         Ok(path)
     }
 
+    /// Retire an entry the writer refuses to accept.
+    ///
+    /// Unlike [`Self::dead_letter`], which retires a payload that could not be
+    /// parsed, the payload here is intact — it simply cannot be shaped into
+    /// its target table. It stays replayable once the rejection cause is
+    /// fixed, so the raw bytes are preserved exactly as `dead_letter` does and
+    /// a `<entry_id>.rejected.json` marker records why alongside them. Without
+    /// the marker the directory mixes salvageable batches with unparseable
+    /// ones under identical `.bin` names, and an operator cannot tell which is
+    /// safe to replay.
+    ///
+    /// Returns the path of the preserved payload.
+    pub async fn dead_letter_rejected(&self, entry_id: Uuid, reason: &str) -> Result<PathBuf> {
+        let entry = self
+            .get_entries()
+            .await?
+            .into_iter()
+            .find(|e| e.id == entry_id)
+            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))?;
+        let data = self.read_entry_data(&entry).await?;
+
+        let dir = self.config.wal_dir.join("dead-letter");
+        create_dir_all(&dir).await?;
+
+        let path = dir.join(format!("{}.bin", entry_id.simple()));
+        let mut file = File::create(&path)
+            .await
+            .with_context(|| format!("Failed to create dead-letter file {}", path.display()))?;
+        file.write_all(&data).await?;
+        file.flush().await?;
+        file.sync_all()
+            .await
+            .context("Failed to fsync dead-letter file")?;
+
+        let marker_path = path.with_extension("rejected.json");
+        let marker = serde_json::json!({
+            "entry_id": entry_id.to_string(),
+            "tenant_id": entry.tenant_id,
+            "dataset_id": entry.dataset_id,
+            "operation": format!("{:?}", entry.operation),
+            "timestamp": entry.timestamp,
+            "reason": reason,
+            "note": "writer rejected this batch; payload is intact and replayable once the cause is fixed",
+        });
+        let body = serde_json::to_vec_pretty(&marker)?;
+        let mut marker_file = File::create(&marker_path).await.with_context(|| {
+            format!(
+                "Failed to create rejection marker {}",
+                marker_path.display()
+            )
+        })?;
+        marker_file.write_all(&body).await?;
+        marker_file.flush().await?;
+        marker_file
+            .sync_all()
+            .await
+            .context("Failed to fsync rejection marker")?;
+
+        self.mark_processed(entry_id).await?;
+        Ok(path)
+    }
+
     /// Load the persisted writer id from `writer.id`, creating (and
     /// fsyncing) it on first use. The id shares the WAL directory's
     /// lifetime: if the directory is wiped, the entries the id guarded
@@ -1740,6 +1802,53 @@ mod tests {
         assert!(
             unprocessed.is_empty(),
             "dead-lettered entry must be marked processed"
+        );
+    }
+
+    #[tokio::test]
+    async fn dead_letter_rejected_records_the_reason_beside_the_payload() {
+        // A rejected batch is intact and replayable once the rejection cause
+        // is fixed, unlike a truncated record. An operator sweeping the
+        // dead-letter directory must be able to tell the two apart without
+        // guessing, so the payload is preserved AND annotated (#1060).
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 1024,
+            max_buffer_entries: 10,
+            flush_interval_secs: 1,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Wal::new(config).await.unwrap();
+
+        let payload = b"perfectly good batch the writer refuses".to_vec();
+        let entry_id = wal
+            .append(WalOperation::WriteMetrics, payload.clone(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let reason = "Flight do_put failed: Column 'value' is declared as non-nullable";
+        let path = wal.dead_letter_rejected(entry_id, reason).await.unwrap();
+
+        let preserved = tokio::fs::read(&path).await.unwrap();
+        assert_eq!(preserved, payload, "payload must be preserved verbatim");
+
+        let marker_path = path.with_extension("rejected.json");
+        let marker: serde_json::Value =
+            serde_json::from_slice(&tokio::fs::read(&marker_path).await.unwrap()).unwrap();
+        assert_eq!(marker["entry_id"], entry_id.to_string());
+        assert_eq!(marker["reason"], reason);
+        assert_eq!(marker["tenant_id"], "test-tenant");
+
+        let unprocessed = wal.get_unprocessed_entries().await.unwrap();
+        assert!(
+            unprocessed.is_empty(),
+            "rejected entry must be marked processed so it stops pinning its segment"
         );
     }
 
