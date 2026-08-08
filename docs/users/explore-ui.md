@@ -24,7 +24,8 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
 - **Logs** — filter chips compiled to LogQL (with an "edit as text" escape
   hatch), a per-level volume histogram, a virtualized log list with
   per-attribute filter/exclude actions, a fields sidebar, and live tail.
-- **Traces** — a group-first view: recent traces arrive grouped by root
+- **Traces** — a trace-volume chart stacked by span status sits above a
+  group-first view: recent traces arrive grouped by root
   span name (or by service, any observed root-span/resource attribute, or
   two dimensions combined via "Then by"), with per-group trace count,
   request rate, error rate, p50/p95 latency, and last-seen columns —
@@ -53,6 +54,27 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   in query parameters alongside it — so views are separately navigable and
   can be bookmarked, shared, and revisited with the browser back/forward
   buttons. Tenant/dataset administration lives at `/manage`.
+
+### Reading the volume charts
+
+The logs and traces tabs both open with a stacked volume chart — logs by
+severity level, traces by span status.
+
+Both charts are server-side aggregates over the whole selected window. They are
+**not** derived from the rows in the list below them, so the row limit never
+truncates them: a chart that looks flat is reporting flat data, not a truncated
+query.
+
+Point at any bucket — anywhere in its column, however short the bar — for its
+timestamp, a per-series breakdown, and the bucket total. Buckets are also
+focusable, so the same detail is reachable with the keyboard.
+
+One busy bucket can dwarf the rest of the window: at a 36:1 ratio the typical
+bucket occupies about 5% of the chart's height. The **log scale** toggle beside
+the time axis compresses the vertical range so the baseline stays readable next
+to a spike. It applies to the bucket total, with each stacked series keeping its
+true proportion of the bar, and it travels in the URL — a shared link opens on
+the scale the sender was using.
 
 ![Explore UI trace waterfall with span details and a link to correlated logs](../assets/screenshots/explore-traces.png)
 
