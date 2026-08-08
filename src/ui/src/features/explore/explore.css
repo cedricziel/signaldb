@@ -711,3 +711,10 @@ span.level-debug {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+
+.attr-scope {
+  font-size: 10px;
+  color: var(--faint);
+  font-style: italic;
+  white-space: nowrap;
+}
