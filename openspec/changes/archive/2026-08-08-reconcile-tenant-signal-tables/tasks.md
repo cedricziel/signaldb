@@ -68,6 +68,6 @@ client need no regeneration. Confirm that during 5.2 and note it in the PR.
 
 ## 8. Ship
 
-- [ ] 8.1 Run `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, and `cargo machete --with-metadata`
-- [ ] 8.2 Run the full workspace test suite and confirm the #972 KNOWN-ISSUE pin now passes in its upgraded form
-- [ ] 8.3 Split into semantic commits / PRs along the group boundaries (read guard; reconcile entry point + config; writer loop; endpoint + compactor fix), each independently revertible
+- [x] 8.1 Run `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, and `cargo machete --with-metadata`
+- [x] 8.2 Run the full workspace test suite and confirm the #972 KNOWN-ISSUE pin now passes in its upgraded form
+- [x] 8.3 Split into semantic commits / PRs along the group boundaries (read guard; reconcile entry point + config; writer loop; endpoint + compactor fix), each independently revertible
