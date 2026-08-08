@@ -75,3 +75,16 @@
 
 - [x] 8.1 Update the explore-UI user documentation for the scale control and
       the chart tooltip, routed via the `docs` skill.
+
+## 9. Refinements from hands-on review
+
+- [x] 9.1 Anchor the tooltip to the pointer, flipping side near the edge, with
+      the focused column as the keyboard anchor.
+- [x] 9.2 Give every rendered number its unit; replace `Intl` compact notation
+      with a locale-stable abbreviation.
+- [x] 9.3 Keep a present series visible in a stacked bar without inflating the
+      bar's total height.
+- [x] 9.4 Render structured metadata in the log detail panel, marked per-line
+      and without stream-selector filter actions.
+- [x] 9.5 Add a user-controlled bucket width, bounded per window and persisted
+      in URL state.

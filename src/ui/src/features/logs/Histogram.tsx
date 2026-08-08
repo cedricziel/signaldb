@@ -45,6 +45,9 @@ interface Props {
   stepMs: number;
   scale: Scale;
   onScaleChange?: (scale: Scale) => void;
+  step?: string;
+  stepOptions?: string[];
+  onStepChange?: (step: string) => void;
   height?: number;
 }
 
@@ -54,6 +57,9 @@ export function Histogram({
   stepMs,
   scale,
   onScaleChange,
+  step,
+  stepOptions,
+  onStepChange,
   height,
 }: Props) {
   return (
@@ -67,6 +73,9 @@ export function Histogram({
       unit="lines"
       label="Log volume over time by level"
       onScaleChange={onScaleChange}
+      step={step ?? ""}
+      stepOptions={stepOptions ?? []}
+      onStepChange={onStepChange}
       {...(height === undefined ? {} : { height })}
     />
   );

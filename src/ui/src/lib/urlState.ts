@@ -9,6 +9,7 @@ import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
 import { DEFAULT_GROUP_BY } from "./traceGroups";
 import {
   DEFAULT_RANGE,
+  durationToSeconds,
   parseRangeParam,
   rangeToParam,
   type TimeRange,
@@ -26,6 +27,8 @@ export interface ExploreState {
   live: boolean;
   /** Vertical scale for the volume charts. */
   scale: Scale;
+  /** Chart bucket width; "" means pick one automatically for the range. */
+  step: string;
   /** Selected trace id — opens the trace view. */
   trace: string;
   /** Selected trace group value — dives into that group's trace list. */
@@ -55,6 +58,7 @@ export const DEFAULT_STATE: ExploreState = {
   limit: 500,
   live: false,
   scale: DEFAULT_SCALE,
+  step: "",
   trace: "",
   group: "",
   groupBy: DEFAULT_GROUP_BY,
@@ -99,6 +103,7 @@ export function parseExploreState(search: string): ExploreState {
     limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 5000) : 500,
     live: p.get("live") === "1",
     scale: scaleFromParam(p.get("scale")),
+    step: stepFromParam(p.get("step")),
     trace: p.get("trace") ?? "",
     group: p.get("group") ?? "",
     groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
@@ -115,6 +120,12 @@ function scaleFromParam(value: string | null): Scale {
   return value !== null && isScale(value) ? value : DEFAULT_SCALE;
 }
 
+/** A malformed step degrades to automatic rather than rejecting the URL. */
+function stepFromParam(value: string | null): string {
+  if (value === null) return "";
+  return durationToSeconds(value) === null ? "" : value;
+}
+
 export function buildSearch(state: ExploreState): string {
   const p = new URLSearchParams();
   const rangeParam = rangeToParam(state.range);
@@ -125,6 +136,7 @@ export function buildSearch(state: ExploreState): string {
   if (state.limit !== 500) p.set("limit", String(state.limit));
   if (state.live) p.set("live", "1");
   if (state.scale !== DEFAULT_SCALE) p.set("scale", state.scale);
+  if (state.step !== "") p.set("step", state.step);
   if (state.trace) p.set("trace", state.trace);
   if (state.group) p.set("group", state.group);
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);

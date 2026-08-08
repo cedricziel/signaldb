@@ -11,7 +11,8 @@ import {
   durationToSeconds,
   rangeToParam,
   resolveRange,
-  stepForRange,
+  resolveStep,
+  stepOptionsForRange,
 } from "../../lib/time";
 import type { ExploreState } from "../../lib/urlState";
 import { FieldSidebar } from "./FieldSidebar";
@@ -51,7 +52,7 @@ export function LogsView({ state, update }: Props) {
   });
 
   const resolvedForStep = resolveRange(state.range, Date.now());
-  const step = stepForRange(resolvedForStep);
+  const step = resolveStep(resolvedForStep, state.step);
   const histogramQL = compileHistogramQL(model, step);
   const histogram = useQuery({
     queryKey: ["loki-histogram", histogramQL, rangeKey],
@@ -174,6 +175,9 @@ export function LogsView({ state, update }: Props) {
                 stepMs={(durationToSeconds(step) ?? 60) * 1000}
                 scale={state.scale}
                 onScaleChange={(scale) => update({ scale })}
+                step={state.step}
+                stepOptions={stepOptionsForRange(resolvedForStep)}
+                onStepChange={(step) => update({ step })}
               />
             </div>
           )}

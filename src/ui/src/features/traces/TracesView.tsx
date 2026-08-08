@@ -19,7 +19,8 @@ import {
   nanosToMs,
   rangeToParam,
   resolveRange,
-  stepForRange,
+  resolveStep,
+  stepOptionsForRange,
 } from "../../lib/time";
 import {
   formatRate,
@@ -136,7 +137,7 @@ function TraceSearch({ state, update }: Props) {
   });
 
   const resolvedForStep = resolveRange(state.range, Date.now());
-  const step = stepForRange(resolvedForStep);
+  const step = resolveStep(resolvedForStep, state.step);
   // Deliberately keyed without `state.limit`: the volume aggregate covers the
   // whole window and must not move when the trace list's limit changes.
   const volume = useQuery({
@@ -159,6 +160,9 @@ function TraceSearch({ state, update }: Props) {
             unit="spans"
             label="Span volume over time by status"
             onScaleChange={(scale) => update({ scale })}
+            step={state.step}
+            stepOptions={stepOptionsForRange(resolvedForStep)}
+            onStepChange={(step) => update({ step })}
           />
         </div>
       )}

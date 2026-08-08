@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import { Histogram, normalizeLevel, toVolumeSeries } from "./Histogram";
 
 describe("normalizeLevel", () => {
@@ -78,5 +79,24 @@ describe("Histogram", () => {
       />,
     );
     expect(screen.getByText(/no volume in range/i)).toBeInTheDocument();
+  });
+});
+
+describe("Histogram bucket control", () => {
+  it("forwards the bucket-width control to the shared chart", async () => {
+    const onStepChange = vi.fn();
+    render(
+      <Histogram
+        series={[{ level: "info", points: [[60_000, 10]] }]}
+        rangeMs={{ fromMs: 0, toMs: 300_000 }}
+        stepMs={60_000}
+        scale="linear"
+        step="1m"
+        stepOptions={["1m", "5m"]}
+        onStepChange={onStepChange}
+      />,
+    );
+    await userEvent.selectOptions(screen.getByLabelText(/bucket width/i), "5m");
+    expect(onStepChange).toHaveBeenCalledWith("5m");
   });
 });

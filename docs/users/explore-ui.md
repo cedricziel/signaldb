@@ -69,12 +69,22 @@ Point at any bucket — anywhere in its column, however short the bar — for it
 timestamp, a per-series breakdown, and the bucket total. Buckets are also
 focusable, so the same detail is reachable with the keyboard.
 
+Two controls sit beside the time axis. **Bucket width** sets the chart's
+resolution — it defaults to a width chosen for the selected window, and each
+offer states how many buckets it produces, so "finer" and "coarser" are
+concrete. A width chosen for a narrow window is not carried over to a much
+wider one, which would otherwise issue a needlessly expensive query.
+
 One busy bucket can dwarf the rest of the window: at a 36:1 ratio the typical
 bucket occupies about 5% of the chart's height. The **log scale** toggle beside
 the time axis compresses the vertical range so the baseline stays readable next
 to a spike. It applies to the bucket total, with each stacked series keeping its
-true proportion of the bar, and it travels in the URL — a shared link opens on
-the scale the sender was using.
+true proportion of the bar. Both controls travel in the URL — a shared link
+opens on the same resolution and scale the sender was using.
+
+A series that is present in a bucket is always drawn, however small its share:
+a handful of errors among tens of thousands of other spans stays visible as a
+thin band rather than rounding away.
 
 ![Explore UI trace waterfall with span details and a link to correlated logs](../assets/screenshots/explore-traces.png)
 

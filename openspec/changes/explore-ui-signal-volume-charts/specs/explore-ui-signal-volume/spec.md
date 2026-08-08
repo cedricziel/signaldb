@@ -46,6 +46,30 @@ orders of magnitude are visually distinguishable.
 - **THEN** the bar renders at no less than one pixel
 - **AND** the floor is applied once to the bar, not once per stacked series
 
+#### Scenario: A series present in a bucket is never invisible
+
+- **WHEN** a series holds a negligible share of its bucket — a fraction of a
+  percent against the other series
+- **THEN** its segment still renders visibly
+- **AND** the bar's total height is unchanged, so comparison between buckets is
+  unaffected
+
+### Requirement: Numbers are presented with their unit
+
+Every count the chart renders — axis gridlines, per-series tooltip rows, and
+bucket totals — SHALL carry the unit it counts, so no number is ambiguous when
+read on its own.
+
+#### Scenario: Axis gridlines name their unit
+
+- **WHEN** the vertical axis renders its gridline labels
+- **THEN** each label states both the value and the unit being counted
+
+#### Scenario: Abbreviation is stable across locales
+
+- **WHEN** an axis value is abbreviated for width
+- **THEN** the abbreviation is the same regardless of the viewer's locale
+
 ### Requirement: A scale control governs the chart's vertical mapping
 
 The chart SHALL offer a linear and a logarithmic vertical scale, defaulting to
@@ -64,6 +88,33 @@ segment heights always sum to the bar.
 - **WHEN** a user selects a scale and shares the resulting URL
 - **THEN** opening that URL reproduces the same scale
 - **AND** a URL that does not specify a scale opens in linear mode
+
+### Requirement: The user controls the chart's bucket width
+
+The chart SHALL let the user choose its bucket width, defaulting to a width
+picked automatically for the selected window. Offered widths SHALL be bounded
+so a choice can neither collapse the window into a single block nor request an
+unreasonable number of buckets, and each offer SHALL state the bucket count it
+produces. The choice SHALL travel in the URL.
+
+#### Scenario: Choosing a coarser width re-resolves the chart
+
+- **WHEN** a user selects a wider bucket than the automatic one
+- **THEN** the chart re-queries at that width
+- **AND** renders correspondingly fewer buckets
+
+#### Scenario: Each offer states its bucket count
+
+- **WHEN** the user opens the bucket-width control
+- **THEN** every offer names the number of buckets it would produce, including
+  the automatic one
+
+#### Scenario: A width that no longer fits is not carried over
+
+- **WHEN** a bucket width was chosen for one window and the window then widens
+  such that the width would produce an unreasonable number of buckets
+- **THEN** the chart falls back to the automatic width rather than issuing the
+  oversized query
 
 ### Requirement: Chart axes are labelled
 
@@ -94,6 +145,12 @@ the full plot height, independent of the bar's rendered height.
 - **WHEN** a bucket renders at its minimum height
 - **THEN** pointing anywhere in that bucket's column, at any height, reveals its
   values
+
+#### Scenario: The detail appears next to what it describes
+
+- **WHEN** a user points at a bucket
+- **THEN** the revealed detail is positioned adjacent to the pointer
+- **AND** near the chart's edge it is placed so it stays within view
 
 #### Scenario: The breakdown reports every series
 

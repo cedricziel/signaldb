@@ -343,3 +343,72 @@ describe("compactCount", () => {
     expect(compactCount(2_400_000_000)).toBe("2.4B");
   });
 });
+
+describe("SignalHistogram bucket control", () => {
+  const series: VolumeSeries[] = [
+    {
+      key: "info",
+      points: [
+        [60_000, 5],
+        [120_000, 9],
+      ],
+    },
+  ];
+
+  it("is absent unless the caller can handle a change", () => {
+    renderChart(series);
+    expect(screen.queryByLabelText(/bucket width/i)).toBeNull();
+  });
+
+  it("lists the offered steps and marks the active one", () => {
+    renderChart(series, {
+      step: "1m",
+      stepOptions: ["30s", "1m", "5m"],
+      onStepChange: vi.fn(),
+    });
+    const select = screen.getByLabelText(/bucket width/i) as HTMLSelectElement;
+    expect(select.value).toBe("1m");
+    expect([...select.options].map((o) => o.value)).toEqual([
+      "",
+      "30s",
+      "1m",
+      "5m",
+    ]);
+  });
+
+  it("reports the bucket count for each choice", () => {
+    renderChart(series, {
+      step: "1m",
+      stepOptions: ["1m"],
+      onStepChange: vi.fn(),
+    });
+    // A 5-minute window at 1m buckets — the padded grid is what is drawn.
+    expect(
+      screen.getByRole("option", { name: /1m · 6 buckets/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("emits the chosen step", async () => {
+    const user = userEvent.setup();
+    const onStepChange = vi.fn();
+    renderChart(series, {
+      step: "1m",
+      stepOptions: ["30s", "1m", "5m"],
+      onStepChange,
+    });
+    await user.selectOptions(screen.getByLabelText(/bucket width/i), "5m");
+    expect(onStepChange).toHaveBeenCalledWith("5m");
+  });
+
+  it("emits auto as an empty step", async () => {
+    const user = userEvent.setup();
+    const onStepChange = vi.fn();
+    renderChart(series, {
+      step: "1m",
+      stepOptions: ["1m", "5m"],
+      onStepChange,
+    });
+    await user.selectOptions(screen.getByLabelText(/bucket width/i), "");
+    expect(onStepChange).toHaveBeenCalledWith("");
+  });
+});

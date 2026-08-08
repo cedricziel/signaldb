@@ -140,3 +140,22 @@ describe("chart scale", () => {
     expect(parseExploreState("?scale=logarithmic").scale).toBe("linear");
   });
 });
+
+describe("chart step", () => {
+  it("defaults to auto when absent", () => {
+    expect(parseExploreState("").step).toBe("");
+  });
+
+  it("round-trips an explicit step", () => {
+    expect(parseExploreState("?step=5m").step).toBe("5m");
+    expect(buildSearch({ ...DEFAULT_STATE, step: "5m" })).toContain("step=5m");
+  });
+
+  it("omits auto from the serialized search", () => {
+    expect(buildSearch({ ...DEFAULT_STATE, step: "" })).not.toContain("step");
+  });
+
+  it("rejects a malformed step", () => {
+    expect(parseExploreState("?step=banana").step).toBe("");
+  });
+});

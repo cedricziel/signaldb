@@ -8,7 +8,7 @@
  * rendering maths.
  */
 import { useRef, useState } from "react";
-import { axisLabelFormatter } from "../../lib/time";
+import { axisLabelFormatter, durationToSeconds } from "../../lib/time";
 import { barHeight, splitSegments, valueAtFraction, type Scale } from "./scale";
 
 /** A series of `[timestampMs, value]` points, ascending or not. */
@@ -99,6 +99,21 @@ const withUnit = (n: number, unit: string) => `${NUM.format(n)} ${unit}`;
 const compactWithUnit = (n: number, unit: string) =>
   `${compactCount(n)} ${unit}`;
 
+/**
+ * How many buckets a step width yields across the window — shown against each
+ * choice so "finer" and "coarser" are concrete rather than guesswork. Matches
+ * the padded grid the chart actually draws (inclusive of both ends).
+ */
+function bucketsFor(
+  step: string,
+  rangeMs: { fromMs: number; toMs: number },
+): number {
+  const stepMs = (durationToSeconds(step) ?? 0) * 1000;
+  if (stepMs <= 0) return 0;
+  const start = Math.floor(rangeMs.fromMs / stepMs) * stepMs;
+  return Math.floor((rangeMs.toMs - start) / stepMs) + 1;
+}
+
 /** Where the tooltip sits, in coordinates relative to the chart root. */
 interface TipPos {
   x: number;
@@ -122,6 +137,12 @@ interface Props {
   height?: number;
   /** Supplied when the caller persists the scale; omit to hide the control. */
   onScaleChange?: (scale: Scale) => void;
+  /** The chosen bucket width; "" means the step was picked automatically. */
+  step?: string;
+  /** Widths offered for the current window. */
+  stepOptions?: string[];
+  /** Supplied when the caller persists the step; omit to hide the control. */
+  onStepChange?: (step: string) => void;
 }
 
 export function SignalHistogram({
@@ -135,6 +156,9 @@ export function SignalHistogram({
   label,
   height = 84,
   onScaleChange,
+  step = "",
+  stepOptions = [],
+  onStepChange,
 }: Props) {
   const [active, setActive] = useState<number | null>(null);
   const [tip, setTip] = useState<TipPos | null>(null);
@@ -238,17 +262,34 @@ export function SignalHistogram({
       </div>
       <div className="svol-xaxis" data-testid="svol-xaxis">
         <span role="presentation">{fmtAxis(buckets[0]!.tMs)}</span>
-        {onScaleChange && (
-          <button
-            type="button"
-            className="svol-scale"
-            aria-pressed={scale === "log"}
-            title="Compress the vertical range so low buckets stay readable next to a spike"
-            onClick={() => onScaleChange(scale === "log" ? "linear" : "log")}
-          >
-            log scale
-          </button>
-        )}
+        <span className="svol-controls">
+          {onStepChange && (
+            <select
+              className="svol-step"
+              aria-label="Bucket width"
+              value={step}
+              onChange={(e) => onStepChange(e.currentTarget.value)}
+            >
+              <option value="">Auto · {buckets.length} buckets</option>
+              {stepOptions.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt} · {bucketsFor(opt, rangeMs)} buckets
+                </option>
+              ))}
+            </select>
+          )}
+          {onScaleChange && (
+            <button
+              type="button"
+              className="svol-scale"
+              aria-pressed={scale === "log"}
+              title="Compress the vertical range so low buckets stay readable next to a spike"
+              onClick={() => onScaleChange(scale === "log" ? "linear" : "log")}
+            >
+              log scale
+            </button>
+          )}
+        </span>
         <span role="presentation">
           {fmtAxis(buckets[buckets.length - 1]!.tMs)}
         </span>

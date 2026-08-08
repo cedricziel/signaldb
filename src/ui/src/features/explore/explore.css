@@ -718,3 +718,19 @@ span.level-debug {
   font-style: italic;
   white-space: nowrap;
 }
+
+.svol-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.svol-step {
+  font-size: 10.5px;
+  font-family: var(--ui);
+  color: var(--dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+}

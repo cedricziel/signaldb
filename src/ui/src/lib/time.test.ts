@@ -9,8 +9,10 @@ import {
   parseRangeParam,
   rangeToParam,
   resolveRange,
+  resolveStep,
   secondsToDuration,
   stepForRange,
+  stepOptionsForRange,
 } from "./time";
 
 describe("resolveRange", () => {
@@ -132,5 +134,53 @@ describe("axisLabelFormatter", () => {
     const fmt = axisLabelFormatter(at(2026, 8, 1, 0), at(2026, 8, 8, 0));
     expect(fmt(at(2026, 8, 1, 0))).toBe("08-01");
     expect(fmt(at(2026, 8, 8, 0))).toBe("08-08");
+  });
+});
+
+describe("stepOptionsForRange", () => {
+  const hours = (n: number) => ({ fromMs: 0, toMs: n * 3600_000 });
+
+  it("offers only steps that yield a sane bucket count", () => {
+    const opts = stepOptionsForRange(hours(1));
+    // 1h: 1s would be 3600 buckets, 1h would be 1 — neither is offered.
+    expect(opts).not.toContain("1s");
+    expect(opts).not.toContain("1h");
+    expect(opts).toContain("1m");
+    expect(opts).toContain("5m");
+  });
+
+  it("scales its offers with the window", () => {
+    const opts = stepOptionsForRange(hours(24 * 7));
+    expect(opts).not.toContain("1m");
+    expect(opts).toContain("1h");
+    expect(opts).toContain("6h");
+  });
+
+  it("always offers something", () => {
+    expect(
+      stepOptionsForRange({ fromMs: 0, toMs: 1000 }).length,
+    ).toBeGreaterThan(0);
+  });
+});
+
+describe("resolveStep", () => {
+  const range = { fromMs: 0, toMs: 3600_000 };
+
+  it("falls back to the automatic step when unset", () => {
+    expect(resolveStep(range, "")).toBe(stepForRange(range));
+  });
+
+  it("honours an explicit step that fits the window", () => {
+    expect(resolveStep(range, "5m")).toBe("5m");
+  });
+
+  // Keeping a fine step across a range change would ask for 10,080 buckets.
+  it("falls back when the chosen step no longer fits the window", () => {
+    const week = { fromMs: 0, toMs: 7 * 24 * 3600_000 };
+    expect(resolveStep(week, "1m")).toBe(stepForRange(week));
+  });
+
+  it("falls back on a malformed step", () => {
+    expect(resolveStep(range, "banana")).toBe(stepForRange(range));
   });
 });
