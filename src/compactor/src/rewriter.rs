@@ -33,6 +33,14 @@ struct PromotionOutcome {
     dropped_columns: Vec<String>,
 }
 
+/// Whether a partition read should be sorted for output, or is only being
+/// scanned for statistics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortRows {
+    Yes,
+    No,
+}
+
 /// Result of rewriting a table's data files.
 pub struct RewriteOutcome {
     /// Newly written data files (with real paths, sizes, and record counts)
@@ -108,6 +116,42 @@ impl ParquetRewriter {
     /// hour re-read and re-wrote months of history.
     ///
     /// Returns `None` when the partition has no data to compact.
+    ///
+    /// ## Streaming
+    ///
+    /// The partition is streamed, never collected. The old `collect()` put
+    /// the whole sorted partition on the heap *outside* the DataFusion
+    /// pool's accounting, which made `memory_limit_mb` a bound on the sort
+    /// alone and left peak process memory proportional to partition size
+    /// (#1064). Live memory is now a handful of batches plus one output
+    /// file's worth of accumulation.
+    ///
+    /// That costs a second scan. The rewrite has a genuine ordering
+    /// constraint: the promotion decision must be settled before the first
+    /// output batch is written, but it is made from statistics gathered by
+    /// scanning the very same data. Collecting satisfied both from one
+    /// pass by keeping everything in memory. Streaming cannot, so the
+    /// partition is read twice:
+    ///
+    /// 1. an **unsorted** scan that folds the attribute statistics — order
+    ///    is irrelevant to presence and cardinality, so this pass plans no
+    ///    sort at all and is comparatively cheap;
+    /// 2. the **sorted** scan that feeds the transforms and the writer.
+    ///
+    /// Deciding promotion from the *previous* cycle's persisted statistics
+    /// would avoid the second scan, but it would also mean the partition
+    /// that first reveals a hot attribute key never materializes it — and
+    /// since a compacted partition is not compacted again, those files
+    /// would never gain the column. A background job can afford an extra
+    /// unsorted scan more than the promotion pass can afford to skip a
+    /// partition.
+    ///
+    /// Both passes read the table object the caller pinned — never a
+    /// freshly loaded one, which would carry any snapshot committed since
+    /// — so the row counts are independent observations of the *same*
+    /// snapshot. That makes the read-vs-written parity check below
+    /// stronger than it was when both numbers came from the same
+    /// materialized `Vec`. Only the write uses the post-promotion schema.
     pub async fn rewrite_partition(
         &self,
         table: &Table,
@@ -116,12 +160,23 @@ impl ParquetRewriter {
     ) -> Result<Option<RewriteOutcome>> {
         let table_name = table.identifier().name().to_string();
 
-        let merged_batches = self
-            .read_and_merge(table, partition_hours)
-            .await
-            .context("Failed to read and merge partition data")?;
+        // Pass 1: fold the advisory attribute statistics over an unsorted
+        // stream (epic #737 L4a).
+        let mut stats_acc = crate::attr_stats::AttrStatsAccumulator::new();
+        {
+            let mut stream = self
+                .partition_stream(table, partition_hours, SortRows::No)
+                .await
+                .context("Failed to read partition data for attribute analysis")?;
+            use futures::StreamExt;
+            while let Some(batch) = stream.next().await {
+                let batch = batch.context("Failed to read partition data")?;
+                stats_acc.push_batch(&batch);
+            }
+        }
+        let (attr_stats, rows_read) = stats_acc.finish();
 
-        if merged_batches.is_empty() || merged_batches.iter().all(|b| b.num_rows() == 0) {
+        if rows_read == 0 {
             tracing::info!(
                 table = %table_name,
                 partition_hours,
@@ -130,14 +185,7 @@ impl ParquetRewriter {
             return Ok(None);
         }
 
-        let rows_read: u64 = merged_batches.iter().map(|b| b.num_rows() as u64).sum();
-
-        // Advisory attribute-stats pass (epic #737 L4a): the data is
-        // already in memory for the rewrite, so per-key presence and
-        // approximate cardinality come nearly free. Logs promotion
-        // candidates; changes nothing.
-        let (attr_stats, scanned) = crate::attr_stats::analyze_batches(&merged_batches);
-        crate::attr_stats::log_promotion_candidates(&table_name, &attr_stats, scanned);
+        crate::attr_stats::log_promotion_candidates(&table_name, &attr_stats, rows_read);
         let mut promotion = PromotionOutcome::default();
         if let Some(catalog) = &self.service_catalog {
             // The identifier namespace is [tenant_slug, dataset_slug].
@@ -149,7 +197,7 @@ impl ParquetRewriter {
                     dataset,
                     &table_name,
                     &attr_stats,
-                    scanned,
+                    rows_read,
                 )
                 .await;
                 promotion = self
@@ -158,9 +206,9 @@ impl ParquetRewriter {
             }
         }
 
-        // When the promotion pass evolved the schema (new label columns),
-        // the write must happen under the reloaded table so the new files
-        // are written with the evolved schema.
+        // A schema evolution is metadata-only (AddSchema/SetCurrentSchema),
+        // so the reloaded table references the same data files — but the
+        // second pass must both project and write under the new schema.
         let reloaded_table;
         let write_table: &Table = if promotion.evolved {
             reloaded_table = self
@@ -172,49 +220,47 @@ impl ParquetRewriter {
             table
         };
 
-        // Drop demoted label columns from the merged batches: the read
-        // happened under the pre-demotion schema, so the batches still
-        // carry the columns the demotion just removed. The attribute
-        // values themselves stay in the map attributes column, so nothing
-        // is lost.
-        let merged_batches = if promotion.dropped_columns.is_empty() {
-            merged_batches
-        } else {
-            Self::drop_columns(merged_batches, &promotion.dropped_columns)
-                .context("Failed to drop demoted label columns from rewrite batches")?
-        };
-
-        // Recompute the materialized label columns from the attribute
-        // sources. Since every live row is rewritten, pre-existing rows
-        // get their values backfilled by construction.
-        let merged_batches = if promotion.backfill.is_empty() {
-            merged_batches
+        let backfill: Vec<(String, String)> = if promotion.backfill.is_empty() {
+            vec![]
         } else {
             let schema_columns: HashSet<String> = write_table
                 .current_schema()
                 .map(|schema| schema.fields().iter().map(|f| f.name.clone()).collect())
                 .unwrap_or_default();
-            let pairs: Vec<(String, String)> = promotion
+            promotion
                 .backfill
                 .into_iter()
                 .filter(|(_, column)| schema_columns.contains(column))
-                .collect();
-            crate::attr_promotion::backfill_label_columns(merged_batches, &pairs)
-                .context("Failed to backfill materialized label columns")?
+                .collect()
         };
 
-        // Chunk batches toward the target file size so the writer produces
-        // reasonably sized files.
-        let split_batches = self.split_batches_by_size(merged_batches, target_file_size_bytes)?;
+        // Pass 2: the sorted stream that becomes the output files.
+        //
+        // Read from `table`, not `write_table`. `write_table` is a *fresh*
+        // load, so it carries whatever snapshot is current now — which
+        // after a late write into this partition is not the snapshot pass
+        // 1 read, and not the input set the caller will commit against.
+        // Reading it would rewrite rows the delta commit does not remove
+        // (duplication, caught only by the row-parity check below, which
+        // would then abort the job on every cycle that evolves the
+        // schema). Both passes therefore read the caller's pinned table;
+        // only the *write* uses the evolved schema. Batches read under the
+        // old schema are reconciled to it by `dropped_columns` and
+        // `backfill`, exactly as they were before the rewrite streamed.
+        let stream = self
+            .partition_stream(table, partition_hours, SortRows::Yes)
+            .await
+            .context("Failed to read and merge partition data")?;
 
-        let batch_stream = futures::stream::iter(
-            split_batches
-                .into_iter()
-                .map(Ok::<_, datafusion::arrow::error::ArrowError>),
+        let output = Self::rewrite_stream(
+            stream,
+            promotion.dropped_columns,
+            backfill,
+            target_file_size_bytes,
         );
 
         let new_files =
-            iceberg_rust::arrow::write::write_parquet_partitioned(write_table, batch_stream, None)
+            iceberg_rust::arrow::write::write_parquet_partitioned(write_table, output, None)
                 .await
                 .context("Failed to write compacted Parquet files")?;
 
@@ -244,6 +290,89 @@ impl ParquetRewriter {
             output_size_bytes,
             rows_written,
         }))
+    }
+
+    /// The rewrite pipeline: per-batch transforms, the statistics fold, and
+    /// re-chunking toward the target file size — all lazily, so no more
+    /// than the batches in flight are resident.
+    ///
+    /// Chunking accumulates input batches until they reach
+    /// `target_file_size_bytes` and emits one concatenated batch. That is
+    /// a hint, not a guarantee of one file per batch:
+    /// `write_parquet_partitioned` may combine yielded batches and rolls
+    /// files by the table's own `write.target-file-size-bytes`. What the
+    /// chunking *does* guarantee is the property this pass exists for —
+    /// the accumulator is bounded by the target size rather than by the
+    /// partition.
+    fn rewrite_stream(
+        mut stream: datafusion::execution::SendableRecordBatchStream,
+        dropped_columns: Vec<String>,
+        backfill: Vec<(String, String)>,
+        target_file_size_bytes: u64,
+    ) -> impl futures::Stream<
+        Item = std::result::Result<RecordBatch, datafusion::arrow::error::ArrowError>,
+    > {
+        use futures::StreamExt;
+
+        async_stream::stream! {
+            let mut pending: Vec<RecordBatch> = vec![];
+            let mut pending_bytes: u64 = 0;
+
+            while let Some(batch) = stream.next().await {
+                let batch = match batch {
+                    Ok(batch) => batch,
+                    Err(e) => {
+                        yield Err(datafusion::arrow::error::ArrowError::ExternalError(Box::new(e)));
+                        return;
+                    }
+                };
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+
+                // Defensive: the second pass reads under the post-demotion
+                // schema, so demoted columns are already out of the
+                // projection — but a batch that still carries one must not
+                // reach the writer.
+                let batch = match Self::drop_columns(vec![batch], &dropped_columns) {
+                    Ok(mut batches) => batches.remove(0),
+                    Err(e) => {
+                        yield Err(datafusion::arrow::error::ArrowError::ExternalError(e.into()));
+                        return;
+                    }
+                };
+
+                let batch = match crate::attr_promotion::backfill_label_columns(vec![batch], &backfill) {
+                    Ok(mut batches) => batches.remove(0),
+                    Err(e) => {
+                        yield Err(datafusion::arrow::error::ArrowError::ExternalError(e.into()));
+                        return;
+                    }
+                };
+
+                pending_bytes += batch.get_array_memory_size() as u64;
+                pending.push(batch);
+
+                if pending_bytes >= target_file_size_bytes {
+                    match Self::concat(&pending) {
+                        Ok(merged) => yield Ok(merged),
+                        Err(e) => {
+                            yield Err(datafusion::arrow::error::ArrowError::ExternalError(e.into()));
+                            return;
+                        }
+                    }
+                    pending.clear();
+                    pending_bytes = 0;
+                }
+            }
+
+            if !pending.is_empty() {
+                match Self::concat(&pending) {
+                    Ok(merged) => yield Ok(merged),
+                    Err(e) => yield Err(datafusion::arrow::error::ArrowError::ExternalError(e.into())),
+                }
+            }
+        }
     }
 
     /// Auto-promotion pass (epic #737, #734): score the freshly persisted
@@ -487,13 +616,16 @@ impl ParquetRewriter {
     /// `SessionContext::new()` is what let a big table OOM the compactor
     /// outright.
     ///
-    /// The bound is **not** total: `read_and_merge` still calls `collect()`,
-    /// and the resulting `Vec<RecordBatch>` lives outside the pool's
-    /// accounting for the whole of attribute analysis, backfill, splitting
-    /// and writing. A partition large enough can therefore still exhaust the
-    /// heap despite this limit. Closing that gap means streaming the rewrite
-    /// via `execute_stream` (openspec task 5.2), which is blocked on making
-    /// the attribute-stats pass incremental (epic #737).
+    /// The bound is now close to total. `rewrite_partition` streams both
+    /// of its passes, so the only rewrite memory outside this pool is the
+    /// chunker's accumulation — bounded by one output file — plus the
+    /// per-key attribute statistics, bounded by the cardinality cap.
+    /// Neither grows with the partition. Before that, the rewrite
+    /// `collect()`ed the sorted partition into a `Vec<RecordBatch>` that
+    /// lived outside the pool's accounting for the whole of attribute
+    /// analysis, backfill, splitting and writing, which left peak process
+    /// memory proportional to partition size no matter what this limit
+    /// said (#1064).
     ///
     /// The pool is a `FairSpillPool` (see
     /// [`common::datafusion_runtime`]), not DataFusion's greedy default:
@@ -573,12 +705,18 @@ impl ParquetRewriter {
             .and(col("timestamp").lt(lit(ScalarValue::TimestampMicrosecond(Some(end), None))))
     }
 
-    /// Read and merge one partition's live data, sorted for query performance.
-    async fn read_and_merge(
+    /// Stream one partition's live data, sorted for query performance.
+    ///
+    /// Returns a lazy stream rather than a materialized `Vec<RecordBatch>`:
+    /// the collected form put the whole sorted partition on the heap
+    /// outside the memory pool's accounting, which is what made
+    /// `memory_limit_mb` a bound on the sort alone (#1064).
+    async fn partition_stream(
         &self,
         table: &Table,
         partition_hours: i64,
-    ) -> Result<Vec<RecordBatch>> {
+        sort: SortRows,
+    ) -> Result<datafusion::execution::SendableRecordBatchStream> {
         let ctx = self.compaction_context();
 
         let table_name = table.identifier().name().to_string();
@@ -595,7 +733,12 @@ impl ParquetRewriter {
                 format!("Failed to scope {table_name} read to partition {partition_hours}")
             })?;
 
-        let sort_cols = Self::get_sort_columns(&table_name);
+        let sort_cols = match sort {
+            SortRows::Yes => Self::get_sort_columns(&table_name),
+            // The statistics pass is order-independent, so it plans no
+            // sort — which is what keeps the extra scan cheap.
+            SortRows::No => vec![],
+        };
         let sorted_df = if !sort_cols.is_empty() {
             let sort_exprs: Vec<_> = sort_cols
                 .into_iter()
@@ -608,168 +751,137 @@ impl ParquetRewriter {
             df
         };
 
-        let batches = sorted_df
-            .collect()
+        let stream = sorted_df
+            .execute_stream()
             .await
-            .context("Failed to collect query results")?;
+            .context("Failed to execute partition read")?;
 
         tracing::debug!(
             table = %table_name,
             partition_hours,
-            batch_count = batches.len(),
-            "Collected partition data for rewrite"
+            "Streaming partition data for rewrite"
         );
 
-        Ok(batches)
+        Ok(stream)
     }
 
-    /// Split batches to target file size
-    fn split_batches_by_size(
-        &self,
-        batches: Vec<RecordBatch>,
-        target_size_bytes: u64,
-    ) -> Result<Vec<RecordBatch>> {
-        let mut result = vec![];
-        let mut current_batch_rows = vec![];
-        let mut current_size = 0u64;
-
-        for batch in batches {
-            let batch_size = batch.get_array_memory_size() as u64;
-
-            // If this batch alone exceeds target size, split it
-            if batch_size > target_size_bytes && batch.num_rows() > 1 {
-                // Flush current accumulated rows first
-                if !current_batch_rows.is_empty() {
-                    let merged = self.merge_batches(&current_batch_rows)?;
-                    result.push(merged);
-                    current_batch_rows.clear();
-                    current_size = 0;
-                }
-
-                // Split large batch into smaller chunks
-                // Use u128 to avoid overflow in multiplication
-                let rows_per_chunk = ((batch.num_rows() as u128 * target_size_bytes as u128)
-                    / batch_size as u128)
-                    .min(usize::MAX as u128) as usize;
-                let rows_per_chunk = rows_per_chunk.max(1);
-
-                let mut offset = 0;
-                while offset < batch.num_rows() {
-                    let length = (batch.num_rows() - offset).min(rows_per_chunk);
-                    let slice = batch.slice(offset, length);
-                    result.push(slice);
-                    offset += length;
-                }
-            } else if current_size + batch_size > target_size_bytes
-                && !current_batch_rows.is_empty()
-            {
-                // Current accumulation would exceed target, flush it
-                let merged = self.merge_batches(&current_batch_rows)?;
-                result.push(merged);
-                current_batch_rows.clear();
-                current_batch_rows.push(batch);
-                current_size = batch_size;
-            } else {
-                // Accumulate this batch
-                current_batch_rows.push(batch);
-                current_size += batch_size;
+    /// Concatenate same-schema batches into one.
+    ///
+    /// The chunker calls this once per output file, over an accumulation
+    /// already bounded by the target file size — so unlike the old
+    /// collect-then-split path, the transient copy is proportional to one
+    /// output file rather than to the partition.
+    fn concat(batches: &[RecordBatch]) -> Result<RecordBatch> {
+        match batches {
+            [] => Err(anyhow::anyhow!("Cannot merge empty batch list")),
+            [single] => Ok(single.clone()),
+            _ => {
+                let schema = batches[0].schema();
+                datafusion::arrow::compute::concat_batches(&schema, batches)
+                    .context("Failed to merge batches")
             }
         }
-
-        // Flush remaining batches
-        if !current_batch_rows.is_empty() {
-            let merged = self.merge_batches(&current_batch_rows)?;
-            result.push(merged);
-        }
-
-        Ok(result)
-    }
-
-    /// Merge multiple batches with the same schema into one
-    fn merge_batches(&self, batches: &[RecordBatch]) -> Result<RecordBatch> {
-        if batches.is_empty() {
-            return Err(anyhow::anyhow!("Cannot merge empty batch list"));
-        }
-
-        if batches.len() == 1 {
-            return Ok(batches[0].clone());
-        }
-
-        // Use DataFusion's concat_batches
-        let schema = batches[0].schema();
-        datafusion::arrow::compute::concat_batches(&schema, batches)
-            .context("Failed to merge batches")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{Int64Array, StringArray};
+    use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
-    #[tokio::test]
-    async fn test_merge_batches() {
-        let catalog_manager = CatalogManager::new_in_memory().await.unwrap();
-        let rewriter = ParquetRewriter::new(Arc::new(catalog_manager));
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("name", DataType::Utf8, false),
-        ]));
-
-        let batch1 = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int64Array::from(vec![1, 2])),
-                Arc::new(StringArray::from(vec!["Alice", "Bob"])),
-            ],
+    fn int_batch(rows: usize, offset: i64) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(
+                (0..rows as i64).map(|i| i + offset).collect::<Vec<i64>>(),
+            ))],
         )
-        .unwrap();
+        .unwrap()
+    }
 
-        let batch2 = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int64Array::from(vec![3, 4])),
-                Arc::new(StringArray::from(vec!["Charlie", "Diana"])),
-            ],
-        )
-        .unwrap();
+    async fn drain(
+        stream: impl futures::Stream<
+            Item = std::result::Result<RecordBatch, datafusion::arrow::error::ArrowError>,
+        >,
+    ) -> Vec<RecordBatch> {
+        use futures::StreamExt;
+        let stream = std::pin::pin!(stream);
+        stream
+            .map(|b| b.expect("chunking must not fail"))
+            .collect()
+            .await
+    }
 
-        let merged = rewriter.merge_batches(&[batch1, batch2]).unwrap();
-
-        assert_eq!(merged.num_rows(), 4);
-        assert_eq!(merged.num_columns(), 2);
+    fn chunk(
+        batches: Vec<RecordBatch>,
+        target_size_bytes: u64,
+    ) -> impl futures::Stream<
+        Item = std::result::Result<RecordBatch, datafusion::arrow::error::ArrowError>,
+    > {
+        use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+        let schema = batches[0].schema();
+        let inner = Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            futures::stream::iter(batches.into_iter().map(Ok)),
+        ));
+        ParquetRewriter::rewrite_stream(inner, vec![], vec![], target_size_bytes)
     }
 
     #[tokio::test]
-    async fn test_split_batches_by_size() {
-        let catalog_manager = CatalogManager::new_in_memory().await.unwrap();
-        let rewriter = ParquetRewriter::new(Arc::new(catalog_manager));
+    async fn chunking_preserves_every_row_in_order() {
+        let batches = vec![int_batch(10, 0), int_batch(10, 10), int_batch(10, 20)];
+        let one_batch = batches[0].get_array_memory_size() as u64;
 
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        // A target of ~2 batches forces more than one output chunk.
+        let out = drain(chunk(batches, one_batch * 2)).await;
 
-        // Create a batch with 100 rows
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int64Array::from((0..100).collect::<Vec<i64>>()))],
-        )
-        .unwrap();
+        assert!(out.len() > 1, "expected the chunker to emit several files");
+        let ids: Vec<i64> = out
+            .iter()
+            .flat_map(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(ids, (0..30).collect::<Vec<i64>>());
+    }
 
-        let batch_size = batch.get_array_memory_size() as u64;
+    /// The accumulator must not grow with the partition: it flushes as
+    /// soon as it reaches the target, so its residency is bounded by one
+    /// output file however long the stream runs.
+    #[tokio::test]
+    async fn chunking_flushes_at_the_target_size_rather_than_at_the_end() {
+        let batches: Vec<_> = (0..20).map(|i| int_batch(10, i * 10)).collect();
+        let one_batch = batches[0].get_array_memory_size() as u64;
 
-        // Split with target size smaller than batch
-        let target_size = batch_size / 3;
-        let split = rewriter
-            .split_batches_by_size(vec![batch], target_size)
-            .expect("Split should succeed");
+        let out = drain(chunk(batches, one_batch * 2)).await;
 
-        // Should be split into multiple batches
-        assert!(split.len() > 1);
+        assert!(
+            out.len() >= 10,
+            "20 batches at a 2-batch target must produce ~10 files, got {}",
+            out.len()
+        );
+        let total: usize = out.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 200);
+    }
 
-        // Total rows should be preserved
-        let total_rows: usize = split.iter().map(|b| b.num_rows()).sum();
-        assert_eq!(total_rows, 100);
+    /// A trailing partial accumulation must still be emitted — otherwise
+    /// the rewrite would silently drop the tail of the partition.
+    #[tokio::test]
+    async fn chunking_emits_the_trailing_partial_chunk() {
+        let batches = vec![int_batch(10, 0)];
+        let huge_target = 1024 * 1024 * 1024;
+
+        let out = drain(chunk(batches, huge_target)).await;
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].num_rows(), 10);
     }
 
     /// Build a rewriter whose config has been tweaked by `f`.

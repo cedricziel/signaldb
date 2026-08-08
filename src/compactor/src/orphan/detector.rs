@@ -109,9 +109,9 @@ impl OrphanDetector {
         table_name: &str,
     ) -> Result<Vec<OrphanCandidate>> {
         tracing::info!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.table = %table_name,
             "Starting orphan detection"
         );
 
@@ -130,10 +130,10 @@ impl OrphanDetector {
         };
 
         tracing::info!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
-            live_files = live_files.len(),
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.table = %table_name,
+            signaldb.job.live_files = live_files.len() as i64,
             "Built live file reference set"
         );
 
@@ -144,10 +144,10 @@ impl OrphanDetector {
             .context("Failed to scan object store")?;
 
         tracing::info!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
-            total_files = all_files.len(),
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.table = %table_name,
+            signaldb.job.total_files = all_files.len() as i64,
             "Scanned object store"
         );
 
@@ -156,11 +156,11 @@ impl OrphanDetector {
             self.identify_candidates(&live_files, &all_files, tenant_id, dataset_id, table_name)?;
 
         tracing::info!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
-            orphan_candidates = candidates.len(),
-            grace_period_hours = self.config.grace_period_hours,
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.table = %table_name,
+            signaldb.job.candidates = candidates.len() as i64,
+            signaldb.job.grace_period_hours = self.config.grace_period_hours as i64,
             "Identified orphan candidates"
         );
 
@@ -224,12 +224,12 @@ impl OrphanDetector {
                 .sum();
             if estimated_live_files > self.config.max_live_files_threshold {
                 tracing::warn!(
-                    tenant_id = %tenant_id,
-                    dataset_id = %dataset_id,
-                    table_name = %table_name,
-                    estimated_live_files,
-                    threshold = self.config.max_live_files_threshold,
-                    skip_reason = SkipReason::LiveFilesThresholdExceeded.as_str(),
+                    signaldb.tenant.id = %tenant_id,
+                    signaldb.dataset.id = %dataset_id,
+                    signaldb.table = %table_name,
+                    signaldb.job.estimated_live_files = estimated_live_files as i64,
+                    signaldb.job.live_files_threshold = self.config.max_live_files_threshold as i64,
+                    signaldb.job.skip_reason = SkipReason::LiveFilesThresholdExceeded.as_str(),
                     "Skipping orphan cleanup: estimated live file count exceeds threshold. \
                      Run snapshot expiration first to reduce file counts, or raise \
                      max_live_files_threshold if memory allows."
@@ -247,10 +247,10 @@ impl OrphanDetector {
             .context("Failed to build live file set from manifests")?;
 
         tracing::debug!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
-            live_files_count = live_files.len(),
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.table = %table_name,
+            signaldb.job.live_files = live_files.len() as i64,
             "Built live file reference set from manifests"
         );
 
@@ -275,9 +275,9 @@ impl OrphanDetector {
 
         tracing::debug!(
             path = %data_path,
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.table = %table_name,
             "Scanning object store"
         );
 
@@ -302,9 +302,9 @@ impl OrphanDetector {
         }
 
         tracing::debug!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.table = %table_name,
             parquet_files = all_files.len(),
             "Found parquet files in object store"
         );
@@ -406,12 +406,12 @@ impl OrphanDetector {
             self.identify_candidates(&live, &all_files, tenant_id, dataset_id, table_name)?;
 
         tracing::info!(
-            tenant_id = %tenant_id,
-            dataset_id = %dataset_id,
-            table_name = %table_name,
-            scanned_metadata_files = all_files.len(),
-            orphan_candidates = candidates.len(),
-            grace_period_hours = self.config.grace_period_hours,
+            signaldb.tenant.id = %tenant_id,
+            signaldb.dataset.id = %dataset_id,
+            signaldb.table = %table_name,
+            signaldb.job.scanned_metadata_files = all_files.len() as i64,
+            signaldb.job.candidates = candidates.len() as i64,
+            signaldb.job.grace_period_hours = self.config.grace_period_hours as i64,
             "Identified orphan metadata candidates"
         );
 
@@ -479,7 +479,7 @@ impl OrphanDetector {
                     path = %file.path,
                     last_modified = %file.last_modified,
                     cutoff_time = %cutoff_time,
-                    grace_period_hours = self.config.grace_period_hours,
+                    signaldb.job.grace_period_hours = self.config.grace_period_hours as i64,
                     "Skipping recent file (within grace period)"
                 );
                 continue;

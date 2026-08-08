@@ -125,9 +125,9 @@ impl OrphanCleaner {
         }
 
         tracing::info!(
-            candidates = candidates.len(),
-            dry_run = self.config.dry_run,
-            batch_size = self.config.batch_size,
+            signaldb.job.candidates = candidates.len() as i64,
+            signaldb.job.dry_run = self.config.dry_run,
+            signaldb.job.batch_size = self.config.batch_size as i64,
             "Starting batch deletion of orphan files"
         );
 
@@ -227,17 +227,17 @@ impl OrphanCleaner {
 
         if self.config.dry_run {
             tracing::info!(
-                would_delete = result.would_delete_count,
-                would_free_bytes = result.would_free_bytes,
-                failed = result.failed_count,
-                dry_run = true,
+                signaldb.job.files_deleted = result.would_delete_count as i64,
+                signaldb.job.bytes_reclaimed = result.would_free_bytes as i64,
+                signaldb.job.deletion_failures = result.failed_count as i64,
+                signaldb.job.dry_run = true,
                 "Batch deletion complete"
             );
         } else {
             tracing::info!(
-                deleted = result.deleted_count,
-                bytes_freed = result.total_bytes_freed,
-                failed = result.failed_count,
+                signaldb.job.files_deleted = result.deleted_count as i64,
+                signaldb.job.bytes_reclaimed = result.total_bytes_freed as i64,
+                signaldb.job.deletion_failures = result.failed_count as i64,
                 dry_run = false,
                 "Batch deletion complete"
             );

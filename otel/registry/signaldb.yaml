@@ -87,6 +87,58 @@ groups:
         type: int
         stability: development
         brief: Candidate count entering an orphan-cleanup batch.
+      - id: signaldb.job.live_files
+        type: int
+        stability: development
+        brief: >
+          Files an orphan-cleanup pass considers live — the union of the
+          retained snapshots' manifest entries. Anything outside this set and
+          past the grace period is a deletion candidate.
+      - id: signaldb.job.total_files
+        type: int
+        stability: development
+        brief: Files present in the object store for the table being scanned.
+      - id: signaldb.job.scanned_metadata_files
+        type: int
+        stability: development
+        brief: >
+          Iceberg metadata files (metadata.json, manifest lists, manifests)
+          examined while building an orphan-cleanup live set.
+      - id: signaldb.job.grace_period_hours
+        type: int
+        stability: development
+        brief: >
+          Age, in hours, a file must exceed before orphan cleanup will delete
+          it — the guard against reclaiming a file a concurrent write is still
+          committing.
+      - id: signaldb.job.estimated_live_files
+        type: int
+        stability: development
+        brief: >
+          Live-file count estimated from manifest summaries before building
+          the exact set. Compared against `signaldb.job.live_files_threshold`
+          to decide whether a cleanup pass is affordable.
+      - id: signaldb.job.live_files_threshold
+        type: int
+        stability: development
+        brief: >
+          Configured ceiling on estimated live files above which orphan
+          cleanup skips a table rather than materializing its live set.
+      - id: signaldb.job.skip_reason
+        type: string
+        stability: development
+        brief: Why a lifecycle job declined to act on a table.
+        examples: ["live_files_threshold_exceeded"]
+      - id: signaldb.job.batch_size
+        type: int
+        stability: development
+        brief: Deletion batch size used by an orphan-cleanup pass.
+      - id: signaldb.job.deletion_failures
+        type: int
+        stability: development
+        brief: >
+          Files an orphan-cleanup pass failed to delete. Non-zero means the
+          reclaim is incomplete and will be retried next cycle.
 
   - id: registry.signaldb.wal
     type: attribute_group

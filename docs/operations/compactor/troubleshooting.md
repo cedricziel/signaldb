@@ -505,6 +505,16 @@ If many partitions exist, consider implementing partition pruning in the query p
 - Memory usage growing over time
 - System swapping during cleanup
 
+> **Rewrite memory is a separate story from cleanup memory.** A compaction
+> rewrite streams its partition in two passes — an unsorted scan that gathers
+> attribute statistics, then a sorted scan that feeds the writer — so its peak
+> is roughly `memory_limit_mb` (the DataFusion pool, which spills past it) plus
+> one `target_file_size_mb` of output accumulation. Neither term grows with the
+> partition. If rewrite memory looks proportional to how much data an hour
+> holds, that is a bug, not tuning. If a *sort* fails outright with
+> `Resources exhausted` instead of spilling, see
+> [Issue 13](#issue-13-rewrites-fail-with-resources-exhausted-instead-of-spilling).
+
 **Diagnostic Steps:**
 
 ```bash
@@ -540,6 +550,49 @@ snapshots_to_keep = 5
 services:
   compactor:
     mem_limit: 4g # Increase from default
+```
+
+### Issue 13: Rewrites Fail With "Resources Exhausted" Instead of Spilling
+
+**Symptoms:**
+
+- `Failed to rewrite partition data: ... Not enough memory to continue external sort`
+- The error names several `ExternalSorter[N]` consumers, each reporting `can spill: true`
+- The job fails in `read_and_merge` — no commit is ever attempted, so nothing is corrupted; the partition is simply never compacted
+
+**What it means:** the memory pool is being exhausted by the sort's own
+*concurrency*, not by one oversized partition. Every DataFusion partition gets
+its own sorter plus an unspillable merge reservation, and they all divide the
+single `memory_limit_mb` budget.
+
+**Diagnostic Steps:**
+
+```bash
+# 1. How many sorters is the plan creating? (should be target_partitions)
+journalctl -u signaldb-compactor | grep -o 'ExternalSorter\[[0-9]*\]' | sort -u
+
+# 2. What is each sorter's share?  memory_limit_mb / max(target_partitions, 1)
+#    Below ~64 MB a spilling sort fails instead of spilling.
+curl -s localhost:9091/status | jq '.compaction'
+
+# 3. Are partitions being declined for size rather than attempted?
+curl -s localhost:9091/metrics | grep compactor_oversized_partitions_skipped_total
+```
+
+**Solutions:**
+
+1. **Lower the fan-out** so one sorter owns the whole budget (the default):
+
+```toml
+[compactor]
+target_partitions = 1
+```
+
+2. **Raise the pool** if the per-sorter share is below ~64 MB:
+
+```toml
+[compactor]
+memory_limit_mb = 1024
 ```
 
 ## Data Integrity Issues
