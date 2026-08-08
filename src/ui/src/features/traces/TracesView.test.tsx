@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -221,14 +221,19 @@ describe("TracesView group list", () => {
     stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
     renderView();
     await screen.findByRole("button", { name: "POST /api/checkout" });
+    // Scope to the table: the facet sidebar also offers a "span.name" button.
+    const header = () =>
+      within(screen.getByRole("table")).getByRole("button", {
+        name: "span.name",
+      });
     // String column: first click sorts ascending.
-    await userEvent.click(screen.getByRole("button", { name: "span.name" }));
+    await userEvent.click(header());
     let rows = screen.getAllByRole("row");
     expect(rows[1]).toHaveTextContent("GET /login");
     expect(rows[1]?.closest("table")?.querySelector("[aria-sort]")).toBe(
       rows[0]?.querySelector("th"),
     );
-    await userEvent.click(screen.getByRole("button", { name: "span.name" }));
+    await userEvent.click(header());
     rows = screen.getAllByRole("row");
     expect(rows[1]).toHaveTextContent("POST /api/checkout");
   });
@@ -462,5 +467,77 @@ describe("TracesView span-volume chart", () => {
     expect(
       screen.getByText(/no traces in this time range/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe("TracesView facet filtering", () => {
+  const FACET_BODY = {
+    result: "table",
+    window: { start_ns: 0, end_ns: 1 },
+    columns: [
+      { name: "v", type: "string" },
+      { name: "n", type: "int64" },
+    ],
+    rows: [["gateway", 2]],
+  };
+  const routes = [
+    { match: "/tempo/api/search", body: SEARCH_BODY },
+    { match: "/api/v1/query", body: FACET_BODY },
+  ];
+
+  it("sends the compiled TraceQL selector to the search", async () => {
+    stubFetchRoutes(routes);
+    renderView({ traceFilters: [{ field: "service.name", value: "gateway" }] });
+    await screen.findByRole("button", { name: "POST /api/checkout" });
+    const urls = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.map(([i]) => String(i instanceof Request ? i.url : i))
+      .filter((u) => u.includes("/tempo/api/search"));
+    // Compare the decoded param: URLSearchParams encodes spaces as "+".
+    const q = new URL(urls[0]!, "http://localhost").searchParams.get("q");
+    expect(q).toBe('{ resource.service.name = "gateway" }');
+  });
+
+  it("omits the query entirely when nothing is selected", async () => {
+    stubFetchRoutes(routes);
+    renderView();
+    await screen.findByRole("button", { name: "POST /api/checkout" });
+    const urls = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.map(([i]) => String(i instanceof Request ? i.url : i))
+      .filter((u) => u.includes("/tempo/api/search"));
+    expect(urls[0]).not.toContain("q=");
+  });
+
+  it("shows an active filter as a removable chip", async () => {
+    stubFetchRoutes(routes);
+    const update = renderView({
+      traceFilters: [{ field: "service.name", value: "gateway" }],
+    });
+    const chip = await screen.findByRole("button", {
+      name: "Remove filter service.name = gateway",
+    });
+    await userEvent.click(chip);
+    expect(update).toHaveBeenCalledWith({ traceFilters: [], group: "" });
+  });
+
+  it("narrows the span-volume chart with the same filters", async () => {
+    stubFetchRoutes(routes);
+    renderView({ traceFilters: [{ field: "service.name", value: "gateway" }] });
+    await screen.findByRole("button", { name: "POST /api/checkout" });
+    const bodies = await Promise.all(
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.map(([i]) => i)
+        .filter(
+          (i): i is Request =>
+            i instanceof Request && i.url.includes("/api/v1/query"),
+        )
+        .map((r) => r.clone().json()),
+    );
+    const volume = bodies.find((b) =>
+      JSON.stringify(b).includes("status.code"),
+    );
+    expect(JSON.stringify(volume?.pipeline?.[0])).toContain("gateway");
   });
 });

@@ -159,3 +159,39 @@ describe("chart step", () => {
     expect(parseExploreState("?step=banana").step).toBe("");
   });
 });
+
+describe("trace filters", () => {
+  it("defaults to none", () => {
+    expect(parseExploreState("").traceFilters).toEqual([]);
+  });
+
+  it("round-trips several filters", () => {
+    const state = {
+      ...DEFAULT_STATE,
+      traceFilters: [
+        { field: "service.name", value: "checkout" },
+        { field: "status", value: "error" },
+      ],
+    };
+    // buildSearch already returns the leading "?".
+    const parsed = parseExploreState(buildSearch(state));
+    expect(parsed.traceFilters).toEqual(state.traceFilters);
+  });
+
+  it("drops unparseable entries without failing the load", () => {
+    const state = parseExploreState("?tf=garbage&tf=service.name%7Capi");
+    expect(state.traceFilters).toEqual([
+      { field: "service.name", value: "api" },
+    ]);
+  });
+
+  it("stays distinct from the logs filters", () => {
+    const state = parseExploreState(
+      "?f=level%7C%3D%7Cerror&tf=service.name%7Capi",
+    );
+    expect(state.filters).toHaveLength(1);
+    expect(state.traceFilters).toEqual([
+      { field: "service.name", value: "api" },
+    ]);
+  });
+});

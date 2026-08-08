@@ -400,3 +400,83 @@
   font-family: var(--mono);
   color: var(--dim);
 }
+
+/* ---------- facet sidebar + filter chips ---------- */
+
+.facet-active {
+  margin-left: auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 0 5px;
+}
+
+.facet-val {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+}
+
+.facet-val-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.facet-val-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.facet-val[aria-pressed="true"] {
+  color: var(--accent);
+  border-left-color: var(--accent);
+}
+
+.facet-val:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.trace-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 11.5px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.chip:hover {
+  border-color: var(--accent);
+}
+
+.chip-k {
+  color: var(--faint);
+}
+
+.chip-v {
+  font-weight: 550;
+}
+
+.chip-x {
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1;
+}
