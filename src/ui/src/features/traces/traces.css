@@ -403,19 +403,6 @@
 
 /* ---------- facet sidebar + filter chips ---------- */
 
-.traces-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
-.traces-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
 .facet-active {
   margin-left: auto;
   font-size: 10px;

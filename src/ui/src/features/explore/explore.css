@@ -255,15 +255,23 @@
 
 /* ---------- layout ---------- */
 
-.logs-body {
+/* One sidebar width for every signal: logs' fields panel and traces' facets
+   are the same furniture and must not drift apart. */
+.explore {
+  --sidebar-w: 248px;
+}
+
+.logs-body,
+.traces-body {
   display: grid;
-  grid-template-columns: 248px 1fr;
+  grid-template-columns: var(--sidebar-w) 1fr;
   flex: 1;
   min-height: 0;
 }
 
 @media (max-width: 900px) {
-  .logs-body {
+  .logs-body,
+  .traces-body {
     grid-template-columns: 1fr;
   }
 
@@ -272,7 +280,8 @@
   }
 }
 
-.logs-main {
+.logs-main,
+.traces-main {
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -282,6 +291,10 @@
 /* ---------- sidebar ---------- */
 
 .sidebar {
+  /* Also fixed here, so a sidebar dropped into a flex container matches the
+     grid-based ones rather than shrinking to its content. */
+  width: var(--sidebar-w);
+  flex: none;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
