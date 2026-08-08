@@ -192,6 +192,10 @@ name = "attr_demotion_rewrite"
 path = "tests/compactor/attr_demotion_rewrite.rs"
 
 [[test]]
+name = "default_lifecycle_e2e"
+path = "tests/compactor/default_lifecycle_e2e.rs"
+
+[[test]]
 name = "trace_bloom_pruning"
 path = "tests/querier/trace_bloom_pruning.rs"
 
