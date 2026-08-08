@@ -845,9 +845,10 @@ mod tests {
         let rewriter = rewriter_with_config(|c| c.compactor.target_partitions = 0).await;
         let ctx = rewriter.compaction_context();
 
-        assert!(
-            ctx.state().config().target_partitions() >= 1,
-            "zero must fall back to DataFusion's available-parallelism default"
+        assert_eq!(
+            ctx.state().config().target_partitions(),
+            datafusion::prelude::SessionConfig::new().target_partitions(),
+            "zero must land on DataFusion's own default, not merely some positive count"
         );
     }
 }

@@ -41,11 +41,14 @@ Compaction, retention and snapshot expiration are Iceberg metadata commits and r
 > once its hour has ended and `[compactor] partition_lateness` (default `10m`)
 > has elapsed — the partition still receiving writes is the one whose files
 > would change under a running rewrite, so it is deliberately left alone.
-> Rewrites run under a `[compactor] memory_limit_mb` budget (default 512 MB) and
-> spill to disk past it rather than growing the process heap. The rewrite sorts
-> with a fan-out of `[compactor] target_partitions` (default `1`): the sorters
-> share the one budget, so raising the fan-out divides it and can exhaust the
-> pool on concurrency alone.
+> Rewrites run their **DataFusion operators** under a `[compactor]
+memory_limit_mb` budget (default 512 MB), spilling to disk past it. That
+> budget is not a bound on the job's total heap: the sorted result is collected
+> into memory before attribute analysis, backfill, splitting, and writing, and
+> those batches are outside the pool's accounting. The rewrite sorts with a
+> fan-out of `[compactor] target_partitions` (default `1`): the sorters share
+> the one budget, so raising the fan-out divides it and can exhaust the pool on
+> concurrency alone.
 >
 > **Default behavior:** The compactor and retention enforcement are **enabled by default** with `dry_run = false` and a 30-day retention period for traces, logs, metrics, and profiles. A default deployment deletes data older than 30 days. To keep data indefinitely, set `[compactor.retention].enabled = false`; to keep it longer, raise the per-signal durations. Orphan cleanup is also **enabled by default** with `dry_run = false` and physically reclaims files no retained snapshot references — data Parquet and unreferenced metadata files (old metadata.json versions, expired snapshots' manifests) alike; set `[compactor.orphan_cleanup].enabled = false` to opt out or `dry_run = true` to observe first.
 
