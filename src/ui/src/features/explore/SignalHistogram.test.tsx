@@ -190,8 +190,9 @@ describe("SignalHistogram interaction", () => {
       parseFloat(within(cols[1]!).getByTestId("svol-bar").style.height),
     ).toBe(1);
     await user.hover(cols[1]!);
-    expect(within(screen.getByRole("status")).getByText("537 lines"))
-      .toBeInTheDocument();
+    expect(
+      within(screen.getByRole("status")).getByText("537 lines"),
+    ).toBeInTheDocument();
   });
 
   it("hides the tooltip when the pointer leaves", async () => {
@@ -211,15 +212,16 @@ describe("SignalHistogram interaction", () => {
     expect(screen.getAllByTestId("svol-col")[0]).toHaveFocus();
     await user.tab();
     expect(screen.getAllByTestId("svol-col")[1]).toHaveFocus();
-    expect(within(screen.getByRole("status")).getByText("537 lines"))
-      .toBeInTheDocument();
+    expect(
+      within(screen.getByRole("status")).getByText("537 lines"),
+    ).toBeInTheDocument();
   });
 
   it("names each bucket for assistive technology", () => {
     renderChart(series);
-    expect(
-      screen.getAllByTestId("svol-col")[1],
-    ).toHaveAccessibleName(/537 lines/);
+    expect(screen.getAllByTestId("svol-col")[1]).toHaveAccessibleName(
+      /537 lines/,
+    );
   });
 });
 

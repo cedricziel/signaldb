@@ -8,10 +8,18 @@ import {
   type TraceSummary,
 } from "../../api/tempo";
 import {
+  STATUS_COLORS,
+  STATUS_ORDER,
+  fetchTraceVolume,
+} from "../../api/traceVolume";
+import { SignalHistogram } from "../explore/SignalHistogram";
+import {
+  durationToSeconds,
   formatTimestamp,
   nanosToMs,
   rangeToParam,
   resolveRange,
+  stepForRange,
 } from "../../lib/time";
 import {
   formatRate,
@@ -127,8 +135,33 @@ function TraceSearch({ state, update }: Props) {
       tempoSearch(resolveRange(state.range, Date.now()), state.limit),
   });
 
+  const resolvedForStep = resolveRange(state.range, Date.now());
+  const step = stepForRange(resolvedForStep);
+  // Deliberately keyed without `state.limit`: the volume aggregate covers the
+  // whole window and must not move when the trace list's limit changes.
+  const volume = useQuery({
+    queryKey: ["trace-volume", rangeKey, step],
+    queryFn: () =>
+      fetchTraceVolume(resolveRange(state.range, Date.now()), step),
+  });
+
   return (
     <div className="traces-search">
+      {volume.data && (
+        <div className="histo-wrap">
+          <SignalHistogram
+            series={volume.data}
+            order={STATUS_ORDER}
+            colors={STATUS_COLORS}
+            rangeMs={resolvedForStep}
+            stepMs={(durationToSeconds(step) ?? 60) * 1000}
+            scale={state.scale}
+            unit="traces"
+            label="Trace volume over time by status"
+            onScaleChange={(scale) => update({ scale })}
+          />
+        </div>
+      )}
       <div className="traces-toolbar">
         <form
           className="trace-id-form"

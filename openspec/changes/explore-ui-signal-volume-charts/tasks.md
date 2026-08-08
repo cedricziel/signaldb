@@ -51,13 +51,13 @@
 
 ## 6. Traces volume chart
 
-- [ ] 6.1 Write failing tests for a traces-volume adapter: builds the Query IR
+- [x] 6.1 Write failing tests for a traces-volume adapter: builds the Query IR
       `series` document (`from: "traces"`, `aggregate` with `by:
     ["status.code"]` and `step`), normalises `[epoch_ns, value]` points to
       milliseconds, and maps OTLP status values to `ok`/`error`/`unset`.
-- [ ] 6.2 Implement the adapter over the generated `queryIr` client function —
+- [x] 6.2 Implement the adapter over the generated `queryIr` client function —
       no hand-written `fetch`.
-- [ ] 6.3 Write a failing test that `TracesView` renders the chart above the
+- [x] 6.3 Write a failing test that `TracesView` renders the chart above the
       group table and that it does not depend on `state.limit`; implement the
       wiring in `src/ui/src/features/traces/TracesView.tsx`.
 
