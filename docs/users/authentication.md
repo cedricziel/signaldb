@@ -116,6 +116,11 @@ querier resolves a tenant's catalog on demand from the tenant registry, so
 the first query after creation succeeds. (Config-file tenants remain the
 bootstrap seed and are equally first-class.)
 
+Creating a tenant with a `default_dataset` creates that dataset too, so no
+separate dataset call is needed to start sending data. Changing a tenant's
+`default_dataset` likewise creates the new one; the previous default is
+left in place, since it may still hold data.
+
 Bootstrap the first human user directly into the service catalog using the
 same configuration file as SignalDB:
 
@@ -154,5 +159,5 @@ returns `500` if any table could not be created.
 You rarely need it: SignalDB provisions those tables on its own, shortly after
 a tenant or dataset is created, and a query against a dataset with no tables
 yet returns an empty result rather than an error. Use the endpoint when you
-want the tables to exist *now* — see
+want the tables to exist _now_ — see
 [Signal table provisioning](../operations/table-provisioning.md).

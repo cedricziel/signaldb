@@ -2123,6 +2123,98 @@ impl Catalog {
         Ok(dataset_id)
     }
 
+    /// Idempotently ensure a tenant has a dataset by this name, returning its
+    /// id — the existing one when the row is already there.
+    ///
+    /// [`Catalog::create_dataset`] is a bare INSERT against a
+    /// `UNIQUE(tenant_id, name)` table, so it errors on a second call and
+    /// cannot be used on a convergence path. The admin API keeps that
+    /// behavior, since a duplicate there is a client error worth reporting;
+    /// the internal materialization and backfill paths use this instead.
+    ///
+    /// Insert-first rather than check-then-insert: the read-then-write form
+    /// races between processes, which matters because boot sync runs in every
+    /// router and monolith process at once.
+    pub async fn ensure_dataset(
+        &self,
+        tenant_id: &str,
+        dataset_name: &str,
+    ) -> Result<String, sqlx::Error> {
+        let dataset_id = Uuid::new_v4().to_string();
+
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now = Utc::now().to_rfc3339();
+                let stmt = r#"
+                INSERT INTO datasets (id, tenant_id, name, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (tenant_id, name) DO NOTHING
+                "#;
+                query(stmt)
+                    .bind(&dataset_id)
+                    .bind(tenant_id)
+                    .bind(dataset_name)
+                    .bind(&now)
+                    .execute(pool)
+                    .await?;
+            }
+            Catalog::Postgres(pool) => {
+                let stmt = r#"
+                INSERT INTO datasets (id, tenant_id, name)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (tenant_id, name) DO NOTHING
+                "#;
+                query(stmt)
+                    .bind(&dataset_id)
+                    .bind(tenant_id)
+                    .bind(dataset_name)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+
+        // Read back rather than trusting `dataset_id`: on conflict the insert
+        // was a no-op and the authoritative id belongs to the existing row.
+        let existing = self
+            .get_datasets(tenant_id)
+            .await?
+            .into_iter()
+            .find(|d| d.name == dataset_name)
+            .map(|d| d.id);
+        Ok(existing.unwrap_or(dataset_id))
+    }
+
+    /// Materialize a `datasets` row for every tenant that names a
+    /// `default_dataset` without having one, returning how many were written.
+    ///
+    /// A tenant in that state cannot authenticate — `resolve_database_tenant`
+    /// requires a matching row and fails closed with `403 Dataset '<name>' not
+    /// found` — and is invisible to every consumer that enumerates dataset
+    /// rows. Tenant creation now materializes the row, so this exists to
+    /// converge tenants created before that: it runs at boot alongside
+    /// `sync_config_tenants` and is a no-op once converged.
+    pub async fn backfill_default_datasets(&self) -> Result<usize, sqlx::Error> {
+        let tenants = self.list_tenants().await?;
+        let mut materialized = 0;
+        for tenant in tenants {
+            let Some(default_dataset) = tenant.default_dataset.as_deref() else {
+                continue;
+            };
+            let datasets = self.get_datasets(&tenant.id).await?;
+            if datasets.iter().any(|d| d.name == default_dataset) {
+                continue;
+            }
+            self.ensure_dataset(&tenant.id, default_dataset).await?;
+            materialized += 1;
+            tracing::info!(
+                tenant_id = %tenant.id,
+                dataset = %default_dataset,
+                "Materialized a missing default dataset row"
+            );
+        }
+        Ok(materialized)
+    }
+
     /// Get datasets for a tenant
     pub async fn get_datasets(&self, tenant_id: &str) -> Result<Vec<DatasetRecord>, sqlx::Error> {
         match self {
@@ -2373,12 +2465,16 @@ impl Catalog {
                     .await?;
             }
 
-            let existing_datasets = self.get_datasets(&tenant.id).await?;
-            for dataset in &tenant.datasets {
-                let already_exists = existing_datasets.iter().any(|d| d.name == dataset.id);
-                if !already_exists {
-                    self.create_dataset(&tenant.id, &dataset.id).await?;
-                }
+            // A tenant may declare `default_dataset` with no matching
+            // `[[auth.tenants.datasets]]` block; it still needs a row, or it
+            // is invisible to everything that enumerates dataset rows.
+            for dataset in tenant
+                .datasets
+                .iter()
+                .map(|d| d.id.as_str())
+                .chain(tenant.default_dataset.as_deref())
+            {
+                self.ensure_dataset(&tenant.id, dataset).await?;
             }
         }
 
@@ -3864,6 +3960,106 @@ mod multi_tenancy_tests {
         assert_eq!(record.dataset_id.as_deref(), Some("production"));
         assert_eq!(record.scopes, Some(scopes));
         assert_eq!(record.created_by_user_id.as_deref(), Some("user-1"));
+    }
+
+    /// `create_dataset` is a bare INSERT against a `UNIQUE(tenant_id, name)`
+    /// table, so it cannot be used on a convergence path. `ensure_dataset` is
+    /// the idempotent form the materialization and backfill paths need.
+    #[tokio::test]
+    async fn ensure_dataset_is_idempotent() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+
+        let first = catalog.ensure_dataset("acme", "production").await.unwrap();
+        let second = catalog.ensure_dataset("acme", "production").await.unwrap();
+
+        assert_eq!(first, second, "the existing dataset id must be returned");
+        assert_eq!(catalog.get_datasets("acme").await.unwrap().len(), 1);
+
+        // And it adopts a row that `create_dataset` wrote.
+        let created = catalog.create_dataset("acme", "staging").await.unwrap();
+        assert_eq!(
+            catalog.ensure_dataset("acme", "staging").await.unwrap(),
+            created
+        );
+        assert_eq!(catalog.get_datasets("acme").await.unwrap().len(), 2);
+    }
+
+    /// Tenants created before the default dataset was materialized at write
+    /// time carry `default_dataset` with no matching row, which fails auth
+    /// closed. The backfill converges them.
+    #[tokio::test]
+    async fn backfill_materializes_missing_default_dataset_rows() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        // Pre-existing admin-API tenant: column set, no dataset row.
+        catalog
+            .upsert_tenant("gamma", "Gamma", Some("production"), "database")
+            .await
+            .unwrap();
+        // A tenant whose default already has a row must be left alone.
+        catalog
+            .upsert_tenant("delta", "Delta", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("delta", "production").await.unwrap();
+        // A tenant with no default dataset at all must gain nothing.
+        catalog
+            .upsert_tenant("epsilon", "Epsilon", None, "database")
+            .await
+            .unwrap();
+
+        let materialized = catalog.backfill_default_datasets().await.unwrap();
+        assert_eq!(materialized, 1, "only the missing row is written");
+
+        let gamma = catalog.get_datasets("gamma").await.unwrap();
+        assert_eq!(
+            gamma.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            vec!["production"],
+        );
+        assert_eq!(catalog.get_datasets("delta").await.unwrap().len(), 1);
+        assert!(catalog.get_datasets("epsilon").await.unwrap().is_empty());
+
+        // Converged: a second pass is a no-op.
+        assert_eq!(catalog.backfill_default_datasets().await.unwrap(), 0);
+    }
+
+    /// A config tenant may declare `default_dataset` without a matching
+    /// `[[auth.tenants.datasets]]` block; boot sync must still give it a row.
+    #[tokio::test]
+    async fn sync_config_tenants_materializes_an_undeclared_default_dataset() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let auth = crate::config::AuthConfig {
+            tenants: vec![crate::config::TenantConfig {
+                id: "acme".to_string(),
+                slug: "acme".to_string(),
+                name: "Acme".to_string(),
+                default_dataset: Some("production".to_string()),
+                datasets: vec![],
+                api_keys: vec![],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        };
+
+        catalog.sync_config_tenants(&auth).await.unwrap();
+        assert_eq!(
+            catalog
+                .get_datasets("acme")
+                .await
+                .unwrap()
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["production"],
+        );
+
+        // Boot runs this every start; it must stay idempotent.
+        catalog.sync_config_tenants(&auth).await.unwrap();
+        assert_eq!(catalog.get_datasets("acme").await.unwrap().len(), 1);
     }
 
     #[tokio::test]

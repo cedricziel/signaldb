@@ -116,6 +116,19 @@ async fn main() -> Result<()> {
         config.auth.tenants.len()
     );
 
+    // Converge tenants created before the default dataset was materialized at
+    // write time: without a dataset row they cannot authenticate and are
+    // invisible to compaction, retention, and orphan cleanup (issue #1066).
+    // A no-op once converged.
+    let materialized = router_bootstrap
+        .catalog()
+        .backfill_default_datasets()
+        .await
+        .context("Failed to backfill default dataset rows")?;
+    if materialized > 0 {
+        tracing::info!("Materialized {materialized} missing default dataset row(s)");
+    }
+
     // First boot with no tenants at all (none in config, none in the
     // catalog): auto-provision a default tenant and print its API key once.
     if let Some(api_key) =

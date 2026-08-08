@@ -135,6 +135,36 @@ pub async fn create_tenant<S: RouterState>(
             .into_response();
     }
 
+    // Materialize the default dataset as a row of its own. Without it the
+    // tenant cannot authenticate — `resolve_database_tenant` requires a
+    // matching row and fails closed — and it is invisible to everything that
+    // enumerates dataset rows (issue #1066). The management API's tenant
+    // creation already does this; the two now agree.
+    if let Some(dataset) = request.default_dataset.as_deref()
+        && let Err(e) = state.catalog().ensure_dataset(&request.id, dataset).await
+    {
+        tracing::error!(
+            tenant_id = %request.id,
+            dataset = %dataset,
+            error = %e,
+            "Default dataset creation failed"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(
+                serde_json::to_value(ApiError::new(
+                    "internal_error",
+                    format!(
+                        "Tenant '{}' was created but its default dataset could not be created: {e}",
+                        request.id
+                    ),
+                ))
+                .unwrap(),
+            ),
+        )
+            .into_response();
+    }
+
     // Fetch back the created tenant to get timestamps
     match state.catalog().get_tenant(&request.id).await {
         Ok(Some(record)) => (
@@ -291,6 +321,31 @@ pub async fn update_tenant<S: RouterState>(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::to_value(ApiError::new("internal_error", e.to_string())).unwrap()),
+        )
+            .into_response();
+    }
+
+    // Repointing the default at a dataset with no row would recreate the
+    // state creation avoids, so materialize it here too. The previous default
+    // is deliberately left in place — it may hold data.
+    if let Some(dataset) = default_dataset
+        && let Err(e) = state.catalog().ensure_dataset(&tenant_id, dataset).await
+    {
+        tracing::error!(
+            tenant_id = %tenant_id,
+            dataset = %dataset,
+            error = %e,
+            "Default dataset creation failed"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(
+                serde_json::to_value(ApiError::new(
+                    "internal_error",
+                    format!("Tenant was updated but its default dataset could not be created: {e}"),
+                ))
+                .unwrap(),
+            ),
         )
             .into_response();
     }
@@ -1176,6 +1231,122 @@ mod tests {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A tenant created with a `default_dataset` must get a real `datasets`
+    /// row, not just the column on the tenant row. Without one it cannot
+    /// authenticate at all — `resolve_database_tenant` fails closed with
+    /// `403 Dataset '<name>' not found` — and it is invisible to everything
+    /// that enumerates dataset rows (issue #1066). The management API already
+    /// materializes the row; the admin API did not.
+    #[tokio::test]
+    async fn creating_a_tenant_materializes_its_default_dataset() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let state = RouterAppState::new(catalog.clone(), Configuration::default());
+        let app = admin_router(state);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/tenants")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"id": "acme", "name": "Acme", "default_dataset": "production"}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        assert_eq!(
+            catalog
+                .get_datasets("acme")
+                .await
+                .unwrap()
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["production"],
+            "the default dataset must exist as a row"
+        );
+
+        // And it is visible on the dataset listing the UI reads.
+        let request = Request::builder()
+            .uri("/tenants/acme/datasets")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("production"),
+            "the default dataset must be listed"
+        );
+    }
+
+    /// Repointing `default_dataset` at a name with no row would recreate
+    /// exactly the state creation now avoids.
+    #[tokio::test]
+    async fn updating_the_default_dataset_materializes_it() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let state = RouterAppState::new(catalog.clone(), Configuration::default());
+        let app = admin_router(state);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/tenants")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"id": "acme", "name": "Acme", "default_dataset": "production"}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+
+        let request = Request::builder()
+            .method("PUT")
+            .uri("/tenants/acme")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"default_dataset": "staging"}"#))
+            .unwrap();
+        assert_eq!(app.oneshot(request).await.unwrap().status(), StatusCode::OK);
+
+        let names: Vec<String> = catalog
+            .get_datasets("acme")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(
+            names.contains(&"staging".to_string()),
+            "new default materialized"
+        );
+        assert!(
+            names.contains(&"production".to_string()),
+            "the previous default is not removed — it may hold data"
+        );
+    }
+
+    /// A tenant created without a default dataset gains no dataset row.
+    #[tokio::test]
+    async fn creating_a_tenant_without_a_default_dataset_writes_no_row() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let state = RouterAppState::new(catalog.clone(), Configuration::default());
+        let app = admin_router(state);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/tenants")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"id": "acme", "name": "Acme"}"#))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        assert!(catalog.get_datasets("acme").await.unwrap().is_empty());
     }
 
     #[tokio::test]

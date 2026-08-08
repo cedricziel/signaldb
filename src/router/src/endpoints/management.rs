@@ -165,7 +165,7 @@ pub(crate) async fn create_tenant<S: RouterState>(
         return error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create tenant");
     }
     if let Some(dataset) = &default_dataset
-        && let Err(catalog_error) = state.catalog().create_dataset(&tenant_id, dataset).await
+        && let Err(catalog_error) = state.catalog().ensure_dataset(&tenant_id, dataset).await
     {
         tracing::error!(error = %catalog_error, tenant_id, dataset, "default dataset creation failed");
         return error(

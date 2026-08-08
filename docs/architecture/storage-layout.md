@@ -233,6 +233,13 @@ Key methods:
 - `get_tenant_slug(tenant_id)` -- resolves slug from config (falls back to tenant_id)
 - `get_dataset_slug(tenant_id, dataset_id)` -- resolves slug from config (falls back to dataset_id)
 - `get_dataset_storage_config(tenant_id, dataset_id)` -- resolves per-dataset or global storage config
+- `list_active_tenants()` / `resolve_tenant_by_slug(slug)` -- the tenant registry: config-defined tenants unioned with database (admin-API) ones, as source-agnostic `ResolvedTenant` descriptors
+
+#### Resolved dataset invariant
+
+A tenant's `default_dataset` is always present in its resolved `datasets`, whether or not a `datasets` row names it. A dataset can be named as the default without having a row of its own -- admin-API tenant creation stores `default_dataset` as a column on the tenant row, and a config tenant may declare `default_dataset` with no matching `[[auth.tenants.datasets]]` block. The synthesized entry derives its slug and storage DSN the same way a runtime-added dataset does, so it is indistinguishable downstream.
+
+This matters because every consumer that enumerates datasets -- compaction planning, retention enforcement, orphan cleanup, table reconciliation -- iterates that list. Without the invariant such a tenant resolves with no datasets and is skipped silently, with no error and no warning.
 
 ### DataFusion Integration
 
@@ -268,16 +275,16 @@ Because both paths call the same constructor, a provisioned table is indistingui
 
 ### Signal Type to Table Mapping
 
-| Signal Type              | Table Name                      | WalOperation   | Schema Source                    |
-| ------------------------ | ------------------------------- | -------------- | -------------------------------- |
-| Traces                   | `traces`                        | `WriteTraces`  | `schemas.toml` (v2, inherits v1) |
-| Logs                     | `logs`                          | `WriteLogs`    | `schemas.toml` (v1)              |
-| Metrics (Gauge)          | `metrics_gauge`                 | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Sum)            | `metrics_sum`                   | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Histogram)      | `metrics_histogram`             | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Exp. Histogram) | `metrics_exponential_histogram` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Summary)        | `metrics_summary`               | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
-| Profiles                 | `profiles`                      | `WriteProfiles`| `iceberg/schemas.rs` (hardcoded) |
+| Signal Type              | Table Name                      | WalOperation    | Schema Source                    |
+| ------------------------ | ------------------------------- | --------------- | -------------------------------- |
+| Traces                   | `traces`                        | `WriteTraces`   | `schemas.toml` (v2, inherits v1) |
+| Logs                     | `logs`                          | `WriteLogs`     | `schemas.toml` (v1)              |
+| Metrics (Gauge)          | `metrics_gauge`                 | `WriteMetrics`  | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Sum)            | `metrics_sum`                   | `WriteMetrics`  | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Histogram)      | `metrics_histogram`             | `WriteMetrics`  | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Exp. Histogram) | `metrics_exponential_histogram` | `WriteMetrics`  | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Summary)        | `metrics_summary`               | `WriteMetrics`  | `iceberg/schemas.rs` (hardcoded) |
+| Profiles                 | `profiles`                      | `WriteProfiles` | `iceberg/schemas.rs` (hardcoded) |
 
 For metrics, the target table name is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics_gauge`.
 
