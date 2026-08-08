@@ -30,7 +30,7 @@ use common::wal::{Wal, WalOperation, bytes_to_record_batch};
 use uuid::Uuid;
 
 use super::WalManager;
-use super::forward::forward_batch_to_writer;
+use super::forward::{ForwardFailureKind, classify_forward_failure, forward_batch_to_writer};
 
 /// How often the retry consumer scans for unprocessed entries.
 pub const DEFAULT_RETRY_INTERVAL: Duration = Duration::from_secs(10);
@@ -189,18 +189,37 @@ impl WalRetryConsumer {
                         // "Flight do_put failed" alone cannot distinguish a
                         // dead writer from a batch the writer rejects, and the
                         // two demand opposite responses.
+                        let reason = format_error_chain(&e);
+                        let kind = classify_forward_failure(&e);
                         tracing::warn!(
                             tenant_id = %tenant,
                             dataset_id = %dataset,
                             signal = %signal,
                             entry_id = %entry.id,
-                            error = %format_error_chain(&e),
+                            failure = ?kind,
+                            error = %reason,
                             "Failed to re-forward WAL entry"
                         );
-                        stats.failed += 1;
-                        // Writer may be down — don't hammer it with the
-                        // remaining entries of this WAL in the same pass.
-                        break;
+
+                        match kind {
+                            // The writer judged the batch and refused it.
+                            // Retrying replays the same bytes into the same
+                            // verdict, and until this entry is retired every
+                            // later entry in this WAL is unreachable — one
+                            // rejected batch shadowed ~101 500 entries on hive
+                            // (#1060). Retire it and keep going.
+                            ForwardFailureKind::Permanent => {
+                                self.record_rejected_entry(&wal, entry.id, &reason, &mut stats)
+                                    .await;
+                                continue;
+                            }
+                            // Writer may be down — don't hammer it with the
+                            // remaining entries of this WAL in the same pass.
+                            ForwardFailureKind::Transient => {
+                                stats.failed += 1;
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -233,6 +252,44 @@ impl WalRetryConsumer {
                     entry_id = %entry_id,
                     error = %e,
                     "Failed to dead-letter WAL entry; it will be retried"
+                );
+                stats.failed += 1;
+            }
+        }
+    }
+
+    /// Retire an entry the writer refuses to accept.
+    ///
+    /// This is the third kind of poison entry, and the only one that reaches
+    /// the writer: the payload reads and deserializes cleanly, but cannot be
+    /// shaped into its target table. The verdict is a property of the bytes,
+    /// so it does not change on a later pass.
+    ///
+    /// The payload is preserved rather than discarded — unlike a truncated
+    /// record it is complete, and becomes replayable once the rejection cause
+    /// is fixed — with the writer's own reason recorded alongside it.
+    async fn record_rejected_entry(
+        &mut self,
+        wal: &Wal,
+        entry_id: Uuid,
+        reason: &str,
+        stats: &mut RetryStats,
+    ) {
+        match wal.dead_letter_rejected(entry_id, reason).await {
+            Ok(path) => {
+                tracing::error!(
+                    entry_id = %entry_id,
+                    path = %path.display(),
+                    error = %reason,
+                    "Writer rejected WAL entry; payload preserved in the dead-letter directory and entry marked processed"
+                );
+                stats.dead_lettered += 1;
+            }
+            Err(e) => {
+                tracing::error!(
+                    entry_id = %entry_id,
+                    error = %e,
+                    "Failed to dead-letter rejected WAL entry; it will be retried"
                 );
                 stats.failed += 1;
             }
