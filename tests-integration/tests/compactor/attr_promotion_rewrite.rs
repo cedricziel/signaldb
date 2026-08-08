@@ -323,6 +323,70 @@ async fn count_rows(ctx: &SessionContext, sql: &str) -> Result<usize> {
     Ok(rows.iter().map(|b| b.num_rows()).sum())
 }
 
+/// A rewrite that evolves the schema must still read the snapshot its
+/// caller pinned, not a freshly loaded one.
+///
+/// The promotion pass commits AddSchema/SetCurrentSchema, after which the
+/// rewrite reloads the table to write under the new schema. If it also
+/// *read* from that reload it would pick up any snapshot committed since
+/// — including a late write into this very partition — and rewrite rows
+/// the delta commit does not remove. The row-parity check turns that into
+/// an abort on every cycle that evolves the schema.
+#[tokio::test]
+async fn schema_evolution_does_not_sweep_in_a_late_write() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+    let (catalog_manager, service_catalog, identifier) = setup(false).await?;
+    let partition = busiest_partition(&catalog_manager, TENANT, DATASET, TABLE).await?;
+
+    // Pin the table the way the executor does, *before* the late write.
+    let pinned = load_table(&catalog_manager, &identifier).await?;
+
+    // A late write lands in the same hour partition after pinning.
+    write_file(
+        &catalog_manager,
+        &identifier,
+        &[(
+            5_000_000,
+            "late",
+            "arrived after pinning",
+            &[("env", "prod")],
+        )],
+    )
+    .await?;
+
+    let mut rewriter = compactor::rewriter::ParquetRewriter::new(catalog_manager.clone());
+    rewriter.set_service_catalog(service_catalog);
+
+    let outcome = rewriter
+        .rewrite_partition(&pinned, partition, 128 * 1024 * 1024)
+        .await?
+        .expect("partition has data to rewrite");
+
+    // The schema did evolve — otherwise this test would pass for the
+    // wrong reason (no reload, so no way to read the wrong snapshot).
+    let reloaded = load_table(&catalog_manager, &identifier).await?;
+    assert!(
+        reloaded
+            .current_schema()?
+            .fields()
+            .iter()
+            .any(|f| f.name == "label_env"),
+        "fixture must actually evolve the schema"
+    );
+
+    assert_eq!(
+        outcome.rows_written, 4,
+        "the rewrite must cover only the 4 rows in the pinned snapshot; \
+         reading the reloaded table would sweep in the late 5th row, which \
+         the delta commit does not remove"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()> {
     let _ = tracing_subscriber::fmt()

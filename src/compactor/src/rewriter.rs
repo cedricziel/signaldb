@@ -146,10 +146,12 @@ impl ParquetRewriter {
     /// unsorted scan more than the promotion pass can afford to skip a
     /// partition.
     ///
-    /// Both passes read the table the caller pinned, so the row counts are
-    /// independent observations of one snapshot — which makes the
-    /// read-vs-written parity check below stronger than it was when both
-    /// numbers came from the same materialized `Vec`.
+    /// Both passes read the table object the caller pinned — never a
+    /// freshly loaded one, which would carry any snapshot committed since
+    /// — so the row counts are independent observations of the *same*
+    /// snapshot. That makes the read-vs-written parity check below
+    /// stronger than it was when both numbers came from the same
+    /// materialized `Vec`. Only the write uses the post-promotion schema.
     pub async fn rewrite_partition(
         &self,
         table: &Table,
@@ -233,8 +235,20 @@ impl ParquetRewriter {
         };
 
         // Pass 2: the sorted stream that becomes the output files.
+        //
+        // Read from `table`, not `write_table`. `write_table` is a *fresh*
+        // load, so it carries whatever snapshot is current now — which
+        // after a late write into this partition is not the snapshot pass
+        // 1 read, and not the input set the caller will commit against.
+        // Reading it would rewrite rows the delta commit does not remove
+        // (duplication, caught only by the row-parity check below, which
+        // would then abort the job on every cycle that evolves the
+        // schema). Both passes therefore read the caller's pinned table;
+        // only the *write* uses the evolved schema. Batches read under the
+        // old schema are reconciled to it by `dropped_columns` and
+        // `backfill`, exactly as they were before the rewrite streamed.
         let stream = self
-            .partition_stream(write_table, partition_hours, SortRows::Yes)
+            .partition_stream(table, partition_hours, SortRows::Yes)
             .await
             .context("Failed to read and merge partition data")?;
 
@@ -283,9 +297,13 @@ impl ParquetRewriter {
     /// than the batches in flight are resident.
     ///
     /// Chunking accumulates input batches until they reach
-    /// `target_file_size_bytes` and emits one concatenated batch, which is
-    /// the unit `write_parquet_partitioned` turns into a file. The
-    /// accumulator is bounded by the target size, not by the partition.
+    /// `target_file_size_bytes` and emits one concatenated batch. That is
+    /// a hint, not a guarantee of one file per batch:
+    /// `write_parquet_partitioned` may combine yielded batches and rolls
+    /// files by the table's own `write.target-file-size-bytes`. What the
+    /// chunking *does* guarantee is the property this pass exists for —
+    /// the accumulator is bounded by the target size rather than by the
+    /// partition.
     fn rewrite_stream(
         mut stream: datafusion::execution::SendableRecordBatchStream,
         dropped_columns: Vec<String>,
