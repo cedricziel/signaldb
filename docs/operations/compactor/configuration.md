@@ -82,6 +82,21 @@ task that wakes up and returns.
 
 Jobs are restricted to **closed** partitions: an hour partition becomes eligible once its hour has ended and `partition_lateness` has elapsed. The partition still receiving writes is exactly the one whose files would change under a running rewrite, so leaving it alone is what lets compaction and ingest coexist. Raise `partition_lateness` if your sources deliver data well after the fact; it is a late-data allowance, not a commit-cadence knob.
 
+**Sizing a compactor's memory.** The three knobs interact, so tune them together:
+
+```
+peak job memory  ≈  memory_limit_mb  +  target_file_size_mb  +  small fixed overhead
+per-sorter share  =  memory_limit_mb / max(target_partitions, 1)
+```
+
+- `memory_limit_mb` is the accounted half: DataFusion's operators spill past it.
+- `target_file_size_mb` is the unaccounted half: the chunker accumulates one output file outside the pool. Keep it comfortably **below** `memory_limit_mb`, or the part the pool does not control dominates the part it does.
+- The per-sorter share must stay above roughly **64 MB**. Below that a spilling sort has no room for a batch plus the reservation its spill merge needs, so it fails instead of spilling — the #1064 failure in miniature. With the default `target_partitions = 1` the share is the whole pool.
+
+The compactor logs a warning at startup for either incoherent combination rather than refusing to start: an operator who has measured their workload may want an unusual ratio, and a background service should say so loudly rather than not run.
+
+The defaults (512 MB pool, 128 MB target, fan-out 1) put peak job memory around 640 MB with the full pool behind one sorter. Raise `memory_limit_mb` to spill less on large partitions; lower it if the compactor shares a process with the other services (monolithic mode) and you would rather trade speed for footprint.
+
 **Why partitions can be declined for size:** the planner gates on file *count* and per-file size, never on the total, so a partition too large to rewrite within `memory_limit_mb` would be selected every cycle, fail after a full read-and-sort, and be selected again — spending compaction capacity entirely on work that cannot currently succeed. `max_partition_input_mb` declines those up front. A declined partition stays uncompacted until the cap is raised or the rewrite can handle it, so watch `compactor_oversized_partitions_skipped_total`: a non-zero and growing value means real work is being turned away, not that nothing needs doing.
 
 **What `memory_limit_mb` actually bounds:** the pool covers the rewrite's **DataFusion operators** — the partition sort above all — which spill to disk rather than growing past it. The rewrite streams its partition rather than collecting it, so the memory outside the pool is bounded too: the chunker holds at most one output file's worth of batches, and the attribute-statistics pass holds per-key state capped by cardinality. Neither grows with the size of the partition. Peak process memory for a job is therefore roughly the pool plus one `target_file_size_mb`, not the pool plus the whole partition.

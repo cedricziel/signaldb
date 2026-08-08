@@ -114,6 +114,11 @@ impl CompactionExecutor {
         config: ExecutorConfig,
         metrics: CompactionMetrics,
     ) -> Self {
+        // The memory knobs interact; a bad combination is invisible from
+        // any one of them, so say so once at construction rather than
+        // failing a rewrite hours later (#1064).
+        ParquetRewriter::warn_on_incoherent_memory_config(&catalog_manager.config().compactor);
+
         let committer = IcebergCommitter::new(catalog_manager.clone());
         let rewriter = ParquetRewriter::new(catalog_manager);
 
