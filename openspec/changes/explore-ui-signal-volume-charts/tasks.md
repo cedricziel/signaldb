@@ -1,10 +1,10 @@
 ## 1. Scale and bar-height maths
 
-- [ ] 1.1 Write failing tests for a `scale.ts` module: linear and `log1p`
+- [x] 1.1 Write failing tests for a `scale.ts` module: linear and `log1p`
       mappings, a bar-height helper that floors once per bar, and a segment
       splitter whose outputs sum to the bar height. Cover the measured
       regression (525 vs 10,240 against a 373,329 maximum must differ).
-- [ ] 1.2 Implement `src/ui/src/features/explore/scale.ts` to make 1.1 pass.
+- [x] 1.2 Implement `src/ui/src/features/explore/scale.ts` to make 1.1 pass.
 
 ## 2. Time-axis formatting
 
