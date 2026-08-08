@@ -92,6 +92,7 @@ impl RetentionTestContext {
             // compactable immediately; a production lateness allowance would
             // defer every generated partition as still open.
             partition_lateness: std::time::Duration::ZERO,
+            max_partition_input_bytes: 0,
         };
         let metrics = CompactionMetrics::new();
 
@@ -121,6 +122,7 @@ impl RetentionTestContext {
             max_input_file_size_bytes: 64 * 1024 * 1024,
             target_file_size_bytes: 128 * 1024 * 1024,
             partition_lateness: std::time::Duration::ZERO,
+            max_partition_input_bytes: 0,
         };
         let metrics = CompactionMetrics::new();
 

@@ -74,6 +74,7 @@ async fn seed_and_plan() -> (CompactionExecutor, CompactionCandidate) {
         // Tests seed data into recent hours and compact it immediately;
         // a production lateness allowance would defer every such partition.
         partition_lateness: std::time::Duration::ZERO,
+        max_partition_input_bytes: 0,
     };
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());
     let candidate = planner

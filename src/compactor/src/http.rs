@@ -132,6 +132,11 @@ impl ObservabilityState {
             "Cumulative wall-clock milliseconds spent in successful compaction jobs",
             s.compaction.total_duration_ms(),
         );
+        counter(
+            "compactor_oversized_partitions_skipped_total",
+            "Partitions the planner declined because their eligible input bytes exceed max_partition_input_mb; these stay uncompacted until the cap is raised",
+            s.compaction.oversized_partitions_skipped() as u64,
+        );
 
         // Retention enforcement
         counter(
@@ -260,6 +265,7 @@ impl ObservabilityState {
                 "conflicts_detected": compaction.conflicts_detected,
                 "retries_attempted": compaction.retries_attempted,
                 "stale_leases_expired": compaction.stale_leases_expired,
+                "oversized_partitions_skipped": s.compaction.oversized_partitions_skipped(),
                 "input_files": compaction.total_input_files,
                 "output_files": compaction.total_output_files,
                 "bytes_before": compaction.bytes_before_compaction,

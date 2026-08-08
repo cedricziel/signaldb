@@ -756,6 +756,7 @@ async fn files_replaced_by_compaction_stay_protected_while_snapshots_retained() 
         // Tests seed data into recent hours and compact it immediately;
         // a production lateness allowance would defer every such partition.
         partition_lateness: std::time::Duration::ZERO,
+        max_partition_input_bytes: 0,
     };
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());
     let candidates = planner.plan().await?;

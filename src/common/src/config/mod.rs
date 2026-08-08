@@ -231,6 +231,10 @@ fn default_compactor_target_partitions() -> usize {
     1
 }
 
+fn default_max_partition_input_mb() -> u64 {
+    2048
+}
+
 fn default_max_per_tenant() -> usize {
     5
 }
@@ -442,6 +446,29 @@ pub struct CompactorConfig {
     #[serde(default = "default_compactor_target_partitions")]
     pub target_partitions: usize,
 
+    /// Upper bound, in MB, on the compaction inputs a single job will take
+    /// on — the summed size of the partition's *eligible* (small) files.
+    ///
+    /// The planner otherwise has no size bound at all: it gates on file
+    /// count and per-file size, never on the total. A partition too large
+    /// to rewrite within `memory_limit_mb` is therefore selected every
+    /// cycle, fails after a full read-and-sort, and is selected again
+    /// (#1053, #1064) — compaction capacity spent entirely on work that
+    /// cannot currently succeed.
+    ///
+    /// Partitions over the cap are skipped with a warning and counted in
+    /// `compactor_oversized_partitions_skipped_total`, so they are visible
+    /// rather than silently dropped. This is a backstop for the
+    /// pathological case, not a tuning knob — the real fix is a rewrite
+    /// that streams instead of collecting.
+    ///
+    /// `0` disables the guard, restoring the old always-attempt behavior.
+    ///
+    /// Default: 2048 MB.
+    /// Env: SIGNALDB__COMPACTOR__MAX_PARTITION_INPUT_MB
+    #[serde(default = "default_max_partition_input_mb")]
+    pub max_partition_input_mb: u64,
+
     /// Retention enforcement configuration (Phase 3)
     /// Env: SIGNALDB__COMPACTOR__RETENTION__*
     #[serde(default)]
@@ -514,6 +541,7 @@ impl Default for CompactorConfig {
             partition_lateness: default_partition_lateness(),
             memory_limit_mb: default_compactor_memory_limit_mb(),
             target_partitions: default_compactor_target_partitions(),
+            max_partition_input_mb: default_max_partition_input_mb(),
             retention: RetentionConfig::default(),
             orphan_cleanup: OrphanCleanupConfig::default(),
             attr_promotion: AttrPromotionConfig::default(),

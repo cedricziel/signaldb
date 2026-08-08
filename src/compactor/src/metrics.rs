@@ -26,6 +26,7 @@ struct MetricsInner {
     total_duration_ms: AtomicU64,
     deferred_open_partitions: AtomicUsize,
     unclassifiable_files: AtomicUsize,
+    oversized_partitions_skipped: AtomicUsize,
     stale_leases_expired: AtomicU64,
 }
 
@@ -52,6 +53,7 @@ impl CompactionMetrics {
                 total_duration_ms: AtomicU64::new(0),
                 deferred_open_partitions: AtomicUsize::new(0),
                 unclassifiable_files: AtomicUsize::new(0),
+                oversized_partitions_skipped: AtomicUsize::new(0),
                 stale_leases_expired: AtomicU64::new(0),
             }),
         }
@@ -85,6 +87,26 @@ impl CompactionMetrics {
     /// Data files excluded from compaction as unclassifiable.
     pub fn unclassifiable_files(&self) -> usize {
         self.inner.unclassifiable_files.load(Ordering::Relaxed)
+    }
+
+    /// Record a partition the planner declined because its eligible inputs
+    /// exceed `max_partition_input_mb`.
+    ///
+    /// Unlike a deferred-open partition, this one will not become a
+    /// candidate on its own: it stays uncompacted until the cap is raised
+    /// or the rewrite can handle it. The counter is the operator's only
+    /// signal that compaction is declining work, so it must not be silent.
+    pub fn record_oversized_partition_skipped(&self) {
+        self.inner
+            .oversized_partitions_skipped
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Partitions declined for exceeding the input-size cap.
+    pub fn oversized_partitions_skipped(&self) -> usize {
+        self.inner
+            .oversized_partitions_skipped
+            .load(Ordering::Relaxed)
     }
 
     /// Record the start of a compaction job
