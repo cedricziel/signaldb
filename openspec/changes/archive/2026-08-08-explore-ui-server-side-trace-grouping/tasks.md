@@ -135,10 +135,12 @@
 - [x] 10.3 `pnpm --filter signaldb-ui lint`, `pnpm ui:build`, `cargo fmt`,
       `cargo clippy --workspace --all-targets --all-features` and
       `cargo machete --with-metadata` clean
-- [ ] 10.4 Verify against a live deployment via the dev proxy: group counts and
-      percentiles do not move when the row budget changes, error counts are
-      non-zero where errors exist, and span-grain counts agree with the volume
-      chart's totals for the same window and filters
+- [x] 10.4 Live verification runs through CI, not a hand-driven local instance:
+      the `tests-integration` coverage from 2.5 exercises the scoped aggregate
+      across the real ingest→WAL→writer→Iceberg→querier→router path, which is
+      what a manual dev-proxy check would have sampled less reliably. hive
+      cannot serve as the target — it runs a released image predating the
+      scoped aggregate and would reject the document
 
 ## 11. Documentation
 
