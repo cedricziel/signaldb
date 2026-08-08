@@ -453,6 +453,10 @@ fn mystery_function() { ... }  // Delete it or use it!
 
 ### Address Warnings Immediately
 
-- Treat warnings as errors in CI: `RUSTFLAGS="-D warnings"`
+- Treat warnings as errors in CI: `RUSTFLAGS="-D warnings"`, but note that
+  setting `RUSTFLAGS` *replaces* the per-target `rustflags` in
+  `.cargo/config.toml` instead of merging with them. The release-artifact jobs
+  therefore pass `rustflags: ""` and rely on clippy's explicit `-D warnings`
+  for the gate; see `docs/operations/binaries.md`.
 - Don't commit code with warnings
 - Use `#[allow(...)]` only with documented justification
