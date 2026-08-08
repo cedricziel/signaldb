@@ -67,11 +67,16 @@ these intervals are independent of one another — a compaction pass that runs
 long does not postpone retention, orphan cleanup, or the 30s stale-lease sweep
 (the sweep cadence is fixed and not configurable; `lease_ttl_seconds` controls
 only how long a lease survives without renewal). Two consequences worth
-knowing: retention and compaction can commit against the same table at the same
-time, which shows up as Iceberg commit conflicts that both paths retry
-(`compactor_conflicts_detected_total`, `compactor_retries_attempted_total`);
-and a cycle disabled with `enabled = false` gets no task at all rather than a
-task that wakes up and returns.
+knowing. First, independent cadences do not mean independent access to a table:
+within one compactor process, compaction commits, retention partition drops and
+snapshot expiration take a per-table lock, so on any one table they take turns
+rather than commit concurrently — a long rewrite defers that table's next
+retention pass, and other tables are unaffected. Across _separate_ compactor
+instances there is no such lock, so those commits can still race; that shows up
+as Iceberg commit conflicts which both paths retry
+(`compactor_conflicts_detected_total`, `compactor_retries_attempted_total`).
+Second, a cycle disabled with `enabled = false` gets no task at all rather than
+a task that wakes up and returns.
 
 **How file selection works:** compaction exists to merge many small ingest files into few large ones. Only files **smaller than** `max_input_file_size_kb` count as compaction inputs; when at least `file_count_threshold` such files exist, the table becomes a candidate and its small files are rewritten toward `target_file_size_mb`. Files at or above the maximum are considered "already big" — re-reading and rewriting them buys nothing, so they never trigger compaction on their own. The default of 64 MB is half the default 128 MB target output size, which keeps freshly ingested files (typically tens to hundreds of KB) always eligible.
 

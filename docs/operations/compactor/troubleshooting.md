@@ -251,9 +251,17 @@ retention pass until it completes. Retention on _other_ tables is unaffected,
 which is the signature to look for: some tables progress while one lags.
 
 ```bash
-# Is a rewrite in flight on the lagging table?
-journalctl -u signaldb-compactor | grep -E "Starting compaction job|Rewrote table data"
+# Is a rewrite in flight on the LAGGING table specifically? Without the
+# tenant/dataset/table filter this matches every concurrent rewrite, which
+# cannot tell you whether this table is the one holding the lock.
+TENANT=acme; DATASET=prod; TABLE=traces
+journalctl -u signaldb-compactor \
+  | grep -E "Starting compaction job|Rewrote table data" \
+  | grep -E "$TENANT/$DATASET/$TABLE|table=$TABLE"
 ```
+
+The compaction job log line carries `tenant/dataset/table`; the rewrite
+completion line carries `table=`, so match either.
 
 **Solution:** None needed — the pass is deferred, not skipped, and runs as soon
 as the rewrite finishes. The wait is bounded by the compaction job, not by a
