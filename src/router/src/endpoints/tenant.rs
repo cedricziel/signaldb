@@ -125,7 +125,10 @@ pub async fn create_tenant_tables<S: RouterState>(
         )
             .into_response();
     }
-    let mut api = TenantApi::new(state.config().clone());
+    // Attach the SQL catalog so a tenant created through the admin API — one
+    // with no `[[auth.tenants]]` block — resolves here too.
+    let mut api = TenantApi::new(state.config().clone())
+        .with_tenant_source(std::sync::Arc::new(state.catalog().clone()));
 
     match api.create_default_tables(&tenant_id).await {
         Ok(()) => (
@@ -347,6 +350,78 @@ mod tests {
         assert_eq!(
             json["error"],
             "Requested tenant does not match authenticated tenant"
+        );
+    }
+
+    /// POST /tenants/:tenant_id/tables/create must actually create the
+    /// tenant's signal tables. It used to return 201 having created nothing
+    /// (`SchemaRegistry::create_default_tables_for_tenant` only logged
+    /// "Would create table ...").
+    #[tokio::test]
+    async fn create_tenant_tables_actually_creates_them() {
+        let catalog_uri = format!(
+            "sqlite:file:signaldb_router_tables_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme".to_string(),
+                    default_dataset: Some("production".to_string()),
+                    datasets: vec![],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "sk-test-key".to_string(),
+                        name: Some("test".to_string()),
+                    }],
+                    schema_config: None,
+                    limits: None,
+                }],
+                ..Default::default()
+            },
+            ..Configuration::default()
+        };
+        config.schema.catalog_uri = catalog_uri.clone();
+
+        let app = create_router(RouterAppState::new(catalog, config.clone()));
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/tenants/acme/tables/create")
+            .header("authorization", "Bearer sk-test-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        // The response contract is unchanged: 201 with the same message.
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        // ...and the tables are really there.
+        let manager = common::CatalogManager::new(config).await.unwrap();
+        let namespace = manager.build_namespace("acme", "production").unwrap();
+        let mut tables: Vec<String> = manager
+            .catalog()
+            .list_tabulars(&namespace)
+            .await
+            .unwrap()
+            .iter()
+            .map(|identifier| identifier.name().to_string())
+            .collect();
+        tables.sort();
+        assert_eq!(
+            tables,
+            vec![
+                "logs",
+                "metrics_exponential_histogram",
+                "metrics_gauge",
+                "metrics_histogram",
+                "metrics_sum",
+                "metrics_summary",
+                "profiles",
+                "traces",
+            ]
         );
     }
 

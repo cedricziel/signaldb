@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::auth::validation::validate_id;
 use crate::config::{Configuration, SchemaConfig};
@@ -84,6 +85,13 @@ impl TenantApi {
         Self {
             registry: TenantSchemaRegistry::new(config),
         }
+    }
+
+    /// Attach a database catalog as an additional tenant source, so
+    /// admin-API tenants resolve alongside config-defined ones.
+    pub fn with_tenant_source(mut self, tenant_source: Arc<crate::catalog::Catalog>) -> Self {
+        self.registry = self.registry.with_tenant_source(tenant_source);
+        self
     }
 
     /// List all tenants
@@ -465,15 +473,38 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_default_tables() {
-        let config = Configuration::default();
-        let mut api = TenantApi::new(config);
+        let mut config = Configuration::default();
+        config.schema.catalog_uri = format!(
+            "sqlite:file:signaldb_tenant_api_tables_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        config.auth.tenants = vec![crate::config::TenantConfig {
+            id: "acme".to_string(),
+            slug: "acme".to_string(),
+            name: "Acme".to_string(),
+            default_dataset: Some("production".to_string()),
+            datasets: vec![],
+            api_keys: vec![],
+            schema_config: None,
+            limits: None,
+        }];
+        let mut api = TenantApi::new(config.clone());
 
-        // Create default tables for default tenant
-        let result = api.create_default_tables("default").await;
-        assert!(result.is_ok());
+        api.create_default_tables("acme")
+            .await
+            .expect("provisioning must succeed");
 
-        // For now, we just verify the call succeeds
-        // TODO: Add table listing verification once table creation API is implemented
+        let manager = crate::CatalogManager::new(config).await.unwrap();
+        let namespace = manager.build_namespace("acme", "production").unwrap();
+        assert_eq!(
+            manager
+                .catalog()
+                .list_tabulars(&namespace)
+                .await
+                .unwrap()
+                .len(),
+            8
+        );
     }
 
     #[test]

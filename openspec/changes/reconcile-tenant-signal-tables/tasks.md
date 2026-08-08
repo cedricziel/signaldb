@@ -43,9 +43,9 @@ to #972's description.
 
 ## 5. Admin endpoint and compactor fix
 
-- [ ] 5.1 Write a failing test asserting `POST /tenants/{tenant_id}/tables/create` actually creates the tenant's tables rather than returning `201` having created nothing (`cargo test -p router`)
-- [ ] 5.2 Reimplement `SchemaRegistry::create_default_tables_for_tenant` (`src/common/src/schema/mod.rs:394-420`) on top of `ensure_dataset_tables`, keeping the `TenantApi::create_default_tables` wrapper and the endpoint's route, request shape, and `201` response contract intact
-- [ ] 5.3 Write a failing test in `src/compactor` asserting a table with no current snapshot yields zero compaction candidates without warning (`cargo test -p compactor`), then fix `group_files_by_partition` (`src/compactor/src/planner.rs:306-310`) so newly provisioned empty tables do not warn every cycle
+- [x] 5.1 Write a failing test asserting `POST /tenants/{tenant_id}/tables/create` actually creates the tenant's tables rather than returning `201` having created nothing (`cargo test -p router`)
+- [x] 5.2 Reimplement `SchemaRegistry::create_default_tables_for_tenant` (`src/common/src/schema/mod.rs:394-420`) on top of `ensure_dataset_tables`, keeping the `TenantApi::create_default_tables` wrapper and the endpoint's route, request shape, and `201` response contract intact
+- [x] 5.3 Write a failing test in `src/compactor` asserting a table with no current snapshot yields zero compaction candidates without warning (`cargo test -p compactor`), then fix `group_files_by_partition` (`src/compactor/src/planner.rs:306-310`) so newly provisioned empty tables do not warn every cycle
 
 ## 6. Cross-service integration coverage
 
