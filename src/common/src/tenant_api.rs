@@ -490,11 +490,16 @@ mod tests {
         }];
         let mut api = TenantApi::new(config.clone());
 
+        // A named shared-cache in-memory SQLite database lives only as long as
+        // some connection to it is open, and provisioning builds and drops its
+        // own catalog pool. Open the verifying manager first and hold it for
+        // the whole test, or the database can be torn down before we read it.
+        let manager = crate::CatalogManager::new(config).await.unwrap();
+
         api.create_default_tables("acme")
             .await
             .expect("provisioning must succeed");
 
-        let manager = crate::CatalogManager::new(config).await.unwrap();
         let namespace = manager.build_namespace("acme", "production").unwrap();
         assert_eq!(
             manager
