@@ -1004,7 +1004,7 @@ dependencies = [
  "futures",
  "hex",
  "humantime-serde",
- "iceberg-rust",
+ "iceberg-rust 0.10.0 (git+https://github.com/cedricziel/iceberg-rust?rev=46c41afdff93ac92ef540bddc258db7173f38c9d)",
  "iceberg-sql-catalog",
  "object_store",
  "once_cell",
@@ -1985,7 +1985,7 @@ dependencies = [
  "datafusion-expr",
  "derive_builder",
  "futures",
- "iceberg-rust",
+ "iceberg-rust 0.10.0 (git+https://github.com/cedricziel/iceberg-rust?rev=98b8f88d65856eb32a58673f5a5ba0ee46bfde08)",
  "itertools",
  "lru",
  "object_store",
@@ -2786,7 +2786,7 @@ dependencies = [
 [[package]]
 name = "iceberg-rust"
 version = "0.10.0"
-source = "git+https://github.com/cedricziel/iceberg-rust?rev=98b8f88d65856eb32a58673f5a5ba0ee46bfde08#98b8f88d65856eb32a58673f5a5ba0ee46bfde08"
+source = "git+https://github.com/cedricziel/iceberg-rust?rev=46c41afdff93ac92ef540bddc258db7173f38c9d#46c41afdff93ac92ef540bddc258db7173f38c9d"
 dependencies = [
  "apache-avro",
  "arrow",
@@ -2797,7 +2797,7 @@ dependencies = [
  "flate2",
  "futures",
  "getrandom 0.4.3",
- "iceberg-rust-spec",
+ "iceberg-rust-spec 0.10.0 (git+https://github.com/cedricziel/iceberg-rust?rev=46c41afdff93ac92ef540bddc258db7173f38c9d)",
  "itertools",
  "lazy_static",
  "lru",
@@ -2817,6 +2817,68 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "iceberg-rust"
+version = "0.10.0"
+source = "git+https://github.com/cedricziel/iceberg-rust?rev=98b8f88d65856eb32a58673f5a5ba0ee46bfde08#98b8f88d65856eb32a58673f5a5ba0ee46bfde08"
+dependencies = [
+ "apache-avro",
+ "arrow",
+ "async-trait",
+ "bytes",
+ "derive-getters",
+ "derive_builder",
+ "flate2",
+ "futures",
+ "getrandom 0.4.3",
+ "iceberg-rust-spec 0.10.0 (git+https://github.com/cedricziel/iceberg-rust?rev=98b8f88d65856eb32a58673f5a5ba0ee46bfde08)",
+ "itertools",
+ "lazy_static",
+ "lru",
+ "murmur3",
+ "object_store",
+ "parquet",
+ "pin-project-lite",
+ "regex",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "smallvec",
+ "sqlparser",
+ "thiserror",
+ "thrift",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "iceberg-rust-spec"
+version = "0.10.0"
+source = "git+https://github.com/cedricziel/iceberg-rust?rev=46c41afdff93ac92ef540bddc258db7173f38c9d#46c41afdff93ac92ef540bddc258db7173f38c9d"
+dependencies = [
+ "apache-avro",
+ "arrow-schema",
+ "chrono",
+ "derive-getters",
+ "derive_builder",
+ "getrandom 0.4.3",
+ "itertools",
+ "murmur3",
+ "ordered-float 5.3.0",
+ "rust_decimal",
+ "serde",
+ "serde_bytes",
+ "serde_derive",
+ "serde_json",
+ "serde_repr",
+ "thiserror",
+ "url",
+ "uuid",
+ "zstd",
 ]
 
 [[package]]
@@ -2848,11 +2910,11 @@ dependencies = [
 [[package]]
 name = "iceberg-sql-catalog"
 version = "0.10.0"
-source = "git+https://github.com/cedricziel/iceberg-rust?rev=98b8f88d65856eb32a58673f5a5ba0ee46bfde08#98b8f88d65856eb32a58673f5a5ba0ee46bfde08"
+source = "git+https://github.com/cedricziel/iceberg-rust?rev=46c41afdff93ac92ef540bddc258db7173f38c9d#46c41afdff93ac92ef540bddc258db7173f38c9d"
 dependencies = [
  "async-trait",
  "futures",
- "iceberg-rust",
+ "iceberg-rust 0.10.0 (git+https://github.com/cedricziel/iceberg-rust?rev=46c41afdff93ac92ef540bddc258db7173f38c9d)",
  "object_store",
  "serde_json",
  "sqlx",
@@ -3759,7 +3821,7 @@ dependencies = [
  "datafusion",
  "datafusion_iceberg",
  "futures",
- "iceberg-rust",
+ "iceberg-rust 0.10.0 (git+https://github.com/cedricziel/iceberg-rust?rev=98b8f88d65856eb32a58673f5a5ba0ee46bfde08)",
  "parquet",
  "rand 0.9.5",
  "serde_json",

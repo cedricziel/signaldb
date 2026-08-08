@@ -128,6 +128,10 @@ name = "database_tenant_namespace_parity"
 path = "tests/e2e/database_tenant_namespace_parity.rs"
 
 [[test]]
+name = "dataset_table_provisioning"
+path = "tests/e2e/dataset_table_provisioning.rs"
+
+[[test]]
 name = "prometheus_remote_write_test"
 path = "tests/prometheus_remote_write_test.rs"
 

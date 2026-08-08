@@ -49,9 +49,9 @@ to #972's description.
 
 ## 6. Cross-service integration coverage
 
-- [ ] 6.1 Add a `tests-integration` test: create a tenant through the admin API, ingest nothing, and assert log, trace, metric, and profile label queries return empty successfully (`cargo test -p tests-integration`)
-- [ ] 6.2 Add a `tests-integration` test asserting a reconciled dataset accepts a subsequent OTLP write into the pre-created tables — no duplicate table, no schema conflict, data queryable afterwards
-- [ ] 6.3 Add a `tests-integration` test asserting a dataset created after startup converges on a later pass and is then queryable
+- [x] 6.1 Add a `tests-integration` test: create a tenant through the admin API, ingest nothing, and assert log, trace, metric, and profile label queries return empty successfully (`cargo test -p tests-integration`)
+- [x] 6.2 Add a `tests-integration` test asserting a reconciled dataset accepts a subsequent OTLP write into the pre-created tables — no duplicate table, no schema conflict, data queryable afterwards
+- [x] 6.3 Add a `tests-integration` test asserting a dataset created after startup converges on a later pass and is then queryable
 
 ## 7. Documentation
 
