@@ -650,9 +650,23 @@ function GroupDetail({
     ? sortRows(membersQuery.data, sort, memberSortValue)
     : [];
 
+  // At trace grain the root-span predicate makes every row a whole trace,
+  // shown by its root span. At span grain a row is whatever span matched —
+  // not necessarily the root — so labeling it "Root" would assert something
+  // the data doesn't guarantee (exactly the misleading-label class #1070
+  // exists to avoid).
+  const isSpanGrain = state.grain === "spans";
+  const identityLabel = isSpanGrain ? "Span" : "Root";
+  const memberNoun = isSpanGrain ? "span" : "trace";
+
   const header = (
     <tr>
-      <SortTh label="Root" sortKey="root" sort={sort} toggle={toggle} />
+      <SortTh
+        label={identityLabel}
+        sortKey="root"
+        sort={sort}
+        toggle={toggle}
+      />
       <SortTh label="Service" sortKey="service" sort={sort} toggle={toggle} />
       <SortTh
         label="Time"
@@ -694,7 +708,7 @@ function GroupDetail({
         </table>
       ) : rows.length === 0 ? (
         <div className="traces-note">
-          No traces for this group in this time range.
+          No {memberNoun}s for this group in this time range.
         </div>
       ) : (
         <>
@@ -722,7 +736,7 @@ function GroupDetail({
           {/* Always true (the query always applies a limit) — states the
               bound rather than claiming truncation we can't detect here. */}
           <div className="traces-note">
-            Showing up to {plural(state.limit, "trace")}, newest first.
+            Showing up to {plural(state.limit, memberNoun)}, newest first.
           </div>
         </>
       )}

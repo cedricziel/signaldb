@@ -553,6 +553,51 @@ describe("TracesView group detail", () => {
     expect(screen.getByText(/up to 250 traces/i)).toBeInTheDocument();
   });
 
+  it("labels the identity column Root at trace grain — a row is a whole trace", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1cafe", "s1", "POST /api/checkout", "gateway", "100", 412),
+    ]);
+    renderView({ group: "POST /api/checkout", grain: "traces" });
+    await screen.findByText("t1cafe");
+    expect(
+      screen.getByRole("columnheader", { name: "Root" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("columnheader", { name: "Span" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("labels the identity column Span at span grain — a row is a matching span, not necessarily the root", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1cafe", "s1", "charge", "payments", "100", 42),
+    ]);
+    renderView({ group: "charge", grain: "spans" });
+    await screen.findByText("t1cafe");
+    expect(
+      screen.getByRole("columnheader", { name: "Span" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("columnheader", { name: "Root" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("states the bound in spans at span grain, not traces", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1cafe", "s1", "charge", "payments", "100", 42),
+    ]);
+    renderView({ group: "charge", grain: "spans", limit: 250 });
+    await screen.findByText("t1cafe");
+    expect(screen.getByText(/up to 250 spans/i)).toBeInTheDocument();
+    expect(screen.queryByText(/up to 250 traces/i)).not.toBeInTheDocument();
+  });
+
+  it("notes no spans (not traces) for an empty group at span grain", async () => {
+    renderView({ group: "charge", grain: "spans" });
+    expect(
+      await screen.findByText(/no spans for this group/i),
+    ).toBeInTheDocument();
+  });
+
   it("renders skeleton rows while the drill-in query is pending", async () => {
     fetchTraceGroupMembers.mockImplementation(() => new Promise(() => {}));
     const { container } = renderWithClient(
