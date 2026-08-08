@@ -1,8 +1,9 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
   bucketizeSeries,
+  compactCount,
   padBuckets,
   SignalHistogram,
   type VolumeSeries,
@@ -108,7 +109,7 @@ describe("SignalHistogram", () => {
 
   it("labels the vertical axis with the window maximum", () => {
     renderChart(series);
-    expect(screen.getByTestId("svol-ymax")).toHaveTextContent("373,341");
+    expect(screen.getByTestId("svol-ymax")).toHaveTextContent("373K lines");
   });
 
   it("labels each end of the time axis distinctly", () => {
@@ -175,9 +176,9 @@ describe("SignalHistogram interaction", () => {
     await user.hover(screen.getAllByTestId("svol-col")[1]!);
     const tip = screen.getByRole("status");
     expect(within(tip).getByText("info")).toBeInTheDocument();
-    expect(within(tip).getByText("525")).toBeInTheDocument();
+    expect(within(tip).getByText("525 lines")).toBeInTheDocument();
     expect(within(tip).getByText("error")).toBeInTheDocument();
-    expect(within(tip).getByText("12")).toBeInTheDocument();
+    expect(within(tip).getByText("12 lines")).toBeInTheDocument();
     expect(within(tip).getByText("537 lines")).toBeInTheDocument();
   });
 
@@ -256,12 +257,18 @@ describe("SignalHistogram scale control", () => {
 
 describe("SignalHistogram y-axis", () => {
   const series: VolumeSeries[] = [
-    { key: "info", points: [[60_000, 1], [120_000, 373_329]] },
+    {
+      key: "info",
+      points: [
+        [60_000, 1],
+        [120_000, 373_329],
+      ],
+    },
   ];
 
   it("labels the midpoint gridline for the active scale", () => {
     const { rerender } = renderChart(series);
-    expect(screen.getByText("186,665")).toBeInTheDocument();
+    expect(screen.getByText("187K lines")).toBeInTheDocument();
     rerender(
       <SignalHistogram
         series={series}
@@ -275,7 +282,64 @@ describe("SignalHistogram y-axis", () => {
       />,
     );
     // Halfway up a log plot is ~610, not half the maximum.
-    expect(screen.queryByText("186,665")).toBeNull();
-    expect(screen.getByText("610")).toBeInTheDocument();
+    expect(screen.queryByText("187K lines")).toBeNull();
+    expect(screen.getByText("610 lines")).toBeInTheDocument();
+  });
+});
+
+describe("SignalHistogram tooltip placement", () => {
+  const series: VolumeSeries[] = [
+    {
+      key: "info",
+      points: [
+        [60_000, 5],
+        [120_000, 9],
+      ],
+    },
+  ];
+
+  it("follows the pointer", () => {
+    renderChart(series);
+    const col = screen.getAllByTestId("svol-col")[1]!;
+    fireEvent.mouseEnter(col, { clientX: 220, clientY: 40 });
+    const tip = screen.getByRole("status");
+    // jsdom reports a zero-origin container, so offsets equal the client point.
+    expect(tip.style.left).toBe("220px");
+    expect(tip.style.top).toBe("40px");
+
+    fireEvent.mouseMove(col, { clientX: 260, clientY: 55 });
+    expect(screen.getByRole("status").style.left).toBe("260px");
+  });
+
+  it("flips to the left of the pointer past the midline", () => {
+    renderChart(series);
+    const col = screen.getAllByTestId("svol-col")[1]!;
+    // The suite stubs a 1200px-wide container (src/test/setup.ts).
+    fireEvent.mouseEnter(col, { clientX: 900, clientY: 30 });
+    expect(screen.getByRole("status").style.transform).toContain("-100%");
+  });
+
+  it("anchors to the column when focused without a pointer", () => {
+    renderChart(series);
+    fireEvent.focus(screen.getAllByTestId("svol-col")[1]!);
+    // Anchored to the column's horizontal centre, not to a pointer.
+    expect(screen.getByRole("status").style.left).toBe("600px");
+  });
+});
+
+describe("compactCount", () => {
+  // Intl's `notation: "compact"` is locale-dependent — in `de` it does not
+  // compact at all — so the axis uses an explicit, locale-stable formatter.
+  it("compacts deterministically regardless of locale", () => {
+    expect(compactCount(0)).toBe("0");
+    expect(compactCount(610)).toBe("610");
+    expect(compactCount(999)).toBe("999");
+    expect(compactCount(1000)).toBe("1K");
+    expect(compactCount(1500)).toBe("1.5K");
+    expect(compactCount(9949)).toBe("9.9K");
+    expect(compactCount(186_665)).toBe("187K");
+    expect(compactCount(373_329)).toBe("373K");
+    expect(compactCount(1_500_000)).toBe("1.5M");
+    expect(compactCount(2_400_000_000)).toBe("2.4B");
   });
 });

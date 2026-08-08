@@ -7,14 +7,9 @@
  * traces are two thin adapters over it rather than two copies of the same
  * rendering maths.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { axisLabelFormatter } from "../../lib/time";
-import {
-  barHeight,
-  splitSegments,
-  valueAtFraction,
-  type Scale,
-} from "./scale";
+import { barHeight, splitSegments, valueAtFraction, type Scale } from "./scale";
 
 /** A series of `[timestampMs, value]` points, ascending or not. */
 export interface VolumeSeries {
@@ -73,6 +68,45 @@ export function padBuckets(
 
 const NUM = new Intl.NumberFormat();
 
+/**
+ * Abbreviate a count for an axis gridline, where width is scarce.
+ *
+ * Deliberately not `Intl`'s `notation: "compact"`: that is locale-dependent
+ * and in some locales (`de`, for one) does not abbreviate at all, which both
+ * overflows the axis and makes the result untestable. One decimal below ten of
+ * a unit (`1.5K`), none above it (`373K`).
+ */
+export function compactCount(n: number): string {
+  const units: [number, string][] = [
+    [1e9, "B"],
+    [1e6, "M"],
+    [1e3, "K"],
+  ];
+  for (const [scale, suffix] of units) {
+    if (n >= scale) {
+      const v = n / scale;
+      return `${v < 10 ? Math.round(v * 10) / 10 : Math.round(v)}${suffix}`;
+    }
+  }
+  return String(Math.round(n));
+}
+
+/**
+ * Every number the chart renders carries its unit — an axis gridline or a
+ * tooltip row read on its own must not be ambiguous about what it counts.
+ */
+const withUnit = (n: number, unit: string) => `${NUM.format(n)} ${unit}`;
+const compactWithUnit = (n: number, unit: string) =>
+  `${compactCount(n)} ${unit}`;
+
+/** Where the tooltip sits, in coordinates relative to the chart root. */
+interface TipPos {
+  x: number;
+  y: number;
+  /** Past the horizontal midline the tooltip flips to the pointer's left. */
+  flipX: boolean;
+}
+
 interface Props {
   series: VolumeSeries[];
   /** Stacking order, bottom to top. Series outside it are not drawn. */
@@ -103,6 +137,25 @@ export function SignalHistogram({
   onScaleChange,
 }: Props) {
   const [active, setActive] = useState<number | null>(null);
+  const [tip, setTip] = useState<TipPos | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  /** Track the pointer so the tooltip reads next to what it describes. */
+  const trackPointer = (e: { clientX: number; clientY: number }) => {
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = e.clientX - rect.left;
+    setTip({ x, y: e.clientY - rect.top, flipX: x > rect.width / 2 });
+  };
+
+  /** Keyboard focus has no pointer: anchor under the column instead. */
+  const trackElement = (el: HTMLElement) => {
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const box = el.getBoundingClientRect();
+    const x = box.left - rect.left + box.width / 2;
+    setTip({ x, y: box.bottom - rect.top, flipX: x > rect.width / 2 });
+  };
 
   let buckets = bucketizeSeries(series);
   if (buckets.length > 0) {
@@ -121,16 +174,19 @@ export function SignalHistogram({
   const activeBucket = active === null ? null : buckets[active];
 
   return (
-    <div className="svol">
+    <div className="svol" ref={rootRef}>
       <div className="svol-plot" style={{ height }}>
         <div className="svol-yaxis" aria-hidden="true">
           <span className="svol-ymax" data-testid="svol-ymax">
-            {NUM.format(max)}
+            {compactWithUnit(max, unit)}
           </span>
           <span className="svol-ymid">
-            {NUM.format(Math.round(valueAtFraction(0.5, max, scale)))}
+            {compactWithUnit(
+              Math.round(valueAtFraction(0.5, max, scale)),
+              unit,
+            )}
           </span>
-          <span className="svol-yzero">0</span>
+          <span className="svol-yzero">{compactWithUnit(0, unit)}</span>
         </div>
         <div className="svol-bars" role="img" aria-label={label}>
           {buckets.map((b, i) => {
@@ -144,11 +200,18 @@ export function SignalHistogram({
                 // The hit target spans the plot, not the drawn bar: a bucket
                 // at the 1px floor must be as easy to interrogate as the peak.
                 style={{ height: "100%" }}
-                aria-label={`${fmtAxis(b.tMs)}: ${NUM.format(b.total)} ${unit}`}
+                aria-label={`${fmtAxis(b.tMs)}: ${withUnit(b.total, unit)}`}
                 aria-describedby={active === i ? "svol-tip" : undefined}
-                onMouseEnter={() => setActive(i)}
+                onMouseEnter={(e) => {
+                  setActive(i);
+                  trackPointer(e);
+                }}
+                onMouseMove={trackPointer}
                 onMouseLeave={() => setActive((a) => (a === i ? null : a))}
-                onFocus={() => setActive(i)}
+                onFocus={(e) => {
+                  setActive(i);
+                  trackElement(e.currentTarget);
+                }}
                 onBlur={() => setActive((a) => (a === i ? null : a))}
               >
                 <span
@@ -190,8 +253,19 @@ export function SignalHistogram({
           {fmtAxis(buckets[buckets.length - 1]!.tMs)}
         </span>
       </div>
-      {activeBucket && (
-        <div className="svol-tip" id="svol-tip" role="status">
+      {activeBucket && tip && (
+        <div
+          className="svol-tip"
+          id="svol-tip"
+          role="status"
+          style={{
+            left: `${tip.x}px`,
+            top: `${tip.y}px`,
+            transform: tip.flipX
+              ? "translate(calc(-100% - 14px), 12px)"
+              : "translate(14px, 12px)",
+          }}
+        >
           <div className="svol-tip-t">{fmtAxis(activeBucket.tMs)}</div>
           {order
             .filter((key) => (activeBucket.counts[key] ?? 0) > 0)
@@ -199,14 +273,12 @@ export function SignalHistogram({
               <div className="svol-tip-row" key={key}>
                 <i style={{ background: colors[key] }} />
                 <span>{key}</span>
-                <b>{NUM.format(activeBucket.counts[key] ?? 0)}</b>
+                <b>{withUnit(activeBucket.counts[key] ?? 0, unit)}</b>
               </div>
             ))}
           <div className="svol-tip-total">
             <span>total</span>
-            <b>
-              {NUM.format(activeBucket.total)} {unit}
-            </b>
+            <b>{withUnit(activeBucket.total, unit)}</b>
           </div>
         </div>
       )}

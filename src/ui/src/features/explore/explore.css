@@ -560,7 +560,7 @@ span.level-debug {
   flex-direction: column;
   justify-content: space-between;
   align-items: flex-end;
-  width: 46px;
+  width: 70px;
   flex: none;
   font-size: 9.5px;
   font-family: var(--mono);
@@ -568,6 +568,7 @@ span.level-debug {
   color: var(--faint);
   /* Nudge the end labels onto their gridlines rather than past them. */
   padding: 0 0 1px;
+  white-space: nowrap;
 }
 
 .svol-bars {
@@ -625,13 +626,14 @@ span.level-debug {
   color: var(--faint);
   font-variant-numeric: tabular-nums;
   font-family: var(--mono);
-  padding: 3px 0 4px 54px;
+  padding: 3px 0 4px 78px;
 }
 
 .svol-tip {
+  /* Positioned from JS: follows the pointer, flipping side near the edge. */
   position: absolute;
   top: 0;
-  right: 0;
+  left: 0;
   z-index: 5;
   min-width: 132px;
   padding: 6px 8px;
