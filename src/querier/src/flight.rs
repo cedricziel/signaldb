@@ -1725,7 +1725,7 @@ impl FlightService for QuerierFlightService {
                                             &dataset_slug,
                                         )
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_PROFILES))?;
                                     if batches.is_empty() {
                                         return Err(Status::not_found("Profile not found"));
                                     }
@@ -1745,7 +1745,7 @@ impl FlightService for QuerierFlightService {
                                     self.profile_service
                                         .search_with_tenant(params, &tenant_slug, &dataset_slug)
                                         .await
-                                        .map_err(querier_error_to_status)?
+                                        .map_err(querier_error_to_status(SIGNAL_PROFILES))?
                                 }
                                 TicketRequest::ProfileTypes {
                                     tenant_slug,
@@ -1760,7 +1760,7 @@ impl FlightService for QuerierFlightService {
                                             &dataset_slug,
                                         )
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_PROFILES))?;
                                     vec![strings_to_batch("profile_type", types)?]
                                 }
                                 TicketRequest::ProfileLabelNames {
@@ -1776,7 +1776,7 @@ impl FlightService for QuerierFlightService {
                                             &dataset_slug,
                                         )
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_PROFILES))?;
                                     vec![strings_to_batch("label_name", names)?]
                                 }
                                 TicketRequest::ProfileLabelValues {
@@ -1794,7 +1794,7 @@ impl FlightService for QuerierFlightService {
                                             &dataset_slug,
                                         )
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_PROFILES))?;
                                     vec![strings_to_batch("label_value", values)?]
                                 }
                                 TicketRequest::ProfileFlamegraph {
@@ -1806,7 +1806,7 @@ impl FlightService for QuerierFlightService {
                                         .profile_service
                                         .flamegraph_with_tenant(params, &tenant_slug, &dataset_slug)
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_PROFILES))?;
                                     vec![json_to_batch("flamegraph", &flamegraph)?]
                                 }
                                 TicketRequest::ProfileDiff {
@@ -1818,7 +1818,7 @@ impl FlightService for QuerierFlightService {
                                         .profile_service
                                         .diff_with_tenant(params, &tenant_slug, &dataset_slug)
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_PROFILES))?;
                                     vec![json_to_batch("diff", &diff)?]
                                 }
                                 TicketRequest::ProfilesByTrace {
@@ -1842,7 +1842,7 @@ impl FlightService for QuerierFlightService {
                                             &dataset_slug,
                                         )
                                         .await
-                                        .map_err(querier_error_to_status)?
+                                        .map_err(querier_error_to_status(SIGNAL_PROFILES))?
                                 }
                                 TicketRequest::QueryLogs {
                                     tenant_slug,
@@ -1858,7 +1858,7 @@ impl FlightService for QuerierFlightService {
                                     self.logs_service
                                         .query_logs(&params, &tenant_slug, &dataset_slug)
                                         .await
-                                        .map_err(querier_error_to_status)?
+                                        .map_err(querier_error_to_status(SIGNAL_LOGS))?
                                 }
                                 TicketRequest::QueryIr {
                                     tenant_slug,
@@ -1874,7 +1874,7 @@ impl FlightService for QuerierFlightService {
                                         .ir_service
                                         .query(&params, &tenant_slug, &dataset_slug)
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_QUERY_IR))?;
                                     batches
                                 }
                                 TicketRequest::QueryLogsLabels {
@@ -1887,7 +1887,7 @@ impl FlightService for QuerierFlightService {
                                         .logs_service
                                         .get_labels(start, end, &tenant_slug, &dataset_slug)
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_LOGS))?;
                                     vec![strings_to_batch("label", labels)?]
                                 }
                                 TicketRequest::QueryLogsLabelValues {
@@ -1907,7 +1907,7 @@ impl FlightService for QuerierFlightService {
                                             &dataset_slug,
                                         )
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_LOGS))?;
                                     vec![strings_to_batch("value", values)?]
                                 }
                                 TicketRequest::QueryLogsSeries {
@@ -1925,7 +1925,7 @@ impl FlightService for QuerierFlightService {
                                             &dataset_slug,
                                         )
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_LOGS))?;
                                     vec![json_to_batch("series", &series)?]
                                 }
                                 TicketRequest::QueryLogsDetectedFields {
@@ -1937,7 +1937,7 @@ impl FlightService for QuerierFlightService {
                                         .logs_service
                                         .detected_fields(&params, &tenant_slug, &dataset_slug)
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_LOGS))?;
                                     vec![json_to_batch("fields", &fields)?]
                                 }
                                 TicketRequest::QueryMetric {
@@ -1954,7 +1954,7 @@ impl FlightService for QuerierFlightService {
                                     self.logs_service
                                         .query_metric(&params, &tenant_slug, &dataset_slug)
                                         .await
-                                        .map_err(querier_error_to_status)?
+                                        .map_err(querier_error_to_status(SIGNAL_LOGS))?
                                 }
                                 TicketRequest::QueryPromql {
                                     tenant_slug,
@@ -1977,7 +1977,7 @@ impl FlightService for QuerierFlightService {
                                             &dataset_slug,
                                         )
                                         .await
-                                        .map_err(querier_error_to_status)?
+                                        .map_err(querier_error_to_status(SIGNAL_METRICS))?
                                 }
                                 TicketRequest::QueryMetricLabels {
                                     tenant_slug,
@@ -1989,7 +1989,7 @@ impl FlightService for QuerierFlightService {
                                         .metrics_service
                                         .get_labels(start, end, &tenant_slug, &dataset_slug)
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_METRICS))?;
                                     vec![strings_to_batch("label", labels)?]
                                 }
                                 TicketRequest::QueryMetricLabelValues {
@@ -2009,7 +2009,7 @@ impl FlightService for QuerierFlightService {
                                             &dataset_slug,
                                         )
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_METRICS))?;
                                     vec![strings_to_batch("value", values)?]
                                 }
                                 TicketRequest::QueryMetricSeries {
@@ -2027,7 +2027,7 @@ impl FlightService for QuerierFlightService {
                                             &dataset_slug,
                                         )
                                         .await
-                                        .map_err(querier_error_to_status)?;
+                                        .map_err(querier_error_to_status(SIGNAL_METRICS))?;
                                     vec![json_to_batch("series", &series)?]
                                 }
                                 TicketRequest::SqlProfiles {
@@ -2254,16 +2254,27 @@ fn json_to_batch<T: serde::Serialize>(column_name: &str, value: &T) -> Result<Re
     strings_to_batch(column_name, vec![json])
 }
 
-/// Map querier errors onto gRPC statuses: caller errors surface as
-/// INVALID_ARGUMENT/UNIMPLEMENTED instead of a blanket internal error.
-fn querier_error_to_status(e: crate::query::error::QuerierError) -> Status {
-    match e {
+/// Read-path labels for [`querier_error_to_status`]. A failure names the
+/// signal it came from, so one signal's failure is never attributed to
+/// another.
+const SIGNAL_LOGS: &str = "Logs";
+const SIGNAL_METRICS: &str = "Metrics";
+const SIGNAL_PROFILES: &str = "Profile";
+const SIGNAL_QUERY_IR: &str = "Query IR";
+
+/// Map one signal's querier errors onto gRPC statuses: caller errors surface
+/// as INVALID_ARGUMENT/UNIMPLEMENTED instead of a blanket internal error, and
+/// server errors name `signal` as their origin.
+fn querier_error_to_status(
+    signal: &'static str,
+) -> impl Fn(crate::query::error::QuerierError) -> Status {
+    move |e| match e {
         crate::query::error::QuerierError::InvalidInput(msg) => Status::invalid_argument(msg),
         crate::query::error::QuerierError::Unsupported(msg) => Status::unimplemented(msg),
         too_many @ crate::query::error::QuerierError::TooManyGroups { .. } => {
             Status::invalid_argument(too_many.to_string())
         }
-        other => Status::internal(format!("Profile query failed: {other:?}")),
+        other => Status::internal(format!("{signal} query failed: {other:?}")),
     }
 }
 
@@ -3220,5 +3231,51 @@ mod tests {
             Some("INTERNAL")
         );
         assert!(matches!(span.status, OtelStatus::Error { .. }));
+    }
+
+    /// Issue #972 companion: the shared status mapper used to label every
+    /// signal's failure "Profile query failed", so a logs or metrics failure
+    /// was attributed to profiles. Each read path names its own signal.
+    #[test]
+    fn error_status_names_the_signal_it_came_from() {
+        use crate::query::error::QuerierError;
+        use datafusion::error::DataFusionError;
+
+        let message_for = |signal| {
+            querier_error_to_status(signal)(QuerierError::QueryFailed(DataFusionError::Internal(
+                "boom".to_string(),
+            )))
+            .message()
+            .to_string()
+        };
+
+        for signal in [
+            SIGNAL_LOGS,
+            SIGNAL_METRICS,
+            SIGNAL_PROFILES,
+            SIGNAL_QUERY_IR,
+        ] {
+            let message = message_for(signal);
+            assert!(
+                message.starts_with(signal),
+                "{signal} failure reported as: {message}"
+            );
+        }
+        assert!(!message_for(SIGNAL_LOGS).contains("Profile"));
+        assert!(!message_for(SIGNAL_METRICS).contains("Profile"));
+    }
+
+    /// Caller errors keep their own gRPC codes regardless of signal.
+    #[test]
+    fn caller_errors_keep_their_codes() {
+        use crate::query::error::QuerierError;
+
+        let status =
+            querier_error_to_status(SIGNAL_LOGS)(QuerierError::InvalidInput("bad".to_string()));
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+
+        let status =
+            querier_error_to_status(SIGNAL_LOGS)(QuerierError::Unsupported("nope".to_string()));
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
     }
 }

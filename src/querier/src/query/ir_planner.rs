@@ -51,7 +51,7 @@ use datafusion::scalar::ScalarValue;
 
 use super::IrQueryParams;
 use super::error::QuerierError;
-use super::table_ref::build_table_reference;
+use super::table_lookup::optional_table;
 
 /// Per-source planning facts: the physical table, its time column, and the
 /// attribute-map containers a `get_field` extraction targets.
@@ -267,10 +267,15 @@ impl IrService {
             .map_err(|e| QuerierError::InvalidInput(format!("invalid IR document: {e}")))?;
         // Stage spans (INTERNAL) under the Flight SERVER span, so a slow
         // query is attributable to planning vs execution.
-        let (df, window) = self
+        let Some((df, window)) = self
             .plan(&doc, tenant_slug, dataset_slug, params.now_ns)
             .instrument(tracing::info_span!("signaldb.query.plan"))
-            .await?;
+            .await?
+        else {
+            // No storage for this source in this dataset: no rows, but the
+            // window is still resolved so the caller can echo it back.
+            return Ok((Vec::new(), resolve_window(&doc, params.now_ns)?));
+        };
         let exec_span = tracing::info_span!(
             "signaldb.query.execute",
             signaldb.query.rows = tracing::field::Empty,
@@ -294,17 +299,23 @@ impl IrService {
         tenant_slug: &str,
         dataset_slug: &str,
         now_ns: i64,
-    ) -> Result<(DataFrame, ResolvedWindow), QuerierError> {
+    ) -> Result<Option<(DataFrame, ResolvedWindow)>, QuerierError> {
         let source = SourcePlan::for_source(&doc.from)
             .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
 
-        let table_ref = build_table_reference(tenant_slug, dataset_slug, source.table)
-            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-        let base = self
-            .session_context
-            .table(table_ref)
-            .await
-            .map_err(QuerierError::QueryFailed)?;
+        // A dataset with no table for this source has no rows to plan over.
+        // The document's schema-dependent validation is skipped along with
+        // the scan — there is no schema to validate against.
+        let Some(base) = optional_table(
+            &self.session_context,
+            tenant_slug,
+            dataset_slug,
+            source.table,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
 
         // Build the resolver from the actual scanned schema and validate the
         // document against it (envelope, coercibility, references, guards).
@@ -336,7 +347,7 @@ impl IrService {
             df = lowering.lower_stage(df, stage)?;
         }
         df = lowering.apply_projection(df, doc)?;
-        Ok((df, window))
+        Ok(Some((df, window)))
     }
 }
 
@@ -1249,7 +1260,11 @@ mod tests {
                 { "aggregate": { "by": ["service_name"], "aggs": [{ "fn": "count", "as": "n" }], "step": "1ms" } }
             ]
         }));
-        let (df, window) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let (df, window) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         assert_eq!(
             window,
             ResolvedWindow {
@@ -1305,7 +1320,11 @@ mod tests {
                 { "aggregate": { "by": ["service_name"], "aggs": [{ "fn": "count", "as": "n" }], "step": "1ms" } }
             ]
         }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         let plan = df.logical_plan();
 
         let mut types = Vec::new();
@@ -1350,7 +1369,11 @@ mod tests {
             ]
         }));
         // `env` is promoted (label_env exists) → resolves to the column.
-        let (df_p, _) = svc.plan(&promoted, "t", "d", 0).await.unwrap();
+        let (df_p, _) = svc
+            .plan(&promoted, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         let plan_p = format!("{}", df_p.logical_plan().display_indent());
         assert!(
             plan_p.contains("label_env"),
@@ -1367,7 +1390,11 @@ mod tests {
                 { "aggregate": { "aggs": [{ "fn": "count", "as": "n" }] } }
             ]
         }));
-        let (df_u, _) = svc.plan(&unpromoted, "t", "d", 0).await.unwrap();
+        let (df_u, _) = svc
+            .plan(&unpromoted, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         let plan_u = format!("{}", df_u.logical_plan().display_indent());
         assert!(
             plan_u.contains("get_field"),
@@ -1485,7 +1512,11 @@ mod tests {
             "fields": ["trace_id", "start_time_unix_nano"],
             "pipeline": []
         }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         let plan = format!("{}", df.logical_plan().display_indent());
         assert!(
             plan.contains("start_time_unix_nano >="),
@@ -1518,7 +1549,11 @@ mod tests {
                 { "topk": { "n": 1, "of": "duration_nanos" } }
             ]
         }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         // `service.name` aliases to the physical `service_name` column.
         let plan = format!("{}", df.logical_plan().display_indent());
         assert!(plan.contains("service_name"), "plan:\n{plan}");
@@ -1583,7 +1618,11 @@ mod tests {
                 { "where": { "field": "level", "op": "eq", "value": "error" } }
             ]
         }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         let batches = df.collect().await.unwrap();
         let total: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total, 2, "two rows have level=error");
@@ -1610,7 +1649,11 @@ mod tests {
             ]
         }));
         // Plans and executes; the Utf8 attribute compares lexically, no error.
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         let _ = df.collect().await.unwrap();
     }
 
@@ -1780,7 +1823,11 @@ mod tests {
                 { "where": { "not": { "field": "env", "op": "eq", "value": "prod" } } }
             ]
         }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         let batches = df.collect().await.unwrap();
         let total: usize = batches.iter().map(|b| b.num_rows()).sum();
         // All present env values are "prod", and the one absent row is excluded.
@@ -1797,7 +1844,11 @@ mod tests {
             "fields": ["service_name", "severity_number"],
             "pipeline": []
         }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap();
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         let batches = df.collect().await.unwrap();
         assert_eq!(
             batches[0].num_columns(),
@@ -1825,8 +1876,16 @@ mod tests {
             "result": "rows", "pipeline": []
         }));
         let now = 3_600_000_000_000_i64; // 1h in ns
-        let (_, w1) = svc.plan(&d, "t", "d", now).await.unwrap();
-        let (_, w2) = svc.plan(&d, "t", "d", now).await.unwrap();
+        let (_, w1) = svc
+            .plan(&d, "t", "d", now)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let (_, w2) = svc
+            .plan(&d, "t", "d", now)
+            .await
+            .unwrap()
+            .expect("source table is registered");
         assert_eq!(w1, w2);
         assert_eq!(w1.end_ns, now);
         assert_eq!(w1.start_ns, 0);
@@ -1941,5 +2000,89 @@ mod tests {
                 )
             });
         assert!(matches!(rows, opentelemetry::Value::I64(_)));
+    }
+
+    // ---- Absent source table reads as empty (issue #972) ----
+
+    /// A `t.d` dataset registered in the catalog but holding no tables.
+    fn empty_dataset_ctx() -> SessionContext {
+        let ctx = SessionContext::new();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", Arc::new(MemorySchemaProvider::new()))
+            .unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    fn logs_ir_params() -> IrQueryParams {
+        IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "pipeline": []
+            }),
+            now_ns: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn query_on_absent_source_table_is_empty() {
+        let svc = IrService::new(empty_dataset_ctx());
+        let (batches, window) = svc
+            .query(&logs_ir_params(), "t", "d")
+            .await
+            .expect("absent table must not error");
+        assert!(batches.is_empty());
+        // The window is still resolved so the caller can echo it back.
+        assert_eq!(
+            window,
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 1000
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_tenant_still_errors_on_ir_query() {
+        let svc = IrService::new(empty_dataset_ctx());
+        assert!(
+            svc.query(&logs_ir_params(), "nosuchtenant", "d")
+                .await
+                .is_err(),
+            "unknown tenant must not read as empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_ir_document_still_errors_when_table_is_absent() {
+        let svc = IrService::new(empty_dataset_ctx());
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 1, "from": "nosuchsource", "range": { "from": 0, "to": 1 },
+                "result": "rows", "pipeline": []
+            }),
+            now_ns: 0,
+        };
+        assert!(matches!(
+            svc.query(&params, "t", "d").await,
+            Err(QuerierError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn invalid_time_bound_still_errors_when_table_is_absent() {
+        let svc = IrService::new(empty_dataset_ctx());
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": "not-a-time", "to": 1 },
+                "result": "rows", "pipeline": []
+            }),
+            now_ns: 0,
+        };
+        assert!(matches!(
+            svc.query(&params, "t", "d").await,
+            Err(QuerierError::InvalidInput(_))
+        ));
     }
 }

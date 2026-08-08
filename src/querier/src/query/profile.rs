@@ -25,7 +25,7 @@ use common::profile::{
     aggregate_profiles_to_flamegraph,
 };
 
-use super::{error::QuerierError, table_ref::build_table_reference};
+use super::{error::QuerierError, table_lookup::optional_table};
 
 /// Parameters for single-profile lookup.
 #[derive(Debug)]
@@ -110,19 +110,17 @@ impl ProfileService {
         self
     }
 
+    /// Resolve the dataset's `profiles` table, or `None` when it has none.
+    ///
+    /// A dataset that has never received profiles — or whose deployment
+    /// disabled the signal — legitimately has no table. Callers turn `None`
+    /// into an empty result; errors here mean the tenant or catalog is broken.
     async fn profiles_table(
         &self,
         tenant_slug: &str,
         dataset_slug: &str,
-    ) -> Result<DataFrame, QuerierError> {
-        let table_ref = build_table_reference(tenant_slug, dataset_slug, "profiles")
-            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-        self.session_context.table(table_ref).await.map_err(|e| {
-            tracing::error!(
-                "Failed to access profiles table for tenant_slug={tenant_slug}, dataset_slug={dataset_slug}: {e}"
-            );
-            QuerierError::QueryFailed(e)
-        })
+    ) -> Result<Option<DataFrame>, QuerierError> {
+        optional_table(&self.session_context, tenant_slug, dataset_slug, "profiles").await
     }
 
     /// Apply inclusive unix-second window bounds on the `timestamp` column.
@@ -169,9 +167,10 @@ impl ProfileService {
             )));
         }
 
-        let df = self
-            .profiles_table(tenant_slug, dataset_slug)
-            .await?
+        let Some(df) = self.profiles_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
+        let df = df
             .filter(col("profile_id").eq(lit(&params.profile_id)))
             .map_err(QuerierError::QueryFailed)?;
 
@@ -187,7 +186,9 @@ impl ProfileService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        let mut df = self.profiles_table(tenant_slug, dataset_slug).await?;
+        let Some(mut df) = self.profiles_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
 
         if let Some(service_name) = &params.service_name {
             df = df
@@ -236,7 +237,9 @@ impl ProfileService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<String>, QuerierError> {
-        let df = self.profiles_table(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.profiles_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let df = Self::apply_time_window(df, params.start, params.end)?;
         let batches = df
             .select_columns(&["sample_type", "sample_unit"])
@@ -278,7 +281,9 @@ impl ProfileService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<String>, QuerierError> {
-        let df = self.profiles_table(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.profiles_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let df = Self::apply_time_window(df, params.start, params.end)?;
         let df = df
             .select_columns(&["profile_attributes"])
@@ -329,7 +334,9 @@ impl ProfileService {
             ));
         }
 
-        let df = self.profiles_table(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.profiles_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let df = Self::apply_time_window(df, params.start, params.end)?;
 
         if label_name == "service_name" {
@@ -412,9 +419,10 @@ impl ProfileService {
             )));
         }
 
-        let mut df = self
-            .profiles_table(tenant_slug, dataset_slug)
-            .await?
+        let Some(df) = self.profiles_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
+        let mut df = df
             .filter(col("trace_id").eq(lit(trace_id)))
             .map_err(QuerierError::QueryFailed)?;
         if let Some(span_id) = span_id {
@@ -452,7 +460,9 @@ impl ProfileService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<Profile>, QuerierError> {
-        let mut df = self.profiles_table(tenant_slug, dataset_slug).await?;
+        let Some(mut df) = self.profiles_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         if let Some(service_name) = &params.service_name {
             df = df
                 .filter(col("service_name").eq(lit(service_name)))
@@ -896,5 +906,117 @@ mod tests {
             .label_values_with_tenant("", ProfileDiscoveryParams::default(), "acme", "prod")
             .await;
         assert!(matches!(result, Err(QuerierError::InvalidInput(_))));
+    }
+
+    // ---- Absent `profiles` table reads as empty (issue #972) ----
+
+    /// An `acme.prod` dataset registered in the catalog but holding no tables.
+    fn service_without_profiles_table() -> ProfileService {
+        use datafusion::catalog::CatalogProvider;
+        use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
+
+        let ctx = SessionContext::new();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog
+            .register_schema("prod", Arc::new(MemorySchemaProvider::new()))
+            .unwrap();
+        ctx.register_catalog("acme", catalog);
+        ProfileService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn profile_reads_on_absent_table_are_empty() {
+        let service = service_without_profiles_table();
+
+        assert!(
+            service
+                .find_by_id_with_tenant(
+                    FindProfileByIdParams {
+                        profile_id: "abcd".to_string(),
+                    },
+                    "acme",
+                    "prod",
+                )
+                .await
+                .expect("find_by_id")
+                .is_empty()
+        );
+        assert!(
+            service
+                .search_with_tenant(ProfileSearchParams::default(), "acme", "prod")
+                .await
+                .expect("search")
+                .is_empty()
+        );
+        assert!(
+            service
+                .profile_types_with_tenant(ProfileDiscoveryParams::default(), "acme", "prod")
+                .await
+                .expect("profile_types")
+                .is_empty()
+        );
+        assert!(
+            service
+                .label_names_with_tenant(ProfileDiscoveryParams::default(), "acme", "prod")
+                .await
+                .expect("label_names")
+                .is_empty()
+        );
+        assert!(
+            service
+                .label_values_with_tenant(
+                    "service_name",
+                    ProfileDiscoveryParams::default(),
+                    "acme",
+                    "prod",
+                )
+                .await
+                .expect("label_values")
+                .is_empty()
+        );
+        assert!(
+            service
+                .find_by_trace_with_tenant("abcd", None, "acme", "prod")
+                .await
+                .expect("find_by_trace")
+                .is_empty()
+        );
+        assert_eq!(
+            service
+                .flamegraph_with_tenant(ProfileSearchParams::default(), "acme", "prod")
+                .await
+                .expect("flamegraph")
+                .total,
+            0,
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_tenant_still_errors_on_profiles() {
+        let service = service_without_profiles_table();
+        assert!(
+            service
+                .profile_types_with_tenant(ProfileDiscoveryParams::default(), "nosuch", "prod")
+                .await
+                .is_err(),
+            "unknown tenant must not read as empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_profile_id_still_errors_when_table_is_absent() {
+        let service = service_without_profiles_table();
+        assert!(matches!(
+            service
+                .find_by_id_with_tenant(
+                    FindProfileByIdParams {
+                        profile_id: "not-hex".to_string(),
+                    },
+                    "acme",
+                    "prod",
+                )
+                .await,
+            Err(QuerierError::InvalidInput(_))
+        ));
     }
 }

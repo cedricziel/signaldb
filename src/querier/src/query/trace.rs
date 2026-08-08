@@ -16,7 +16,7 @@ use datafusion::{
 
 use super::{
     FindTraceByIdParams, SearchQueryParams, error::QuerierError, search_filter,
-    table_ref::build_table_reference,
+    table_lookup::optional_table,
 };
 
 pub struct TraceService {
@@ -76,24 +76,15 @@ impl TraceService {
             dataset_slug
         );
 
-        // Build safe table reference with tenant and dataset isolation
-        let table_ref = build_table_reference(tenant_slug, dataset_slug, "traces")
-            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+        // A dataset with no `traces` table holds no trace to find.
+        let Some(df) =
+            optional_table(&self.session_context, tenant_slug, dataset_slug, "traces").await?
+        else {
+            return Ok(None);
+        };
 
         // Use DataFrame API with parameterized filter (prevents SQL injection)
-        let mut df = self
-            .session_context
-            .table(table_ref)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to access table for tenant_slug={}, dataset_slug={}: {}",
-                    tenant_slug,
-                    dataset_slug,
-                    e
-                );
-                QuerierError::QueryFailed(e)
-            })?
+        let mut df = df
             .filter(col("trace_id").eq(lit(&params.trace_id)))
             .map_err(|e| {
                 tracing::error!(
@@ -282,9 +273,12 @@ impl TraceService {
             dataset_slug
         );
 
-        let (df, limit) = self
+        let Some((df, limit)) = self
             .build_search_dataframe(&query, tenant_slug, dataset_slug)
-            .await?;
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
 
         let results = df.collect().await.map_err(|e| {
             tracing::error!(
@@ -388,21 +382,37 @@ impl TraceService {
         query: &SearchQueryParams,
         tenant_slug: &str,
         dataset_slug: &str,
-    ) -> Result<(DataFrame, usize), QuerierError> {
-        // Build safe table reference with tenant and dataset isolation
-        let table_ref = build_table_reference(tenant_slug, dataset_slug, "traces")
-            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    ) -> Result<Option<(DataFrame, usize)>, QuerierError> {
+        // Validate the client-supplied selectors and window bounds before
+        // touching the catalog: a malformed query must still be reported as
+        // such on a dataset whose `traces` table does not exist yet.
+        //
+        // Apply the `q` (TraceQL subset) and `tags` (logfmt) selectors.
+        // Unsupported constructs error out instead of silently returning
+        // unfiltered results (issue #551).
+        let mut conditions = Vec::new();
+        if let Some(q) = query.q.as_deref().filter(|s| !s.trim().is_empty()) {
+            conditions.extend(search_filter::parse_traceql(q)?);
+        }
+        if let Some(tags) = query.tags.as_deref().filter(|s| !s.trim().is_empty()) {
+            conditions.extend(search_filter::parse_tags(tags)?);
+        }
+        let start_bound = query
+            .start
+            .map(|start| unix_seconds_to_nanos("start", start))
+            .transpose()?;
+        let end_bound = query
+            .end
+            .map(|end| unix_seconds_to_nanos("end", end))
+            .transpose()?;
+        let (limit, span_limit) = clamped_limits(query.limit, self.max_search_limit)?;
 
-        // Use DataFrame API (prevents SQL injection)
-        let mut df = self.session_context.table(table_ref).await.map_err(|e| {
-            tracing::error!(
-                "Failed to access table for tenant_slug={}, dataset_slug={}: {}",
-                tenant_slug,
-                dataset_slug,
-                e
-            );
-            QuerierError::QueryFailed(e)
-        })?;
+        // A dataset with no `traces` table has no traces to search.
+        let Some(mut df) =
+            optional_table(&self.session_context, tenant_slug, dataset_slug, "traces").await?
+        else {
+            return Ok(None);
+        };
 
         // Apply time range filters if provided. Each bound is applied twice:
         // a precise `start_time_unix_nano` row filter, plus an equivalent
@@ -415,8 +425,7 @@ impl TraceService {
             .iter()
             .find(|f| f.name() == "timestamp")
             .map(|f| f.data_type().clone());
-        if let Some(start) = query.start {
-            let start_nanos = unix_seconds_to_nanos("start", start)?;
+        if let Some(start_nanos) = start_bound {
             df = df
                 .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
                 .map_err(|e| {
@@ -432,8 +441,7 @@ impl TraceService {
                     })?;
             }
         }
-        if let Some(end) = query.end {
-            let end_nanos = unix_seconds_to_nanos("end", end)?;
+        if let Some(end_nanos) = end_bound {
             df = df
                 .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
                 .map_err(|e| {
@@ -468,16 +476,6 @@ impl TraceService {
                 })?;
         }
 
-        // Apply the `q` (TraceQL subset) and `tags` (logfmt) selectors.
-        // Unsupported constructs error out instead of silently returning
-        // unfiltered results (issue #551).
-        let mut conditions = Vec::new();
-        if let Some(q) = query.q.as_deref().filter(|s| !s.trim().is_empty()) {
-            conditions.extend(search_filter::parse_traceql(q)?);
-        }
-        if let Some(tags) = query.tags.as_deref().filter(|s| !s.trim().is_empty()) {
-            conditions.extend(search_filter::parse_tags(tags)?);
-        }
         let attr_ctx = super::logql::AttrContext {
             materialized: df
                 .schema()
@@ -534,13 +532,12 @@ impl TraceService {
 
         // Apply limit — we query for more spans than the requested trace count because
         // each trace typically contains many spans. This estimate avoids truncating traces.
-        let (limit, span_limit) = clamped_limits(query.limit, self.max_search_limit)?;
         df = df.limit(0, Some(span_limit)).map_err(|e| {
             tracing::error!("Failed to apply limit: {e}");
             QuerierError::QueryFailed(e)
         })?;
 
-        Ok((df, limit))
+        Ok(Some((df, limit)))
     }
 }
 
@@ -1004,7 +1001,8 @@ mod tests {
         let (df, _) = service
             .build_search_dataframe(&query, "t", "d")
             .await
-            .unwrap();
+            .unwrap()
+            .expect("traces table is registered");
         let plan = format!("{}", df.logical_plan().display_indent());
         assert!(
             plan.contains("start_time_unix_nano >="),
@@ -1032,7 +1030,8 @@ mod tests {
         let (df, _) = service
             .build_search_dataframe(&search_params(), "t", "d")
             .await
-            .unwrap();
+            .unwrap()
+            .expect("traces table is registered");
         let plan = format!("{}", df.logical_plan().display_indent());
         let sort_pos = plan
             .find("Sort:")
@@ -1060,7 +1059,8 @@ mod tests {
         let (df, _) = service
             .build_search_dataframe(&search_params(), "t", "d")
             .await
-            .unwrap();
+            .unwrap()
+            .expect("traces table is registered");
         let names: Vec<&str> = df
             .schema()
             .fields()
@@ -1446,5 +1446,74 @@ mod tests {
         assert_eq!(span.span_id, "span1");
         assert_eq!(span.name, "test-span");
         assert_eq!(span.span_kind, SpanKind::Server);
+    }
+
+    // ---- Absent `traces` table reads as empty (issue #972) ----
+
+    /// A `t.d` dataset registered in the catalog but holding no tables.
+    fn service_without_traces_table() -> TraceService {
+        use datafusion::catalog::CatalogProvider;
+        use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
+
+        let ctx = SessionContext::new();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", Arc::new(MemorySchemaProvider::new()))
+            .unwrap();
+        ctx.register_catalog("t", cat);
+        TraceService::new(ctx, "traces".to_string())
+    }
+
+    #[tokio::test]
+    async fn find_by_id_on_absent_table_is_not_found() {
+        let service = service_without_traces_table();
+        let trace = service
+            .find_by_id_with_tenant(
+                FindTraceByIdParams {
+                    trace_id: "abc123".to_string(),
+                    start: None,
+                    end: None,
+                },
+                "t",
+                "d",
+            )
+            .await
+            .expect("absent table must not error");
+        assert!(trace.is_none());
+    }
+
+    #[tokio::test]
+    async fn search_on_absent_table_is_empty() {
+        let service = service_without_traces_table();
+        let traces = service
+            .find_traces_with_tenant(search_params(), "t", "d")
+            .await
+            .expect("absent table must not error");
+        assert!(traces.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_tenant_still_errors_on_search() {
+        let service = service_without_traces_table();
+        assert!(
+            service
+                .find_traces_with_tenant(search_params(), "nosuchtenant", "d")
+                .await
+                .is_err(),
+            "unknown tenant must not read as empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_search_query_still_errors_when_table_is_absent() {
+        let service = service_without_traces_table();
+        let mut query = search_params();
+        query.q = Some("{ not valid traceql ((".to_string());
+        assert!(
+            service
+                .find_traces_with_tenant(query, "t", "d")
+                .await
+                .is_err(),
+            "a malformed query must not read as empty"
+        );
     }
 }

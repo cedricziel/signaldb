@@ -41,7 +41,7 @@ use super::logql_metric::{
 };
 use super::{
     DetectedField, DetectedFieldsParams, LogQueryParams, MetricQueryParams, error::QuerierError,
-    table_ref::build_table_reference,
+    table_lookup::optional_table,
 };
 
 /// Columns projected for a log-line query, in wire order. The Flight
@@ -121,19 +121,17 @@ impl LogsService {
         }
     }
 
+    /// Resolve the dataset's `logs` table, or `None` when it has none.
+    ///
+    /// A dataset that has never received logs — or whose deployment disabled
+    /// the signal — legitimately has no table. Callers turn `None` into an
+    /// empty result; errors here mean the tenant or catalog is broken.
     async fn logs_table(
         &self,
         tenant_slug: &str,
         dataset_slug: &str,
-    ) -> Result<DataFrame, QuerierError> {
-        let table_ref = build_table_reference(tenant_slug, dataset_slug, "logs")
-            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-        self.session_context.table(table_ref).await.map_err(|e| {
-            tracing::error!(
-                "Failed to access logs table for tenant_slug={tenant_slug}, dataset_slug={dataset_slug}: {e}"
-            );
-            QuerierError::QueryFailed(e)
-        })
+    ) -> Result<Option<DataFrame>, QuerierError> {
+        optional_table(&self.session_context, tenant_slug, dataset_slug, "logs").await
     }
 
     /// Execute a LogQL log query, returning the projected log-line
@@ -150,7 +148,9 @@ impl LogsService {
         record_attr_demand(&parsed, tenant_slug, dataset_slug);
         let direction = Direction::parse(params.direction.as_deref());
 
-        let df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.logs_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let filter = log_query_filter_with_columns(&parsed, &attr_context_of(&df))?;
         let df = shape_log_query(
             df,
@@ -230,7 +230,9 @@ impl LogsService {
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
         record_attr_demand(&plan.log_query, tenant_slug, dataset_slug);
-        let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let Some(mut df) = self.logs_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let materialized = materialized_columns_of(&df);
 
         // Resolve the output grouping columns (the `by` labels): a
@@ -376,7 +378,9 @@ impl LogsService {
     ) -> Result<Vec<String>, QuerierError> {
         let mut labels: BTreeSet<String> = KNOWN_LABELS.iter().map(|s| s.to_string()).collect();
 
-        let df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.logs_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let map_attrs = attr_context_of(&df).map_attrs;
         let df = apply_window(df, start, end)?;
         let df = df
@@ -422,7 +426,9 @@ impl LogsService {
             ));
         }
 
-        let df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let Some(df) = self.logs_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let map_attrs = attr_context_of(&df).map_attrs;
         let df = apply_window(df, start, end)?;
 
@@ -480,7 +486,9 @@ impl LogsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<DetectedField>, QuerierError> {
-        let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let Some(mut df) = self.logs_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         if let Some(q) = params
             .query
             .as_deref()
@@ -578,7 +586,9 @@ impl LogsService {
             pipeline: Vec::new(),
         };
 
-        let mut df = self.logs_table(tenant_slug, dataset_slug).await?;
+        let Some(mut df) = self.logs_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
         let filter = log_query_filter_with_columns(&query, &attr_context_of(&df))?;
         df = apply_window(df, start, end)?;
         if let Some(filter) = filter {
@@ -2584,5 +2594,158 @@ mod tests {
                 .await,
             Err(QuerierError::InvalidInput(_))
         ));
+    }
+
+    // ---- Absent `logs` table reads as empty (issue #972) ----
+
+    /// A `t.d` dataset registered in the catalog but holding no tables — the
+    /// state of a freshly created tenant before its first write.
+    fn service_without_logs_table() -> LogsService {
+        let ctx = SessionContext::new();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog
+            .register_schema("d", Arc::new(MemorySchemaProvider::new()))
+            .unwrap();
+        ctx.register_catalog("t", catalog);
+        LogsService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn get_labels_on_absent_table_is_empty() {
+        let service = service_without_logs_table();
+        let labels = service.get_labels(0, i64::MAX, "t", "d").await.unwrap();
+        assert!(labels.is_empty(), "expected empty labels, got {labels:?}");
+    }
+
+    #[tokio::test]
+    async fn get_label_values_on_absent_table_is_empty() {
+        let service = service_without_logs_table();
+        // Dedicated-column label and attribute-backed label both go empty.
+        for label in ["service_name", "some_attribute"] {
+            let values = service
+                .get_label_values(label, 0, i64::MAX, "t", "d")
+                .await
+                .unwrap();
+            assert!(values.is_empty(), "{label}: got {values:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn query_logs_on_absent_table_is_empty() {
+        let service = service_without_logs_table();
+        let batches = service
+            .query_logs(
+                &LogQueryParams {
+                    query: r#"{service_name="api"}"#.to_string(),
+                    start: 0,
+                    end: i64::MAX,
+                    limit: 100,
+                    direction: None,
+                },
+                "t",
+                "d",
+            )
+            .await
+            .unwrap();
+        assert!(batches.is_empty(), "got {} batches", batches.len());
+    }
+
+    #[tokio::test]
+    async fn query_metric_on_absent_table_is_empty() {
+        let service = service_without_logs_table();
+        let batches = service
+            .query_metric(
+                &metric_params(r#"count_over_time({service_name="api"}[1s])"#, 1_000_000),
+                "t",
+                "d",
+            )
+            .await
+            .unwrap();
+        assert!(batches.is_empty(), "got {} batches", batches.len());
+    }
+
+    #[tokio::test]
+    async fn get_series_on_absent_table_is_empty() {
+        let service = service_without_logs_table();
+        let series = service
+            .get_series(r#"{service_name="api"}"#, 0, i64::MAX, "t", "d")
+            .await
+            .unwrap();
+        assert!(series.is_empty(), "got {series:?}");
+    }
+
+    #[tokio::test]
+    async fn detected_fields_on_absent_table_is_empty() {
+        let service = service_without_logs_table();
+        let fields = service
+            .detected_fields(
+                &DetectedFieldsParams {
+                    query: None,
+                    start: 0,
+                    end: i64::MAX,
+                    limit: 100,
+                },
+                "t",
+                "d",
+            )
+            .await
+            .unwrap();
+        assert!(fields.is_empty(), "got {} fields", fields.len());
+    }
+
+    // ---- Negative cases: absence must not swallow real errors ----
+
+    #[tokio::test]
+    async fn unknown_tenant_still_errors() {
+        let service = service_without_logs_table();
+        assert!(
+            service
+                .get_labels(0, i64::MAX, "nosuchtenant", "d")
+                .await
+                .is_err(),
+            "unknown tenant must not read as empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_query_still_errors_when_table_is_absent() {
+        let service = service_without_logs_table();
+        assert!(matches!(
+            service
+                .query_logs(
+                    &LogQueryParams {
+                        query: "not a logql query {{{".to_string(),
+                        start: 0,
+                        end: i64::MAX,
+                        limit: 100,
+                        direction: None,
+                    },
+                    "t",
+                    "d",
+                )
+                .await,
+            Err(QuerierError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn planning_failure_on_an_existing_table_still_errors() {
+        // The table exists but the requested grouping cannot be lowered —
+        // a planning failure that must surface, not read as empty.
+        let service = service_with_data();
+        assert!(
+            service
+                .query_metric(
+                    &metric_params(
+                        r#"sum by (nonmaterialized_attr) (count_over_time({service_name=~".+"}[1000ns]))"#,
+                        1000,
+                    ),
+                    "t",
+                    "d",
+                )
+                .await
+                .is_err(),
+            "planning failure on an existing table must not read as empty"
+        );
     }
 }

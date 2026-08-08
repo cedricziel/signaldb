@@ -4,15 +4,15 @@ Independent of reconciliation and closes issue #972's symptom on its own. Ship
 first. Note that no read path has such a guard today — including traces, contrary
 to #972's description.
 
-- [ ] 1.1 Write failing tests in `src/querier` for the logs metadata paths: with a registered tenant catalog whose dataset has no `logs` table, `get_labels` and `get_label_values` return empty results instead of an error (`cargo test -p querier`)
-- [ ] 1.2 Write failing tests in `src/querier` for the traces paths (`TraceService` query and search) under the same missing-table condition
-- [ ] 1.3 Write failing tests in `src/querier` for the metrics, profiles, and Query-IR (`ir_planner`) paths under the same condition
-- [ ] 1.4 Write failing tests in `src/querier` asserting the negative cases still error: an unknown tenant, an invalid query, and a planning failure against a table that _does_ exist must not be reported as empty
-- [ ] 1.5 Add a shared table-resolution helper in the querier keyed on the async lookup (`schema_for_ref(...)?.table(name).await` → `Ok(None)` means absent), never on `SessionContext::table_exist` (hardcoded `true` via `LiveIcebergSchema`, `src/querier/src/flight.rs:98-100`) and never on DataFusion error text
-- [ ] 1.6 Route the traces, logs, metrics, profiles, and Query-IR metadata/label/search paths through the helper, yielding empty results on absence; leave data-plane errors from existing tables propagating unchanged
-- [ ] 1.7 Tighten the metrics paths that currently swallow _all_ errors as empty (`src/querier/src/query/metrics.rs:1072`, `:1231`, `:1438`) so absence returns empty but real failures surface — a deliberate behavior change, covered by the 1.4 negative tests
-- [ ] 1.8 Write a failing test pinning per-signal error wrappers, then split the shared `querier_error_to_status` mapper (`src/querier/src/flight.rs:2252-2261`) so a logs or trace failure is not reported as `"Profile query failed"`
-- [ ] 1.9 Upgrade the KNOWN-ISSUE pin in `src/querier/tests/lazy_tenant_registration.rs` from "any error except catalog-resolution" to asserting an empty label result, and drop the #972 marker
+- [x] 1.1 Write failing tests in `src/querier` for the logs metadata paths: with a registered tenant catalog whose dataset has no `logs` table, `get_labels` and `get_label_values` return empty results instead of an error (`cargo test -p querier`)
+- [x] 1.2 Write failing tests in `src/querier` for the traces paths (`TraceService` query and search) under the same missing-table condition
+- [x] 1.3 Write failing tests in `src/querier` for the metrics, profiles, and Query-IR (`ir_planner`) paths under the same condition
+- [x] 1.4 Write failing tests in `src/querier` asserting the negative cases still error: an unknown tenant, an invalid query, and a planning failure against a table that _does_ exist must not be reported as empty
+- [x] 1.5 Add a shared table-resolution helper in the querier keyed on the async lookup (`schema_for_ref(...)?.table(name).await` → `Ok(None)` means absent), never on `SessionContext::table_exist` (hardcoded `true` via `LiveIcebergSchema`, `src/querier/src/flight.rs:98-100`) and never on DataFusion error text
+- [x] 1.6 Route the traces, logs, metrics, profiles, and Query-IR metadata/label/search paths through the helper, yielding empty results on absence; leave data-plane errors from existing tables propagating unchanged
+- [x] 1.7 Tighten the metrics paths that currently swallow _all_ errors as empty (`src/querier/src/query/metrics.rs:1072`, `:1231`, `:1438`) so absence returns empty but real failures surface — a deliberate behavior change, covered by the 1.4 negative tests
+- [x] 1.8 Write a failing test pinning per-signal error wrappers, then split the shared `querier_error_to_status` mapper (`src/querier/src/flight.rs:2252-2261`) so a logs or trace failure is not reported as `"Profile query failed"`
+- [x] 1.9 Upgrade the KNOWN-ISSUE pin in `src/querier/tests/lazy_tenant_registration.rs` from "any error except catalog-resolution" to asserting an empty label result, and drop the #972 marker
 
 ## 2. Reconcile entry point (common)
 
