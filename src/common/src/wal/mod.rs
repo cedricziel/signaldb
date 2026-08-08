@@ -154,6 +154,13 @@ impl WalSegment {
         while offset < buffer.len() {
             // Read entry length (8 bytes)
             if offset + 8 > buffer.len() {
+                tracing::warn!(
+                    segment_id,
+                    offset,
+                    trailing_bytes = buffer.len() - offset,
+                    "WAL segment tail truncated (length prefix incomplete); \
+                     dropping the torn record, all prior entries preserved"
+                );
                 break;
             }
             let entry_len = u64::from_le_bytes(
@@ -165,12 +172,58 @@ impl WalSegment {
 
             // Read entry data
             if offset + entry_len as usize > buffer.len() {
+                tracing::warn!(
+                    segment_id,
+                    offset,
+                    entry_len,
+                    trailing_bytes = buffer.len() - offset,
+                    "WAL segment tail truncated (entry payload incomplete); \
+                     dropping the torn record, all prior entries preserved"
+                );
                 break;
             }
             let entry_data = &buffer[offset..offset + entry_len as usize];
-            let entry: WalEntry =
-                bincode::deserialize(entry_data).context("Failed to deserialize WAL entry")?;
-            entries.push(entry);
+            match bincode::deserialize::<WalEntry>(entry_data) {
+                Ok(entry) => entries.push(entry),
+                Err(e) => {
+                    // Framing is intact (the length prefix matched a
+                    // readable byte range) but the payload itself does not
+                    // decode — content corruption rather than a truncated
+                    // write. Unlike the bounds checks above, `offset +=
+                    // entry_len` still resyncs exactly onto the next
+                    // record, so skip-and-continue preserves every entry
+                    // around this one. A `break` here would silently
+                    // discard the rest of the segment on every single
+                    // restart (issue #1033).
+                    tracing::error!(
+                        segment_id,
+                        offset,
+                        entry_len,
+                        error = %e,
+                        "WAL entry failed to deserialize during replay; \
+                         skipping and quarantining it, replay continues"
+                    );
+                    crate::self_monitoring::app_metrics()
+                        .wal_corrupt_entries
+                        .add(1, &[]);
+                    if let Err(quarantine_err) =
+                        Self::quarantine_corrupt_entry(wal_dir, segment_id, offset, entry_data)
+                            .await
+                    {
+                        // A failed quarantine must never abort replay — that
+                        // would recreate the exact crash loop this handling
+                        // exists to fix. The bytes are simply lost; the
+                        // error above already named the segment and offset.
+                        tracing::error!(
+                            segment_id,
+                            offset,
+                            error = %quarantine_err,
+                            "Failed to quarantine corrupt WAL entry bytes; \
+                             continuing replay without them"
+                        );
+                    }
+                }
+            }
             offset += entry_len as usize;
         }
 
@@ -228,6 +281,48 @@ impl WalSegment {
             data_size,
             entries,
         })
+    }
+
+    /// Preserve the raw bytes of a WAL log entry that failed to deserialize
+    /// during replay, mirroring the dead-letter convention used elsewhere in
+    /// this file ([`Wal::dead_letter`], [`Wal::dead_letter_rejected`],
+    /// [`Wal::dead_letter_unreadable`]) so operators find every retired
+    /// entry — payload or, as here, metadata-record — under one directory.
+    ///
+    /// This differs from those in one way: it is a `WalSegment` associated
+    /// function with only `wal_dir` and `segment_id` in scope, not a `Wal`
+    /// method. `load()` runs before any `Wal` exists (segments are loaded to
+    /// *construct* one), so there is no `&self`, no tenant/dataset, and no
+    /// entry id to key the marker on — the corrupt bytes are all that
+    /// survived. The file is named
+    /// `<wal_dir>/dead-letter/segment-<segment_id>-offset-<offset>.corrupt.bin`,
+    /// where `offset` is the byte offset of the entry's payload within the
+    /// segment's `.log` file (after its 8-byte length prefix), which is
+    /// enough to locate the damage by hand with `hexdump`.
+    ///
+    /// Errors are the caller's to swallow: a failed quarantine (disk full,
+    /// permissions) must never abort replay, or this recreates the exact
+    /// crash loop issue #1033 exists to fix.
+    async fn quarantine_corrupt_entry(
+        wal_dir: &Path,
+        segment_id: u64,
+        offset: usize,
+        entry_data: &[u8],
+    ) -> Result<PathBuf> {
+        let dir = wal_dir.join("dead-letter");
+        create_dir_all(&dir).await?;
+        let path = dir.join(format!("segment-{segment_id}-offset-{offset}.corrupt.bin"));
+
+        let mut file = File::create(&path)
+            .await
+            .with_context(|| format!("Failed to create quarantine file {}", path.display()))?;
+        file.write_all(entry_data).await?;
+        file.flush().await?;
+        file.sync_all()
+            .await
+            .context("Failed to fsync quarantined WAL entry")?;
+
+        Ok(path)
     }
 
     /// Append an entry to the WAL segment
@@ -1850,6 +1945,256 @@ mod tests {
             unprocessed.is_empty(),
             "rejected entry must be marked processed so it stops pinning its segment"
         );
+    }
+
+    /// Corrupt the payload bytes of the `target_index`-th entry (0-based, in
+    /// append order) in a single-segment WAL log file on disk, leaving the
+    /// entry's 8-byte length prefix — and every other entry — untouched.
+    /// Overwrites with `0xFF` rather than flipping a byte or two: a small
+    /// flip can still deserialize into garbage bincode, which would not
+    /// exercise the deserialize-failure path this helper exists to trigger.
+    ///
+    /// Returns `(entry_payload_offset, entry_payload_len)` of the corrupted
+    /// entry — the byte range inside the `.log` file, after its length
+    /// prefix — so callers can assert on the quarantine file name/contents.
+    async fn corrupt_nth_log_entry_payload(log_path: &Path, target_index: usize) -> (usize, usize) {
+        let mut buffer = tokio::fs::read(log_path).await.unwrap();
+
+        // Walk the file exactly like `WalSegment::load` does, to find the
+        // byte range of the target entry's payload.
+        let mut offset = 0usize;
+        let mut index = 0usize;
+        loop {
+            assert!(
+                offset + 8 <= buffer.len(),
+                "ran out of entries before reaching index {target_index}"
+            );
+            let entry_len =
+                u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap()) as usize;
+            offset += 8;
+            assert!(offset + entry_len <= buffer.len(), "entry runs past EOF");
+
+            if index == target_index {
+                let payload_offset = offset;
+                for byte in &mut buffer[payload_offset..payload_offset + entry_len] {
+                    *byte = 0xFF;
+                }
+                tokio::fs::write(log_path, &buffer).await.unwrap();
+                return (payload_offset, entry_len);
+            }
+
+            offset += entry_len;
+            index += 1;
+        }
+    }
+
+    fn wal_test_config(wal_dir: PathBuf) -> WalConfig {
+        WalConfig {
+            wal_dir,
+            max_segment_size: 64 * 1024 * 1024,
+            max_buffer_entries: 10,
+            flush_interval_secs: 1,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_load_skips_content_corrupted_entry_and_keeps_neighbours() {
+        // Regression for issue #1033: a single content-corrupted WAL entry
+        // (framing intact, payload undeserializable) must not abort replay.
+        // Framing is intact, so `offset += entry_len` resyncs exactly onto
+        // the next record — skip-and-continue must preserve every entry
+        // around the corrupt one rather than discarding the whole tail.
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+        let first = b"entry one payload".to_vec();
+        let second = b"entry two payload (will be corrupted)".to_vec();
+        let third = b"entry three payload".to_vec();
+        let first_id = wal
+            .append(WalOperation::WriteTraces, first.clone(), None)
+            .await
+            .unwrap();
+        let second_id = wal
+            .append(WalOperation::WriteTraces, second.clone(), None)
+            .await
+            .unwrap();
+        let third_id = wal
+            .append(WalOperation::WriteTraces, third.clone(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        drop(wal);
+
+        let log_path = temp_dir.path().join("wal-0000000000.log");
+        corrupt_nth_log_entry_payload(&log_path, 1).await;
+
+        // Reopening must succeed, not error out on the corrupted entry.
+        let reopened = Wal::new(config).await.expect(
+            "load() must skip a content-corrupted entry instead of aborting the whole replay",
+        );
+
+        let entries = reopened.get_entries().await.unwrap();
+        let ids: std::collections::HashSet<Uuid> = entries.iter().map(|e| e.id).collect();
+        assert!(
+            ids.contains(&first_id),
+            "entry before the corrupt one must survive"
+        );
+        assert!(
+            ids.contains(&third_id),
+            "entry after the corrupt one must survive"
+        );
+        assert!(
+            !ids.contains(&second_id),
+            "the corrupted entry itself must not appear in the replayed set"
+        );
+
+        let first_entry = entries.iter().find(|e| e.id == first_id).unwrap();
+        let third_entry = entries.iter().find(|e| e.id == third_id).unwrap();
+        assert_eq!(reopened.read_entry_data(first_entry).await.unwrap(), first);
+        assert_eq!(reopened.read_entry_data(third_entry).await.unwrap(), third);
+    }
+
+    #[tokio::test]
+    async fn wal_load_quarantines_corrupt_entry_bytes() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+        wal.append(WalOperation::WriteTraces, b"first".to_vec(), None)
+            .await
+            .unwrap();
+        wal.append(
+            WalOperation::WriteTraces,
+            b"second (corrupted)".to_vec(),
+            None,
+        )
+        .await
+        .unwrap();
+        wal.append(WalOperation::WriteTraces, b"third".to_vec(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        drop(wal);
+
+        let log_path = temp_dir.path().join("wal-0000000000.log");
+        let (payload_offset, payload_len) = corrupt_nth_log_entry_payload(&log_path, 1).await;
+        let corrupted_bytes = {
+            let buffer = tokio::fs::read(&log_path).await.unwrap();
+            buffer[payload_offset..payload_offset + payload_len].to_vec()
+        };
+
+        Wal::new(config).await.unwrap();
+
+        let dead_letter_dir = temp_dir.path().join("dead-letter");
+        let mut quarantine_files = Vec::new();
+        let mut rd = tokio::fs::read_dir(&dead_letter_dir).await.unwrap();
+        while let Some(e) = rd.next_entry().await.unwrap() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with("segment-") && name.ends_with(".corrupt.bin") {
+                quarantine_files.push(e.path());
+            }
+        }
+        assert_eq!(
+            quarantine_files.len(),
+            1,
+            "expected exactly one quarantined corrupt entry, found {quarantine_files:?}"
+        );
+
+        let quarantined = tokio::fs::read(&quarantine_files[0]).await.unwrap();
+        assert_eq!(
+            quarantined, corrupted_bytes,
+            "quarantined bytes must match the raw corrupt entry bytes on disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn wal_reopen_after_corruption_is_idempotent() {
+        // The actual crash-loop regression (#1033): a corrupted entry must
+        // not turn every subsequent restart into a fatal error. Reopening
+        // twice must both succeed.
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+        wal.append(WalOperation::WriteTraces, b"first".to_vec(), None)
+            .await
+            .unwrap();
+        wal.append(
+            WalOperation::WriteTraces,
+            b"second (corrupted)".to_vec(),
+            None,
+        )
+        .await
+        .unwrap();
+        wal.append(WalOperation::WriteTraces, b"third".to_vec(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        drop(wal);
+
+        let log_path = temp_dir.path().join("wal-0000000000.log");
+        corrupt_nth_log_entry_payload(&log_path, 1).await;
+
+        Wal::new(config.clone())
+            .await
+            .expect("first reopen after corruption must succeed");
+        Wal::new(config)
+            .await
+            .expect("second reopen after corruption must ALSO succeed (this is the crash loop)");
+    }
+
+    #[tokio::test]
+    async fn wal_load_survives_torn_tail() {
+        // Characterization test: a truncated tail (short read, e.g. a crash
+        // mid-write) is a different failure mode from content corruption and
+        // is already handled by the bounds check breaking out of the replay
+        // loop. This locks in that existing behavior.
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+        let first = b"entry one payload".to_vec();
+        let second = b"entry two payload".to_vec();
+        let first_id = wal
+            .append(WalOperation::WriteTraces, first.clone(), None)
+            .await
+            .unwrap();
+        let second_id = wal
+            .append(WalOperation::WriteTraces, second.clone(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        drop(wal);
+
+        let log_path = temp_dir.path().join("wal-0000000000.log");
+        let mut buffer = tokio::fs::read(&log_path).await.unwrap();
+        // Truncate mid-payload of the last entry.
+        let torn_len = buffer.len() - 3;
+        buffer.truncate(torn_len);
+        tokio::fs::write(&log_path, &buffer).await.unwrap();
+
+        let reopened = Wal::new(config)
+            .await
+            .expect("a torn tail must not abort replay");
+        let entries = reopened.get_entries().await.unwrap();
+        let ids: std::collections::HashSet<Uuid> = entries.iter().map(|e| e.id).collect();
+        assert!(
+            ids.contains(&first_id),
+            "entry before the tear must survive"
+        );
+        assert!(
+            !ids.contains(&second_id),
+            "the torn entry must not appear (it was never fully written)"
+        );
+
+        let first_entry = entries.iter().find(|e| e.id == first_id).unwrap();
+        assert_eq!(reopened.read_entry_data(first_entry).await.unwrap(), first);
     }
 
     #[tokio::test]

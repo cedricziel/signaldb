@@ -82,7 +82,21 @@ Path: `{wal_dir}/{tenant_id}/{dataset_id}/{signal_type}/`
         wal-0000000000.log    # Entry metadata (bincode)
         wal-0000000000.data   # Raw data (Arrow IPC StreamWriter)
         wal-0000000000.index  # Processed entry tracking (UUID list)
+        dead-letter/          # Retired entries (unreadable/rejected/corrupt), see below
 ```
+
+On replay, a `.log` record whose payload fails to deserialize (framing
+intact, content corrupted) is skipped rather than aborting the whole
+segment — the offset of the next record is still known from the length
+prefix, so `offset += entry_len` resyncs onto it. The corrupt bytes are
+quarantined to `dead-letter/segment-<id>-offset-<offset>.corrupt.bin` (keyed
+by physical location, not `<entry_id>`, since the id lives inside the bytes
+that failed to decode — every other `dead-letter/` file is keyed by
+`<entry_id>`) and `signaldb.wal.corrupt_entries` is incremented. This is a
+permanent loss of that entry, not just a delay: aborting instead of skipping
+would turn one corrupted record into a permanent crash loop, since the
+same bytes are hit again on every restart (issue #1033). Full detail:
+`docs/operations/wal-persistence.md#corrupted-entry-records-during-replay`.
 
 ### WAL Entry Structure
 

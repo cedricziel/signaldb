@@ -35,6 +35,7 @@ pub struct AppMetrics {
     pub wal_entries_processed: Counter<u64>,
     pub wal_entries_pending: UpDownCounter<i64>,
     pub wal_flush_duration: Histogram<f64>,
+    pub wal_corrupt_entries: Counter<u64>,
 
     // Flight metrics
     pub flight_request_duration: Histogram<f64>,
@@ -136,6 +137,13 @@ impl AppMetrics {
                 .f64_histogram("signaldb.wal.flush.duration")
                 .with_description("Duration of WAL flushes")
                 .with_unit("s")
+                .build(),
+            wal_corrupt_entries: meter
+                .u64_counter("signaldb.wal.corrupt_entries")
+                .with_description(
+                    "WAL entries discarded during replay because they could not be deserialized",
+                )
+                .with_unit("{entry}")
                 .build(),
             flight_request_duration: meter
                 .f64_histogram("signaldb.flight.request.duration")

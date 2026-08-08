@@ -15,6 +15,12 @@ every exported resource and instrumentation scope). This page is the
 operator-facing reference: what spans exist, what they're named, and what
 changed if you had dashboards on the old names.
 
+This page covers spans only. Counter/histogram/gauge instruments (e.g.
+`signaldb.wal.entries_written`, `signaldb.wal.corrupt_entries`) are defined
+in `src/common/src/self_monitoring/app_metrics.rs`; WAL-specific ones are
+documented alongside their recovery behavior in
+[WAL Persistence](wal-persistence.md#monitoring-and-alerting).
+
 ## Resource identity
 
 Every service exports with:
@@ -76,6 +82,7 @@ flowchart LR
   strings and break numeric queries. Per-file deletion detail stays in
   plain logs: a path per file is unbounded cardinality and does not belong
   in span attributes.
+
 - **WAL fan-in**: the writer's batch span **links** to every distinct
   source ingest trace (one link per origin, never a parent).
 
