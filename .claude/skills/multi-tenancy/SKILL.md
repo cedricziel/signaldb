@@ -34,7 +34,7 @@ Tenant (e.g., "acme", slug: "acme")
    - Database-backed keys second (from service catalog)
 3. Validates tenant_id matches key's tenant (403 on mismatch)
 4. Resolves dataset: explicit header -> tenant default_dataset -> first `is_default` -> 400 error
-5. For a database tenant, the resolved dataset must have a `datasets` row — `resolve_database_tenant` fails closed with `403 Dataset '<name>' not found for tenant '<id>'`. Tenant creation (admin API, management API, config sync) therefore **materializes the `default_dataset` as a real row**, and `Catalog::backfill_default_datasets` converges tenants created before that at router/monolith boot (#1066). Use the idempotent `Catalog::ensure_dataset` on any path that may run twice; `create_dataset` is a bare INSERT and errors on a duplicate
+5. For a database tenant, the resolved dataset must have a `datasets` row — `resolve_database_tenant` fails closed with `403 Dataset '<name>' not found for tenant '<id>'`. Tenant creation and update therefore **materialize the `default_dataset` as a real row**, via `Catalog::upsert_tenant_with_default_dataset` — one transaction, because a tenant row that commits without its dataset row cannot be repaired by a retry (creation 409s on an existing id). Config sync uses the idempotent `Catalog::ensure_dataset`, and `Catalog::backfill_default_datasets` converges tenants created before this at router/monolith boot (#1066). Never use `create_dataset` on a path that may run twice — it is a bare INSERT and errors on a duplicate
 6. Returns `TenantContext { tenant_id, dataset_id, tenant_slug, dataset_slug }`
 
 ### Session-Cookie Fallback (Embedded UI)

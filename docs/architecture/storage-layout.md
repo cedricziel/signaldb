@@ -237,7 +237,9 @@ Key methods:
 
 #### Resolved dataset invariant
 
-A tenant's `default_dataset` is always present in its resolved `datasets`, whether or not a `datasets` row names it. A dataset can be named as the default without having a row of its own -- admin-API tenant creation stores `default_dataset` as a column on the tenant row, and a config tenant may declare `default_dataset` with no matching `[[auth.tenants.datasets]]` block. The synthesized entry derives its slug and storage DSN the same way a runtime-added dataset does, so it is indistinguishable downstream.
+A tenant's `default_dataset` is always present in its resolved `datasets`, whether or not a `datasets` row names it. The synthesized entry derives its slug and storage DSN the same way a runtime-added dataset does, so it is indistinguishable downstream.
+
+Every write path now materializes that row — admin and management tenant creation, tenant update, and config sync all go through `upsert_tenant_with_default_dataset` or `ensure_dataset` — so a row-less default is a **legacy state**, carried by tenants created before that and cleared by `Catalog::backfill_default_datasets` at router/monolith boot. The invariant is what keeps such a tenant correct in the window before the backfill runs, and it costs nothing once converged.
 
 This matters because every consumer that enumerates datasets -- compaction planning, retention enforcement, orphan cleanup, table reconciliation -- iterates that list. Without the invariant such a tenant resolves with no datasets and is skipped silently, with no error and no warning.
 
