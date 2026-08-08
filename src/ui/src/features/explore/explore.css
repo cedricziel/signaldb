@@ -635,7 +635,11 @@ span.level-debug {
   top: 0;
   left: 0;
   z-index: 5;
+  /* Size to content rather than to the space left of the container edge,
+     which shrinks as the pointer moves right. */
+  width: max-content;
   min-width: 132px;
+  max-width: 320px;
   padding: 6px 8px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -674,6 +678,16 @@ span.level-debug {
 .svol-tip-total b {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+  white-space: nowrap;
+  /* Set from JS to the widest value in the window, so every bucket's tooltip
+     is the same width and the numbers stay column-aligned. */
+  min-width: calc(var(--svol-val-ch, 10) * 1ch);
+  text-align: right;
+}
+
+.svol-tip-row span,
+.svol-tip-t {
+  white-space: nowrap;
 }
 
 .svol-tip-total {

@@ -412,3 +412,48 @@ describe("SignalHistogram bucket control", () => {
     expect(onStepChange).toHaveBeenCalledWith("");
   });
 });
+
+describe("SignalHistogram tooltip width", () => {
+  const series: VolumeSeries[] = [
+    {
+      key: "info",
+      points: [
+        [60_000, 7],
+        [120_000, 382_870],
+      ],
+    },
+    { key: "error", points: [[120_000, 99]] },
+  ];
+
+  // The tooltip is absolutely positioned, so its shrink-to-fit width is capped
+  // by the space left of the container edge — near the right edge the value
+  // wrapped onto a second line. Reserving the widest value keeps one stable
+  // width for every bucket, so it neither wraps nor jitters while hovering.
+  it("reserves the width of the largest value in the window", () => {
+    renderChart(series);
+    fireEvent.mouseEnter(screen.getAllByTestId("svol-col")[1]!, {
+      clientX: 10,
+      clientY: 10,
+    });
+    const tip = screen.getByRole("status");
+    // "382,969 lines" — the window maximum, not the hovered bucket's value.
+    const widest = `${new Intl.NumberFormat().format(382_969)} lines`;
+    expect(tip.style.getPropertyValue("--svol-val-ch")).toBe(
+      String(widest.length),
+    );
+  });
+
+  it("keeps the reservation stable across buckets", () => {
+    renderChart(series);
+    const cols = screen.getAllByTestId("svol-col");
+    fireEvent.mouseEnter(cols[1]!, { clientX: 10, clientY: 10 });
+    const wide = screen
+      .getByRole("status")
+      .style.getPropertyValue("--svol-val-ch");
+    fireEvent.mouseLeave(cols[1]!);
+    fireEvent.mouseEnter(cols[2]!, { clientX: 20, clientY: 10 });
+    expect(
+      screen.getByRole("status").style.getPropertyValue("--svol-val-ch"),
+    ).toBe(wide);
+  });
+});

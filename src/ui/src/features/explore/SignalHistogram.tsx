@@ -7,7 +7,7 @@
  * traces are two thin adapters over it rather than two copies of the same
  * rendering maths.
  */
-import { useRef, useState } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import { axisLabelFormatter, durationToSeconds } from "../../lib/time";
 import { barHeight, splitSegments, valueAtFraction, type Scale } from "./scale";
 
@@ -299,13 +299,21 @@ export function SignalHistogram({
           className="svol-tip"
           id="svol-tip"
           role="status"
-          style={{
-            left: `${tip.x}px`,
-            top: `${tip.y}px`,
-            transform: tip.flipX
-              ? "translate(calc(-100% - 14px), 12px)"
-              : "translate(14px, 12px)",
-          }}
+          style={
+            {
+              left: `${tip.x}px`,
+              top: `${tip.y}px`,
+              transform: tip.flipX
+                ? "translate(calc(-100% - 14px), 12px)"
+                : "translate(14px, 12px)",
+              // Reserve the widest value the window can produce. Absolutely
+              // positioned, the tooltip's shrink-to-fit width is capped by the
+              // space left of the container edge, so a long value wrapped when
+              // hovering to the right; and sizing per-bucket would make it
+              // jitter as the pointer moves.
+              "--svol-val-ch": String(withUnit(max, unit).length),
+            } as CSSProperties
+          }
         >
           <div className="svol-tip-t">{fmtAxis(activeBucket.tMs)}</div>
           {order
