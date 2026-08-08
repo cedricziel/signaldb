@@ -77,6 +77,13 @@ pub struct RetentionEnforcer {
     manifest_reader: ManifestReader,
     metrics: RetentionMetrics,
     config: RetentionConfig,
+    /// Serializes this table's partition drops and snapshot expiration
+    /// against compaction commits on the same table (D6). Defaults to a
+    /// private registry via [`Self::new`]; [`Self::with_table_locks`] shares
+    /// one registry with the compaction executor so the two actors actually
+    /// gate each other — `CompactorService::new` does this for the
+    /// long-running compactor process.
+    table_locks: crate::table_lock::TableLockRegistry,
 }
 
 impl RetentionEnforcer {
@@ -97,7 +104,17 @@ impl RetentionEnforcer {
             manifest_reader: ManifestReader::new(),
             metrics,
             config,
+            table_locks: crate::table_lock::TableLockRegistry::new(),
         })
+    }
+
+    /// Share a [`crate::table_lock::TableLockRegistry`] with other lifecycle
+    /// actors (compaction) so partition drops and snapshot expiration on a
+    /// table serialize against them (D6). Without this call the enforcer
+    /// gates only against itself.
+    pub fn with_table_locks(mut self, table_locks: crate::table_lock::TableLockRegistry) -> Self {
+        self.table_locks = table_locks;
+        self
     }
 
     /// Run retention enforcement for all tables in a tenant/dataset
@@ -238,6 +255,17 @@ impl RetentionEnforcer {
             signal_type = %signal_type,
             "Starting table retention enforcement"
         );
+
+        // Serialize against compaction commits on this same table (D6): a
+        // compaction job holds this same per-table lock across its retries
+        // (see `CompactionExecutor::execute_candidate`), so a commit in
+        // flight there and this drop+expire pass cannot interleave. Held
+        // across both steps below, not just the commit calls, so the two
+        // steps stay atomic relative to compaction as a whole.
+        let _table_guard = self
+            .table_locks
+            .lock(tenant_id, dataset_id, table_name)
+            .await;
 
         // Compute retention cutoff for this table
         let cutoff = self
@@ -779,6 +807,164 @@ mod tests {
 
         let enforcer = RetentionEnforcer::new(catalog_manager, config, metrics);
         assert!(enforcer.is_ok());
+    }
+
+    /// D6: compaction commits and retention drops/snapshot expiration must
+    /// not interleave on the same table. This drives the two real
+    /// production entry points — `CompactionExecutor::execute_candidate`
+    /// (the single method both the background compaction loop and the
+    /// Flight `compact_now` action call, since they share one
+    /// `Arc<CompactionExecutor>` — see `CompactorService`) and
+    /// `RetentionEnforcer::enforce_retention` — against a `TableLockRegistry`
+    /// shared exactly the way `CompactorService::new` wires it. Without that
+    /// wiring (e.g. each actor keeping its own private default registry) the
+    /// `!handle.is_finished()` assertions below would fail, because grabbing
+    /// the lock from the externally-held `table_locks` handle would not
+    /// block either real call at all.
+    ///
+    /// This is deliberately *not* wall-clock based (an earlier version used
+    /// `timeout(200ms, ...)`/`timeout(5s, ...)` and was flaky under CI load
+    /// — a busy machine can blow either bound without the guard being
+    /// broken). Instead:
+    ///
+    /// - "did not proceed while the lock is held" is asserted via
+    ///   `JoinHandle::is_finished()`, which needs no timing guess at all:
+    ///   holding the guard makes it *impossible* for the other task to have
+    ///   completed, so the assertion is deterministically true regardless of
+    ///   machine speed. The `started` rendezvous plus a bounded
+    ///   `yield_now()` loop only give the spawned task real scheduling turns
+    ///   to run its non-contended work up to the point where it blocks on
+    ///   the lock, so the assertion exercises the guard instead of an
+    ///   unscheduled task — it does not gate correctness.
+    /// - "proceeds once released" waits on the task's own join handle rather
+    ///   than a guessed deadline; the `timeout` around it is a generous
+    ///   deadlock backstop (fires only on a genuine hang), not a timing
+    ///   assertion.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compaction_and_retention_do_not_interleave_on_the_same_table() {
+        use crate::executor::{CompactionExecutor, ExecutorConfig};
+        use crate::planner::{CompactionCandidate, PartitionStats};
+        use crate::table_lock::TableLockRegistry;
+        use tokio::sync::Notify;
+        use tokio::time::{Duration as TokioDuration, timeout};
+
+        // Deadlock backstop only — if this ever fires, the guard is
+        // genuinely stuck, not merely slow, so a generous bound is fine.
+        const DEADLOCK_BACKSTOP: TokioDuration = TokioDuration::from_secs(30);
+
+        // Give the spawned task real scheduling turns to run its
+        // non-contended work (e.g. listing tables) up to the point where it
+        // blocks on the table lock, if it is going to. Purely to make the
+        // "did not finish" assertion meaningful rather than vacuous — the
+        // assertion itself does not depend on this count being "enough".
+        async fn let_spawned_task_run() {
+            for _ in 0..256 {
+                tokio::task::yield_now().await;
+            }
+        }
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        catalog_manager
+            .ensure_table("acme", "prod", "traces")
+            .await
+            .unwrap();
+
+        let table_locks = TableLockRegistry::new();
+
+        let enforcer = RetentionEnforcer::new(
+            catalog_manager.clone(),
+            create_test_config(),
+            RetentionMetrics::new_mock(),
+        )
+        .unwrap()
+        .with_table_locks(table_locks.clone());
+
+        let executor = CompactionExecutor::new(
+            catalog_manager.clone(),
+            ExecutorConfig::default(),
+            crate::metrics::CompactionMetrics::new(),
+        )
+        .with_table_locks(table_locks.clone());
+
+        // Direction 1: compaction is "mid-commit" on the table (standing in
+        // for `execute_candidate` holding its guard — see
+        // `CompactionExecutor::execute_candidate`). A real retention pass on
+        // the same table must wait, then proceed once the guard is dropped.
+        let held = table_locks.lock("acme", "prod", "traces").await;
+
+        let started = Arc::new(Notify::new());
+        let mut retention_pass = tokio::spawn({
+            let enforcer = enforcer;
+            let started = started.clone();
+            async move {
+                started.notify_one();
+                enforcer.enforce_retention("acme", "prod").await
+            }
+        });
+
+        timeout(DEADLOCK_BACKSTOP, started.notified())
+            .await
+            .expect("spawned retention task never started");
+        let_spawned_task_run().await;
+
+        assert!(
+            !retention_pass.is_finished(),
+            "retention ran while compaction held the table lock"
+        );
+
+        drop(held);
+
+        timeout(DEADLOCK_BACKSTOP, &mut retention_pass)
+            .await
+            .expect("retention never proceeded after the table lock was released")
+            .expect("task does not panic")
+            .expect("retention enforcement succeeds");
+
+        // Direction 2: retention is mid-drop/expire on the table. A real
+        // `execute_candidate` call — the same method both compaction entry
+        // points use — must wait, then proceed once released. The table has
+        // no data files, so once unblocked the job completes immediately
+        // with nothing to compact; only the ordering is under test here.
+        let held = table_locks.lock("acme", "prod", "traces").await;
+
+        let candidate = CompactionCandidate {
+            tenant_id: "acme".to_string(),
+            dataset_id: "prod".to_string(),
+            table_name: "traces".to_string(),
+            partition_id: "0".to_string(),
+            stats: PartitionStats {
+                file_count: 0,
+                total_size_bytes: 0,
+                avg_file_size_bytes: 0,
+            },
+        };
+
+        let started = Arc::new(Notify::new());
+        let mut compaction_pass = tokio::spawn({
+            let started = started.clone();
+            async move {
+                started.notify_one();
+                executor.execute_candidate(candidate).await
+            }
+        });
+
+        timeout(DEADLOCK_BACKSTOP, started.notified())
+            .await
+            .expect("spawned compaction task never started");
+        let_spawned_task_run().await;
+
+        assert!(
+            !compaction_pass.is_finished(),
+            "compaction ran while retention held the table lock"
+        );
+
+        drop(held);
+
+        timeout(DEADLOCK_BACKSTOP, &mut compaction_pass)
+            .await
+            .expect("compaction never proceeded after the table lock was released")
+            .expect("task does not panic")
+            .expect("compaction completes (no live files to compact)");
     }
 
     /// Full drop-vs-dry-run coverage against real *expired* partitions lives

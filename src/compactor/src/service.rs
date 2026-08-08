@@ -182,6 +182,14 @@ impl CompactorService {
         let executor_config = ExecutorConfig::from(&planner_config);
         let compaction_metrics = CompactionMetrics::new();
 
+        // Shared by the compaction executor and the retention enforcer so
+        // compaction commits, partition drops, and snapshot expiration on
+        // the same table serialize against each other in-process (D6).
+        // Cross-process safety still rests on catalog CAS + input-scoped
+        // conflict validation (`commit.rs`) — this only removes in-process
+        // self-conflicts between the compactor's own lifecycle actors.
+        let table_locks = crate::table_lock::TableLockRegistry::new();
+
         // The planner shares the executor's metrics so the files it declines
         // to compact — still-open partitions, unclassifiable files — are
         // visible next to the jobs it does produce.
@@ -196,7 +204,8 @@ impl CompactorService {
                 compaction_metrics.clone(),
             )
             // Persist advisory attribute statistics (epic #737, #733).
-            .with_service_catalog(service_catalog.clone()),
+            .with_service_catalog(service_catalog.clone())
+            .with_table_locks(table_locks.clone()),
         );
 
         tracing::info!(
@@ -231,7 +240,8 @@ impl CompactorService {
                 retention_config.clone(),
                 retention_metrics.clone(),
             )
-            .context("Failed to initialize retention enforcer")?,
+            .context("Failed to initialize retention enforcer")?
+            .with_table_locks(table_locks.clone()),
         );
 
         tracing::info!(
