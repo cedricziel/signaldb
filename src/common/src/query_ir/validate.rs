@@ -414,6 +414,21 @@ impl InferCtx<'_> {
             });
         }
 
+        // A scoping predicate is checked exactly as a `where` stage's is — same
+        // resolver, same literal coercion, same logical-namespace guard — so a
+        // scope can never reach fields or spellings `where` would have refused.
+        // It narrows this aggregate only; the grouping is unaffected, so no
+        // relation-type change follows from it.
+        if let Some(scope) = &a.scope {
+            let mut result = Ok(());
+            scope.walk_leaves(&mut |leaf| {
+                if result.is_ok() {
+                    result = self.check_leaf(leaf);
+                }
+            });
+            result?;
+        }
+
         // Field operand requirements.
         let of_type = match (&a.of, a.func.needs_field()) {
             (Some(of), _) => Some(self.ref_type(of)?),
@@ -892,5 +907,97 @@ mod tests {
             matches!(err, IrError::UnknownFieldType { .. }),
             "got {err:?}"
         );
+    }
+
+    /// A grouped document whose second aggregate carries `scope` as its scoping
+    /// predicate — the RED shape (total beside errors) the traces group table
+    /// submits.
+    fn scoped_agg_doc(scope: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+                { "fn": "count", "as": "n" },
+                { "fn": "count", "as": "errors", "where": scope }
+            ] } } ]
+        })
+    }
+
+    #[test]
+    fn a_scoped_aggregate_validates_alongside_an_unscoped_one() {
+        let v = validate_json(scoped_agg_doc(
+            json!({ "field": "severity_number", "op": "gte", "value": 17 }),
+        ))
+        .expect("a scoped aggregate validates");
+        let cols = match &v.terminal {
+            RelationType::RowSet(rs) => &rs.columns,
+            other => panic!("expected a row-set relation, got {other:?}"),
+        };
+        let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"n") && names.contains(&"errors"),
+            "both outputs are declared: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_scope_naming_an_unresolvable_field_is_rejected() {
+        let err = validate_json(scoped_agg_doc(
+            json!({ "field": "not.in.registry", "op": "eq", "value": "x" }),
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::UnknownFieldType { .. }),
+            "the scope resolves through the same registry as `where`: got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_scope_with_an_uncoercible_literal_is_rejected() {
+        let err = validate_json(scoped_agg_doc(
+            json!({ "field": "severity_number", "op": "eq", "value": "banana" }),
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Coercion { .. }),
+            "the scope coerces literals like `where`: got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_scope_misusing_an_operator_is_rejected() {
+        let err = validate_json(scoped_agg_doc(
+            json!({ "field": "service.name", "op": "exists", "value": "x" }),
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("exists")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_scope_may_not_address_physical_storage() {
+        let err = validate_json(scoped_agg_doc(
+            json!({ "field": "log_attributes", "op": "exists" }),
+        ))
+        .unwrap_err();
+        assert!(
+            !matches!(err, IrError::Invalid(ref m) if m.is_empty()),
+            "the logical-namespace guard applies to a scope too: got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_scope_on_a_non_count_aggregate_validates() {
+        validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+                { "fn": "max", "of": "severity_number", "as": "worst",
+                  "where": { "field": "body", "op": "contains", "value": "timeout" } }
+            ] } } ]
+        }))
+        .expect("a scoped non-count aggregate validates");
     }
 }

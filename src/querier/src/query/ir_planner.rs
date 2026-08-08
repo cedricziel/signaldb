@@ -43,8 +43,8 @@ use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::functions_aggregate::expr_fn::{approx_percentile_cont, avg, count, max, min, sum};
 use datafusion::logical_expr::{
-    ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature,
-    Volatility, cast, col, lit, not,
+    ColumnarValue, Expr, ExprFunctionExt, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    TypeSignature, Volatility, cast, col, lit, not,
 };
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
@@ -575,7 +575,7 @@ impl Lowering<'_> {
 
     fn agg_expr(&self, a: &common::query_ir::Agg) -> Result<Expr, QuerierError> {
         use common::query_ir::AggFn;
-        Ok(match a.func {
+        let expr = match a.func {
             AggFn::Count => count(lit(1i64)),
             AggFn::Sum => sum(self.numeric_of(a)?),
             AggFn::Avg => avg(self.numeric_of(a)?),
@@ -585,7 +585,20 @@ impl Lowering<'_> {
                 let q = a.arg.unwrap_or(0.5);
                 approx_percentile_cont(self.numeric_of(a)?.sort(true, false), lit(q), None)
             }
-        })
+        };
+        // A scoping predicate narrows this aggregate alone, as a per-aggregate
+        // FILTER on the one grouping — not a `Filter` node, which would narrow
+        // every aggregate in the stage and drop groups with no matching row.
+        // The scope lowers through `lower_predicate`, so it inherits the same
+        // Kleene absent-value semantics a `where` stage has: a row whose field
+        // is NULL satisfies neither the scope nor its negation.
+        match &a.scope {
+            None => Ok(expr),
+            Some(scope) => expr
+                .filter(self.lower_predicate(scope)?)
+                .build()
+                .map_err(QuerierError::QueryFailed),
+        }
     }
 
     /// The `of` field of an aggregate as a numeric (Float64) expression.
@@ -2084,5 +2097,174 @@ mod tests {
             svc.query(&params, "t", "d").await,
             Err(QuerierError::InvalidInput(_))
         ));
+    }
+
+    // Task 2 — scoped aggregates. The `logs_ctx` fixture holds four rows:
+    // (api, sev 17), (api, sev 9), (web, sev 17), (web, sev 21) — so `api` has
+    // one row at/above 17 out of two, and `web` has two out of two.
+
+    /// Run a document against `logs_ctx` and return its rows.
+    async fn collect_doc(v: serde_json::Value) -> Vec<RecordBatch> {
+        let svc = IrService::new(logs_ctx());
+        let (df, _) = svc
+            .plan(&doc(v), "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        df.collect().await.unwrap()
+    }
+
+    /// The `n`-th Int64 column of the single returned batch, keyed by the
+    /// group column so the assertion does not depend on group ordering.
+    fn counts_by_group(batches: &[RecordBatch], group: &str, measure: &str) -> Vec<(String, i64)> {
+        let b = &batches[0];
+        let g = b
+            .column_by_name(group)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let m = b.column_by_name(measure).unwrap();
+        let m = m.as_any().downcast_ref::<Int64Array>().unwrap();
+        let mut out: Vec<(String, i64)> = (0..b.num_rows())
+            .map(|i| (g.value(i).to_string(), m.value(i)))
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[tokio::test]
+    async fn a_scoped_count_measures_only_matching_rows() {
+        let batches = collect_doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service_name"], "aggs": [
+                { "fn": "count", "as": "n" },
+                { "fn": "count", "as": "errors",
+                  "where": { "field": "severity_number", "op": "gte", "value": 17 } }
+            ] } } ]
+        }))
+        .await;
+        assert_eq!(
+            counts_by_group(&batches, "service_name", "n"),
+            vec![("api".to_string(), 2), ("web".to_string(), 2)],
+            "the unscoped count covers every row in the group"
+        );
+        assert_eq!(
+            counts_by_group(&batches, "service_name", "errors"),
+            vec![("api".to_string(), 1), ("web".to_string(), 2)],
+            "the scoped count covers only matching rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_group_with_no_matching_row_reports_zero_and_is_kept() {
+        let batches = collect_doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service_name"], "aggs": [
+                { "fn": "count", "as": "n" },
+                // No `api` row reaches 21; `web` has exactly one.
+                { "fn": "count", "as": "worst",
+                  "where": { "field": "severity_number", "op": "gte", "value": 21 } }
+            ] } } ]
+        }))
+        .await;
+        assert_eq!(
+            counts_by_group(&batches, "service_name", "worst"),
+            vec![("api".to_string(), 0), ("web".to_string(), 1)],
+            "a group with no matching row is kept, reporting zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn scoping_does_not_change_the_group_set() {
+        let unscoped = collect_doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service_name"],
+                "aggs": [ { "fn": "count", "as": "n" } ] } } ]
+        }))
+        .await;
+        let scoped = collect_doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service_name"], "aggs": [
+                { "fn": "count", "as": "n" },
+                { "fn": "count", "as": "errors",
+                  "where": { "field": "severity_number", "op": "gte", "value": 17 } }
+            ] } } ]
+        }))
+        .await;
+        assert_eq!(
+            counts_by_group(&unscoped, "service_name", "n"),
+            counts_by_group(&scoped, "service_name", "n"),
+            "adding a scoped aggregate leaves the groups and their totals alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scoped_aggregate_lowers_to_one_aggregate_node() {
+        let svc = IrService::new(logs_ctx());
+        let (df, _) = svc
+            .plan(
+                &doc(serde_json::json!({
+                    "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                    "result": "table",
+                    "pipeline": [ { "aggregate": { "by": ["service_name"], "aggs": [
+                        { "fn": "count", "as": "n" },
+                        { "fn": "count", "as": "errors",
+                          "where": { "field": "severity_number", "op": "gte", "value": 17 } }
+                    ] } } ]
+                })),
+                "t",
+                "d",
+                0,
+            )
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let mut nodes = Vec::new();
+        plan_node_types(df.logical_plan(), &mut nodes);
+        assert_eq!(
+            nodes.iter().filter(|n| **n == "Aggregate").count(),
+            1,
+            "one grouping, not one per aggregate: {nodes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scoped_quantile_measures_only_matching_rows() {
+        let batches = collect_doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service_name"], "aggs": [
+                // `web` holds severities 17 and 21; scoped to >= 21 the median
+                // must be 21, not 19.
+                { "fn": "quantile", "of": "severity_number", "arg": 0.5, "as": "p50",
+                  "where": { "field": "severity_number", "op": "gte", "value": 21 } }
+            ] } } ]
+        }))
+        .await;
+        let b = &batches[0];
+        let g = b
+            .column_by_name("service_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let p = b.column_by_name("p50").unwrap();
+        let p = p
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Float64Array>()
+            .unwrap();
+        let web = (0..b.num_rows())
+            .find(|i| g.value(*i) == "web")
+            .expect("web group present");
+        assert_eq!(
+            p.value(web),
+            21.0,
+            "the quantile sees only the rows the scope admits"
+        );
     }
 }

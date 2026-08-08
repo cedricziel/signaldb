@@ -96,8 +96,14 @@ describe("TenantSelector with whoami", () => {
     );
     const tenantInput = await screen.findByLabelText("Tenant");
     expect(tenantInput.tagName).toBe("INPUT");
+    // Inputs are prefilled from the build-time SIGNALDB_TENANT/_DATASET
+    // defaults (empty in CI, but not necessarily in a dev's local env) —
+    // clear before typing so the test doesn't depend on that ambient value.
+    await userEvent.clear(tenantInput);
     await userEvent.type(tenantInput, "acme");
-    await userEvent.type(screen.getByLabelText("Dataset"), "prod");
+    const datasetInput = screen.getByLabelText("Dataset");
+    await userEvent.clear(datasetInput);
+    await userEvent.type(datasetInput, "prod");
     await userEvent.click(screen.getByRole("button", { name: "Apply" }));
     expect(update).toHaveBeenCalledWith({ tenant: "acme", dataset: "prod" });
   });

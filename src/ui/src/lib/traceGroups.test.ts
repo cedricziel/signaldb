@@ -3,9 +3,7 @@ import type { TraceSummary } from "../api/tempo";
 import {
   DEFAULT_GROUP_BY,
   formatRate,
-  groupDimensions,
   groupKey,
-  groupTraces,
   groupValue,
   NOT_SET,
   parseGroupBy,
@@ -68,129 +66,21 @@ describe("groupValue", () => {
   });
 });
 
-describe("groupTraces", () => {
-  it("groups by root span name by default, largest group first", () => {
-    const groups = groupTraces(
-      [
-        trace("a", "gateway", "POST /checkout", "300", 400),
-        trace("b", "auth", "GET /login", "100", 50),
-        trace("c", "gateway", "POST /checkout", "200", 100),
-      ],
-      ["span.name"],
-    );
-    expect(groups.map((g) => [g.values, g.traces.length])).toEqual([
-      [["POST /checkout"], 2],
-      [["GET /login"], 1],
-    ]);
-  });
-
-  it("distinguishes same-named roots when also grouped by service", () => {
-    const traces = [
-      trace("a", "gateway", "GET /health", "1", 1),
-      trace("b", "auth", "GET /health", "2", 1),
-    ];
-    expect(groupTraces(traces, ["span.name"])).toHaveLength(1);
-    const two = groupTraces(traces, ["span.name", "service.name"]);
-    expect(two.map((g) => g.values)).toEqual(
-      [[["GET /health", "auth"]], [["GET /health", "gateway"]]].flat(),
-    );
-  });
-
-  it("counts errored traces per group", () => {
-    const groups = groupTraces(
-      [
-        trace("a", "gw", "op", "1", 1, {}, true),
-        trace("b", "gw", "op", "2", 1),
-        trace("c", "gw", "op", "3", 1),
-      ],
-      ["span.name"],
-    );
-    expect(groups[0]?.errorCount).toBe(1);
-  });
-
-  it("groups by an arbitrary attribute and lists each group's services", () => {
-    const groups = groupTraces(
-      [
-        trace("a", "gateway", "POST /checkout", "1", 10, { env: "prod" }),
-        trace("b", "auth", "GET /login", "2", 10, { env: "prod" }),
-        trace("c", "gateway", "POST /checkout", "3", 10, { env: "staging" }),
-      ],
-      ["env"],
-    );
-    expect(groups.map((g) => [g.values, g.traces.length])).toEqual([
-      [["prod"], 2],
-      [["staging"], 1],
-    ]);
-    expect(groups[0]?.services).toEqual(["auth", "gateway"]);
-    expect(groups[1]?.services).toEqual(["gateway"]);
-  });
-
-  it("sorts traces within a group newest first and tracks the latest start", () => {
-    const groups = groupTraces(
-      [
-        trace("old", "gateway", "POST /checkout", "9000000000", 100),
-        trace("new", "gateway", "POST /checkout", "10000000000", 100),
-      ],
-      ["span.name"],
-    );
-    expect(groups[0]?.traces.map((t) => t.traceId)).toEqual(["new", "old"]);
-    expect(groups[0]?.lastStartNs).toBe("10000000000");
-  });
-
-  it("computes duration percentiles", () => {
-    const groups = groupTraces(
-      [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((d, i) =>
-        trace(`t${i}`, "svc", "op", String(i), d),
-      ),
-      ["span.name"],
-    );
-    expect(groups[0]?.p50Ms).toBe(50);
-    expect(groups[0]?.p95Ms).toBe(100);
-  });
-
-  it("uses the single duration for all percentiles of a one-trace group", () => {
-    const groups = groupTraces(
-      [trace("a", "svc", "op", "1", 42)],
-      ["span.name"],
-    );
-    expect(groups[0]?.p50Ms).toBe(42);
-    expect(groups[0]?.p95Ms).toBe(42);
-  });
-
-  it("returns no groups for no traces", () => {
-    expect(groupTraces([], ["span.name"])).toEqual([]);
-  });
-});
-
 describe("groupKey", () => {
-  it("matches the key of the group a trace lands in", () => {
+  it("joins per-dimension values with the unit separator", () => {
     const t = trace("a", "gateway", "GET /health", "1", 1);
-    const groups = groupTraces([t], ["span.name", "service.name"]);
-    expect(groupKey(t, ["span.name", "service.name"])).toBe(groups[0]?.key);
-  });
-});
-
-describe("groupDimensions", () => {
-  it("offers the built-ins plus observed root attributes, sorted", () => {
-    const dims = groupDimensions([
-      trace("a", "gateway", "POST /checkout", "1", 1, {
-        "resource.host.name": "web-1",
-        "http.method": "POST",
-      }),
-      trace("b", "auth", "GET /login", "2", 1, {
-        "resource.host.name": "web-2",
-      }),
-    ]);
-    expect(dims).toEqual([
-      "span.name",
-      "service.name",
-      "http.method",
-      "resource.host.name",
-    ]);
+    expect(groupKey(t, ["span.name", "service.name"])).toBe(
+      "GET /healthgateway",
+    );
   });
 
-  it("offers only the built-ins when traces carry no attributes", () => {
-    expect(groupDimensions([])).toEqual(["span.name", "service.name"]);
+  it("distinguishes same-named roots once a second dimension is added", () => {
+    const a = trace("a", "gateway", "GET /health", "1", 1);
+    const b = trace("b", "auth", "GET /health", "2", 1);
+    expect(groupKey(a, ["span.name"])).toBe(groupKey(b, ["span.name"]));
+    expect(groupKey(a, ["span.name", "service.name"])).not.toBe(
+      groupKey(b, ["span.name", "service.name"]),
+    );
   });
 });
 

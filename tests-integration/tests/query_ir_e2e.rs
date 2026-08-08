@@ -554,3 +554,179 @@ async fn traces_ir_query_end_to_end() {
     // The slowest checkout span is `GET /b` (900ms).
     assert_eq!(rows[0][0], "GET /b", "expected the slowest span: {body}");
 }
+
+/// Read a `table` envelope as `(group, measure)` pairs, sorted — addressing
+/// columns by name so the assertion does not depend on column or row order.
+/// The server answers with *physical* column names for group fields, so the
+/// caller passes those, not the logical names the document sent.
+fn table_pairs(body: &serde_json::Value, group: &str, measure: &str) -> Vec<(String, i64)> {
+    let columns = body["columns"].as_array().expect("columns array");
+    let index_of = |name: &str| {
+        columns
+            .iter()
+            .position(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("column '{name}' absent from {columns:?}"))
+    };
+    let (g, m) = (index_of(group), index_of(measure));
+    let mut pairs: Vec<(String, i64)> = body["rows"]
+        .as_array()
+        .expect("rows array")
+        .iter()
+        .map(|row| {
+            (
+                row[g].as_str().unwrap_or_default().to_string(),
+                row[m].as_i64().expect("an integer measure"),
+            )
+        })
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+// Task 2.5 — a scoped aggregate measures a subset of each group across the
+// full service path, and leaves the group set the unscoped query returns
+// untouched.
+#[tokio::test]
+async fn scoped_aggregate_end_to_end() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    // `api`: one of two records is an error. `web`: both are.
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "api",
+                vec![
+                    log_record(0, "ERROR", "boom happened"),
+                    log_record(1_000_000, "INFO", "all good"),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest api logs");
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "web",
+                vec![
+                    log_record(2_000_000, "ERROR", "upstream failed"),
+                    log_record(3_000_000, "ERROR", "retry failed"),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest web logs");
+
+    let app = build_router(&services).await;
+
+    let scoped = serde_json::json!({
+        "irVersion": 1,
+        "from": "logs",
+        "range": range(),
+        "result": "table",
+        "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+            { "fn": "count", "as": "n" },
+            { "fn": "count", "as": "errors",
+              "where": { "field": "severity_number", "op": "gte", "value": 17 } }
+        ] } } ]
+    });
+    let (status, body) = post_ir_until_rows(&app, scoped).await;
+    assert_eq!(status, StatusCode::OK, "scoped aggregate: {body}");
+    assert_eq!(body["result"], "table");
+
+    assert_eq!(
+        table_pairs(&body, "service_name", "n"),
+        vec![("api".to_string(), 2), ("web".to_string(), 2)],
+        "the unscoped count covers every record in the group: {body}"
+    );
+    assert_eq!(
+        table_pairs(&body, "service_name", "errors"),
+        vec![("api".to_string(), 1), ("web".to_string(), 2)],
+        "the scoped count covers only matching records: {body}"
+    );
+
+    // The same query without the scope returns the same groups and totals —
+    // scoping narrows one aggregate, never the group set.
+    let (status, unscoped) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "logs",
+            "range": range(),
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service.name"],
+                "aggs": [ { "fn": "count", "as": "n" } ] } } ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unscoped aggregate: {unscoped}");
+    assert_eq!(
+        table_pairs(&unscoped, "service_name", "n"),
+        table_pairs(&body, "service_name", "n"),
+        "the group set and totals are identical with and without a scope"
+    );
+}
+
+// Task 2.5 — a group no record in it satisfies is still returned, reporting
+// zero. A `where` *stage* would have dropped it; a scope must not.
+#[tokio::test]
+async fn scoped_aggregate_keeps_groups_with_no_match() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    // No `api` record is an error; `web` has one.
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "api",
+                vec![
+                    log_record(0, "INFO", "all good"),
+                    log_record(1_000_000, "WARN", "slow request"),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest api logs");
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "web",
+                vec![log_record(2_000_000, "ERROR", "upstream failed")],
+            ),
+        )
+        .await
+        .expect("ingest web logs");
+
+    let app = build_router(&services).await;
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "logs",
+            "range": range(),
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+                { "fn": "count", "as": "n" },
+                { "fn": "count", "as": "errors",
+                  "where": { "field": "severity_number", "op": "gte", "value": 17 } }
+            ] } } ]
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "scoped aggregate: {body}");
+    assert_eq!(
+        table_pairs(&body, "service_name", "errors"),
+        vec![("api".to_string(), 0), ("web".to_string(), 1)],
+        "the error-free group is kept, reporting zero: {body}"
+    );
+}

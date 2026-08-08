@@ -2,10 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   tempoGetTrace,
-  tempoSearch,
   type SpanEventView,
   type TempoSpan,
-  type TraceSummary,
 } from "../../api/tempo";
 import {
   STATUS_COLORS,
@@ -27,18 +25,32 @@ import {
   resolveRange,
   resolveStep,
   stepOptionsForRange,
+  type ResolvedRange,
 } from "../../lib/time";
 import {
+  BUILTIN_DIMENSIONS,
   formatRate,
-  groupDimensions,
-  groupKey,
   groupLabel,
-  groupTraces,
+  KEY_SEP,
+  NOT_SET,
   parseGroupBy,
-  type TraceGroup,
 } from "../../lib/traceGroups";
+import {
+  DEFAULT_GROUP_SORT,
+  GROUP_BUDGET,
+  fetchTraceGroups,
+  type GroupGrain,
+  type GroupSort,
+  type TraceGroup,
+} from "../../api/traceGroups";
+import {
+  fetchTraceGroupMembers,
+  type TraceGroupMember,
+} from "../../api/traceGroupMembers";
+import { SkeletonLines, SkeletonRows } from "../explore/Skeleton";
 import type { ExploreState } from "../../lib/urlState";
 import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
+import { fetchWindowTotal, looksUnresolved } from "./unresolvedGroup";
 import "./traces.css";
 
 interface Props {
@@ -138,11 +150,7 @@ function TraceSearch({ state, update }: Props) {
   const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
   const filters = state.traceFilters;
   const traceql = compileTraceQL(filters);
-  const search = useQuery({
-    queryKey: ["tempo-search", rangeKey, state.limit, traceql],
-    queryFn: () =>
-      tempoSearch(resolveRange(state.range, Date.now()), state.limit, traceql),
-  });
+  const dims = parseGroupBy(state.groupBy);
 
   const resolvedForStep = resolveRange(state.range, Date.now());
   const step = resolveStep(resolvedForStep, state.step);
@@ -229,31 +237,27 @@ function TraceSearch({ state, update }: Props) {
               <button type="submit">Open</button>
             </form>
             {state.group === "" && (
-              <DimensionPickers
-                traces={search.data ?? []}
-                groupBy={state.groupBy}
-                update={update}
-              />
+              <>
+                <DimensionPickers groupBy={state.groupBy} update={update} />
+                <GrainToggle grain={state.grain} update={update} />
+              </>
             )}
           </div>
 
-          {search.isError && (
-            <div className="query-error" role="alert">
-              Search failed: {(search.error as Error).message}
-            </div>
+          {state.group === "" ? (
+            <GroupList
+              dims={dims}
+              filters={filters}
+              traceql={traceql}
+              range={resolvedForStep}
+              rangeKey={rangeKey}
+              grain={state.grain}
+              rangeSeconds={rangeSeconds(state)}
+              update={update}
+            />
+          ) : (
+            <GroupDetail state={state} update={update} />
           )}
-          {search.isPending && <div className="traces-note">Loading…</div>}
-          {search.data &&
-            (state.group === "" ? (
-              <GroupList
-                traces={search.data}
-                dims={parseGroupBy(state.groupBy)}
-                rangeSeconds={rangeSeconds(state)}
-                update={update}
-              />
-            ) : (
-              <GroupDetail state={state} traces={search.data} update={update} />
-            ))}
         </div>
       </div>
     </div>
@@ -266,11 +270,9 @@ function rangeSeconds(state: ExploreState): number {
 }
 
 function DimensionPickers({
-  traces,
   groupBy,
   update,
 }: {
-  traces: TraceSummary[];
   groupBy: string;
   update: (patch: Partial<ExploreState>) => void;
 }) {
@@ -291,7 +293,7 @@ function DimensionPickers({
             setDims([v, secondary === v ? "" : secondary]);
           }}
         >
-          {dimensionOptions(traces, primary).map((d) => (
+          {dimensionOptions(primary).map((d) => (
             <option key={d} value={d}>
               {d}
             </option>
@@ -306,7 +308,7 @@ function DimensionPickers({
           onChange={(e) => setDims([primary, e.currentTarget.value])}
         >
           <option value="">—</option>
-          {dimensionOptions(traces, secondary)
+          {dimensionOptions(secondary)
             .filter((d) => d !== primary && d !== "")
             .map((d) => (
               <option key={d} value={d}>
@@ -315,182 +317,375 @@ function DimensionPickers({
             ))}
         </select>
       </label>
+      {/* There's no trace sample to derive attribute names from any more
+          (the group table is a server-side aggregate) — typing one in is how
+          a user reaches an attribute the built-ins don't cover. */}
+      <form
+        className="group-custom"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const value = new FormData(e.currentTarget).get("dim");
+          if (typeof value === "string" && value.trim() !== "") {
+            setDims([value.trim(), secondary]);
+            e.currentTarget.reset();
+          }
+        }}
+      >
+        <input
+          name="dim"
+          aria-label="Custom dimension"
+          placeholder="Group by attribute…"
+        />
+      </form>
     </div>
   );
 }
 
-/** The picked dimension stays selectable even if absent from this range. */
-function dimensionOptions(traces: TraceSummary[], picked: string): string[] {
-  const dims = groupDimensions(traces);
-  return picked === "" || dims.includes(picked)
-    ? dims
-    : [...dims, picked].sort();
+/**
+ * Options offered by a dimension picker: the built-ins, plus the currently
+ * picked dimension if it isn't one of them — otherwise switching this picker
+ * away and back would lose a dimension typed into the custom field.
+ */
+function dimensionOptions(picked: string): string[] {
+  return picked === "" || (BUILTIN_DIMENSIONS as string[]).includes(picked)
+    ? BUILTIN_DIMENSIONS
+    : [...BUILTIN_DIMENSIONS, picked].sort();
 }
 
-function GroupList({
-  traces,
-  dims,
-  rangeSeconds,
+function GrainToggle({
+  grain,
   update,
 }: {
-  traces: TraceSummary[];
-  dims: string[];
-  rangeSeconds: number;
+  grain: GroupGrain;
   update: (patch: Partial<ExploreState>) => void;
 }) {
-  const [sort, toggle] = useSort("traces", "desc");
-  if (traces.length === 0) {
-    return <div className="traces-note">No traces in this time range.</div>;
-  }
-  const groups = sortRows(groupTraces(traces, dims), sort, groupSortValue);
-  const showServices = !dims.includes("service.name");
   return (
-    <table className="trace-table">
-      <thead>
-        <tr>
-          {dims.map((d, i) => (
-            <SortTh
-              key={d}
-              label={d}
-              sortKey={`dim:${i}`}
-              sort={sort}
-              toggle={toggle}
-            />
-          ))}
-          {showServices && (
-            <SortTh
-              label="Services"
-              sortKey="services"
-              sort={sort}
-              toggle={toggle}
-            />
-          )}
-          <SortTh
-            label="Traces"
-            sortKey="traces"
-            sort={sort}
-            toggle={toggle}
-            numeric
-          />
-          <SortTh
-            label="Rate"
-            sortKey="rate"
-            sort={sort}
-            toggle={toggle}
-            numeric
-          />
-          <SortTh
-            label="Errors"
-            sortKey="errors"
-            sort={sort}
-            toggle={toggle}
-            numeric
-          />
-          <SortTh
-            label="P50"
-            sortKey="p50"
-            sort={sort}
-            toggle={toggle}
-            numeric
-          />
-          <SortTh
-            label="P95"
-            sortKey="p95"
-            sort={sort}
-            toggle={toggle}
-            numeric
-          />
-          <SortTh
-            label="Last seen"
-            sortKey="last"
-            sort={sort}
-            toggle={toggle}
-            firstDir="desc"
-          />
-        </tr>
-      </thead>
-      <tbody>
-        {groups.map((g) => (
-          <tr key={g.key} onClick={() => update({ group: g.key })}>
-            <td>
-              <button className="trace-open">{g.values[0]}</button>
-            </td>
-            {g.values.slice(1).map((v, i) => (
-              <td key={dims[i + 1]}>{v}</td>
-            ))}
-            {showServices && <td>{formatServices(g)}</td>}
-            <td className="num">{g.traces.length}</td>
-            <td className="num">{formatRate(g.traces.length, rangeSeconds)}</td>
-            <td className={`num${g.errorCount > 0 ? " err-rate" : ""}`}>
-              {g.errorCount > 0
-                ? `${Math.round((100 * g.errorCount) / g.traces.length)}%`
-                : "–"}
-            </td>
-            <td className="num">{formatDurationMs(g.p50Ms)}</td>
-            <td className="num">{formatDurationMs(g.p95Ms)}</td>
-            <td>{formatTimestamp(nanosToMs(g.lastStartNs))}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <label className="group-by">
+      Grain
+      <select
+        aria-label="Grain"
+        value={grain}
+        onChange={(e) =>
+          update({ grain: e.currentTarget.value as GroupGrain, group: "" })
+        }
+      >
+        <option value="traces">Traces</option>
+        <option value="spans">Spans</option>
+      </select>
+    </label>
   );
 }
 
-function formatServices(g: TraceGroup): string {
-  return g.services.length > 2
-    ? `${plural(g.services.length, "service")}`
-    : g.services.join(", ");
+/**
+ * Builds the same key `groupKey()` would build for a `TraceSummary`, from a
+ * server-computed group's `values` instead — so a row click drills in exactly
+ * as it did when grouping was client-side, and `GroupDetail`'s
+ * `groupKey(t, dims) === state.group` match keeps working unmodified.
+ */
+function groupRowKey(values: TraceGroup["values"]): string {
+  return values.map((v) => v ?? NOT_SET).join(KEY_SEP);
 }
 
-function groupSortValue(g: TraceGroup, key: string): SortValue {
-  if (key.startsWith("dim:")) return g.values[Number(key.slice(4))] ?? "";
-  switch (key) {
-    case "services":
-      return g.services.join(", ");
-    case "errors":
-      return g.errorCount / g.traces.length;
-    case "p50":
-      return g.p50Ms;
-    case "p95":
-      return g.p95Ms;
-    case "last":
-      return BigInt(g.lastStartNs);
-    default:
-      return g.traces.length;
-  }
+function GroupList({
+  dims,
+  filters,
+  traceql,
+  range,
+  rangeKey,
+  grain,
+  rangeSeconds,
+  update,
+}: {
+  dims: string[];
+  filters: TraceFilter[];
+  traceql: string;
+  range: ResolvedRange;
+  rangeKey: string;
+  grain: GroupGrain;
+  rangeSeconds: number;
+  update: (patch: Partial<ExploreState>) => void;
+}) {
+  // Sorting is a server-side `order` stage (see api/traceGroups), so a new
+  // sort must refetch rather than re-rank the fetched page.
+  const [sort, toggle] = useSort(
+    DEFAULT_GROUP_SORT.key,
+    DEFAULT_GROUP_SORT.dir,
+  );
+  const result = useQuery({
+    queryKey: [
+      "trace-groups",
+      rangeKey,
+      dims.join(","),
+      grain,
+      traceql,
+      sort.key,
+      sort.dir,
+    ],
+    queryFn: () =>
+      fetchTraceGroups(dims, range, filters, grain, sort as GroupSort),
+  });
+
+  // #1070: an unresolvable dimension answers 200 with a single null-labelled
+  // group holding the window total rather than erroring. A dimension that
+  // resolves but that every remaining record simply lacks produces the same
+  // *shape* legitimately, so the shape alone (`looksUnresolved`) only makes
+  // it a suspect — confirming it needs the window total under the same
+  // scope, fetched only when suspect.
+  const suspect = result.data ? looksUnresolved(result.data.groups) : false;
+  const windowTotal = useQuery({
+    queryKey: ["trace-window-total", rangeKey, grain, traceql],
+    queryFn: () => fetchWindowTotal(range, filters, grain),
+    enabled: suspect,
+  });
+  const unresolved =
+    suspect &&
+    windowTotal.data !== undefined &&
+    windowTotal.data === result.data!.groups[0]!.count;
+
+  const pending = result.isPending || (suspect && windowTotal.isPending);
+  const groups = unresolved ? [] : (result.data?.groups ?? []);
+  const columns = dims.length + 6;
+  const countLabel = grain === "spans" ? "Spans" : "Traces";
+  const done = !pending && result.data !== undefined;
+  // Trace grain scopes the aggregate to root spans only; a filter on a field
+  // that only ever appears on a child span legitimately matches nothing.
+  const rootGrainOnly = grain === "traces" && filters.length > 0;
+
+  return (
+    <>
+      {result.isError && (
+        <div className="query-error" role="alert">
+          Groups failed: {(result.error as Error).message}
+        </div>
+      )}
+      <table className="trace-table" aria-busy={pending}>
+        <thead>
+          <tr>
+            {dims.map((d, i) => (
+              <SortTh
+                key={d}
+                label={d}
+                sortKey={`dim:${i}`}
+                sort={sort}
+                toggle={toggle}
+              />
+            ))}
+            <SortTh
+              label={countLabel}
+              sortKey="n"
+              sort={sort}
+              toggle={toggle}
+              numeric
+            />
+            {/* Rate is count / a fixed window — strictly increasing in count,
+                so it sorts identically to n; no separate sort key needed. */}
+            <SortTh
+              label="Rate"
+              sortKey="n"
+              sort={sort}
+              toggle={toggle}
+              numeric
+            />
+            <SortTh
+              label="Errors"
+              sortKey="errors"
+              sort={sort}
+              toggle={toggle}
+              numeric
+            />
+            <SortTh
+              label="P50"
+              sortKey="p50"
+              sort={sort}
+              toggle={toggle}
+              numeric
+            />
+            <SortTh
+              label="P95"
+              sortKey="p95"
+              sort={sort}
+              toggle={toggle}
+              numeric
+            />
+            <SortTh
+              label="Last seen"
+              sortKey="last"
+              sort={sort}
+              toggle={toggle}
+              firstDir="desc"
+            />
+          </tr>
+        </thead>
+        <tbody>
+          {pending ? (
+            <SkeletonRows
+              rows={8}
+              columns={columns}
+              numericFrom={dims.length}
+            />
+          ) : (
+            groups.map((g) => {
+              const key = groupRowKey(g.values);
+              return (
+                <tr key={key} onClick={() => update({ group: key })}>
+                  <td>
+                    <button className="trace-open">
+                      {g.values[0] ?? NOT_SET}
+                    </button>
+                  </td>
+                  {g.values.slice(1).map((v, i) => (
+                    <td key={dims[i + 1]}>{v ?? NOT_SET}</td>
+                  ))}
+                  <td className="num">{g.count}</td>
+                  <td className="num">{formatRate(g.count, rangeSeconds)}</td>
+                  <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
+                    {g.errors > 0
+                      ? `${Math.round((100 * g.errors) / g.count)}%`
+                      : "–"}
+                  </td>
+                  <td className="num">{formatDurationMs(g.p50Ms)}</td>
+                  <td className="num">{formatDurationMs(g.p95Ms)}</td>
+                  <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
+                </tr>
+              );
+            })
+          )}
+        </tbody>
+      </table>
+      {unresolved && (
+        <div className="traces-note">
+          &ldquo;{dims.join(", ")}&rdquo; isn&rsquo;t queryable for this tenant
+          or window right now — pick a different dimension.
+        </div>
+      )}
+      {done && !unresolved && groups.length === 0 && rootGrainOnly && (
+        <div className="traces-note">
+          No groups: trace grain only inspects each trace's root span, and one
+          of the active filters is on a field that only appears on a child span.
+          Switch to span grain to see it.
+        </div>
+      )}
+      {done && !unresolved && groups.length === 0 && !rootGrainOnly && (
+        <div className="traces-note">No groups in this time range.</div>
+      )}
+      {result.data?.truncated && (
+        <div className="traces-note">
+          Showing the top {GROUP_BUDGET} groups by the current sort — narrow the
+          time range or filters to see the rest.
+        </div>
+      )}
+    </>
+  );
 }
 
-function traceSortValue(t: TraceSummary, key: string): SortValue {
+function memberSortValue(m: TraceGroupMember, key: string): SortValue {
   switch (key) {
     case "root":
-      return t.rootTraceName;
+      return m.spanName;
     case "service":
-      return t.rootServiceName;
+      return m.serviceName;
     case "duration":
-      return t.durationMs;
+      return BigInt(m.durationNanos);
     case "id":
-      return t.traceId;
+      return m.traceId;
     default:
-      return BigInt(t.startNs);
+      return BigInt(m.startNs);
   }
+}
+
+/**
+ * Reverses `groupRowKey`: splits the URL-stored composite key back into one
+ * value per dimension. The URL already collapsed "no value for this
+ * dimension" to the NOT_SET sentinel, so a value equal to it is treated as
+ * null here too — the displayed "(not set)" row means the field is absent,
+ * so drilling into it must query "not exists", not `eq "(not set)"`.
+ */
+function parseGroupValues(key: string, dims: string[]): (string | null)[] {
+  const parts = key.split(KEY_SEP);
+  return dims.map((_, i) => {
+    const v = parts[i];
+    return v === undefined || v === NOT_SET ? null : v;
+  });
 }
 
 function GroupDetail({
   state,
-  traces,
   update,
 }: {
   state: ExploreState;
-  traces: TraceSummary[];
   update: (patch: Partial<ExploreState>) => void;
 }) {
-  const [sort, toggle] = useSort("time", "desc");
+  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const range = resolveRange(state.range, Date.now());
+  const traceql = compileTraceQL(state.traceFilters);
   const dims = parseGroupBy(state.groupBy);
-  const members = sortRows(
-    traces.filter((t) => groupKey(t, dims) === state.group),
-    sort,
-    traceSortValue,
+  const values = parseGroupValues(state.group, dims);
+
+  // The dimension pins are server-side now (see api/traceGroupMembers) — this
+  // returns exactly the group's members, newest first, bounded by the same
+  // limit the rest of the traces tab uses.
+  const membersQuery = useQuery({
+    queryKey: [
+      "trace-group-members",
+      rangeKey,
+      dims.join(","),
+      values.join(KEY_SEP),
+      state.grain,
+      traceql,
+      state.limit,
+    ],
+    queryFn: () =>
+      fetchTraceGroupMembers(
+        dims,
+        values,
+        range,
+        state.traceFilters,
+        state.grain,
+        state.limit,
+      ),
+  });
+
+  const [sort, toggle] = useSort("time", "desc");
+  const rows = membersQuery.data
+    ? sortRows(membersQuery.data, sort, memberSortValue)
+    : [];
+
+  // At trace grain the root-span predicate makes every row a whole trace,
+  // shown by its root span. At span grain a row is whatever span matched —
+  // not necessarily the root — so labeling it "Root" would assert something
+  // the data doesn't guarantee (exactly the misleading-label class #1070
+  // exists to avoid).
+  const isSpanGrain = state.grain === "spans";
+  const identityLabel = isSpanGrain ? "Span" : "Root";
+  const memberNoun = isSpanGrain ? "span" : "trace";
+
+  const header = (
+    <tr>
+      <SortTh
+        label={identityLabel}
+        sortKey="root"
+        sort={sort}
+        toggle={toggle}
+      />
+      <SortTh label="Service" sortKey="service" sort={sort} toggle={toggle} />
+      <SortTh
+        label="Time"
+        sortKey="time"
+        sort={sort}
+        toggle={toggle}
+        firstDir="desc"
+      />
+      <SortTh
+        label="Duration"
+        sortKey="duration"
+        sort={sort}
+        toggle={toggle}
+        numeric
+      />
+      <SortTh label="Trace ID" sortKey="id" sort={sort} toggle={toggle} />
+    </tr>
   );
+
   return (
     <>
       <div className="trace-head">
@@ -498,61 +693,52 @@ function GroupDetail({
           ← groups
         </button>
         <h3>{groupLabel(state.group)}</h3>
-        <span className="tmeta">
-          {dims.join(", ")} · {plural(members.length, "trace")}
-        </span>
+        <span className="tmeta">{dims.join(", ")}</span>
       </div>
-      {members.length === 0 ? (
-        <div className="traces-note">
-          No traces for this group in this time range.
+      {membersQuery.isError ? (
+        <div className="query-error" role="alert">
+          Search failed: {(membersQuery.error as Error).message}
         </div>
-      ) : (
-        <table className="trace-table">
-          <thead>
-            <tr>
-              <SortTh label="Root" sortKey="root" sort={sort} toggle={toggle} />
-              <SortTh
-                label="Service"
-                sortKey="service"
-                sort={sort}
-                toggle={toggle}
-              />
-              <SortTh
-                label="Time"
-                sortKey="time"
-                sort={sort}
-                toggle={toggle}
-                firstDir="desc"
-              />
-              <SortTh
-                label="Duration"
-                sortKey="duration"
-                sort={sort}
-                toggle={toggle}
-                numeric
-              />
-              <SortTh
-                label="Trace ID"
-                sortKey="id"
-                sort={sort}
-                toggle={toggle}
-              />
-            </tr>
-          </thead>
+      ) : membersQuery.isPending ? (
+        <table className="trace-table" aria-busy="true">
+          <thead>{header}</thead>
           <tbody>
-            {members.map((t) => (
-              <tr key={t.traceId} onClick={() => update({ trace: t.traceId })}>
-                <td>
-                  <button className="trace-open">{t.rootTraceName}</button>
-                </td>
-                <td>{t.rootServiceName}</td>
-                <td>{formatTimestamp(nanosToMs(t.startNs))}</td>
-                <td className="num">{formatDurationMs(t.durationMs)}</td>
-                <td className="trace-id">{t.traceId}</td>
-              </tr>
-            ))}
+            <SkeletonRows rows={8} columns={5} numericFrom={3} />
           </tbody>
         </table>
+      ) : rows.length === 0 ? (
+        <div className="traces-note">
+          No {memberNoun}s for this group in this time range.
+        </div>
+      ) : (
+        <>
+          <table className="trace-table">
+            <thead>{header}</thead>
+            <tbody>
+              {rows.map((m) => (
+                <tr
+                  key={`${m.traceId}-${m.spanId}`}
+                  onClick={() => update({ trace: m.traceId })}
+                >
+                  <td>
+                    <button className="trace-open">{m.spanName}</button>
+                  </td>
+                  <td>{m.serviceName}</td>
+                  <td>{formatTimestamp(nanosToMs(m.startNs))}</td>
+                  <td className="num">
+                    {formatDurationMs(nanosToMs(m.durationNanos))}
+                  </td>
+                  <td className="trace-id">{m.traceId}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {/* Always true (the query always applies a limit) — states the
+              bound rather than claiming truncation we can't detect here. */}
+          <div className="traces-note">
+            Showing up to {plural(state.limit, memberNoun)}, newest first.
+          </div>
+        </>
       )}
     </>
   );
@@ -572,7 +758,13 @@ function TraceDetail({ state, update }: Props) {
       </div>
     );
   }
-  if (trace.isPending) return <div className="traces-note">Loading…</div>;
+  if (trace.isPending) {
+    return (
+      <div className="traceview" aria-busy="true">
+        <SkeletonLines lines={10} />
+      </div>
+    );
+  }
 
   const waterfall = buildWaterfall(trace.data.spans);
   const selectedRow =

@@ -12,6 +12,10 @@ import {
   type TraceFilter,
 } from "./traceFilters";
 import { DEFAULT_GROUP_BY } from "./traceGroups";
+import type { GroupGrain } from "../api/traceGroups";
+
+/** A group row counts whole traces unless the URL says otherwise. */
+export const DEFAULT_GRAIN: GroupGrain = "traces";
 import {
   DEFAULT_RANGE,
   durationToSeconds,
@@ -42,6 +46,12 @@ export interface ExploreState {
   group: string;
   /** Trace grouping dimension: "span.name", "service.name", or an attribute key. */
   groupBy: string;
+  /**
+   * What one group row counts: whole traces (root spans only, end-to-end
+   * duration) or every matching span. The two answer different questions from
+   * the same window, so a shared link must carry it.
+   */
+  grain: GroupGrain;
   /** PromQL expression for the metrics view. */
   promql: string;
   /** Profile type id (e.g. `cpu:nanoseconds`) — "" auto-picks the first. */
@@ -70,6 +80,7 @@ export const DEFAULT_STATE: ExploreState = {
   trace: "",
   group: "",
   groupBy: DEFAULT_GROUP_BY,
+  grain: DEFAULT_GRAIN,
   promql: "",
   profileType: "",
   profileService: "",
@@ -119,12 +130,18 @@ export function parseExploreState(search: string): ExploreState {
     trace: p.get("trace") ?? "",
     group: p.get("group") ?? "",
     groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
+    grain: grainFromParam(p.get("grain")),
     promql: p.get("promql") ?? "",
     profileType: p.get("ptype") ?? "",
     profileService: p.get("psvc") ?? "",
     tenant: p.get("tenant") ?? "",
     dataset: p.get("dataset") ?? "",
   };
+}
+
+/** An unknown grain degrades to the default rather than rejecting the URL. */
+function grainFromParam(value: string | null): GroupGrain {
+  return value === "spans" || value === "traces" ? value : DEFAULT_GRAIN;
 }
 
 /** Unknown values fall back to the default rather than rejecting the URL. */
@@ -153,6 +170,7 @@ export function buildSearch(state: ExploreState): string {
   if (state.trace) p.set("trace", state.trace);
   if (state.group) p.set("group", state.group);
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);
+  if (state.grain !== DEFAULT_GRAIN) p.set("grain", state.grain);
   if (state.promql) p.set("promql", state.promql);
   if (state.profileType) p.set("ptype", state.profileType);
   if (state.profileService) p.set("psvc", state.profileService);
