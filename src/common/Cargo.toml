@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 default = []
-testing = []
+testing = ["dep:tempfile"]
 # Enables the Criterion ingest/WAL benchmarks under benches/.
 benchmarks = ["dep:criterion"]
 # Heap profiling via jemalloc: binaries built with this feature install
@@ -19,6 +19,8 @@ jemalloc-profiling = [
 ]
 
 [dependencies]
+# Optional: only pulled in by the `testing` feature, for `TempCatalog`.
+tempfile = { workspace = true, optional = true }
 anyhow.workspace = true
 tempo-api = { path = "../tempo-api" }
 
@@ -114,6 +116,8 @@ common = { path = ".", features = ["testing"] }
 tokio = { workspace = true, features = ["test-util"] }
 testcontainers-modules.workspace = true
 testcontainers.workspace = true
+# Also a dev-dependency: `testing` compiles under plain `cfg(test)` too,
+# where the feature (and so `dep:tempfile`) is not enabled.
 tempfile.workspace = true
 figment = { workspace = true, features = ["test"] }
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs", "testing"] }

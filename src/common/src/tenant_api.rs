@@ -474,10 +474,13 @@ mod tests {
     #[tokio::test]
     async fn test_create_default_tables() {
         let mut config = Configuration::default();
-        config.schema.catalog_uri = format!(
-            "sqlite:file:signaldb_tenant_api_tables_{}?mode=memory&cache=shared",
-            uuid::Uuid::new_v4()
-        );
+        // A file-backed catalog: a named in-memory database lives only while a
+        // connection to it is open, and the code under test builds and drops
+        // its own pool. Holding a second manager open does not help — sqlx
+        // pools are lazy and reap idle connections, so a held manager is not a
+        // held connection.
+        let temp_catalog = crate::testing::TempCatalog::new();
+        config.schema.catalog_uri = temp_catalog.uri().to_string();
         config.auth.tenants = vec![crate::config::TenantConfig {
             id: "acme".to_string(),
             slug: "acme".to_string(),
@@ -490,10 +493,6 @@ mod tests {
         }];
         let mut api = TenantApi::new(config.clone());
 
-        // A named shared-cache in-memory SQLite database lives only as long as
-        // some connection to it is open, and provisioning builds and drops its
-        // own catalog pool. Open the verifying manager first and hold it for
-        // the whole test, or the database can be torn down before we read it.
         let manager = crate::CatalogManager::new(config).await.unwrap();
 
         api.create_default_tables("acme")

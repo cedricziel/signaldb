@@ -42,6 +42,9 @@ path = "src/main.rs"
 tokio-test.workspace = true
 tower.workspace = true
 tempfile.workspace = true
+# `common::testing::TempCatalog` — provisioning tests need a catalog that
+# outlives the pool the handler under test creates and drops.
+common = { workspace = true, features = ["testing"] }
 
 [package.metadata.cargo-machete]
 ignored = ["tokio-test"]

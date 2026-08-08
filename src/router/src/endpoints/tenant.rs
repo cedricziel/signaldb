@@ -359,10 +359,12 @@ mod tests {
     /// "Would create table ...").
     #[tokio::test]
     async fn create_tenant_tables_actually_creates_them() {
-        let catalog_uri = format!(
-            "sqlite:file:signaldb_router_tables_{}?mode=memory&cache=shared",
-            uuid::Uuid::new_v4()
-        );
+        // A file-backed catalog: a named in-memory database lives only
+        // while a connection is open, and the code under test builds and
+        // drops its own pool. Holding a second manager does not help —
+        // sqlx pools are lazy and reap idle connections.
+        let temp_catalog = common::testing::TempCatalog::new();
+        let catalog_uri = temp_catalog.uri().to_string();
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let mut config = Configuration {
             auth: AuthConfig {
@@ -385,10 +387,6 @@ mod tests {
         };
         config.schema.catalog_uri = catalog_uri.clone();
 
-        // A named shared-cache in-memory SQLite database lives only as long as
-        // some connection to it is open, and the handler builds and drops its
-        // own catalog pool. Open the verifying manager first and hold it for
-        // the whole test, or the database can be torn down before we read it.
         let manager = common::CatalogManager::new(config.clone()).await.unwrap();
 
         let app = create_router(RouterAppState::new(catalog, config.clone()));
@@ -438,15 +436,15 @@ mod tests {
     async fn create_tenant_tables_for_a_database_only_tenant() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let mut config = Configuration::default();
-        config.schema.catalog_uri = format!(
-            "sqlite:file:signaldb_router_dbtenant_{}?mode=memory&cache=shared",
-            uuid::Uuid::new_v4()
-        );
+        // A file-backed catalog: a named in-memory database lives only while a
+        // connection to it is open, and the handler builds and drops its own
+        // pool. Holding a second manager open does not help — sqlx pools are
+        // lazy and reap idle connections.
+        let temp_catalog = common::testing::TempCatalog::new();
+        config.schema.catalog_uri = temp_catalog.uri().to_string();
         // Deliberately empty: the tenant is registered only in the catalog.
         config.auth.tenants = vec![];
 
-        // Held open for the whole test so the named shared-cache in-memory
-        // database survives the handler's own catalog pool being dropped.
         let manager = common::CatalogManager::new(config.clone()).await.unwrap();
 
         catalog
