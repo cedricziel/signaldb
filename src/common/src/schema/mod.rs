@@ -953,10 +953,13 @@ traces = ["http.method"]
     #[tokio::test]
     async fn test_create_default_tables_for_tenant() {
         let mut config = Configuration::default();
-        config.schema.catalog_uri = format!(
-            "sqlite:file:signaldb_registry_tables_{}?mode=memory&cache=shared",
-            uuid::Uuid::new_v4()
-        );
+        // A file-backed catalog: a named in-memory database lives only while a
+        // connection to it is open, and the code under test builds and drops
+        // its own pool. Holding a second manager open does not help — sqlx
+        // pools are lazy and reap idle connections, so a held manager is not a
+        // held connection.
+        let temp_catalog = crate::testing::TempCatalog::new();
+        config.schema.catalog_uri = temp_catalog.uri().to_string();
         config.auth.tenants = vec![crate::config::TenantConfig {
             id: "acme".to_string(),
             slug: "acme".to_string(),
@@ -969,11 +972,6 @@ traces = ["http.method"]
         }];
         let mut registry = TenantSchemaRegistry::new(config.clone());
 
-        // A named shared-cache in-memory SQLite database lives only as long as
-        // some connection to it is open, and `create_default_tables_for_tenant`
-        // builds and drops its own catalog pool. Open the verifying manager
-        // first and hold it for the whole test, or the database can be torn
-        // down before we read it.
         let manager = crate::CatalogManager::new(config).await.unwrap();
 
         registry
@@ -996,10 +994,13 @@ traces = ["http.method"]
     #[tokio::test]
     async fn create_default_tables_refuses_a_cross_tenant_slug_collision() {
         let mut config = Configuration::default();
-        config.schema.catalog_uri = format!(
-            "sqlite:file:signaldb_collision_{}?mode=memory&cache=shared",
-            uuid::Uuid::new_v4()
-        );
+        // A file-backed catalog: a named in-memory database lives only while a
+        // connection to it is open, and the code under test builds and drops
+        // its own pool. Holding a second manager open does not help — sqlx
+        // pools are lazy and reap idle connections, so a held manager is not a
+        // held connection.
+        let temp_catalog = crate::testing::TempCatalog::new();
+        config.schema.catalog_uri = temp_catalog.uri().to_string();
         // Config tenant `team-a` owns slug `shared`.
         config.auth.tenants = vec![crate::config::TenantConfig {
             id: "team-a".to_string(),
@@ -1022,9 +1023,6 @@ traces = ["http.method"]
         let mut registry =
             TenantSchemaRegistry::new(config.clone()).with_tenant_source(source.clone());
 
-        // Held open for the whole test so the named shared-cache in-memory
-        // database survives provisioning's own pool: a torn-down database
-        // would read as empty and pass the assertion below for free.
         let manager = crate::CatalogManager::new(config).await.unwrap();
 
         let err = registry
