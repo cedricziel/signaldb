@@ -50,6 +50,17 @@
   color: var(--text);
 }
 
+.group-custom input {
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--text);
+  width: 160px;
+}
+
 .trace-id-form input {
   flex: 0 1 340px;
   border: 1px solid var(--border);

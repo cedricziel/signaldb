@@ -1,83 +1,91 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { TracesView } from "./TracesView";
+import * as traceGroupsApi from "../../api/traceGroups";
+import type { TraceGroup } from "../../api/traceGroups";
+import * as traceGroupMembersApi from "../../api/traceGroupMembers";
+import type { TraceGroupMember } from "../../api/traceGroupMembers";
+import * as unresolvedGroupApi from "./unresolvedGroup";
+
+// The group table is a server-side aggregate (see api/traceGroups) — mocked
+// at the module boundary rather than at the network layer, the way the rest
+// of this file mocks `tempoSearch`/`fetchTraceVolume` via `stubFetchRoutes`.
+// `importOriginal` keeps the real `groupsFromIrResponse`/`buildGroupDoc` etc.
+// (covered by api/traceGroups.test.ts) and swaps only the network-touching
+// entry point.
+vi.mock("../../api/traceGroups", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/traceGroups")>();
+  return { ...actual, fetchTraceGroups: vi.fn() };
+});
+
+// Same treatment for the group drill-in (api/traceGroupMembers.test.ts covers
+// buildMembersDoc/membersFromIrResponse) and the #1070 unresolved-dimension
+// guard's window-total query (unresolvedGroup.test.ts covers its doc/shape).
+vi.mock("../../api/traceGroupMembers", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/traceGroupMembers")>();
+  return { ...actual, fetchTraceGroupMembers: vi.fn() };
+});
+vi.mock("./unresolvedGroup", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./unresolvedGroup")>();
+  return { ...actual, fetchWindowTotal: vi.fn() };
+});
+
+const fetchTraceGroups = vi.mocked(traceGroupsApi.fetchTraceGroups);
+const fetchTraceGroupMembers = vi.mocked(
+  traceGroupMembersApi.fetchTraceGroupMembers,
+);
+const fetchWindowTotal = vi.mocked(unresolvedGroupApi.fetchWindowTotal);
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function searchTrace(
-  traceID: string,
-  service: string,
-  name: string,
-  startNs: string,
-  durationMs: number,
-  env: string,
-  status = "ok",
-) {
-  return {
-    traceID,
-    rootServiceName: service,
-    rootTraceName: name,
-    startTimeUnixNano: startNs,
-    durationMs,
-    spanSets: [
-      {
-        matched: 1,
-        spans: [
-          {
-            spanID: `${traceID}-root`,
-            startTimeUnixNano: startNs,
-            durationNanos: String(durationMs * 1e6),
-            name,
-            serviceName: service,
-            status,
-            attributes: {
-              "resource.env": {
-                key: "resource.env",
-                value: { stringValue: env },
-              },
-            },
-          },
-        ],
-      },
-    ],
-  };
+beforeEach(() => {
+  fetchTraceGroups.mockReset();
+  fetchTraceGroupMembers.mockReset();
+  fetchWindowTotal.mockReset();
+  // Quiet defaults so tests that don't care about a particular query (trace
+  // detail, facet sidebar, ...) don't each have to stub it.
+  fetchTraceGroups.mockResolvedValue({ groups: [], truncated: false });
+  fetchTraceGroupMembers.mockResolvedValue([]);
+  fetchWindowTotal.mockResolvedValue(0);
+});
+
+function group(
+  values: (string | null)[],
+  count: number,
+  errors: number,
+  p50Ms: number,
+  p95Ms: number,
+  lastNs: string,
+): TraceGroup {
+  return { values, count, errors, p50Ms, p95Ms, lastNs };
 }
 
-const SEARCH_BODY = {
-  traces: [
-    searchTrace(
-      "t1cafe",
-      "gateway",
-      "POST /api/checkout",
-      "1700000000000000000",
-      412,
-      "prod",
-      "error",
-    ),
-    searchTrace(
-      "t2feed",
-      "gateway",
-      "POST /api/checkout",
-      "1700000060000000000",
-      88,
-      "staging",
-    ),
-    searchTrace(
-      "t3beef",
-      "auth",
-      "GET /login",
-      "1700000030000000000",
-      51,
-      "prod",
-    ),
-  ],
-  metrics: {},
-};
+function member(
+  traceId: string,
+  spanId: string,
+  spanName: string,
+  serviceName: string,
+  startNs: string,
+  durationMs: number,
+  statusCode = "Ok",
+): TraceGroupMember {
+  return {
+    traceId,
+    spanId,
+    parentSpanId: null,
+    spanName,
+    serviceName,
+    startNs,
+    durationNanos: String(durationMs * 1e6),
+    statusCode,
+  };
+}
 
 const TRACE_BODY = {
   traceID: "t1cafe",
@@ -130,34 +138,252 @@ function renderView(state: Partial<ExploreState> = {}) {
 }
 
 describe("TracesView group list", () => {
-  it("groups traces by root, largest group first", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
-    renderView();
-    const rows = await screen.findAllByRole("row");
-    // Header row + one row per group, not per trace.
-    expect(rows).toHaveLength(3);
-    expect(rows[1]).toHaveTextContent("POST /api/checkout");
-    expect(rows[1]).toHaveTextContent("2");
-    expect(rows[2]).toHaveTextContent("GET /login");
+  // Every test here renders the group table, which fires the (unrelated)
+  // span-volume aggregate too — an unmatched fetch 404s harmlessly, so an
+  // empty stub is enough unless a test cares about the volume response.
+  beforeEach(() => {
+    stubFetchRoutes([]);
   });
 
-  it("shows rate, error rate, and latency percentiles per group", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+  it("renders the server's aggregates verbatim", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [
+        group(["POST /api/checkout"], 42, 3, 12, 91, "1700000000000000000"),
+        group(["GET /login"], 7, 0, 4, 9, "1700000030000000000"),
+      ],
+      truncated: false,
+    });
     renderView();
-    const rows = await screen.findAllByRole("row");
-    expect(rows[0]).toHaveTextContent("Rate");
-    expect(rows[0]).toHaveTextContent("Errors");
-    expect(rows[0]).toHaveTextContent("P50");
-    // Default range is 1h; 2 checkout traces, one of them errored.
-    expect(rows[1]).toHaveTextContent("2/h");
-    expect(rows[1]).toHaveTextContent("50%");
-    expect(rows[2]).toHaveTextContent("1/h");
+    // `findAllByRole` would race the pending skeleton rows (also role="row")
+    // — wait for real content first.
+    await screen.findByText("POST /api/checkout");
+    const rows = screen.getAllByRole("row");
+    // Header row + one row per group.
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveTextContent("POST /api/checkout");
+    expect(rows[1]).toHaveTextContent("42");
+    expect(rows[1]).toHaveTextContent("7%"); // 3 errors / 42 = 7%, rounded
+    expect(rows[1]).toHaveTextContent("12 ms");
+    expect(rows[1]).toHaveTextContent("91 ms");
+    expect(rows[2]).toHaveTextContent("GET /login");
+    expect(rows[2]).toHaveTextContent("7");
+  });
+
+  it("keeps a group with zero errors listed, showing a dash", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [group(["GET /health"], 5, 0, 1, 2, "1700000000000000000")],
+      truncated: false,
+    });
+    renderView();
+    await screen.findByText("GET /health");
+    const row = screen.getAllByRole("row")[1]!;
+    expect(row).toHaveTextContent("GET /health");
+    expect(row).toHaveTextContent("–");
+  });
+
+  it("does not change the displayed aggregates when the row limit changes", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [
+        group(["POST /api/checkout"], 42, 0, 12, 91, "1700000000000000000"),
+      ],
+      truncated: false,
+    });
+    const small = renderWithClient(
+      <TracesView
+        state={{ ...DEFAULT_STATE, signal: "traces", limit: 10 }}
+        update={vi.fn()}
+      />,
+    );
+    await within(small.container).findByText("POST /api/checkout");
+    expect(
+      within(small.container).getByRole("row", {
+        name: /POST \/api\/checkout/,
+      }),
+    ).toHaveTextContent("42");
+    small.unmount();
+
+    const big = renderWithClient(
+      <TracesView
+        state={{ ...DEFAULT_STATE, signal: "traces", limit: 5000 }}
+        update={vi.fn()}
+      />,
+    );
+    await within(big.container).findByText("POST /api/checkout");
+    expect(
+      within(big.container).getByRole("row", { name: /POST \/api\/checkout/ }),
+    ).toHaveTextContent("42");
+  });
+
+  it("drills into a group on click, building the composite key from group values", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [
+        group(
+          ["POST /api/checkout", "gateway"],
+          2,
+          0,
+          10,
+          20,
+          "1700000000000000000",
+        ),
+      ],
+      truncated: false,
+    });
+    const update = renderView({ groupBy: "span.name,service.name" });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "POST /api/checkout" }),
+    );
+    expect(update).toHaveBeenCalledWith({
+      group: "POST /api/checkoutgateway",
+    });
+  });
+
+  it("maps a null dimension value to the not-set sentinel in the drill-in key", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [group([null], 3, 0, 5, 6, "1700000000000000000")],
+      truncated: false,
+    });
+    const update = renderView();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "(not set)" }),
+    );
+    expect(update).toHaveBeenCalledWith({ group: "(not set)" });
+  });
+
+  it("issues a new query with a different sort on header click, rather than re-sorting the page", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [
+        group(["POST /api/checkout"], 2, 0, 10, 20, "1700000000000000000"),
+      ],
+      truncated: false,
+    });
+    renderView();
+    await screen.findByText("POST /api/checkout");
+    expect(fetchTraceGroups).toHaveBeenCalledTimes(1);
+    expect(fetchTraceGroups).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      { key: "n", dir: "desc" },
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "P95" }));
+    expect(fetchTraceGroups).toHaveBeenCalledTimes(2);
+    expect(fetchTraceGroups).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      { key: "p95", dir: "desc" },
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "P95" }));
+    expect(fetchTraceGroups).toHaveBeenCalledTimes(3);
+    expect(fetchTraceGroups).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      { key: "p95", dir: "asc" },
+    );
+  });
+
+  it("sorts the Rate column by count — the same ordering over a fixed window", async () => {
+    renderView();
+    await screen.findByLabelText("Group by");
+    await userEvent.click(screen.getByRole("button", { name: "Rate" }));
+    expect(fetchTraceGroups).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      { key: "n", dir: "asc" },
+    );
+  });
+
+  it("shows a truncation note only when the result is truncated", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [group(["a"], 1, 0, 1, 1, "1")],
+      truncated: true,
+    });
+    const truncated = renderWithClient(
+      <TracesView
+        state={{ ...DEFAULT_STATE, signal: "traces" }}
+        update={vi.fn()}
+      />,
+    );
+    expect(
+      await within(truncated.container).findByText(/top 500 groups/i),
+    ).toBeInTheDocument();
+    truncated.unmount();
+
+    fetchTraceGroups.mockResolvedValue({
+      groups: [group(["a"], 1, 0, 1, 1, "1")],
+      truncated: false,
+    });
+    const full = renderWithClient(
+      <TracesView
+        state={{ ...DEFAULT_STATE, signal: "traces" }}
+        update={vi.fn()}
+      />,
+    );
+    await within(full.container).findByText("a");
+    expect(
+      within(full.container).queryByText(/top 500 groups/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders skeleton rows while the query is pending", async () => {
+    fetchTraceGroups.mockImplementation(() => new Promise(() => {}));
+    const { container } = renderWithClient(
+      <TracesView
+        state={{ ...DEFAULT_STATE, signal: "traces" }}
+        update={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole("table")).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expect(container.querySelectorAll(".skeleton-bar").length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it("labels the count column by grain and refetches when the grain toggle changes", async () => {
+    const update = renderView();
+    expect(
+      await screen.findByRole("columnheader", { name: "Traces" }),
+    ).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("Grain"), "spans");
+    expect(update).toHaveBeenCalledWith({ grain: "spans", group: "" });
+  });
+
+  it("shows the Spans column label at span grain", async () => {
+    renderView({ grain: "spans" });
+    expect(
+      await screen.findByRole("columnheader", { name: "Spans" }),
+    ).toBeInTheDocument();
+  });
+
+  it("suggests span grain when trace grain finds nothing under active filters", async () => {
+    renderView({
+      grain: "traces",
+      traceFilters: [{ field: "name", value: "charge" }],
+    });
+    expect(await screen.findByText(/root span/i)).toBeInTheDocument();
+    expect(screen.getByText(/span grain/i)).toBeInTheDocument();
+  });
+
+  it("does not suggest span grain when nothing is filtered", async () => {
+    renderView();
+    await screen.findByText(/no groups in this time range/i);
+    expect(screen.queryByText(/span grain/i)).not.toBeInTheDocument();
   });
 
   it("adds a secondary dimension via the then-by picker", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
     const update = renderView();
-    await screen.findByRole("button", { name: "POST /api/checkout" });
+    await screen.findByLabelText("Then by");
     await userEvent.selectOptions(
       screen.getByLabelText("Then by"),
       "service.name",
@@ -168,154 +394,144 @@ describe("TracesView group list", () => {
     });
   });
 
-  it("renders one column per dimension and drills in with a composite key", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
-    const update = renderView({ groupBy: "span.name,service.name" });
-    const rows = await screen.findAllByRole("row");
-    expect(rows).toHaveLength(3);
-    expect(rows[1]).toHaveTextContent("POST /api/checkout");
-    expect(rows[1]).toHaveTextContent("gateway");
-    await userEvent.click(
-      screen.getByRole("button", { name: "POST /api/checkout" }),
+  it("lets a user type a custom attribute as a grouping dimension", async () => {
+    const update = renderView();
+    await userEvent.type(
+      screen.getByLabelText("Custom dimension"),
+      "http.route{enter}",
     );
-    expect(update).toHaveBeenCalledWith({
-      group: "POST /api/checkout\u001fgateway",
-    });
+    expect(update).toHaveBeenCalledWith({ groupBy: "http.route", group: "" });
   });
 
-  it("dives into a group on click", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
-    const update = renderView();
-    await userEvent.click(
-      await screen.findByRole("button", { name: "POST /api/checkout" }),
-    );
-    expect(update).toHaveBeenCalledWith({ group: "POST /api/checkout" });
-  });
-
-  it("offers observed attributes as grouping dimensions", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
-    const update = renderView();
-    // Attribute options appear once results arrive.
-    await screen.findByRole("button", { name: "POST /api/checkout" });
-    await userEvent.selectOptions(
-      screen.getByLabelText("Group by"),
+  it("keeps a non-builtin groupBy selectable in the picker", async () => {
+    renderView({ groupBy: "resource.env" });
+    expect(await screen.findByLabelText("Group by")).toHaveValue(
       "resource.env",
     );
-    expect(update).toHaveBeenCalledWith({
-      groupBy: "resource.env",
-      group: "",
-    });
   });
 
-  it("groups by the selected attribute dimension", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
-    renderView({ groupBy: "resource.env" });
-    const rows = await screen.findAllByRole("row");
-    expect(rows).toHaveLength(3);
-    expect(rows[1]).toHaveTextContent("prod");
-    expect(rows[1]).toHaveTextContent("2");
-    expect(rows[2]).toHaveTextContent("staging");
-  });
-
-  it("sorts by a clicked column and flips on the second click", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+  it("surfaces group aggregate errors", async () => {
+    fetchTraceGroups.mockRejectedValue(new Error("boom"));
     renderView();
-    await screen.findByRole("button", { name: "POST /api/checkout" });
-    // Scope to the table: the facet sidebar also offers a "span.name" button.
-    const header = () =>
-      within(screen.getByRole("table")).getByRole("button", {
-        name: "span.name",
-      });
-    // String column: first click sorts ascending.
-    await userEvent.click(header());
-    let rows = screen.getAllByRole("row");
-    expect(rows[1]).toHaveTextContent("GET /login");
-    expect(rows[1]?.closest("table")?.querySelector("[aria-sort]")).toBe(
-      rows[0]?.querySelector("th"),
-    );
-    await userEvent.click(header());
-    rows = screen.getAllByRole("row");
-    expect(rows[1]).toHaveTextContent("POST /api/checkout");
-  });
-
-  it("sorts metric columns descending first", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
-    renderView();
-    await screen.findByRole("button", { name: "POST /api/checkout" });
-    // checkout has 50% errors, login none: desc keeps checkout on top,
-    // the flip to ascending puts login first.
-    await userEvent.click(screen.getByRole("button", { name: "Errors" }));
-    expect(screen.getAllByRole("row")[1]).toHaveTextContent(
-      "POST /api/checkout",
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Errors" }));
-    expect(screen.getAllByRole("row")[1]).toHaveTextContent("GET /login");
+    expect(await screen.findByRole("alert")).toHaveTextContent(/boom/);
   });
 
   it("opens a trace by pasted id", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: { metrics: {} } }]);
     const update = renderView();
     await userEvent.type(screen.getByLabelText("Trace ID"), "  deadbeef  ");
     await userEvent.click(screen.getByRole("button", { name: "Open" }));
     expect(update).toHaveBeenCalledWith({ trace: "deadbeef" });
   });
+});
 
-  it("surfaces search errors", async () => {
-    stubFetchRoutes([
-      { match: "/tempo/api/search", body: { error: "boom" }, status: 500 },
-    ]);
+describe("TracesView unresolvable-dimension guard (#1070)", () => {
+  beforeEach(() => {
+    stubFetchRoutes([]);
+  });
+
+  it("reports an unresolvable dimension instead of rendering the bogus row", async () => {
+    // Signature: exactly one null-labelled group whose count equals the
+    // window total under the same scope.
+    fetchTraceGroups.mockResolvedValue({
+      groups: [group([null], 1000, 0, 1, 1, "1")],
+      truncated: false,
+    });
+    fetchWindowTotal.mockResolvedValue(1000);
+    renderView({ groupBy: "http.rotue" });
+    // The picked dimension also shows up in the "Group by" select and the
+    // (now moot) column header, so scope the name check to the note itself.
+    const note = await screen.findByText(/isn.t queryable/i);
+    expect(note).toHaveTextContent("http.rotue");
+    expect(screen.queryByText("(not set)")).not.toBeInTheDocument();
+  });
+
+  it("still renders a genuine null group whose count is under the window total", async () => {
+    // Same shape (one null group), but its count is a strict subset of the
+    // window — a real "(not set)" bucket, not an unresolved field.
+    fetchTraceGroups.mockResolvedValue({
+      groups: [group([null], 3, 0, 1, 1, "1")],
+      truncated: false,
+    });
+    fetchWindowTotal.mockResolvedValue(1000);
     renderView();
-    expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
+    expect(await screen.findByText("(not set)")).toBeInTheDocument();
+    expect(screen.queryByText(/isn.t queryable/i)).not.toBeInTheDocument();
+  });
+
+  it("renders normally, without checking the window total, when a null group sits alongside real groups", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [
+        group([null], 1000, 0, 1, 1, "1"),
+        group(["GET /health"], 5, 0, 1, 1, "1"),
+      ],
+      truncated: false,
+    });
+    renderView();
+    await screen.findByText("(not set)");
+    expect(screen.getByText("GET /health")).toBeInTheDocument();
+    // The result already isn't the unresolved shape, so the companion
+    // window-total query must never fire.
+    expect(fetchWindowTotal).not.toHaveBeenCalled();
   });
 });
 
 describe("TracesView group detail", () => {
-  it("lists only the selected group's traces, newest first", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+  it("lists the group's members, newest first", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1cafe", "s1", "POST /api/checkout", "gateway", "100", 412),
+      member("t2feed", "s2", "POST /api/checkout", "gateway", "200", 88),
+    ]);
     renderView({ group: "POST /api/checkout" });
-    const rows = await screen.findAllByRole("row");
+    // `findAllByRole` would race the pending skeleton rows (also
+    // role="row") — wait for real content first.
+    await screen.findByText("t2feed");
+    const rows = screen.getAllByRole("row");
     expect(rows).toHaveLength(3);
     expect(rows[1]).toHaveTextContent("t2feed");
     expect(rows[2]).toHaveTextContent("t1cafe");
-    expect(screen.queryByText("t3beef")).not.toBeInTheDocument();
   });
 
-  it("filters by the active dimension, not just span name", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
-    renderView({ groupBy: "resource.env", group: "prod" });
-    const rows = await screen.findAllByRole("row");
-    expect(rows).toHaveLength(3);
-    expect(screen.getByText("t1cafe")).toBeInTheDocument();
-    expect(screen.getByText("t3beef")).toBeInTheDocument();
-    expect(screen.queryByText("t2feed")).not.toBeInTheDocument();
-  });
-
-  it("filters by every dimension of a composite group", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+  it("parses a resolvable group key into per-dimension values for the members query", async () => {
     renderView({
       groupBy: "span.name,service.name",
-      group: "POST /api/checkout\u001fgateway",
+      group: "POST /api/checkoutgateway",
     });
-    // Title shows the values joined for humans.
-    expect(
-      await screen.findByRole("heading", {
-        name: "POST /api/checkout · gateway",
-      }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("t1cafe")).toBeInTheDocument();
-    expect(screen.getByText("t2feed")).toBeInTheDocument();
-    expect(screen.queryByText("t3beef")).not.toBeInTheDocument();
+    await screen.findByRole("heading", {
+      name: "POST /api/checkout · gateway",
+    });
+    expect(fetchTraceGroupMembers).toHaveBeenCalledWith(
+      ["span.name", "service.name"],
+      ["POST /api/checkout", "gateway"],
+      expect.anything(),
+      [],
+      "traces",
+      500,
+    );
+  });
+
+  it("maps the not-set sentinel back to null for the members query", async () => {
+    renderView({ groupBy: "resource.env", group: "(not set)" });
+    await screen.findByRole("heading", { name: "(not set)" });
+    expect(fetchTraceGroupMembers).toHaveBeenCalledWith(
+      ["resource.env"],
+      [null],
+      expect.anything(),
+      [],
+      "traces",
+      500,
+    );
   });
 
   it("opens a trace on click", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1cafe", "s1", "POST /api/checkout", "gateway", "100", 412),
+    ]);
     const update = renderView({ group: "POST /api/checkout" });
     await userEvent.click(await screen.findByText("t1cafe"));
     expect(update).toHaveBeenCalledWith({ trace: "t1cafe" });
   });
 
   it("navigates back to the group list", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
     const update = renderView({ group: "POST /api/checkout" });
     await userEvent.click(
       await screen.findByRole("button", { name: "← groups" }),
@@ -324,13 +540,48 @@ describe("TracesView group detail", () => {
   });
 
   it("notes when the group has no traces in range", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: { metrics: {} } }]);
     renderView({ group: "POST /api/checkout" });
     expect(await screen.findByText(/no traces/i)).toBeInTheDocument();
   });
 
-  it("sorts the trace list by a clicked column", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/search", body: SEARCH_BODY }]);
+  it("states the list is bounded by the row limit", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1cafe", "s1", "POST /api/checkout", "gateway", "100", 412),
+    ]);
+    renderView({ group: "POST /api/checkout", limit: 250 });
+    await screen.findByText("t1cafe");
+    expect(screen.getByText(/up to 250 traces/i)).toBeInTheDocument();
+  });
+
+  it("renders skeleton rows while the drill-in query is pending", async () => {
+    fetchTraceGroupMembers.mockImplementation(() => new Promise(() => {}));
+    const { container } = renderWithClient(
+      <TracesView
+        state={{
+          ...DEFAULT_STATE,
+          signal: "traces",
+          group: "POST /api/checkout",
+        }}
+        update={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("table")).toHaveAttribute("aria-busy", "true");
+    expect(container.querySelectorAll(".skeleton-bar").length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it("surfaces member query errors", async () => {
+    fetchTraceGroupMembers.mockRejectedValue(new Error("boom"));
+    renderView({ group: "POST /api/checkout" });
+    expect(await screen.findByRole("alert")).toHaveTextContent(/boom/);
+  });
+
+  it("sorts the member list by a clicked column", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1cafe", "s1", "POST /api/checkout", "gateway", "100", 412),
+      member("t2feed", "s2", "POST /api/checkout", "gateway", "200", 88),
+    ]);
     renderView({ group: "POST /api/checkout" });
     await screen.findByText("t1cafe");
     // Newest first by default; duration sorts descending first.
@@ -399,6 +650,20 @@ describe("TracesView detail", () => {
     renderView({ trace: "missing" });
     expect(await screen.findByRole("alert")).toHaveTextContent(/404/);
   });
+
+  it("renders a skeleton while the trace is loading", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    const { container } = renderWithClient(
+      <TracesView
+        state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
+        update={vi.fn()}
+      />,
+    );
+    expect(container.querySelector('[aria-busy="true"]')).toBeTruthy();
+    expect(container.querySelectorAll(".skeleton-bar").length).toBeGreaterThan(
+      0,
+    );
+  });
 });
 
 const VOLUME_BODY = {
@@ -424,10 +689,7 @@ const VOLUME_BODY = {
 };
 
 describe("TracesView span-volume chart", () => {
-  const routes = [
-    { match: "/tempo/api/search", body: SEARCH_BODY },
-    { match: "/api/v1/query", body: VOLUME_BODY },
-  ];
+  const routes = [{ match: "/api/v1/query", body: VOLUME_BODY }];
 
   it("renders span volume stacked by status", async () => {
     stubFetchRoutes(routes);
@@ -457,15 +719,12 @@ describe("TracesView span-volume chart", () => {
     expect(JSON.stringify(doc)).not.toContain("limit");
   });
 
-  it("keeps the chart when the trace list is empty", async () => {
-    stubFetchRoutes([
-      { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
-      { match: "/api/v1/query", body: VOLUME_BODY },
-    ]);
+  it("keeps the chart visible when the group table has nothing to show", async () => {
+    stubFetchRoutes(routes);
     renderView();
     await screen.findByRole("img", { name: /span volume/i });
     expect(
-      screen.getByText(/no traces in this time range/i),
+      screen.getByText(/no groups in this time range/i),
     ).toBeInTheDocument();
   });
 });
@@ -480,33 +739,23 @@ describe("TracesView facet filtering", () => {
     ],
     rows: [["gateway", 2]],
   };
-  const routes = [
-    { match: "/tempo/api/search", body: SEARCH_BODY },
-    { match: "/api/v1/query", body: FACET_BODY },
-  ];
+  const routes = [{ match: "/api/v1/query", body: FACET_BODY }];
 
-  it("sends the compiled TraceQL selector to the search", async () => {
+  it("sends the compiled TraceQL selector as the active filter's query", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [group(["POST /api/checkout"], 1, 0, 1, 1, "1")],
+      truncated: false,
+    });
     stubFetchRoutes(routes);
     renderView({ traceFilters: [{ field: "service.name", value: "gateway" }] });
-    await screen.findByRole("button", { name: "POST /api/checkout" });
-    const urls = vi
-      .mocked(globalThis.fetch)
-      .mock.calls.map(([i]) => String(i instanceof Request ? i.url : i))
-      .filter((u) => u.includes("/tempo/api/search"));
-    // Compare the decoded param: URLSearchParams encodes spaces as "+".
-    const q = new URL(urls[0]!, "http://localhost").searchParams.get("q");
-    expect(q).toBe('{ resource.service.name = "gateway" }');
-  });
-
-  it("omits the query entirely when nothing is selected", async () => {
-    stubFetchRoutes(routes);
-    renderView();
-    await screen.findByRole("button", { name: "POST /api/checkout" });
-    const urls = vi
-      .mocked(globalThis.fetch)
-      .mock.calls.map(([i]) => String(i instanceof Request ? i.url : i))
-      .filter((u) => u.includes("/tempo/api/search"));
-    expect(urls[0]).not.toContain("q=");
+    await screen.findByText("POST /api/checkout");
+    expect(fetchTraceGroups).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      [{ field: "service.name", value: "gateway" }],
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it("shows an active filter as a removable chip", async () => {
@@ -524,7 +773,9 @@ describe("TracesView facet filtering", () => {
   it("narrows the span-volume chart with the same filters", async () => {
     stubFetchRoutes(routes);
     renderView({ traceFilters: [{ field: "service.name", value: "gateway" }] });
-    await screen.findByRole("button", { name: "POST /api/checkout" });
+    // Sync point: the group table's default (empty) mock has resolved once
+    // this text is up, and the volume fetch fires alongside it.
+    await screen.findByText(/no groups/i);
     const bodies = await Promise.all(
       vi
         .mocked(globalThis.fetch)

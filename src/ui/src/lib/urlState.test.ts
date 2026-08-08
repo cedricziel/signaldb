@@ -95,6 +95,26 @@ describe("buildSearch", () => {
     expect(parseExploreState("").groupBy).toBe("span.name");
   });
 
+  // A shared traces link must reproduce whether the table counts traces or
+  // spans — the two answer different questions from the same window.
+  it("defaults the grouping grain to traces", () => {
+    expect(parseExploreState("").grain).toBe("traces");
+  });
+
+  it("omits the grain param at the default", () => {
+    expect(buildSearch(DEFAULT_STATE)).not.toContain("grain");
+  });
+
+  it("round-trips the span grain", () => {
+    const search = buildSearch({ ...DEFAULT_STATE, grain: "spans" });
+    expect(search).toContain("grain=spans");
+    expect(parseExploreState(search).grain).toBe("spans");
+  });
+
+  it("falls back to traces for an unknown grain rather than rejecting the URL", () => {
+    expect(parseExploreState("?grain=sideways").grain).toBe("traces");
+  });
+
   it("round-trips the profiles signal's selectors", () => {
     const state = {
       ...DEFAULT_STATE,

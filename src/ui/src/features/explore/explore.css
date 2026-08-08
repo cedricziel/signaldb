@@ -761,3 +761,49 @@ span.level-debug {
   border-radius: 3px;
   padding: 1px 4px;
 }
+
+/* Loading placeholders (see Skeleton.tsx). The sweep is a moving highlight
+   over a flat base, so it reads as "content arriving" rather than progress
+   toward a known total — which a spinner or bar would falsely imply. */
+.skeleton-bar {
+  display: inline-block;
+  height: 0.85em;
+  vertical-align: middle;
+  border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    var(--surface2) 25%,
+    var(--surface3) 37%,
+    var(--surface2) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-sweep {
+  from {
+    background-position: 100% 50%;
+  }
+  to {
+    background-position: 0 50%;
+  }
+}
+
+.skeleton-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 0;
+}
+
+/* Held at the real row height so the table does not resize when rows land. */
+.skeleton-row td {
+  padding: 6px 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-bar {
+    animation: none !important;
+    background: var(--surface2);
+  }
+}

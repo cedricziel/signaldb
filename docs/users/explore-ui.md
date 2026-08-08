@@ -69,6 +69,44 @@ fields the query API can enumerate exactly today; attribute facets follow once
 [#1073](https://github.com/cedricziel/signaldb/issues/1073) lands, and will
 appear in the same sidebar without changing how it works.
 
+### The group table
+
+Traces are presented grouped, one row per distinct value of the grouping
+dimensions, carrying **RED** for that group: request count, rate over the
+window, error count, and p50/p95 duration, plus when the group was last seen.
+
+Every one of those numbers is a server-side aggregate over the whole selected
+window. The row budget (500 groups) bounds how many _groups_ come back, never
+the records they are computed from — so a group's p95 is the p95 of all its
+records in the window, and changing the row limit does not move it. When more
+than 500 groups exist the table says so; it does not claim a total, because the
+number of distinct groups is not something the query returns.
+
+**Grain** selects what a row counts:
+
+| Grain    | A row counts        | Duration is          | Filters match          |
+| -------- | ------------------- | -------------------- | ---------------------- |
+| `traces` | traces (root spans) | the trace end-to-end | the **root** span only |
+| `spans`  | matching spans      | each span            | any span               |
+
+Trace grain is the default. Because it scopes the query to root spans, a filter
+on a field that only ever appears on a child span — a `db.system` on an inner
+call, say — legitimately matches nothing and the table is empty; switch to span
+grain to see those matches. Matching a trace because _any_ of its spans matches,
+while still grouping by the root, is a structural query and is not available
+yet. The grain lives in the URL, so a shared link reproduces it.
+
+**Grouping** is by span name and optionally a second dimension. Beyond the
+built-ins (`span.name`, `service.name`) you can type any attribute name —
+`http.route`, `deployment.environment` — and the server groups by it directly,
+including a bucket for records carrying no value for it.
+
+**Sorting** re-runs the query rather than reordering the rows on screen. This
+matters: the table holds the top 500 groups _under the current sort_, so
+reordering those locally would answer "the slowest of the 500 most frequent
+groups" instead of "the 500 slowest". Sorting by rate is the same ordering as
+sorting by count, since rate is count divided by a fixed window.
+
 ### Reading the volume charts
 
 The logs and traces tabs both open with a stacked volume chart — logs by
