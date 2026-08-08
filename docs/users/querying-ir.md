@@ -112,6 +112,48 @@ thing a later stage may reference:
 { "topk": { "n": 10, "of": "max_dur" } }
 ```
 
+### Scoping an aggregate to a subset
+
+An aggregate may carry an optional `where` predicate scoping which records _it_
+consumes. Everything else in the stage is unaffected: the grouping happens once,
+and unscoped aggregates in the same stage still see every record in their group.
+
+This is what lets one query report a total beside a measure over part of the
+same groups — RED metrics (rate, errors, duration) on a single row per group:
+
+```jsonc
+{
+  "aggregate": {
+    "by": ["service.name"],
+    "aggs": [
+      { "fn": "count", "as": "requests" },
+      {
+        "fn": "count",
+        "as": "errors",
+        "where": { "field": "status.code", "op": "eq", "value": "Error" },
+      },
+      { "fn": "quantile", "of": "duration", "arg": 0.95, "as": "p95" },
+    ],
+  },
+}
+```
+
+The scope uses the same predicate grammar, the same logical field names, and the
+same coercion and absent-value rules as a `where` stage — it is validated
+identically, so a field or operator `where` would reject is rejected here too.
+
+Two properties worth relying on:
+
+- **A group with no matching record is kept**, reporting `0` (or null for a
+  non-count aggregate) rather than disappearing from the result. A `where`
+  _stage_ would have dropped it.
+- **The group set does not change.** Adding or removing a scope alters only that
+  aggregate's values, never which groups come back or how `order`/`topk` rank
+  them.
+
+Scoping works on any aggregate function, not just `count` — a scoped `quantile`
+computes its percentile over only the records the scope admits.
+
 ## Value types, coercion, and absent values
 
 Every logical field has one canonical value type
