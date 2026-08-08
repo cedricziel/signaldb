@@ -101,6 +101,7 @@ async fn test_basic_compaction() -> Result<()> {
         // Tests seed data into recent hours and compact it immediately;
         // a production lateness allowance would defer every such partition.
         partition_lateness: std::time::Duration::ZERO,
+        max_partition_input_bytes: 0,
     };
 
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config.clone());
@@ -187,6 +188,7 @@ async fn test_compaction_empty_table() -> Result<()> {
         // Tests seed data into recent hours and compact it immediately;
         // a production lateness allowance would defer every such partition.
         partition_lateness: std::time::Duration::ZERO,
+        max_partition_input_bytes: 0,
     };
 
     let planner = CompactionPlanner::new(catalog_manager.clone(), planner_config);

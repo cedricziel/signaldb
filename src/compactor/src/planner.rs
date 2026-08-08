@@ -75,6 +75,10 @@ pub struct PlannerConfig {
     pub max_input_file_size_bytes: u64,
     /// Target file size in bytes after compaction
     pub target_file_size_bytes: u64,
+    /// Upper bound on the summed size of a partition's eligible input
+    /// files. Partitions above it are declined rather than attempted;
+    /// `0` disables the guard.
+    pub max_partition_input_bytes: u64,
     /// How long after an hour partition ends it stays "open" — i.e. still
     /// accepting late-arriving writes — and is therefore not compacted.
     pub partition_lateness: std::time::Duration,
@@ -86,6 +90,7 @@ impl From<&CompactorConfig> for PlannerConfig {
             file_count_threshold: config.file_count_threshold,
             max_input_file_size_bytes: config.max_input_file_size_kb * 1024,
             target_file_size_bytes: config.target_file_size_mb * 1024 * 1024,
+            max_partition_input_bytes: config.max_partition_input_mb * 1024 * 1024,
             partition_lateness: config.partition_lateness,
         }
     }
@@ -411,6 +416,29 @@ impl CompactionPlanner {
             0
         };
 
+        // Decline partitions whose inputs exceed the per-job budget. The
+        // rewrite reads and sorts every eligible file at once, so a
+        // partition over the cap fails after doing all that work — and the
+        // planner, having no memory of the failure, selects it again next
+        // cycle (#1053, #1064). Declining is bounded and visible; the
+        // partition simply waits for a rewrite that can handle it.
+        if self.config.max_partition_input_bytes > 0 {
+            let eligible_bytes: u64 = eligible_files.iter().map(|f| f.size_bytes).sum();
+            if eligible_bytes > self.config.max_partition_input_bytes {
+                tracing::warn!(
+                    eligible_files = file_count,
+                    eligible_mb = %format_mb(eligible_bytes),
+                    cap_mb = %format_mb(self.config.max_partition_input_bytes),
+                    "Partition exceeds the compaction input budget and will not be compacted; \
+                     raise [compactor] max_partition_input_mb to attempt it anyway"
+                );
+                if let Some(metrics) = &self.metrics {
+                    metrics.record_oversized_partition_skipped();
+                }
+                return None;
+            }
+        }
+
         // Skip if average file size is already close to target
         // (within 20% tolerance)
         let target = self.config.target_file_size_bytes;
@@ -529,6 +557,7 @@ mod tests {
             partition_lateness: std::time::Duration::from_secs(600),
             memory_limit_mb: 512,
             target_partitions: 1,
+            max_partition_input_mb: 2048,
             retention: Default::default(),
             orphan_cleanup: Default::default(),
             attr_promotion: Default::default(),
@@ -583,6 +612,7 @@ mod tests {
             max_input_file_size_bytes: 64 * 1024 * 1024, // 64MB
             target_file_size_bytes: 128 * 1024 * 1024,   // 128MB
             partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 0,
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -609,6 +639,7 @@ mod tests {
             max_input_file_size_bytes: 64 * 1024 * 1024, // 64MB
             target_file_size_bytes: 128 * 1024 * 1024,   // 128MB
             partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 0,
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -640,6 +671,7 @@ mod tests {
             max_input_file_size_bytes: 64 * 1024 * 1024, // 64MB maximum
             target_file_size_bytes: 128 * 1024 * 1024,   // 128MB
             partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 0,
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -675,6 +707,7 @@ mod tests {
             max_input_file_size_bytes: 64 * 1024 * 1024, // 64MB maximum
             target_file_size_bytes: 128 * 1024 * 1024,   // 128MB
             partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 0,
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -707,6 +740,136 @@ mod tests {
         assert_eq!(stats.avg_file_size_bytes, 60 * 1024);
     }
 
+    /// A partition whose inputs cannot fit the rewrite's budget is not a
+    /// candidate: selecting it means a full read-and-sort that fails every
+    /// cycle, forever, while the planner keeps re-selecting it (#1053,
+    /// #1064). Skipping is visible and bounded; failing is neither.
+    #[tokio::test]
+    async fn oversized_partition_is_not_a_candidate() {
+        let config = PlannerConfig {
+            file_count_threshold: 10,
+            max_input_file_size_bytes: 64 * 1024 * 1024,
+            target_file_size_bytes: 128 * 1024 * 1024,
+            partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 100 * 1024 * 1024, // 100MB cap
+        };
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let metrics = crate::metrics::CompactionMetrics::new();
+        let planner = CompactionPlanner::new(catalog_manager, config).with_metrics(metrics.clone());
+
+        // 20 eligible files of 10MB = 200MB total, over the 100MB cap.
+        let files: Vec<_> = (0..20)
+            .map(|i| FileInfo {
+                path: format!("file_{i}.parquet"),
+                size_bytes: 10 * 1024 * 1024,
+                record_count: 100_000,
+            })
+            .collect();
+
+        assert!(
+            planner.evaluate_partition(&files).is_none(),
+            "a partition over max_partition_input_bytes must not be selected"
+        );
+        assert_eq!(
+            metrics.oversized_partitions_skipped(),
+            1,
+            "skipping must be counted, not silent — an operator has to see \
+             which partitions compaction is declining"
+        );
+    }
+
+    /// The cap is a backstop, not a policy: a partition at or under it is
+    /// selected exactly as before.
+    #[tokio::test]
+    async fn partition_within_the_cap_is_still_a_candidate() {
+        let config = PlannerConfig {
+            file_count_threshold: 10,
+            max_input_file_size_bytes: 64 * 1024 * 1024,
+            target_file_size_bytes: 128 * 1024 * 1024,
+            partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 100 * 1024 * 1024,
+        };
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let planner = CompactionPlanner::new(catalog_manager, config);
+
+        // 20 files of 1MB = 20MB total, well under the cap.
+        let files: Vec<_> = (0..20)
+            .map(|i| FileInfo {
+                path: format!("file_{i}.parquet"),
+                size_bytes: 1024 * 1024,
+                record_count: 10_000,
+            })
+            .collect();
+
+        assert!(planner.evaluate_partition(&files).is_some());
+    }
+
+    /// `0` disables the cap, for anyone who would rather have the job fail
+    /// than have the partition skipped.
+    #[tokio::test]
+    async fn a_zero_cap_disables_the_size_guard() {
+        let config = PlannerConfig {
+            file_count_threshold: 10,
+            max_input_file_size_bytes: 64 * 1024 * 1024,
+            target_file_size_bytes: 128 * 1024 * 1024,
+            partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 0,
+        };
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let planner = CompactionPlanner::new(catalog_manager, config);
+
+        // 300 eligible files of 60MB = ~18GB of input, far past any cap —
+        // each still under max_input_file_size_bytes so they all count.
+        let files: Vec<_> = (0..300)
+            .map(|i| FileInfo {
+                path: format!("file_{i}.parquet"),
+                size_bytes: 60 * 1024 * 1024,
+                record_count: 100_000,
+            })
+            .collect();
+
+        assert!(planner.evaluate_partition(&files).is_some());
+    }
+
+    /// The cap counts only the files the rewrite will actually read.
+    /// Already-big files are excluded from compaction, so counting them
+    /// toward the budget would skip partitions the rewrite could handle.
+    #[tokio::test]
+    async fn the_cap_counts_only_eligible_files() {
+        let config = PlannerConfig {
+            file_count_threshold: 10,
+            max_input_file_size_bytes: 64 * 1024 * 1024,
+            target_file_size_bytes: 128 * 1024 * 1024,
+            partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 100 * 1024 * 1024,
+        };
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let planner = CompactionPlanner::new(catalog_manager, config);
+
+        let mut files: Vec<_> = (0..12)
+            .map(|i| FileInfo {
+                path: format!("small_{i}.parquet"),
+                size_bytes: 1024 * 1024, // 12MB total eligible
+                record_count: 10_000,
+            })
+            .collect();
+        // 1GB of already-compacted files the rewrite will not read.
+        files.push(FileInfo {
+            path: "big.parquet".to_string(),
+            size_bytes: 1024 * 1024 * 1024,
+            record_count: 10_000_000,
+        });
+
+        assert!(
+            planner.evaluate_partition(&files).is_some(),
+            "ineligible big files must not count toward the input budget"
+        );
+    }
+
     #[tokio::test]
     async fn test_evaluate_partition_skips_optimal_size() {
         let config = PlannerConfig {
@@ -716,6 +879,7 @@ mod tests {
             max_input_file_size_bytes: 256 * 1024 * 1024, // 256MB
             target_file_size_bytes: 128 * 1024 * 1024,    // 128MB target
             partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 0,
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -742,6 +906,7 @@ mod tests {
             max_input_file_size_bytes: 256 * 1024 * 1024, // 256MB
             target_file_size_bytes: 128 * 1024 * 1024,    // 128MB target
             partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 0,
         };
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -781,6 +946,7 @@ mod tests {
             max_input_file_size_bytes: 64 * 1024 * 1024,
             target_file_size_bytes: 128 * 1024 * 1024,
             partition_lateness: std::time::Duration::from_secs(600),
+            max_partition_input_bytes: 0,
         };
 
         // A tenant that exists only in the database (admin-API created), with

@@ -305,6 +305,9 @@ partition_lateness = "10m"            # How long a partition stays open for late
                                       # are compacted
 memory_limit_mb = 512                 # Memory budget for one rewrite; larger partitions
                                       # spill to disk instead of growing the heap
+max_partition_input_mb = 2048         # Decline partitions whose eligible input files sum
+                                      # past this rather than failing the job every cycle
+                                      # (0 = no cap)
 target_partitions = 1                 # DataFusion fan-out for the rewrite (0 = core count).
                                       # Each partition sorts independently and they share
                                       # memory_limit_mb, so raising this divides the budget
