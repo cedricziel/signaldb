@@ -290,8 +290,9 @@ metadata_previous_versions_max = 100
 #
 # A pass always runs at startup; this governs only the periodic re-run, which
 # is what picks up tenants and datasets created while the writer was running.
-# Set to "0s" to disable periodic passes (tables then appear on first write,
-# as before).
+# Set to "0s" to disable periodic passes. The startup pass still provisions
+# every dataset registered at that point; datasets created afterwards then
+# appear on first write, on an on-demand request, or after a writer restart.
 table_reconcile_interval = "5m"
 
 [compactor]

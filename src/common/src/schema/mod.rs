@@ -463,6 +463,18 @@ impl TenantSchemaRegistry {
         let Some(tenant) = manager.resolve_tenant_by_slug(&slug).await? else {
             return Err(anyhow::anyhow!("Tenant '{tenant_id}' is not registered"));
         };
+        // The id -> slug -> tenant round-trip is not identity-preserving:
+        // `resolve_tenant_by_slug` matches config tenants first, so a database
+        // tenant whose id equals a different config tenant's slug resolves to
+        // that config tenant. Provisioning its dataset names under this
+        // tenant's namespace would breach tenant isolation.
+        if tenant.id != tenant_id {
+            return Err(anyhow::anyhow!(
+                "Tenant '{tenant_id}' resolves to a different tenant ('{}') by slug '{slug}'; \
+                 refusing to provision across tenants",
+                tenant.id
+            ));
+        }
 
         let mut datasets: Vec<String> = tenant.datasets.iter().map(|d| d.id.clone()).collect();
         if let Some(default) = &tenant.default_dataset
@@ -971,6 +983,65 @@ traces = ["http.method"]
         let namespace = manager.build_namespace("acme", "production").unwrap();
         let tables = manager.catalog().list_tabulars(&namespace).await.unwrap();
         assert_eq!(tables.len(), 8, "{tables:?}");
+    }
+
+    /// Tenant isolation: `resolve_tenant_by_slug` matches config tenants
+    /// first, so a database tenant whose id equals a *different* config
+    /// tenant's slug resolves to that config tenant. Provisioning must not
+    /// then create tables under one tenant's namespace using another
+    /// tenant's dataset names.
+    #[tokio::test]
+    async fn create_default_tables_refuses_a_cross_tenant_slug_collision() {
+        let mut config = Configuration::default();
+        config.schema.catalog_uri = format!(
+            "sqlite:file:signaldb_collision_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        // Config tenant `team-a` owns slug `shared`.
+        config.auth.tenants = vec![crate::config::TenantConfig {
+            id: "team-a".to_string(),
+            slug: "shared".to_string(),
+            name: "Team A".to_string(),
+            default_dataset: Some("team-a-private".to_string()),
+            datasets: vec![],
+            api_keys: vec![],
+            schema_config: None,
+            limits: None,
+        }];
+
+        // A database-only tenant whose *id* is `shared`.
+        let source = Arc::new(crate::catalog::Catalog::new_in_memory().await.unwrap());
+        source
+            .upsert_tenant("shared", "Shared", Some("shared-default"), "database")
+            .await
+            .unwrap();
+
+        let mut registry =
+            TenantSchemaRegistry::new(config.clone()).with_tenant_source(source.clone());
+
+        let err = registry
+            .create_default_tables_for_tenant("shared")
+            .await
+            .expect_err("must refuse to provision across tenants");
+        assert!(
+            err.to_string().contains("different tenant"),
+            "unexpected error: {err}"
+        );
+
+        // Nothing was created under either tenant's namespace.
+        let manager = crate::CatalogManager::new(config).await.unwrap();
+        for (tenant, dataset) in [("shared", "team-a-private"), ("shared", "shared-default")] {
+            let namespace = manager.build_namespace(tenant, dataset).unwrap();
+            assert!(
+                manager
+                    .catalog()
+                    .list_tabulars(&namespace)
+                    .await
+                    .unwrap_or_default()
+                    .is_empty(),
+                "{tenant}/{dataset} must hold no tables"
+            );
+        }
     }
 
     #[tokio::test]

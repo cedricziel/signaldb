@@ -253,6 +253,11 @@ impl CatalogManager {
     /// The signal tables enabled for a tenant, resolved from configuration
     /// alone — no catalog traffic.
     ///
+    /// A per-tenant override comes from `[tenants.tenants.<id>] schema`, the
+    /// single source [`Configuration::get_tenant_schema_config`] consults;
+    /// `[[auth.tenants]] schema_config` is **not** read for this purpose.
+    /// Otherwise the deployment-wide `[schema]` applies.
+    ///
     /// `TableSchema::Custom` entries are excluded: they are a config-only
     /// concept that [`Self::ensure_table`] cannot create.
     pub fn enabled_table_names(&self, tenant_id: &str) -> Vec<String> {
@@ -978,23 +983,20 @@ mod tests {
     // Task 2.2
     #[tokio::test]
     async fn tenant_override_narrows_the_set_for_that_tenant_only() {
-        let mut narrowed = provisioning_tenant("narrow");
+        let narrowed = provisioning_tenant("narrow");
         let mut schema = crate::config::SchemaConfig::default();
         schema.default_schemas.metrics_enabled = false;
         schema.default_schemas.profiles_enabled = false;
-        narrowed.schema_config = Some(crate::config::TenantSchemaConfig {
-            schema: Some(schema.clone()),
-            custom_schemas: None,
-            enabled: true,
-        });
 
         let mut config = Configuration::default();
         config.schema.catalog_uri = format!(
             "sqlite:file:signaldb_ensure_{}?mode=memory&cache=shared",
             uuid::Uuid::new_v4()
         );
+        // Only `config.tenants.tenants` is read by `get_tenant_schema_config`
+        // (`TenantConfig.schema_config` is not consulted), so the override
+        // lives there alone — writing it to both would mask that.
         config.auth.tenants = vec![narrowed.clone(), provisioning_tenant("wide")];
-        // The per-tenant lookup reads `config.tenants.tenants`.
         config.tenants.tenants.insert(
             "narrow".to_string(),
             crate::config::TenantSchemaConfig {

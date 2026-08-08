@@ -76,6 +76,19 @@ impl TraceService {
             dataset_slug
         );
 
+        // Convert the client-supplied time hints before touching the catalog:
+        // the range check needs no schema, so a malformed hint must be
+        // reported as invalid input even when the dataset has no `traces`
+        // table yet (mirrors `build_search_dataframe`).
+        let start_bound = params
+            .start
+            .map(|start| unix_seconds_to_nanos("start", start))
+            .transpose()?;
+        let end_bound = params
+            .end
+            .map(|end| unix_seconds_to_nanos("end", end))
+            .transpose()?;
+
         // A dataset with no `traces` table holds no trace to find.
         let Some(df) =
             optional_table(&self.session_context, tenant_slug, dataset_slug, "traces").await?
@@ -111,8 +124,7 @@ impl TraceService {
             .iter()
             .find(|f| f.name() == "timestamp")
             .map(|f| f.data_type().clone());
-        if let Some(start) = params.start {
-            let start_nanos = unix_seconds_to_nanos("start", start)?;
+        if let Some(start_nanos) = start_bound {
             df = df
                 .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
                 .map_err(|e| {
@@ -134,8 +146,7 @@ impl TraceService {
                     })?;
             }
         }
-        if let Some(end) = params.end {
-            let end_nanos = unix_seconds_to_nanos("end", end)?;
+        if let Some(end_nanos) = end_bound {
             df = df
                 .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
                 .map_err(|e| {
@@ -1515,5 +1526,42 @@ mod tests {
                 .is_err(),
             "a malformed query must not read as empty"
         );
+    }
+
+    /// Schema-independent input validation must run *before* the table
+    /// lookup, so a malformed time hint still errors on a dataset whose
+    /// `traces` table has not been provisioned yet rather than silently
+    /// reading as "not found".
+    #[tokio::test]
+    async fn out_of_range_time_hint_still_errors_when_table_is_absent() {
+        let service = service_without_traces_table();
+        assert!(matches!(
+            service
+                .find_by_id_with_tenant(
+                    FindTraceByIdParams {
+                        trace_id: "abc123".to_string(),
+                        start: Some(i64::MAX),
+                        end: None,
+                    },
+                    "t",
+                    "d",
+                )
+                .await,
+            Err(QuerierError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            service
+                .find_by_id_with_tenant(
+                    FindTraceByIdParams {
+                        trace_id: "abc123".to_string(),
+                        start: None,
+                        end: Some(1_785_829_987_000),
+                    },
+                    "t",
+                    "d",
+                )
+                .await,
+            Err(QuerierError::InvalidInput(_))
+        ));
     }
 }

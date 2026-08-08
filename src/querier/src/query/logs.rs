@@ -486,16 +486,21 @@ impl LogsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<DetectedField>, QuerierError> {
-        let Some(mut df) = self.logs_table(tenant_slug, dataset_slug).await? else {
-            return Ok(Vec::new());
-        };
-        if let Some(q) = params
+        // Parse the selector before touching the catalog: it needs no schema,
+        // so a malformed one must be reported as invalid input even when the
+        // dataset has no `logs` table yet (mirrors `query_logs`/`get_series`).
+        let parsed = params
             .query
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-        {
-            let parsed = parse_query(q).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+            .map(|q| parse_query(q).map_err(|e| QuerierError::InvalidInput(e.to_string())))
+            .transpose()?;
+
+        let Some(mut df) = self.logs_table(tenant_slug, dataset_slug).await? else {
+            return Ok(Vec::new());
+        };
+        if let Some(parsed) = parsed {
             let filter = log_query_filter_with_columns(&parsed, &attr_context_of(&df))?;
             if let Some(filter) = filter {
                 df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
@@ -2747,5 +2752,28 @@ mod tests {
                 .is_err(),
             "planning failure on an existing table must not read as empty"
         );
+    }
+
+    /// As for `query_logs`: a malformed selector must be reported as
+    /// invalid input even when the dataset has no `logs` table, so the
+    /// parse has to happen before the table lookup.
+    #[tokio::test]
+    async fn detected_fields_invalid_query_still_errors_when_table_is_absent() {
+        let service = service_without_logs_table();
+        assert!(matches!(
+            service
+                .detected_fields(
+                    &DetectedFieldsParams {
+                        query: Some("not a logql query {{{".to_string()),
+                        start: 0,
+                        end: i64::MAX,
+                        limit: 100,
+                    },
+                    "t",
+                    "d",
+                )
+                .await,
+            Err(QuerierError::InvalidInput(_))
+        ));
     }
 }

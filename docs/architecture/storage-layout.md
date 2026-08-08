@@ -277,6 +277,7 @@ Because both paths call the same constructor, a provisioned table is indistingui
 | Metrics (Histogram)      | `metrics_histogram`             | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
 | Metrics (Exp. Histogram) | `metrics_exponential_histogram` | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
 | Metrics (Summary)        | `metrics_summary`               | `WriteMetrics` | `iceberg/schemas.rs` (hardcoded) |
+| Profiles                 | `profiles`                      | `WriteProfiles`| `iceberg/schemas.rs` (hardcoded) |
 
 For metrics, the target table name is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics_gauge`.
 

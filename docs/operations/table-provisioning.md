@@ -11,14 +11,18 @@ sources:
 
 # Signal Table Provisioning
 
-Every tenant/dataset SignalDB knows about holds an Iceberg table for each
-signal type enabled for it, so a dataset is complete and queryable from the
-moment it exists rather than only after telemetry happens to arrive for each
-signal.
+Every tenant/dataset SignalDB knows about converges on an Iceberg table for
+each signal type enabled for it, so a dataset becomes complete without waiting
+for telemetry to arrive for each signal.
 
-The writer converges datasets onto that set continuously. Nothing needs to be
-run by hand; this page describes the knob, what a pass does, and how to tell
-whether it is working.
+Convergence is eventual, not instantaneous: a dataset created while the writer
+is running is provisioned by the next reconcile pass (within
+`table_reconcile_interval`), by an on-demand request, or by its first write,
+whichever comes first. Queries do not wait for any of that — a signal with no
+table yet reads as an empty result, never an error.
+
+The writer runs this continuously; nothing needs to be run by hand. This page
+describes the knob, what a pass does, and how to tell whether it is working.
 
 ## What gets provisioned
 
@@ -46,8 +50,10 @@ second table and cannot conflict.
 ```toml
 [writer]
 # How often the writer re-runs the reconciler over the tenant registry.
-# A pass always runs at startup; this governs the periodic re-run.
-# "0s" disables periodic passes (tables then appear on first write).
+# A pass always runs at startup; this governs only the periodic re-run.
+# "0s" keeps the startup pass and disables the periodic one, so datasets
+# created after startup wait for a first write, an on-demand request, or a
+# writer restart.
 table_reconcile_interval = "5m"
 ```
 
@@ -129,11 +135,14 @@ A converged pass logs at `debug`.
   to eight catalog rows and eight `metadata.json` files. They carry no
   snapshots and no data files, so retention, orphan cleanup, storage
   accounting, and the compactor all treat them as no-ops.
-- **Materialized labels are fixed at provisioning time.** `[schema]
-materialized_labels` is applied when a table is created and never evolves an
-  existing table's schema. Provisioning means that now happens for every
-  dataset, not only for ones that ingest — so change `materialized_labels`
-  before a dataset is provisioned, not after.
+- **Materialized labels are fixed at creation time.** `[schema]
+  materialized_labels` is applied when a table is created; `ensure_table`
+  itself never evolves an existing table's schema. Provisioning means that
+  now happens for every dataset, not only for ones that ingest, so prefer
+  setting `materialized_labels` before a dataset is provisioned. Existing
+  tables are not stuck: the compactor's attribute-promotion pass can add
+  `label_<key>` columns to them — see
+  [label columns can be added to existing tables](../architecture/storage-layout.md#label-columns-can-be-added-to-existing-tables).
 
 ## Related
 
