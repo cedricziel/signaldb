@@ -1274,6 +1274,7 @@ dependencies = [
  "bincode",
  "chrono",
  "clap",
+ "common",
  "criterion",
  "dashmap",
  "datafusion",
