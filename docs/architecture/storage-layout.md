@@ -612,6 +612,7 @@ The WAL is organized by tenant, dataset, and signal type under the configured ba
         wal-0000000001.log      # Next segment after rotation
         wal-0000000001.data
         wal-0000000001.index
+        dead-letter/             # Entries retired so they stop blocking (see below)
 ```
 
 A segment rotates when **either** its `.log` or its `.data` file would exceed
@@ -622,6 +623,21 @@ this bounds each segment's size and keeps `.data` offsets well clear of the
 offset recorded in its `.log` entry (the writer seeks to that offset rather than
 blind-appending), so a short or partial write cannot shift the offsets of the
 entries that follow it.
+
+Replaying a segment's `.log` file on load can hit a record whose 8-byte length
+prefix is intact but whose payload no longer deserializes (a bit flip or
+partial overwrite from an OOM kill or disk fault). Because the framing is
+intact, the offset of the next record is still known, so `WalSegment::load`
+skips just that record — logging the failure, quarantining its raw bytes to
+`dead-letter/segment-<id>-offset-<offset>.corrupt.bin`, and resuming — rather
+than aborting the whole replay, which would otherwise turn one corrupted
+record into a permanent crash loop on every restart. Every other
+`dead-letter/` artifact is keyed by `<entry_id>`, taken from a
+successfully-decoded `WalEntry`; this is the one kind keyed by its physical
+`segment-<id>-offset-<offset>` location instead, because the entry id lives
+inside the very bytes that failed to decode. See
+[WAL Persistence](../operations/wal-persistence.md#corrupted-entry-records-during-replay)
+for the full recovery behavior and the other `dead-letter/` artifact kinds.
 
 ### Concrete Example
 
