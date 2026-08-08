@@ -117,6 +117,22 @@ async fn main() -> Result<()> {
         "Synced config tenants to catalog"
     );
 
+    // Converge tenants created before the default dataset was materialized at
+    // write time: without a dataset row they cannot authenticate and are
+    // invisible to compaction, retention, and orphan cleanup (issue #1066).
+    // A no-op once converged.
+    let materialized = router_bootstrap
+        .catalog()
+        .backfill_default_datasets()
+        .await
+        .context("Failed to backfill default dataset rows")?;
+    if materialized > 0 {
+        tracing::info!(
+            count = materialized,
+            "Materialized missing default dataset rows"
+        );
+    }
+
     // Create router state with catalog access and configuration
     let state = RouterAppState::new(router_bootstrap.catalog().clone(), config.clone());
 
