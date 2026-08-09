@@ -105,8 +105,14 @@ Filtering uses one predicate grammar — comparison leaves composed with
 
 `field` is a **logical, dotted OTel-native name** (`service.name`,
 `http.status_code`). You never name a physical column, the attribute blob, or a
-storage detail — those are rejected. Operators: `eq`, `ne`, `gt`, `gte`, `lt`,
-`lte`, `in`, `between`, `contains`, `regex`, `exists`.
+storage detail — those are rejected by the resolver's physical-name check.
+Operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `between`, `contains`,
+`regex`, `exists`.
+
+Some logical fields are **retrieval-only**: they can appear in `fields`
+projections but are rejected in predicates, `aggregate.by`, `topk.of`,
+`bottomk.of`, and `order` keys. The log `body` is retrieval-only today. A
+retrieval-only field used in a predicate raises an `UnfilterableField` error.
 
 ### Addressing an attribute scope
 
@@ -215,9 +221,11 @@ the IR, independent of the execution engine.
 
 ### Field resolution is promotion-invariant
 
-Fields resolve through the attribute registry to a physical location — a
-promoted column or an attribute-map extraction — at plan time. The **result of a
-query does not depend on whether a field is currently promoted**; promotion is
+Fields resolve through the logical schema (`LogicalSchema::core()`, which
+declares the canonical client-visible OTel fields independent of the physical
+Iceberg layout) and then through the attribute registry to a physical location —
+a promoted column or an attribute-map extraction — at plan time. The **result of
+a query does not depend on whether a field is currently promoted**; promotion is
 pure performance upside. (Until the attribute-registry work lands canonical
 attribute types, an unpromoted attribute is typed as a string; a field with no
 resolvable type is a defined rejection.)
@@ -274,13 +282,19 @@ literals for its bounds.
   "from": "traces",
   "range": { "from": "now-1h", "to": "now" },
   "result": "heatmap",
-  "pipeline": [{
-    "heatmap": {
-      "x": { "step": "1m", "align": "epoch" },
-      "y": { "of": "duration", "bounds": ["1ms", "5ms", "25ms", "100ms", "1s"], "overflow": true },
-      "value": { "fn": "count", "as": "count" }
+  "pipeline": [
+    {
+      "heatmap": {
+        "x": { "step": "1m", "align": "epoch" },
+        "y": {
+          "of": "duration",
+          "bounds": ["1ms", "5ms", "25ms", "100ms", "1s"],
+          "overflow": true
+        },
+        "value": { "fn": "count", "as": "count" }
+      }
     }
-  }]
+  ]
 }
 ```
 
