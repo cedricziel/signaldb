@@ -14,8 +14,8 @@ no coexistence read-path, no legacy safe-cast, no compactor rewrite of old files
 
 ## 1. `extract_value` fidelity fix (prereq for any losslessness claim)
 
-- [ ] 1.1 Write failing tests: `BytesValue` round-trips as bytes (distinct from string); `StringValueStrindex` preserved (spec `typed-attribute-storage` — AnyValue-fidelity requirement). Duplicate/ordered-key preservation is NOT tested here — it is deferred (see 12.2), because the phase-1 `serde_json::Map` wire collapses it
-- [ ] 1.2 Fix `conversion_common.rs` `extract_value` so bytes/interned values survive to the residue in phase 1 (duplicate/ordered-key fidelity requires acceptor-side binary residue or the typed wire — layer 12.2, out of this layer's scope)
+- [x] 1.1 Write failing tests: `BytesValue` round-trips as bytes (distinct from string); Profiles `StringValueStrindex` resolves through its request dictionary (spec `typed-attribute-storage` — AnyValue-fidelity requirement). Duplicate/ordered-key preservation is NOT tested here — it is deferred (see 12.2), because the phase-1 `serde_json::Map` wire collapses it
+- [x] 1.2 Fix `conversion_common.rs` `extract_value` so bytes survive through the phase-1 carrier and the Profiles converter resolves interned values through `ProfilesDictionary` (duplicate/ordered-key fidelity requires acceptor-side binary residue or the typed wire — layer 12.2, out of this layer's scope)
 - [ ] 1.3 `cargo test -p common` green; lint/format/machete
 
 ## 2. Logical schema + reconciliation of the two schema systems
