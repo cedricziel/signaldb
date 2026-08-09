@@ -1,4 +1,5 @@
 pub mod attr_demand;
+pub mod attrs;
 pub mod auth;
 pub mod bootstrap;
 pub mod catalog;
