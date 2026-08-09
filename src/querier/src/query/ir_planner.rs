@@ -1,7 +1,7 @@
 //! # IR → DataFusion planner (single-signal)
 //!
 //! Lowers a validated [`Document`](common::query_ir::Document) over a single
-//! signal (`logs`/`traces`) to a DataFusion `DataFrame`, satisfying the IR's
+//! signal (`logs`/`traces`/`profiles`) to a DataFusion `DataFrame`, satisfying the IR's
 //! denotational semantics. The DataFrame API is used throughout (as in the
 //! LogQL/trace planners), so user-controlled query values never enter a SQL
 //! string.
@@ -148,6 +148,47 @@ impl SourcePlan {
                     ("duration", "duration_nanos"),
                     ("duration_nano", "duration_nanos"),
                     ("status.code", "status_code"),
+                ],
+            }),
+            "profiles" => Some(SourcePlan {
+                table: "profiles",
+                time_col: "timestamp",
+                time_is_timestamp: true,
+                containers: &[
+                    "profile_attributes",
+                    "scope_attributes",
+                    "resource_attributes",
+                ],
+                attr_prefixes: &[
+                    ("profile.", "profile_attributes"),
+                    ("scope.", "scope_attributes"),
+                    ("resource.", "resource_attributes"),
+                ],
+                // Summary rows intentionally omit profile payload columns
+                // (`samples_json`/`stacktraces_json`) and attribute containers.
+                row_defaults: &[
+                    "profile_id",
+                    "timestamp",
+                    "duration_nano",
+                    "sample_type",
+                    "sample_unit",
+                    "period_type",
+                    "period_unit",
+                    "period",
+                    "service_name",
+                    "trace_id",
+                    "span_id",
+                ],
+                aliases: &[
+                    ("profile.id", "profile_id"),
+                    ("duration", "duration_nano"),
+                    ("sample.type", "sample_type"),
+                    ("sample.unit", "sample_unit"),
+                    ("period.type", "period_type"),
+                    ("period.unit", "period_unit"),
+                    ("service.name", "service_name"),
+                    ("trace.id", "trace_id"),
+                    ("span.id", "span_id"),
                 ],
             }),
             _ => None,
@@ -1425,6 +1466,70 @@ mod tests {
         ctx
     }
 
+    fn profiles_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("profile_id", DataType::Utf8, false),
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("duration_nano", DataType::Int64, false),
+            Field::new("sample_type", DataType::Utf8, false),
+            Field::new("sample_unit", DataType::Utf8, false),
+            Field::new("period_type", DataType::Utf8, true),
+            Field::new("period_unit", DataType::Utf8, true),
+            Field::new("period", DataType::Int64, true),
+            Field::new("service_name", DataType::Utf8, false),
+            map_field_named("profile_attributes"),
+            map_field_named("scope_attributes"),
+            map_field_named("resource_attributes"),
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("span_id", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["p1", "p2", "p3"])),
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20, 30])),
+                Arc::new(Int64Array::from(vec![100_i64, 200, 300])),
+                Arc::new(StringArray::from(vec!["cpu", "cpu", "heap"])),
+                Arc::new(StringArray::from(vec!["nanoseconds"; 3])),
+                Arc::new(StringArray::from(vec![Some("cpu"); 3])),
+                Arc::new(StringArray::from(vec![Some("nanoseconds"); 3])),
+                Arc::new(Int64Array::from(vec![Some(10_i64); 3])),
+                Arc::new(StringArray::from(vec!["api", "api", "web"])),
+                build_map(&[
+                    &[("profile.kind", "cpu")],
+                    &[("profile.kind", "cpu")],
+                    &[("profile.kind", "heap")],
+                ]),
+                build_map(&[
+                    &[("otel.scope.name", "profiler")],
+                    &[("otel.scope.name", "profiler")],
+                    &[("otel.scope.name", "profiler")],
+                ]),
+                build_map(&[
+                    &[("deployment.environment", "prod")],
+                    &[("deployment.environment", "prod")],
+                    &[("deployment.environment", "staging")],
+                ]),
+                Arc::new(StringArray::from(vec![Some("t1"), Some("t2"), None])),
+                Arc::new(StringArray::from(vec![Some("s1"), Some("s2"), None])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("profiles".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
     fn doc(v: serde_json::Value) -> Document {
         serde_json::from_value(v).unwrap()
     }
@@ -1462,6 +1567,56 @@ mod tests {
         assert!(plan.contains("date_bin"), "plan:\n{plan}");
         // Executes.
         let _ = df.collect().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn profiles_summary_rows_grouped_tables_and_series_execute() {
+        let svc = IrService::new(profiles_ctx());
+        let rows = doc(serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["profile.id", "duration", "sample.type", "service.name"],
+            "pipeline": [{ "where": { "field": "resource.deployment.environment", "op": "eq", "value": "prod" } }]
+        }));
+        let (df, _) = svc.plan(&rows, "t", "d", 0).await.unwrap().unwrap();
+        assert_eq!(
+            df.collect()
+                .await
+                .unwrap()
+                .iter()
+                .map(|b| b.num_rows())
+                .sum::<usize>(),
+            2
+        );
+
+        let table = doc(serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
+            "result": "table", "pipeline": [{ "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } }]
+        }));
+        let (df, _) = svc.plan(&table, "t", "d", 0).await.unwrap().unwrap();
+        assert_eq!(
+            df.collect()
+                .await
+                .unwrap()
+                .iter()
+                .map(|b| b.num_rows())
+                .sum::<usize>(),
+            2
+        );
+
+        let series = doc(serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
+            "result": "series", "pipeline": [{ "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }], "step": "1ms" } }]
+        }));
+        let (df, _) = svc.plan(&series, "t", "d", 0).await.unwrap().unwrap();
+        assert_eq!(
+            df.collect()
+                .await
+                .unwrap()
+                .iter()
+                .map(|b| b.num_rows())
+                .sum::<usize>(),
+            2
+        );
     }
 
     // ---- OTel-native attribute scopes ----
@@ -2367,6 +2522,18 @@ mod tests {
             &SourcePlan::for_source("traces").unwrap(),
             &trace_cols,
             "traces",
+        );
+
+        let profiles = common::iceberg::schemas::create_profiles_schema().unwrap();
+        let profile_cols: HashSet<String> = profiles
+            .fields()
+            .iter()
+            .map(|field| field.name.to_string())
+            .collect();
+        check(
+            &SourcePlan::for_source("profiles").unwrap(),
+            &profile_cols,
+            "profiles",
         );
     }
 

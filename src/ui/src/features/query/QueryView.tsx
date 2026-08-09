@@ -112,6 +112,7 @@ export function QueryView({ range }: { range?: TimeRange } = {}) {
           >
             <option value="logs">logs</option>
             <option value="traces">traces</option>
+            <option value="profiles">profile summaries</option>
           </select>
         </label>
         <label>

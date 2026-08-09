@@ -3013,7 +3013,7 @@
           },
           "from": {
             "type": "string",
-            "description": "The registered signal source: `logs` or `traces`.",
+            "description": "The registered signal source: `logs`, `traces`, or profile-summary `profiles`.",
             "example": "logs"
           },
           "irVersion": {

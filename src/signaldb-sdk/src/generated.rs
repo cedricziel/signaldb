@@ -1459,7 +1459,7 @@ pub mod types {
     ///      }
     ///    },
     ///    "from": {
-    ///      "description": "The registered signal source: `logs` or `traces`.",
+    ///      "description": "The registered signal source: `logs`, `traces`, or profile-summary `profiles`.",
     ///      "examples": [
     ///        "logs"
     ///      ],
@@ -1496,7 +1496,7 @@ pub mod types {
         ///Curated projection (logical field names) for `rows`/`table`.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub fields: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-        ///The registered signal source: `logs` or `traces`.
+        ///The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
         pub from: ::std::string::String,
         ///IR document version (the server accepts a bounded range).
         #[serde(rename = "irVersion")]

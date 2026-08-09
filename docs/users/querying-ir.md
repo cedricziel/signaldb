@@ -5,6 +5,7 @@ status: living
 sources:
   - src/router/src/endpoints/query.rs
   - src/common/src/query_ir/**
+  - src/querier/src/query/ir_planner.rs
   - src/signaldb-cli/src/commands/query.rs
 ---
 
@@ -17,8 +18,8 @@ Grafana and existing clients; the IR is what the SignalDB UI and CLI build
 directly, without formulating a dialect string.
 
 This page is the reference for the IR at its foundational scope: **single-signal
-queries over `logs` and `traces`**. Cross-signal correlation, structural trace
-matching, and metrics are separate, later capabilities (see
+queries over `logs`, `traces`, and profile summaries**. Cross-signal correlation,
+structural trace matching, and metrics are separate, later capabilities (see
 [Roadmap](#roadmap)).
 
 ## The endpoint
@@ -41,7 +42,7 @@ body. The response is the declared result envelope (see
 ```jsonc
 {
   "irVersion": 1, // versioned; use 2 for heatmap
-  "from": "logs", // a registered source: "logs" or "traces"
+  "from": "logs", // a registered source: "logs", "traces", or "profiles"
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap
   "fields": ["service.name"], // optional curated projection (rows/table)
@@ -49,9 +50,8 @@ body. The response is the declared result envelope (see
 }
 ```
 
-- **`from`** selects a _registered signal source_. It is not a fixed enum —
-  later releases add sources (metrics, profiles) without changing the document
-  shape.
+- **`from`** selects a _registered signal source_. It is not a fixed enum, so
+  later releases can add sources without changing the document shape.
 - **`range`** bounds the query in time. `from`/`to` are timestamp literals:
   RFC3339, a relative anchor (`now`, `now-1h`, `now+30m`), or integer
   nanoseconds. Relative anchors are resolved **once**, against the server clock,
@@ -131,6 +131,7 @@ prefix addresses exactly one container:
 | `scope.`    | scope attributes      | logs, traces |
 | `log.`      | log-record attributes | logs         |
 | `span.`     | span attributes       | traces       |
+| `profile.`  | profile attributes    | profiles     |
 
 ```jsonc
 { "field": "resource.deployment.environment", "op": "eq", "value": "prod" }
@@ -242,6 +243,24 @@ An attribute container is typed `map<string,string>` and arrives as a JSON
 object, so you index a key rather than parse a rendering. A `null` cell means
 the row carried no such container; `{}` means it carried one holding no
 attributes.
+
+## Profile summaries
+
+`profiles` reads one metadata row per stored profile. It supports the same
+filtering, aggregation, ranking, ordering, and rows/table/series envelopes as
+the other scalar sources. Profile IR requests require the `profiles:read` scope;
+the authenticated tenant and dataset still determine the table scanned.
+
+The registered scalar fields are `profile.id`, `timestamp`, `duration`,
+`sample.type`, `sample.unit`, `period.type`, `period.unit`, `period`,
+`service.name`, `trace.id`, and `span.id`, plus registered profile, scope, and
+resource attributes. The default rows projection contains only those scalar
+metadata values.
+
+Profile IR deliberately does not expose `samples_json`, `stacktraces_json`, or
+attribute payload columns. Use the Pyroscope-compatible APIs for flamegraphs,
+diffs, label discovery, profile extraction, and heatmaps; those payload-oriented
+operations remain specialized APIs rather than generic Query IR fields.
 
 ### Heatmap envelope (IR v2)
 

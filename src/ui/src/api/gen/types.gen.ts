@@ -395,7 +395,7 @@ export type QueryIrRequest = {
      */
     fields?: Array<string> | null;
     /**
-     * The registered signal source: `logs` or `traces`.
+     * The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
      */
     from: string;
     /**

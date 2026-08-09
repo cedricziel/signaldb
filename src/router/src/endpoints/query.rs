@@ -17,7 +17,7 @@ use tracing::Instrument;
 
 use arrow_flight::Ticket;
 use axum::{Router, extract::State, http::StatusCode, routing::post};
-use common::auth::TenantContextExtractor;
+use common::auth::{TenantContext, TenantContextExtractor};
 use common::flight::transport::ServiceCapability;
 use common::query_ir::{Literal, ValueType, coerce};
 use datafusion::arrow::array::{
@@ -60,7 +60,7 @@ pub struct QueryIrRequest {
     /// IR document version (the server accepts a bounded range).
     #[serde(rename = "irVersion")]
     pub ir_version: i64,
-    /// The registered signal source: `logs` or `traces`.
+    /// The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
     #[schema(example = "logs")]
     pub from: String,
     pub range: QueryRange,
@@ -204,6 +204,10 @@ pub async fn query_ir<S: RouterState>(
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
     let ctx = &tenant_ctx.0;
 
+    // Query IR covers several signal tables, so its authorization must be
+    // selected from the source before the ticket can reach a querier.
+    source_read_scope(ctx, &req.from)?;
+
     // Stamp the server clock once, at the ticket boundary, so relative anchors
     // resolve to a single absolute window every stage of the plan sees.
     let now = now_ns();
@@ -223,6 +227,26 @@ pub async fn query_ir<S: RouterState>(
     let batches = execute_ticket(&state, ticket).await?;
     let response = build_envelope(&req.result, window, &batches, &document)?;
     Ok(axum::Json(response))
+}
+
+/// Require the read scope associated with a registered Query IR source.
+fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
+    let signal = match source {
+        "logs" | "traces" | "profiles" => source,
+        _ => {
+            return Err(ApiError::bad_request(format!(
+                "unknown query source '{source}'"
+            )));
+        }
+    };
+    if ctx.can_read(signal) {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            format!("missing {signal}:read scope"),
+        ))
+    }
 }
 
 /// Resolve a range to an absolute window using the server-stamped clock.
@@ -733,11 +757,13 @@ mod row_encoding {
 
 #[cfg(test)]
 mod tests {
-    use super::{ResolvedWindow, build_envelope};
+    use super::{ResolvedWindow, build_envelope, source_read_scope};
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use common::auth::{TenantContext, TenantSource};
     use common::catalog::Catalog;
+    use common::catalog::MembershipRole;
     use common::config::{ApiKeyConfig, Configuration, DatasetConfig, TenantConfig};
     use tower::ServiceExt;
 
@@ -811,6 +837,27 @@ mod tests {
                 .header("x-tenant-id", "acme");
         }
         b.body(body).unwrap()
+    }
+
+    fn scoped_context(scopes: Vec<&str>) -> TenantContext {
+        TenantContext::new(
+            "acme".into(),
+            "default".into(),
+            "acme".into(),
+            "default".into(),
+            None,
+            TenantSource::Database,
+        )
+        .with_user("u1".into(), MembershipRole::Member, false, None)
+        .with_api_key_restrictions(Some(scopes.into_iter().map(str::to_string).collect()), None)
+    }
+
+    #[test]
+    fn ir_source_scopes_are_checked_before_dispatch() {
+        let profiles = scoped_context(vec!["profiles:read"]);
+        assert!(source_read_scope(&profiles, "profiles").is_ok());
+        assert!(source_read_scope(&profiles, "logs").is_err());
+        assert!(source_read_scope(&profiles, "traces").is_err());
     }
 
     // Task 6.1 — unauthenticated requests are rejected.

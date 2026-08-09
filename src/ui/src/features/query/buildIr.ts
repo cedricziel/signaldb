@@ -4,7 +4,7 @@
 // features/metrics/buildPromQL.ts) for the native query surface.
 import type { QueryIrRequest } from "../../api/gen";
 
-export type IrSource = "logs" | "traces";
+export type IrSource = "logs" | "traces" | "profiles";
 export type IrResult = "rows" | "series" | "table";
 
 /** A structured predicate leaf, optionally negated (`not(leaf)`). */

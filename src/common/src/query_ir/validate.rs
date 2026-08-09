@@ -661,6 +661,7 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
     for field in fields {
         // A field is valid iff it is present in the terminal relation — a
         // closed column when aggregated, or a resolvable logical field when not.
+        guard_logical_name(field)?;
         if ctx.ref_type(field).is_err() {
             return Err(IrError::FieldNotInTerminal {
                 field: field.clone(),
@@ -701,6 +702,32 @@ mod tests {
             )
             .with_column("traces", "service.name", "service_name", ValueType::String)
             .with_column("traces", "name", "name", ValueType::String)
+    }
+
+    fn profiles_resolver() -> InMemoryResolver {
+        InMemoryResolver::new()
+            .with_column("profiles", "profile.id", "profile_id", ValueType::String)
+            .with_column("profiles", "timestamp", "timestamp", ValueType::TimestampNs)
+            .with_column(
+                "profiles",
+                "duration",
+                "duration_nano",
+                ValueType::DurationNs,
+            )
+            .with_column("profiles", "sample.type", "sample_type", ValueType::String)
+            .with_column(
+                "profiles",
+                "service.name",
+                "service_name",
+                ValueType::String,
+            )
+            .with_attribute(
+                "profiles",
+                "resource.deployment.environment",
+                "resource_attributes",
+                ValueType::String,
+                false,
+            )
     }
 
     fn doc(v: serde_json::Value) -> Document {
@@ -904,6 +931,49 @@ mod tests {
         });
         // Same document, unchanged shape, still validates.
         assert!(validate(&d, &sources, &logs_resolver()).is_ok());
+    }
+
+    #[test]
+    fn profiles_is_registered_as_a_summary_row_source() {
+        let sources = SourceRegistry::core();
+        let source = sources
+            .resolve("profiles")
+            .expect("profiles source is registered");
+        assert_eq!(source.grain, Grain::Event);
+        assert!(!source.allows_extract);
+    }
+
+    #[test]
+    fn profiles_accept_registered_summary_fields_and_resource_attributes() {
+        let document = doc(json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "fields": ["profile.id", "timestamp", "duration", "sample.type", "service.name"],
+            "pipeline": [{ "where": { "field": "resource.deployment.environment", "op": "eq", "value": "prod" } }]
+        }));
+        assert!(validate(&document, &SourceRegistry::core(), &profiles_resolver()).is_ok());
+    }
+
+    #[test]
+    fn profiles_reject_payload_json_and_log_extraction() {
+        let payload = doc(json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "fields": ["samples_json"], "pipeline": []
+        }));
+        assert!(matches!(
+            validate(&payload, &SourceRegistry::core(), &profiles_resolver()),
+            Err(IrError::PhysicalAddressing { .. })
+        ));
+
+        let extract = doc(json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [{ "extract": { "parser": "json", "as": [{ "name": "x", "type": "string" }] } }]
+        }));
+        assert!(matches!(
+            validate(&extract, &SourceRegistry::core(), &profiles_resolver()),
+            Err(IrError::IllegalStage { stage, .. }) if stage == "extract"
+        ));
     }
 
     // Task 2.1 — logical-namespace guard.

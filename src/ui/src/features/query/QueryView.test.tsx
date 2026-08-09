@@ -53,6 +53,25 @@ describe("QueryView", () => {
     await screen.findByText("checkout");
   });
 
+  it("selects profile summaries and renders their generic rows envelope", async () => {
+    const calls = stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "profile_id", type: "string" }],
+      rows: [["profile-1"]],
+    });
+    renderWithClient(<QueryView />);
+
+    fireEvent.change(screen.getByLabelText("source"), {
+      target: { value: "profiles" },
+    });
+    fireEvent.click(screen.getByText("Run"));
+
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    expect((calls[0]!.body as { from?: string }).from).toBe("profiles");
+    await screen.findByText("profile-1");
+  });
+
   it("copies rendered table cells", async () => {
     const writeText = vi.fn();
     vi.stubGlobal("navigator", { clipboard: { writeText } });
