@@ -196,6 +196,11 @@ The declared `result` selects one canonical response shape:
 Values follow the value type: timestamps/durations are integer nanoseconds,
 bytes are base64, everything else its JSON-native form.
 
+An attribute container is typed `map<string,string>` and arrives as a JSON
+object, so you index a key rather than parse a rendering. A `null` cell means
+the row carried no such container; `{}` means it carried one holding no
+attributes.
+
 ## Worked example — error-log volume by service (logs → series)
 
 Count error logs per minute, per service, in `prod` over the last hour:
