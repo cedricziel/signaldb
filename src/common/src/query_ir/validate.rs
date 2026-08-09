@@ -239,13 +239,7 @@ impl InferCtx<'_> {
     }
 
     fn check_leaf(&self, leaf: &Leaf) -> Result<(), IrError> {
-        if self.resolver.filterability(self.source, &leaf.field)
-            == crate::schema::logical::Filterability::RetrievalOnly
-        {
-            return Err(IrError::UnfilterableField {
-                field: leaf.field.clone(),
-            });
-        }
+        self.require_filterable(&leaf.field)?;
         let ty = self.ref_type(&leaf.field)?;
         match (leaf.op.takes_value(), &leaf.value) {
             (true, None) => {
@@ -297,6 +291,17 @@ impl InferCtx<'_> {
                 let v = leaf.value.as_ref().unwrap();
                 coerce_for(&leaf.field, v, &ty)?;
             }
+        }
+        Ok(())
+    }
+
+    fn require_filterable(&self, field: &str) -> Result<(), IrError> {
+        if self.resolver.filterability(self.source, field)
+            == crate::schema::logical::Filterability::RetrievalOnly
+        {
+            return Err(IrError::UnfilterableField {
+                field: field.to_string(),
+            });
         }
         Ok(())
     }
@@ -357,6 +362,7 @@ impl InferCtx<'_> {
         // Group columns keep their canonical types.
         let mut group_cols = Vec::new();
         for by in &agg.by {
+            self.require_filterable(by)?;
             let ty = self.ref_type(by)?;
             group_cols.push(Column::new(by.clone(), ty));
         }
@@ -511,7 +517,10 @@ impl InferCtx<'_> {
 
         // Field operand requirements.
         let of_type = match (&a.of, a.func.needs_field()) {
-            (Some(of), _) => Some(self.ref_type(of)?),
+            (Some(of), _) => {
+                self.require_filterable(of)?;
+                Some(self.ref_type(of)?)
+            }
             (None, true) => {
                 return Err(IrError::Invalid(format!(
                     "aggregate '{}' requires an `of` field",
@@ -564,6 +573,7 @@ impl InferCtx<'_> {
         if rank.n <= 0 {
             return Err(IrError::InvalidRankSize { n: rank.n });
         }
+        self.require_filterable(&rank.of)?;
         let ty = self.ref_type(&rank.of)?;
         if !is_numeric(&ty) {
             return Err(IrError::Invalid(format!(
@@ -578,6 +588,7 @@ impl InferCtx<'_> {
     fn apply_order(&mut self, keys: &[Order]) -> Result<(), IrError> {
         self.require_rowset("order")?;
         for key in keys {
+            self.require_filterable(&key.of)?;
             let _ = self.ref_type(&key.of)?;
         }
         Ok(())
@@ -1028,6 +1039,24 @@ mod tests {
         }))
         .unwrap_err();
         assert!(matches!(err, IrError::UnfilterableField { .. }));
+    }
+
+    #[test]
+    fn retrieval_only_field_is_rejected_in_grouping_and_ordering() {
+        for pipeline in [
+            json!([{ "aggregate": { "by": ["structured.payload"], "aggs": [{ "fn": "count", "as": "n" }] } }]),
+            json!([{ "order": [{ "of": "structured.payload", "dir": "asc" }] }]),
+        ] {
+            let err = validate_json(json!({
+                "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+                "result": "rows", "pipeline": pipeline
+            }))
+            .unwrap_err();
+            assert!(
+                matches!(err, IrError::UnfilterableField { .. }),
+                "got {err:?}"
+            );
+        }
     }
 
     // Task 2.2 — structured operands.
