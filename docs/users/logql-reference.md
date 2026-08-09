@@ -92,6 +92,22 @@ is also kept in the attribute JSON, label discovery (`/labels`,
 Series identity (in `/series` results and un-grouped metric queries) is
 the `service_name` and `level` labels.
 
+### Structured metadata
+
+A returned log entry carries per-line fields as Loki **structured metadata**:
+the trace context (`trace_id`, `span_id`) and the record's log and resource
+attributes. These are per-entry rather than stream labels because their values
+vary line to line — promoting them to the label set would split every distinct
+combination into its own stream.
+
+Structured metadata is a flat string map, so the three OTel attribute scopes
+(resource, instrumentation scope, log record) are **flattened into one map**
+here, and a key present at more than one scope resolves to the log-record
+value. This is a limitation of the Loki wire format, not of storage. To read
+attributes with their scopes intact — and to reach instrumentation-scope
+attributes, `trace_flags`, `severity_number` or `observed_timestamp` at all —
+use the [native Query IR](querying-ir.md), which keeps each container separate.
+
 ### Discovering fields
 
 `GET /loki/api/v1/detected_fields` answers "what attributes exist here?"
