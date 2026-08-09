@@ -2619,11 +2619,7 @@
       },
       "HeatmapAxisX": {
         "type": "object",
-<<<<<<< HEAD
         "description": "Epoch-aligned time axis with a fixed nanosecond step.",
-=======
-        "description": "Epoch-aligned time axis with a fixed nanosecond step.",
->>>>>>> feat/query-ir-profiles
         "required": [
           "step_ns",
           "align"
