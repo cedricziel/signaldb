@@ -173,6 +173,15 @@ impl SchemaDefinitions {
             resolved_fields.push(resolved);
         }
 
+        for partition in &schema_def.partition_by {
+            if let Some(field) = resolved_fields
+                .iter_mut()
+                .find(|field| field.name == *partition)
+            {
+                field.physical_only = true;
+            }
+        }
+
         Ok(ResolvedSchema {
             version: version.to_string(),
             description: schema_def.description.clone(),
@@ -503,5 +512,12 @@ fields = [
         assert_eq!(v2.fields[2].name, "timestamp");
         assert_eq!(v2.fields[2].computed, Some("start_time".to_string()));
         assert!(v2.fields[2].physical_only);
+        assert!(
+            v2.fields
+                .iter()
+                .find(|field| field.name == "timestamp")
+                .unwrap()
+                .physical_only
+        );
     }
 }
