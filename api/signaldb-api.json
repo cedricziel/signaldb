@@ -2619,7 +2619,7 @@
       },
       "HeatmapAxisX": {
         "type": "object",
-        "description": "Complete axes plus one non-zero heatmap cell. Missing declared coordinates\nrepresent zero, making the Flight payload sparse without hiding the window.",
+        "description": "X-axis configuration for heatmap queries, representing time buckets.",
         "required": [
           "step_ns",
           "align"
