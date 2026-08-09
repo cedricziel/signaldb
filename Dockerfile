@@ -137,15 +137,15 @@ RUN cargo build --release --features "${CARGO_FEATURES}" \
     --bin signaldb-cli \
     --bin signaldb-mcp
 
-# Strip debug symbols to reduce binary size
-RUN strip target/release/signaldb-acceptor && \
-    strip target/release/signaldb-router && \
-    strip target/release/signaldb-writer && \
-    strip target/release/signaldb-querier && \
-    strip target/release/signaldb-compactor && \
-    strip target/release/signaldb && \
-    strip target/release/signaldb-cli && \
-    strip target/release/signaldb-mcp
+# Keep symbol tables for pprof-rs self-profiling while removing DWARF sections.
+RUN strip --strip-debug target/release/signaldb-acceptor && \
+    strip --strip-debug target/release/signaldb-router && \
+    strip --strip-debug target/release/signaldb-writer && \
+    strip --strip-debug target/release/signaldb-querier && \
+    strip --strip-debug target/release/signaldb-compactor && \
+    strip --strip-debug target/release/signaldb && \
+    strip --strip-debug target/release/signaldb-cli && \
+    strip --strip-debug target/release/signaldb-mcp
 
 # Prebuilt-binary path - CI builds static musl binaries on the host runner
 # (where sccache/rust-cache make rebuilds incremental) and stages them in

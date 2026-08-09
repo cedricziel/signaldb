@@ -260,7 +260,9 @@ lto = "thin"      # ~95% perf at much faster link times
 codegen-units = 8
 panic = "abort"
 debug = 0
-strip = "symbols"
+# pprof-rs resolves sampled production stacks from the symbol table. Keep it
+# while dropping DWARF debug sections to avoid shipping full debug info.
+strip = "debuginfo"
 
 # CI-optimized tests (fast linking, small artifacts)
 [profile.ci-test]
