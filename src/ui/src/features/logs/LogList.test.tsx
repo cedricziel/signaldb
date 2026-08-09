@@ -205,6 +205,32 @@ describe("LogList structured metadata", () => {
     ).toBeInTheDocument();
   });
 
+  it("copies individual label and metadata values", async () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    render(
+      <LogList
+        rows={[metaRow]}
+        onAddFilter={() => {}}
+        onOpenTrace={() => {}}
+      />,
+    );
+
+    await userEvent.click(screen.getByText("checkout timed out"));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Copy value for service_name" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Copied value for service_name" }),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Copy value for span_id" }),
+    );
+
+    expect(writeText).toHaveBeenNthCalledWith(1, "checkout");
+    expect(writeText).toHaveBeenNthCalledWith(2, "def456");
+  });
+
   it("copies metadata as well as labels", async () => {
     const writeText = vi.fn();
     vi.stubGlobal("navigator", { clipboard: { writeText } });

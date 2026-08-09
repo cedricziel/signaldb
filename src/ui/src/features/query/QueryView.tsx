@@ -9,6 +9,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { runIrQuery } from "../../api/queryIr";
+import { CopyValueButton } from "../../components/CopyValueButton";
 import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
 import { FilterChips } from "../logs/FilterChips";
 import type { LabelFilter } from "../../lib/filters";
@@ -169,9 +170,17 @@ function RowsTable({ data, topN }: { data: QueryIrResponse; topN: boolean }) {
       <tbody>
         {rows.map((row, i) => (
           <tr key={i}>
-            {row.map((cell, j) => (
-              <td key={j}>{formatCell(cell)}</td>
-            ))}
+            {row.map((cell, j) => {
+              const value = formatCell(cell);
+              return (
+                <td key={j}>
+                  <span className="copy-value">
+                    <span className="copy-value-text">{value}</span>
+                    <CopyValueButton value={value} label={`cell ${value}`} />
+                  </span>
+                </td>
+              );
+            })}
           </tr>
         ))}
       </tbody>
@@ -184,12 +193,18 @@ function SeriesChart({ data }: { data: QueryIrResponse }) {
   return (
     <div className="ir-series">
       {series.length === 0 && <div>No series</div>}
-      {series.map((s, i) => (
-        <div key={i} className="ir-series-row">
-          <span className="ir-series-label">{labelString(s.labels)}</span>
-          <span className="ir-series-points">{s.points.length} points</span>
-        </div>
-      ))}
+      {series.map((s, i) => {
+        const labels = labelString(s.labels);
+        return (
+          <div key={i} className="ir-series-row">
+            <span className="ir-series-label copy-value">
+              <span className="copy-value-text">{labels}</span>
+              <CopyValueButton value={labels} label={`series ${labels}`} />
+            </span>
+            <span className="ir-series-points">{s.points.length} points</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

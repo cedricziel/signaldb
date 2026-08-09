@@ -156,3 +156,53 @@ select:focus-visible {
   outline-offset: 1px;
   border-radius: 3px;
 }
+
+.copy-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.copy-value-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.copy-value-button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.copy-value-button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.copy-value-button[data-copied] {
+  color: var(--ok);
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.copy-value-icon {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}

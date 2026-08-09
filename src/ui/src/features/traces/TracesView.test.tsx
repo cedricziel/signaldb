@@ -120,6 +120,25 @@ const TRACE_BODY = {
               value: { stringValue: "stripe" },
             },
           },
+          events: [
+            {
+              name: "exception",
+              attributes: {
+                "exception.type": {
+                  key: "exception.type",
+                  value: { stringValue: "PaymentError" },
+                },
+                "exception.message": {
+                  key: "exception.message",
+                  value: { stringValue: "card declined" },
+                },
+                "exception.stacktrace": {
+                  key: "exception.stacktrace",
+                  value: { stringValue: "Error: card declined" },
+                },
+              },
+            },
+          ],
         },
       ],
     },
@@ -642,7 +661,9 @@ describe("TracesView detail", () => {
   it("renders the waterfall with the error span preselected", async () => {
     stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
     renderView({ trace: "t1cafe" });
-    const spans = await screen.findAllByRole("listitem");
+    const spans = await within(
+      await screen.findByRole("list", { name: "Spans" }),
+    ).findAllByRole("listitem");
     expect(spans).toHaveLength(2);
     // Error span is preselected, so its attributes show in the detail panel.
     expect(screen.getByText("payment.provider")).toBeInTheDocument();
@@ -659,6 +680,38 @@ describe("TracesView detail", () => {
     expect(
       screen.getByRole("heading", { name: "POST /api/checkout", level: 4 }),
     ).toBeInTheDocument();
+  });
+
+  it("copies span and promoted exception attribute values", async () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    renderView({ trace: "t1cafe" });
+
+    await screen.findByText("payment.provider");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Copy value for payment.provider" }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Copy value for exception.type",
+      }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Copy value for exception.message",
+      }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Copy value for exception.stacktrace",
+      }),
+    );
+
+    expect(writeText).toHaveBeenNthCalledWith(1, "stripe");
+    expect(writeText).toHaveBeenNthCalledWith(2, "PaymentError");
+    expect(writeText).toHaveBeenNthCalledWith(3, "card declined");
+    expect(writeText).toHaveBeenNthCalledWith(4, "Error: card declined");
   });
 
   it("pivots to logs filtered by trace_id", async () => {
