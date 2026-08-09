@@ -1,5 +1,5 @@
 //! Diagnostic: read a spike-written parquet file DIRECTLY with DataFusion's
-//! parquet reader (bypassing datafusion_iceberg) and show the residue map.
+//! parquet reader (bypassing datafusion_iceberg) and show the binary residue.
 //! Usage: residue_probe <file.parquet>
 
 use anyhow::Result;
@@ -14,11 +14,7 @@ async fn main() -> Result<()> {
     let ctx = SessionContext::new();
     ctx.register_parquet("t", &path, ParquetReadOptions::default())
         .await?;
-    for sql in [
-        "SELECT service_name, attributes_residue FROM t",
-        "SELECT attributes_residue['http.response.status_code'] AS v FROM t",
-        "SELECT map_extract(attributes_residue, 'http.response.status_code') AS v FROM t",
-    ] {
+    for sql in ["SELECT service_name, attributes_residue FROM t"] {
         println!("-- {sql}");
         match ctx.sql(sql).await {
             Ok(df) => match df.collect().await {

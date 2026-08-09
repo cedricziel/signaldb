@@ -1,6 +1,6 @@
 # Spike results — otel-native-schema layer 0 (task 0.4)
 
-Synthesis of the four spike documents, 2026-08-04. Detail lives in:
+Synthesis of the four spike documents, refreshed 2026-08-09. Detail lives in:
 `warm-index.md` (0.1), `coexistence.md` (0.2), `data-characterization.md` +
 `bench.md` (0.3). Code: `spikes/otel-native-spike/` (standalone crate; demo
 binaries `warm_index_demo`, `coexistence_demo`, `bench_demo`, `residue_probe`).
@@ -39,16 +39,14 @@ correction from 0.3: bloom bytes are 1.88%, but the token _columns_ are
 **24–36% of total storage** — hence the budget/policy condition.
 
 **0.2 — typed layout + promotion evolution through the pinned provider
-(viable).** 10/11 probes pass: per-type maps round-trip with typed access and
-predicates; promotion adds a typed column via genuine Iceberg field-id
-evolution (id continues past the tree max); ONE scan spans pre-/post-promotion
-generations with null-fill; projection is field-id-based (not positional);
-demotion works. The one failure: `Map<String,Binary>` residue content nulls
-through the provider (bytes verified intact on disk; plain-parquet reads serve
-them) — the provider's field-id override machinery only reshapes top-level
-fields. Mitigation chosen by the bench and validated end-to-end: a **top-level
-`Binary` residue column** (one CBOR blob per row). Fixing the fork remains an
-option; either way this is a layer-4.2 detail, not a blocker.
+(viable).** All 11 probes pass on the workspace-pinned `46c41af` provider:
+per-type maps round-trip with typed access and predicates; a top-level `Binary`
+residue column carries one CBOR document per row and decodes through the provider;
+promotion adds a typed column via genuine Iceberg field-id evolution (id continues
+past the tree max); ONE scan spans pre-/post-promotion generations with null-fill;
+projection is field-id-based (not positional); and demotion works. The earlier
+`Map<String,Binary>` nested-value limitation is avoided by the selected top-level
+binary representation.
 
 **0.3 — benchmark on real hive data (the layout pays, compacted).** 200k real
 rows, 83 keys, four layouts × two file-size regimes, 3 reps, seeded:
@@ -98,8 +96,8 @@ write-path regression for V1/V2; V3 is opt-in by design.**
 
 ## Feed-forward into the layer stack
 
-- Layer 4.2: residue = top-level `Binary` CBOR column (or fix the fork's nested
-  field-id handling first); per-type maps as specced.
+- Layer 4.2: residue = validated top-level `Binary` CBOR column; per-type maps
+  as specced.
 - Layer 4.3: custom pre-filter hook; explicit bloom NDV; selectivity gate;
   fix `warm_index_demo`'s metric reading if the demo is kept.
 - Layer 6: promotion machinery validated end-to-end (field-id evolution,
