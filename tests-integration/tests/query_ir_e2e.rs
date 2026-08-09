@@ -636,13 +636,17 @@ async fn trace_heatmap_end_to_end_uses_native_query_ir_without_list_limit() {
         {
             assert_eq!(body["result"], "heatmap");
             let cells = body["heatmap"]["cells"].as_array().unwrap();
-            assert_eq!(
-                cells
-                    .iter()
-                    .map(|cell| cell["count"].as_i64().unwrap())
-                    .sum::<i64>(),
-                3
-            );
+            let mut buckets: Vec<(i64, i64)> = cells
+                .iter()
+                .map(|cell| {
+                    (
+                        cell["duration_bucket"].as_i64().unwrap(),
+                        cell["count"].as_i64().unwrap(),
+                    )
+                })
+                .collect();
+            buckets.sort_unstable();
+            assert_eq!(buckets, vec![(0, 1), (1, 1), (2, 1)], "{body}");
             return;
         }
         last = body;
@@ -688,6 +692,7 @@ async fn trace_heatmap_isolated_by_authenticated_tenant_and_dataset() {
     ];
     for (key, tenant, dataset, expected_bucket) in contexts {
         let mut body = serde_json::Value::Null;
+        let mut last = serde_json::Value::Null;
         for _ in 0..40 {
             let (status, response) = post_ir_as(&app, doc.clone(), key, tenant, dataset).await;
             if status == StatusCode::OK
@@ -698,11 +703,12 @@ async fn trace_heatmap_isolated_by_authenticated_tenant_and_dataset() {
                 body = response;
                 break;
             }
+            last = response;
             sleep(Duration::from_millis(500)).await;
         }
-        let cells = body["heatmap"]["cells"]
-            .as_array()
-            .expect("one isolated heatmap cell");
+        let cells = body["heatmap"]["cells"].as_array().unwrap_or_else(|| {
+            panic!("{tenant}/{dataset:?} never returned one isolated cell; last: {last}")
+        });
         assert_eq!(cells[0]["count"], 1, "context leaked rows: {body}");
         assert_eq!(
             cells[0]["duration_bucket"], expected_bucket,

@@ -239,8 +239,7 @@ export type DatasetResponse = {
 };
 
 /**
- * Complete axes plus one non-zero heatmap cell. Missing declared coordinates
- * represent zero, making the Flight payload sparse without hiding the window.
+ * Epoch-aligned time axis with a fixed nanosecond step.
  */
 export type HeatmapAxisX = {
     align: string;
@@ -260,6 +259,10 @@ export type HeatmapCell = {
     time_bucket_ns: number;
 };
 
+/**
+ * Complete axes plus one non-zero heatmap cell. Missing declared coordinates
+ * represent zero, making the Flight payload sparse without hiding the window.
+ */
 export type HeatmapResult = {
     cells: Array<HeatmapCell>;
     value: string;
@@ -418,13 +421,13 @@ export type QueryIrRequest = {
 /**
  * The single canonical response contract. `result` discriminates which fields
  * are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
- * `series` + `step_ns`.
+ * `series` + `step_ns`; `heatmap` fills `heatmap`.
  */
 export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
     heatmap?: HeatmapResult;
     /**
-     * The result envelope: `rows`, `series`, or `table`.
+     * The result envelope: `rows`, `series`, `table`, or `heatmap`.
      */
     result: string;
     rows?: Array<Array<unknown>>;

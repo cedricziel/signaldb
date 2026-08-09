@@ -836,6 +836,11 @@ mod tests {
             serde_json::from_value(params.query).unwrap();
         assert_eq!(request.ir_version, 2);
         assert_eq!(request.result, "heatmap");
+        assert!(
+            request.pipeline.len() == 1 && request.pipeline[0].contains_key("heatmap"),
+            "the heatmap stage must survive the conversion: {:?}",
+            request.pipeline
+        );
     }
 
     #[test]

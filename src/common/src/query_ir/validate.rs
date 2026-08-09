@@ -440,9 +440,9 @@ impl InferCtx<'_> {
             return Err(IrError::Invalid("heatmap x.step must be > 0".into()));
         }
         let ty = self.ref_type(&heatmap.y.of)?;
-        if !is_numeric(&ty) {
+        if ty != ValueType::DurationNs {
             return Err(IrError::Invalid(format!(
-                "heatmap y.of requires a numeric or duration field, got {ty}"
+                "heatmap y.of requires a duration field, got {ty}"
             )));
         }
         if heatmap.value.func != AggFn::Count || heatmap.value.as_name != "count" {
@@ -471,11 +471,8 @@ impl InferCtx<'_> {
         let bounds = bounds
             .iter()
             .map(|v| match v {
-                super::value::Literal::Duration(n) | super::value::Literal::Int64(n) => Ok(*n),
-                super::value::Literal::Float64(_) => Err(IrError::Invalid(
-                    "heatmap floating point bounds are not yet representable".into(),
-                )),
-                _ => Err(IrError::Invalid("heatmap bounds must be numeric".into())),
+                super::value::Literal::Duration(n) => Ok(*n),
+                _ => Err(IrError::Invalid("heatmap bounds must be durations".into())),
             })
             .collect::<Result<Vec<_>, _>>()?;
         if bounds.windows(2).any(|p| p[0] >= p[1]) {
@@ -864,6 +861,21 @@ mod tests {
         let err = validate_json(heatmap_doc(2, json!(["5ms", "5ms"]))).unwrap_err();
         assert!(
             matches!(err, IrError::Invalid(message) if message.contains("strictly increasing"))
+        );
+    }
+
+    #[test]
+    fn heatmap_rejects_non_duration_y_axes() {
+        let mut document = heatmap_doc(2, json!([1, 5]));
+        document["pipeline"][0]["heatmap"]["y"]["of"] = json!("numeric");
+
+        let resolver =
+            logs_resolver().with_column("traces", "numeric", "numeric", ValueType::Int64);
+        let err = validate(&doc(document), &SourceRegistry::core(), &resolver).unwrap_err();
+
+        assert!(
+            matches!(err, IrError::Invalid(ref message) if message.contains("duration field")),
+            "got {err:?}"
         );
     }
 

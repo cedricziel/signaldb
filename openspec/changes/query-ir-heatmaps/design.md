@@ -53,11 +53,12 @@ this stage and envelope to IR v2 so v1 behavior remains unchanged.
 
 ### Lower bins server-side and cap their shape
 
-The planner resolves `y.of` as a numeric or duration logical field and coerces
-bounds to that field's canonical type. It lowers x with `date_bin` and y with a
-typed `CASE` expression, then groups by both values and counts rows. Bins are
+The planner accepts the trace `duration` logical field and coerces bounds to
+integer nanoseconds. It lowers x with epoch-aligned integer buckets and y with a
+duration `CASE` expression, then groups by both values and counts rows. Bins are
 lower-inclusive and upper-exclusive, with the final bucket accepting all values
-at or above its lower bound.
+at or above its lower bound. Other numeric fields are deliberately excluded
+until the response can transport their bound types without loss.
 
 The server caps duration boundaries and computed time-bucket count before
 planning. This bounds the output and prevents a client from turning one query

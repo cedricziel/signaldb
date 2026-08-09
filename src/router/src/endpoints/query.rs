@@ -101,8 +101,7 @@ pub struct ResultSeries {
     pub points: Vec<[serde_json::Value; 2]>,
 }
 
-/// Complete axes plus one non-zero heatmap cell. Missing declared coordinates
-/// represent zero, making the Flight payload sparse without hiding the window.
+/// Epoch-aligned time axis with a fixed nanosecond step.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct HeatmapAxisX {
     pub step_ns: i64,
@@ -122,6 +121,8 @@ pub struct HeatmapCell {
     pub duration_bucket: i64,
     pub count: i64,
 }
+/// Complete axes plus one non-zero heatmap cell. Missing declared coordinates
+/// represent zero, making the Flight payload sparse without hiding the window.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct HeatmapResult {
     pub x: HeatmapAxisX,
@@ -157,10 +158,10 @@ impl HeatmapResult {
 
 /// The single canonical response contract. `result` discriminates which fields
 /// are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
-/// `series` + `step_ns`.
+/// `series` + `step_ns`; `heatmap` fills `heatmap`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct QueryIrResponse {
-    /// The result envelope: `rows`, `series`, or `table`.
+    /// The result envelope: `rows`, `series`, `table`, or `heatmap`.
     pub result: String,
     /// The resolved absolute window the query ran over.
     pub window: ResolvedWindow,
@@ -433,15 +434,30 @@ fn to_heatmap_cells(batches: &[RecordBatch]) -> Result<Vec<HeatmapCell>, ApiErro
         let time = batch
             .column_by_name("time_bucket_ns")
             .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
-            .ok_or_else(|| ApiError::bad_request("heatmap result is missing time_bucket_ns"))?;
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "heatmap result is missing time_bucket_ns",
+                )
+            })?;
         let duration = batch
             .column_by_name("duration_bucket")
             .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
-            .ok_or_else(|| ApiError::bad_request("heatmap result is missing duration_bucket"))?;
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "heatmap result is missing duration_bucket",
+                )
+            })?;
         let count = batch
             .column_by_name("count")
             .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
-            .ok_or_else(|| ApiError::bad_request("heatmap result is missing count"))?;
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "heatmap result is missing count",
+                )
+            })?;
         for row in 0..batch.num_rows() {
             cells.push(HeatmapCell {
                 time_bucket_ns: time.value(row),

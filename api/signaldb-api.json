@@ -2619,7 +2619,7 @@
       },
       "HeatmapAxisX": {
         "type": "object",
-        "description": "Complete axes plus one non-zero heatmap cell. Missing declared coordinates\nrepresent zero, making the Flight payload sparse without hiding the window.",
+        "description": "Epoch-aligned time axis with a fixed nanosecond step.",
         "required": [
           "step_ns",
           "align"
@@ -2685,6 +2685,7 @@
       },
       "HeatmapResult": {
         "type": "object",
+        "description": "Complete axes plus one non-zero heatmap cell. Missing declared coordinates\nrepresent zero, making the Flight payload sparse without hiding the window.",
         "required": [
           "x",
           "y",
@@ -3040,7 +3041,7 @@
       },
       "QueryIrResponse": {
         "type": "object",
-        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`.",
+        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`.",
         "required": [
           "result",
           "window"
@@ -3057,7 +3058,7 @@
           },
           "result": {
             "type": "string",
-            "description": "The result envelope: `rows`, `series`, or `table`."
+            "description": "The result envelope: `rows`, `series`, `table`, or `heatmap`."
           },
           "rows": {
             "type": "array",

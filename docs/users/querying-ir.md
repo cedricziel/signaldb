@@ -264,9 +264,9 @@ operations remain specialized APIs rather than generic Query IR fields.
 
 ### Heatmap envelope (IR v2)
 
-Use the terminal `heatmap` stage to count spans by epoch-aligned time and a
-numeric or duration field. It is currently available for `traces`; `duration`
-accepts duration literals for its bounds.
+Use the terminal `heatmap` stage to count spans by epoch-aligned time and
+duration. It is currently available for `traces`; `duration` accepts duration
+literals for its bounds.
 
 ```json
 {
@@ -285,8 +285,9 @@ accepts duration literals for its bounds.
 ```
 
 The response has `result: "heatmap"` and a `heatmap` object containing `x`
-(`step_ns`, `align`), `y` (`of`, `type`, integer-nanosecond `bounds`,
-`overflow`), and sparse `{time_bucket_ns, duration_bucket, count}` cells.
+(`step_ns`, `align`), `y` (`of: "duration"`, `type: "duration_ns"`,
+integer-nanosecond `bounds`, `overflow`), and sparse
+`{time_bucket_ns, duration_bucket, count}` cells.
 Bounds are lower-inclusive and upper-exclusive. Values below the first bound
 use bucket zero; values at or above the final bound use the final overflow
 bucket. Missing cells inside the declared window are zero. The server accepts

@@ -446,7 +446,7 @@ fn validate_heatmap_window(doc: &Document, window: &ResolvedWindow) -> Result<()
                 "heatmap requires a positive step and non-empty range".into(),
             ));
         }
-        let buckets = (window.end_ns - window.start_ns).saturating_add(step - 1) / step;
+        let buckets = heatmap_bucket_count(window.start_ns, window.end_ns, step)?;
         if buckets > MAX_TIME_BUCKETS {
             return Err(QuerierError::InvalidInput(format!(
                 "heatmap has {buckets} time buckets; maximum is {MAX_TIME_BUCKETS}"
@@ -454,6 +454,19 @@ fn validate_heatmap_window(doc: &Document, window: &ResolvedWindow) -> Result<()
         }
     }
     Ok(())
+}
+
+/// Count epoch-aligned buckets that intersect the inclusive query window.
+fn heatmap_bucket_count(start_ns: i64, end_ns: i64, step_ns: i64) -> Result<i64, QuerierError> {
+    if start_ns >= end_ns || step_ns <= 0 {
+        return Err(QuerierError::InvalidInput(
+            "heatmap requires a positive step and non-empty range".into(),
+        ));
+    }
+    let first = start_ns.div_euclid(step_ns) as i128;
+    let last = end_ns.div_euclid(step_ns) as i128;
+    i64::try_from(last - first + 1)
+        .map_err(|_| QuerierError::InvalidInput("heatmap time bucket count overflows i64".into()))
 }
 
 /// Resolve the document's range to an absolute window.
@@ -703,15 +716,22 @@ impl Lowering<'_> {
                 common::query_ir::coerce(bound, &y_type)
                     .map_err(|e| QuerierError::InvalidInput(e.to_string()))
                     .and_then(|value| match value {
-                        Literal::Duration(ns) | Literal::Int64(ns) => Ok(ns),
+                        Literal::Duration(ns) => Ok(ns),
                         _ => Err(QuerierError::InvalidInput(
-                            "heatmap bounds must be integer or duration values".into(),
+                            "heatmap bounds must be duration values".into(),
                         )),
                     })
             })
             .collect::<Result<Vec<_>, QuerierError>>()?;
-        // Integer division defines epoch-aligned buckets without timezone or calendar semantics.
-        let time_bucket = (col(self.source.time_col) / lit(step_ns)) * lit(step_ns);
+        // DataFusion integer division truncates negative values toward zero.
+        // Offset negative timestamps before division to retain epoch floor semantics.
+        let time = col(self.source.time_col);
+        let time_bucket = datafusion::logical_expr::when(
+            time.clone().lt(lit(0i64)),
+            ((time.clone() + lit(1i64)) / lit(step_ns) - lit(1i64)) * lit(step_ns),
+        )
+        .otherwise((time / lit(step_ns)) * lit(step_ns))
+        .map_err(QuerierError::QueryFailed)?;
         let mut duration_bucket = lit(bounds.len() as i64);
         for (index, bound) in bounds.iter().enumerate().rev() {
             duration_bucket = datafusion::logical_expr::when(
@@ -1949,14 +1969,20 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(StringArray::from(vec!["t1", "t2", "t3"])),
-                Arc::new(StringArray::from(vec!["s1", "s2", "s3"])),
-                Arc::new(StringArray::from(vec![Some("p1"), None, Some("p3")])),
-                Arc::new(StringArray::from(vec!["GET /a", "GET /b", "POST /c"])),
-                Arc::new(StringArray::from(vec!["api", "api", "web"])),
-                Arc::new(Int64Array::from(vec![10_i64, 20, 30])),
-                Arc::new(Int64Array::from(vec![100_i64, 900, 500])),
+                Arc::new(StringArray::from(vec!["t0", "t1", "t2", "t3"])),
+                Arc::new(StringArray::from(vec!["s0", "s1", "s2", "s3"])),
+                Arc::new(StringArray::from(vec![None, Some("p1"), None, Some("p3")])),
                 Arc::new(StringArray::from(vec![
+                    "GET /before",
+                    "GET /a",
+                    "GET /b",
+                    "POST /c",
+                ])),
+                Arc::new(StringArray::from(vec!["api", "api", "api", "web"])),
+                Arc::new(Int64Array::from(vec![-1_i64, 10, 20, 30])),
+                Arc::new(Int64Array::from(vec![100_i64, 100, 900, 500])),
+                Arc::new(StringArray::from(vec![
+                    Some("OK"),
                     Some("OK"),
                     Some("ERROR"),
                     Some("OK"),
@@ -2089,7 +2115,7 @@ mod tests {
     async fn trace_heatmap_uses_epoch_buckets_and_duration_boundary_overflow_bins() {
         let svc = IrService::new(traces_ctx());
         let d = doc(serde_json::json!({
-            "irVersion": 2, "from": "traces", "range": { "from": 0, "to": 40 },
+            "irVersion": 2, "from": "traces", "range": { "from": -10, "to": 40 },
             "result": "heatmap", "pipeline": [{ "heatmap": {
                 "x": { "step": "10ns", "align": "epoch" },
                 "y": { "of": "duration", "bounds": [100, 500, 900], "overflow": true },
@@ -2127,7 +2153,18 @@ mod tests {
                 cells.push((time.value(row), bucket.value(row), count.value(row)));
             }
         }
-        assert_eq!(cells, vec![(10, 1, 1), (20, 3, 1), (30, 2, 1)]);
+        assert_eq!(cells, vec![(-10, 1, 1), (10, 1, 1), (20, 3, 1), (30, 2, 1)]);
+    }
+
+    #[test]
+    fn heatmap_window_counts_aligned_buckets_inclusive_of_end() {
+        assert_eq!(heatmap_bucket_count(1, 5121, 10).unwrap(), 513);
+    }
+
+    #[test]
+    fn heatmap_window_rejects_extreme_timestamp_ranges() {
+        let err = heatmap_bucket_count(i64::MIN, i64::MAX, 1).unwrap_err();
+        assert!(err.to_string().contains("overflows"));
     }
 
     #[tokio::test]

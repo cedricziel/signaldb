@@ -16,8 +16,12 @@ export function CopyValueButton({ value, label }: Props) {
 
   async function copyValue() {
     if (!navigator.clipboard) return;
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
   }
 
   return (
