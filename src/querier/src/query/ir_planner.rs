@@ -69,6 +69,10 @@ struct SourcePlan {
     time_is_timestamp: bool,
     /// Attribute-map containers, in resolution/coalesce order.
     containers: &'static [&'static str],
+    /// Logical prefixes that address one container explicitly, longest-first
+    /// at match time. `resource.deployment.environment` reads only the
+    /// resource container, where the bare name coalesces across all of them.
+    attr_prefixes: &'static [(&'static str, &'static str)],
     /// The default projection for a `rows` result (intersected with the schema).
     row_defaults: &'static [&'static str],
     /// Logical field name → physical column, for OTel-native names and the
@@ -84,14 +88,35 @@ impl SourcePlan {
                 table: "logs",
                 time_col: "timestamp",
                 time_is_timestamp: true,
-                containers: &["log_attributes", "resource_attributes"],
+                containers: &["log_attributes", "scope_attributes", "resource_attributes"],
+                attr_prefixes: &[
+                    ("log.", "log_attributes"),
+                    ("scope.", "scope_attributes"),
+                    ("resource.", "resource_attributes"),
+                ],
+                // The OTel LogRecord: trace context (including the sampled
+                // flag), severity as text *and* number, the instrumentation
+                // scope's identity, and all three attribute containers kept
+                // separate. A client rendering a log line needs every one of
+                // these, and merging the containers would erase the scope
+                // distinction OTel draws between them.
                 row_defaults: &[
                     "timestamp",
+                    "observed_timestamp",
                     "body",
                     "service_name",
                     "severity_text",
+                    "severity_number",
                     "trace_id",
                     "span_id",
+                    "trace_flags",
+                    "scope_name",
+                    "scope_version",
+                    "scope_schema_url",
+                    "resource_schema_url",
+                    "log_attributes",
+                    "scope_attributes",
+                    "resource_attributes",
                 ],
                 aliases: &[("service.name", "service_name")],
             }),
@@ -99,7 +124,12 @@ impl SourcePlan {
                 table: "traces",
                 time_col: "start_time_unix_nano",
                 time_is_timestamp: false,
-                containers: &["span_attributes", "resource_attributes"],
+                containers: &["span_attributes", "scope_attributes", "resource_attributes"],
+                attr_prefixes: &[
+                    ("span.", "span_attributes"),
+                    ("scope.", "scope_attributes"),
+                    ("resource.", "resource_attributes"),
+                ],
                 row_defaults: &[
                     "trace_id",
                     "span_id",
@@ -627,6 +657,16 @@ impl Lowering<'_> {
     /// Extract an attribute value, coalescing over the source's containers that
     /// are present in the scanned schema.
     fn attr_expr(&self, key: &str) -> Expr {
+        // An explicit container qualifier reads that container only. Checked
+        // before the coalesce so `resource.x` and `log.x` stay distinguishable
+        // when the same key exists at both scopes.
+        if let Some((container, bare)) = self.qualified_attr(key) {
+            return if self.schema_cols.iter().any(|s| s == container) {
+                get_field(col(container), bare)
+            } else {
+                lit(ScalarValue::Utf8(None))
+            };
+        }
         let mut parts: Vec<Expr> = self
             .source
             .containers
@@ -639,6 +679,21 @@ impl Lowering<'_> {
             1 => parts.remove(0),
             _ => coalesce(parts),
         }
+    }
+
+    /// Split a container-qualified field into `(container column, bare key)`.
+    /// Returns `None` for an unqualified name, which coalesces instead.
+    fn qualified_attr<'f>(&self, field: &'f str) -> Option<(&'static str, &'f str)> {
+        self.source
+            .attr_prefixes
+            .iter()
+            .find_map(|(prefix, container)| {
+                field
+                    .strip_prefix(prefix)
+                    // A bare prefix with nothing after it is not a field.
+                    .filter(|rest| !rest.is_empty())
+                    .map(|rest| (*container, rest))
+            })
     }
 
     fn lower_predicate(&self, pred: &Predicate) -> Result<Expr, QuerierError> {
@@ -1137,7 +1192,7 @@ mod tests {
     use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
     use std::sync::Arc;
 
-    fn map_field() -> Field {
+    fn map_field_named(name: &str) -> Field {
         let entries = Field::new(
             "entries",
             DataType::Struct(Fields::from(vec![
@@ -1146,11 +1201,11 @@ mod tests {
             ])),
             false,
         );
-        Field::new(
-            "log_attributes",
-            DataType::Map(Arc::new(entries), false),
-            true,
-        )
+        Field::new(name, DataType::Map(Arc::new(entries), false), true)
+    }
+
+    fn map_field() -> Field {
+        map_field_named("log_attributes")
     }
 
     fn build_map(pairs: &[&[(&str, &str)]]) -> ArrayRef {
@@ -1186,22 +1241,13 @@ mod tests {
             Field::new("trace_id", DataType::Utf8, true),
             Field::new("span_id", DataType::Utf8, true),
             Field::new("label_env", DataType::Utf8, true),
+            // The OTel LogRecord fields the explore UI renders.
+            Field::new("trace_flags", DataType::Int64, true),
+            Field::new("scope_name", DataType::Utf8, true),
+            Field::new("scope_version", DataType::Utf8, true),
             map_field(),
-            Field::new(
-                "resource_attributes",
-                DataType::Map(
-                    Arc::new(Field::new(
-                        "entries",
-                        DataType::Struct(Fields::from(vec![
-                            Field::new("keys", DataType::Utf8, false),
-                            Field::new("values", DataType::Utf8, true),
-                        ])),
-                        false,
-                    )),
-                    false,
-                ),
-                true,
-            ),
+            map_field_named("resource_attributes"),
+            map_field_named("scope_attributes"),
         ]));
 
         let ts = TimestampNanosecondArray::from(vec![10_i64, 20, 30, 40]);
@@ -1218,13 +1264,34 @@ mod tests {
         let span = StringArray::from(vec![Some("s1"), Some("s2"), Some("s3"), Some("s4")]);
         // `env` promoted into label_env for two rows; the third row has no env.
         let env = StringArray::from(vec![Some("prod"), Some("prod"), None, Some("prod")]);
+        let flags = Int64Array::from(vec![Some(1), Some(0), Some(1), Some(1)]);
+        let scope_name = StringArray::from(vec![
+            Some("app.http"),
+            Some("app.http"),
+            Some("app.db"),
+            Some("app.db"),
+        ]);
+        let scope_version = StringArray::from(vec![Some("1.0"); 4]);
         let log_attrs = build_map(&[
             &[("deployment.environment", "prod")],
             &[("deployment.environment", "prod")],
             &[("other", "x")],
             &[("deployment.environment", "prod")],
         ]);
-        let res_attrs = build_map(&[&[], &[], &[], &[]]);
+        // `deployment.environment` also exists at resource scope, with a
+        // different value — the two containers must stay distinguishable.
+        let res_attrs = build_map(&[
+            &[("deployment.environment", "resource-prod")],
+            &[("deployment.environment", "resource-prod")],
+            &[("deployment.environment", "resource-prod")],
+            &[("deployment.environment", "resource-prod")],
+        ]);
+        let scope_attrs = build_map(&[
+            &[("otel.scope.flavor", "sync")],
+            &[("otel.scope.flavor", "sync")],
+            &[("otel.scope.flavor", "async")],
+            &[("otel.scope.flavor", "async")],
+        ]);
 
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -1237,8 +1304,12 @@ mod tests {
                 Arc::new(trace),
                 Arc::new(span),
                 Arc::new(env),
+                Arc::new(flags),
+                Arc::new(scope_name),
+                Arc::new(scope_version),
                 log_attrs,
                 res_attrs,
+                scope_attrs,
             ],
         )
         .unwrap();
@@ -1291,6 +1362,182 @@ mod tests {
         assert!(plan.contains("date_bin"), "plan:\n{plan}");
         // Executes.
         let _ = df.collect().await.unwrap();
+    }
+
+    // ---- OTel-native attribute scopes ----
+    //
+    // A LogRecord carries three attribute containers with different meanings:
+    // resource (the emitting entity), scope (the instrumentation library), and
+    // the record's own attributes. They must stay separately addressable, or a
+    // UI cannot render them as the distinct things they are.
+
+    /// Collect one string column's values, in row order.
+    async fn column_values(df: DataFrame, column: &str) -> Vec<Option<String>> {
+        let batches = df.collect().await.unwrap();
+        let mut out = Vec::new();
+        for batch in &batches {
+            let idx = batch.schema().index_of(column).unwrap();
+            let col = batch
+                .column(idx)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap_or_else(|| panic!("column '{column}' is not a string column"));
+            for i in 0..batch.num_rows() {
+                out.push((!col.is_null(i)).then(|| col.value(i).to_string()));
+            }
+        }
+        out
+    }
+
+    /// A scope attribute is only reachable if `scope_attributes` is one of the
+    /// source's containers. It was omitted, so grouping by an instrumentation
+    /// scope attribute silently produced nothing.
+    #[tokio::test]
+    async fn scope_attributes_are_a_resolvable_container() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["otel.scope.flavor"], "aggs": [{ "fn": "count", "as": "n" }] } },
+                { "order": [{ "of": "n", "dir": "desc" }] }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let values = column_values(df, &safe_ident("otel.scope.flavor")).await;
+        let mut found: Vec<String> = values.into_iter().flatten().collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec!["async".to_string(), "sync".to_string()],
+            "scope attributes must be groupable"
+        );
+    }
+
+    /// A qualified name addresses exactly one container. `deployment.environment`
+    /// exists at both log and resource scope with different values; without
+    /// qualification the coalesce hides which one answered.
+    #[tokio::test]
+    async fn a_container_qualifier_selects_one_scope() {
+        let svc = IrService::new(logs_ctx());
+        for (field, expected) in [
+            ("resource.deployment.environment", "resource-prod"),
+            ("log.deployment.environment", "prod"),
+        ] {
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "fields": [field],
+                "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "api" } }]
+            }));
+            let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+            let values = column_values(df, &safe_ident(field)).await;
+            assert!(
+                values.iter().all(|v| v.as_deref() == Some(expected)),
+                "{field} must read only its own container, got {values:?}"
+            );
+        }
+    }
+
+    /// The qualifier must not shadow a physical column: `scope.name` is the
+    /// `scope_name` column, not the key `name` inside `scope_attributes`.
+    #[tokio::test]
+    async fn a_physical_column_wins_over_a_container_qualifier() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["scope.name"],
+            "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "api" } }]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let values = column_values(df, "scope_name").await;
+        assert!(
+            values.iter().all(|v| v.as_deref() == Some("app.http")),
+            "scope.name must resolve to the scope_name column, got {values:?}"
+        );
+    }
+
+    /// An unqualified name keeps coalescing across containers, so no document
+    /// written before qualification existed changes meaning.
+    #[tokio::test]
+    async fn an_unqualified_name_still_coalesces_across_containers() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "where": { "field": "deployment.environment", "op": "eq", "value": "prod" } },
+                { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert!(total > 0, "the unqualified predicate must still match");
+    }
+
+    /// The default `rows` projection is the OTel LogRecord: trace context,
+    /// severity (text *and* number), scope identity, and all three attribute
+    /// containers — everything the explore UI renders per line.
+    #[tokio::test]
+    async fn logs_row_defaults_are_the_otel_log_record() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "pipeline": []
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let names: Vec<String> = df
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        for expected in [
+            "timestamp",
+            "body",
+            "service_name",
+            "severity_text",
+            "severity_number",
+            "trace_id",
+            "span_id",
+            "trace_flags",
+            "scope_name",
+            "scope_version",
+            "log_attributes",
+            "resource_attributes",
+            "scope_attributes",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "row defaults must include '{expected}', got {names:?}"
+            );
+        }
+    }
+
+    /// Widening the row defaults must not open a back door to physical
+    /// addressing: the server chooses the default projection, but a client
+    /// still cannot name a storage column. Containers reach the client only
+    /// through the defaults, under their OTel scope.
+    #[tokio::test]
+    async fn a_client_still_cannot_address_a_container_by_storage_name() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["log_attributes"],
+            "pipeline": []
+        }));
+        let err = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .expect_err("physical addressing must stay rejected");
+        assert!(
+            format!("{err}").contains("log_attributes"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Collect the LogicalPlan node types, root-first, following each node's
