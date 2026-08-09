@@ -13,6 +13,8 @@ import {
 import { SignalHistogram } from "../explore/SignalHistogram";
 import { AttributeValue } from "../../components/AttributeValue";
 import { TraceFacets } from "./TraceFacets";
+import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
+import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
 import {
   compileTraceQL,
   upsertTraceFilter,
@@ -148,6 +150,11 @@ export function TracesView({ state, update }: Props) {
 }
 
 function TraceSearch({ state, update }: Props) {
+  const [volumeView, setVolumeView] = useState<
+    "histogram" | "area" | "heatmap"
+  >(
+    "histogram",
+  );
   const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
   const filters = state.traceFilters;
   const traceql = compileTraceQL(filters);
@@ -178,20 +185,72 @@ function TraceSearch({ state, update }: Props) {
     <div className="traces-search">
       {volume.data && (
         <div className="histo-wrap">
-          <SignalHistogram
-            series={volume.data}
-            order={STATUS_ORDER}
-            colors={STATUS_COLORS}
-            rangeMs={resolvedForStep}
-            stepMs={(durationToSeconds(step) ?? 60) * 1000}
-            scale={state.scale}
-            unit="spans"
-            label="Span volume over time by status"
-            onScaleChange={(scale) => update({ scale })}
-            step={state.step}
-            stepOptions={stepOptionsForRange(resolvedForStep)}
-            onStepChange={(step) => update({ step })}
-          />
+          <div className="trace-volume-head">
+            <span>Span volume</span>
+            <div
+              className="trace-volume-mode"
+              role="group"
+              aria-label="Trace volume visualization"
+            >
+              <button
+                type="button"
+                aria-pressed={volumeView === "histogram"}
+                onClick={() => setVolumeView("histogram")}
+              >
+                Histogram
+              </button>
+              <button
+                type="button"
+                aria-pressed={volumeView === "area"}
+                onClick={() => setVolumeView("area")}
+              >
+                Area
+              </button>
+              <button
+                type="button"
+                aria-pressed={volumeView === "heatmap"}
+                onClick={() => setVolumeView("heatmap")}
+              >
+                Heatmap
+              </button>
+            </div>
+          </div>
+          {volumeView === "histogram" ? (
+            <SignalHistogram
+              series={volume.data}
+              order={STATUS_ORDER}
+              colors={STATUS_COLORS}
+              rangeMs={resolvedForStep}
+              stepMs={(durationToSeconds(step) ?? 60) * 1000}
+              scale={state.scale}
+              unit="spans"
+              label="Span volume over time by status"
+              onScaleChange={(scale) => update({ scale })}
+              step={state.step}
+              stepOptions={stepOptionsForRange(resolvedForStep)}
+              onStepChange={(step) => update({ step })}
+            />
+          ) : volumeView === "area" ? (
+            <TraceVolumeAreaChart
+              series={volume.data}
+              order={STATUS_ORDER}
+              colors={STATUS_COLORS}
+              rangeMs={resolvedForStep}
+              stepMs={(durationToSeconds(step) ?? 60) * 1000}
+              unit="spans"
+              label="Span volume"
+            />
+          ) : (
+            <TraceVolumeHeatmap
+              series={volume.data}
+              order={STATUS_ORDER}
+              colors={STATUS_COLORS}
+              rangeMs={resolvedForStep}
+              stepMs={(durationToSeconds(step) ?? 60) * 1000}
+              unit="spans"
+              label="Span volume"
+            />
+          )}
         </div>
       )}
       {filters.length > 0 && (

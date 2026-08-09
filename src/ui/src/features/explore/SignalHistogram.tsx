@@ -154,7 +154,7 @@ export function SignalHistogram({
   scale,
   unit,
   label,
-  height = 84,
+  height = 64,
   onScaleChange,
   step = "",
   stepOptions = [],

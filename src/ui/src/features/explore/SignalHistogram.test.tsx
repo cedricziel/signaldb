@@ -72,6 +72,14 @@ describe("padBuckets", () => {
 });
 
 describe("SignalHistogram", () => {
+  it("uses a compact default height to preserve result-list space", () => {
+    renderChart(series);
+
+    expect(
+      screen.getByTestId("svol-ymax").parentElement?.parentElement,
+    ).toHaveStyle({ height: "64px" });
+  });
+
   const series: VolumeSeries[] = [
     {
       key: "info",

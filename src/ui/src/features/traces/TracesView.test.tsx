@@ -793,10 +793,83 @@ describe("TracesView span-volume chart", () => {
     stubFetchRoutes(routes);
     renderView();
     await screen.findByRole("img", { name: /span volume/i });
+    expect(
+      screen.getByRole("button", { name: "Histogram" }),
+    ).toHaveAttribute("aria-pressed", "true");
     const cols = screen.getAllByTestId("svol-col");
     expect(cols.length).toBeGreaterThan(1);
     // 2018 unset, then 41 unset + 7 error.
     expect(cols[0]).toHaveAccessibleName(/2,018 spans/);
+  });
+
+  it("switches the span volume visualization to an area chart without refetching", async () => {
+    stubFetchRoutes(routes);
+    renderView();
+    await screen.findByRole("img", { name: /span volume/i });
+
+    const volumeQueries = () =>
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.map(([input]) => input)
+        .filter(
+          (input): input is Request =>
+            input instanceof Request && input.url.includes("/api/v1/query"),
+        ).length;
+    const queryCount = volumeQueries();
+
+    await userEvent.click(screen.getByRole("button", { name: "Area" }));
+
+    expect(screen.getByRole("button", { name: "Area" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      screen.getByRole("img", { name: /span volume area chart/i }),
+    ).toBeInTheDocument();
+    const area = screen.getByTestId("trace-volume-area");
+    expect(
+      area.querySelector('.trace-area-series[stroke="var(--err-bar)"]'),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("svol-col")).not.toBeInTheDocument();
+    expect(volumeQueries()).toBe(queryCount);
+  });
+
+  it("switches to an accessible status heatmap without refetching", async () => {
+    stubFetchRoutes(routes);
+    renderView();
+    await screen.findByRole("img", { name: /span volume/i });
+
+    const volumeQueries = () =>
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.map(([input]) => input)
+        .filter(
+          (input): input is Request =>
+            input instanceof Request && input.url.includes("/api/v1/query"),
+        ).length;
+    const queryCount = volumeQueries();
+
+    await userEvent.click(screen.getByRole("button", { name: "Heatmap" }));
+
+    expect(screen.getByRole("button", { name: "Heatmap" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    const heatmap = screen.getByTestId("trace-volume-heatmap");
+    expect(heatmap).toHaveAccessibleName(/span volume heatmap/i);
+    expect(
+      within(heatmap).getAllByTestId("trace-volume-heatmap-cell").length,
+    ).toBeGreaterThan(0);
+    const error = within(heatmap).getByLabelText(/error,.*7 spans/i);
+    expect(error).toHaveAttribute("fill", "var(--err-bar)");
+    expect(error).toHaveAttribute("data-intensity", "0.003");
+    expect(
+      within(heatmap).getByLabelText(/unset,.*2,018 spans/i),
+    ).toHaveAttribute("data-intensity", "1.000");
+    expect(
+      within(heatmap).getByText(/color identifies status and intensity/i),
+    ).toBeInTheDocument();
+    expect(volumeQueries()).toBe(queryCount);
   });
 
   it("asks for the volume aggregate without a row limit", async () => {
