@@ -3,15 +3,16 @@
 
 [metadata]
 description = "SignalDB built-in table schemas"
-current_trace_version = "v2"
-current_log_version = "v1"
-current_metric_version = "v1"
+current_trace_version = "physical-v2"
+current_log_version = "physical-v1"
+current_metric_version = "physical-v1"
+logical_schema_version = "otel-2026-08"
 
 # ==============================================================================
 # TRACES TABLE SCHEMAS
 # ==============================================================================
 
-[traces.v1]
+[traces.physical-v1]
 description = "Initial traces schema matching OTLP Flight conversion"
 fields = [
     { name = "trace_id", type = "string", required = true },
@@ -38,9 +39,9 @@ fields = [
     { name = "scope_attributes", type = "map<string,string>", required = false },
 ]
 
-[traces.v2]
+[traces.physical-v2]
 description = "Iceberg-compatible traces schema with partitioning fields"
-inherits = "v1"
+inherits = "physical-v1"
 field_renames = [
     { from = "name", to = "span_name" },
     { from = "duration_nano", to = "duration_nanos" },
@@ -58,7 +59,7 @@ partition_by = ["timestamp"]
 # LOGS TABLE SCHEMAS
 # ==============================================================================
 
-[logs.v1]
+[logs.physical-v1]
 description = "Initial logs schema"
 fields = [
     { name = "timestamp", type = "timestamp_ns", required = true },
@@ -86,7 +87,7 @@ partition_by = ["timestamp"]
 # METRICS TABLE SCHEMAS
 # ==============================================================================
 
-[metrics_gauge.v1]
+[metrics_gauge.physical-v1]
 description = "Gauge metrics schema"
 fields = [
     { name = "timestamp", type = "timestamp_ns", required = true },
@@ -111,7 +112,7 @@ fields = [
 ]
 partition_by = ["timestamp"]
 
-[metrics_sum.v1]
+[metrics_sum.physical-v1]
 description = "Sum metrics schema"
 fields = [
     { name = "timestamp", type = "timestamp_ns", required = true },
@@ -138,7 +139,7 @@ fields = [
 ]
 partition_by = ["timestamp"]
 
-[metrics_histogram.v1]
+[metrics_histogram.physical-v1]
 description = "Histogram metrics schema"
 fields = [
     { name = "timestamp", type = "timestamp_ns", required = true },

@@ -24,6 +24,12 @@ pub struct SchemaMetadata {
     pub current_trace_version: String,
     pub current_log_version: String,
     pub current_metric_version: String,
+    #[serde(default = "default_logical_schema_version")]
+    pub logical_schema_version: String,
+}
+
+fn default_logical_schema_version() -> String {
+    "otel-2026-08".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +90,12 @@ impl SchemaDefinitions {
     /// Get current trace schema version
     pub fn current_trace_version(&self) -> &str {
         &self.metadata.current_trace_version
+    }
+
+    /// Version of the client-visible OTel logical schema, independent from
+    /// the physical Iceberg table realization selected above.
+    pub fn logical_schema_version(&self) -> &str {
+        &self.metadata.logical_schema_version
     }
 
     /// Resolve a trace schema by version
@@ -436,20 +448,20 @@ mod tests {
         let toml = r#"
 [metadata]
 description = "Test schemas"
-current_trace_version = "v2"
-current_log_version = "v1"
-current_metric_version = "v1"
+current_trace_version = "physical-v2"
+current_log_version = "physical-v1"
+current_metric_version = "physical-v1"
 
-[traces.v1]
+[traces.physical-v1]
 description = "Base schema"
 fields = [
     { name = "trace_id", type = "string", required = true },
     { name = "name", type = "string", required = true },
 ]
 
-[traces.v2]
+[traces.physical-v2]
 description = "Extended schema"
-inherits = "v1"
+inherits = "physical-v1"
 field_renames = [
     { from = "name", to = "span_name" },
 ]
@@ -458,7 +470,7 @@ field_additions = [
 ]
 partition_by = ["timestamp"]
 
-[logs.v1]
+[logs.physical-v1]
 description = "Log schema"
 fields = [
     { name = "timestamp", type = "timestamp_ns", required = true },
@@ -466,16 +478,16 @@ fields = [
 "#;
 
         let schemas = SchemaDefinitions::from_toml(toml).unwrap();
-        assert_eq!(schemas.current_trace_version(), "v2");
+        assert_eq!(schemas.current_trace_version(), "physical-v2");
 
         // Test v1 resolution
-        let v1 = schemas.resolve_trace_schema("v1").unwrap();
+        let v1 = schemas.resolve_trace_schema("physical-v1").unwrap();
         assert_eq!(v1.fields.len(), 2);
         assert_eq!(v1.fields[0].name, "trace_id");
         assert_eq!(v1.fields[1].name, "name");
 
         // Test v2 resolution with inheritance and rename
-        let v2 = schemas.resolve_trace_schema("v2").unwrap();
+        let v2 = schemas.resolve_trace_schema("physical-v2").unwrap();
         assert_eq!(v2.fields.len(), 3);
         assert_eq!(v2.fields[0].name, "trace_id");
         assert_eq!(v2.fields[1].name, "span_name"); // Renamed from "name"

@@ -113,7 +113,7 @@ pub fn determine_wal_operation(signal_type: Option<&str>) -> common::wal::WalOpe
 
 /// Transform a trace RecordBatch from v1 to v2 schema
 pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
-    let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("v2")?;
+    let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("physical-v2")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v2_schema)?;
 
     // Debug logging to understand the schema mismatch
@@ -610,7 +610,7 @@ fn extend_schema_with_labels(
 }
 
 pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
-    let v1_schema = SCHEMA_DEFINITIONS.resolve_log_schema("v1")?;
+    let v1_schema = SCHEMA_DEFINITIONS.resolve_log_schema("physical-v1")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v1_schema)?;
 
     let num_rows = batch.num_rows();
