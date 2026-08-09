@@ -67,6 +67,9 @@ pub enum IrError {
     #[error("field '{field}' has no canonical type in the registry")]
     UnknownFieldType { field: String },
 
+    #[error("field '{field}' is retrievable but cannot be used in a predicate")]
+    UnfilterableField { field: String },
+
     #[error("topk/bottomk `n` must be an integer > 0, got {n}")]
     InvalidRankSize { n: i64 },
 
@@ -236,6 +239,13 @@ impl InferCtx<'_> {
     }
 
     fn check_leaf(&self, leaf: &Leaf) -> Result<(), IrError> {
+        if self.resolver.filterability(self.source, &leaf.field)
+            == crate::schema::logical::Filterability::RetrievalOnly
+        {
+            return Err(IrError::UnfilterableField {
+                field: leaf.field.clone(),
+            });
+        }
         let ty = self.ref_type(&leaf.field)?;
         match (leaf.op.takes_value(), &leaf.value) {
             (true, None) => {
@@ -666,6 +676,14 @@ mod tests {
             .with_column("logs", "body", "body", ValueType::String)
             .with_attribute(
                 "logs",
+                "structured.payload",
+                "log_attributes",
+                ValueType::String,
+                false,
+            )
+            .with_retrieval_only("logs", "structured.payload")
+            .with_attribute(
+                "logs",
                 "deployment.environment",
                 "log_attributes",
                 ValueType::String,
@@ -999,6 +1017,17 @@ mod tests {
             "pipeline": [ { "where": { "field": "service.name", "op": "eq", "value": "api" } } ]
         }))
         .unwrap();
+    }
+
+    #[test]
+    fn retrieval_only_field_is_rejected_in_a_predicate() {
+        let err = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [ { "where": { "field": "structured.payload", "op": "exists" } } ]
+        }))
+        .unwrap_err();
+        assert!(matches!(err, IrError::UnfilterableField { .. }));
     }
 
     // Task 2.2 — structured operands.

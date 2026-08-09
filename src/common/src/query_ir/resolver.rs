@@ -18,6 +18,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::value::ValueType;
+use crate::schema::logical::Filterability;
 
 /// Where a logical field physically lives, with its canonical type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +70,10 @@ pub trait FieldResolver: Send + Sync {
     fn is_physical_name(&self, _source: &str, _field: &str) -> bool {
         false
     }
+
+    fn filterability(&self, _source: &str, _field: &str) -> Filterability {
+        Filterability::Filterable
+    }
 }
 
 /// A per-attribute entry in the [`InMemoryResolver`].
@@ -96,6 +101,7 @@ enum Entry {
 pub struct InMemoryResolver {
     entries: HashMap<(String, String), Entry>,
     physical_names: HashMap<String, HashSet<String>>,
+    retrieval_only: HashSet<(String, String)>,
 }
 
 impl InMemoryResolver {
@@ -162,6 +168,12 @@ impl InMemoryResolver {
             .insert(name.to_string());
         self
     }
+
+    pub fn with_retrieval_only(mut self, source: &str, field: &str) -> Self {
+        self.retrieval_only
+            .insert((source.to_string(), field.to_string()));
+        self
+    }
 }
 
 impl FieldResolver for InMemoryResolver {
@@ -202,6 +214,17 @@ impl FieldResolver for InMemoryResolver {
         self.physical_names
             .get(source)
             .is_some_and(|names| names.contains(field))
+    }
+
+    fn filterability(&self, source: &str, field: &str) -> Filterability {
+        if self
+            .retrieval_only
+            .contains(&(source.to_string(), field.to_string()))
+        {
+            Filterability::RetrievalOnly
+        } else {
+            Filterability::Filterable
+        }
     }
 }
 
