@@ -259,6 +259,14 @@ available for machine clients and ingestion.
 | PromQL `histogram_quantile(phi, metric)`                           | Implemented -- interpolated per series from `metrics_histogram` OTLP buckets                               |
 | PromQL `histogram_quantile` over `rate()`, binary ops, `topk`      | Not implemented yet (#335)                                                                                 |
 
+**Native Query IR** (`POST /api/v1/query`, `src/router/src/endpoints/query.rs`):
+the first-party structured query surface the UI and CLI build against. The
+router shapes the querier's Arrow batches into the declared envelope, encoding
+attribute containers (`Map<Utf8,Utf8>`) as JSON objects rather than flattening
+them to strings — the compatibility dialects lose the OTel resource/scope/record
+distinction, the IR preserves it. See
+[the Query IR reference](../users/querying-ir.md).
+
 **Admin API Endpoints** (requires `admin_api_key`):
 
 | Endpoint                              | Description            |
