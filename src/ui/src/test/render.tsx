@@ -24,7 +24,13 @@ afterEach(() => {
   generatedClient.setConfig({ baseUrl: "/", fetch: realFetch });
 });
 
-type JsonRoute = { match: string | RegExp; body: unknown; status?: number };
+type JsonRoute = {
+  match: string | RegExp;
+  body: unknown;
+  status?: number;
+  /** When set, only match requests with this HTTP method. */
+  method?: string;
+};
 
 /**
  * Stub URL-matched JSON routes for both raw `fetch` calls (e.g.
@@ -34,15 +40,27 @@ type JsonRoute = { match: string | RegExp; body: unknown; status?: number };
  * relative URLs under jsdom/Node, so it needs an absolute `baseUrl` too (see
  * api/queryIr.ts's test precedent). Later routes win when multiple match;
  * unmatched URLs 404 so tests fail loudly on unexpected requests.
+ *
+ * The generated SDK passes a single `Request` object to fetch (not
+ * `(url, init)`), so the method is extracted from the `Request` when
+ * available. Raw `fetch(url, init)` calls extract the method from the second
+ * argument's `method` field (defaulting to GET).
  */
 export function stubFetchRoutes(routes: JsonRoute[]) {
   const fn = vi.fn().mockImplementation((input: RequestInfo | URL) => {
     const url = String(input instanceof Request ? input.url : input);
-    const route = [...routes]
-      .reverse()
-      .find((r) =>
-        typeof r.match === "string" ? url.includes(r.match) : r.match.test(url),
-      );
+    const method = (
+      input instanceof Request
+        ? input.method
+        : ((input as RequestInit)?.method ?? "GET")
+    ).toUpperCase();
+    const route = [...routes].reverse().find((r) => {
+      const urlMatch =
+        typeof r.match === "string" ? url.includes(r.match) : r.match.test(url);
+      if (!urlMatch) return false;
+      if (r.method && r.method.toUpperCase() !== method) return false;
+      return true;
+    });
     if (!route) {
       return Promise.resolve(
         new Response(JSON.stringify({ error: `no stub for ${url}` }), {
