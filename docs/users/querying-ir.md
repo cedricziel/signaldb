@@ -63,6 +63,14 @@ body. The response is the declared result envelope (see
   results. Omit it for a bounded server default — the IR never returns every
   physical column.
 
+For `logs`, the default `rows` projection is the OTel LogRecord: `timestamp`
+and `observed_timestamp`, `body`, `service_name`, `severity_text` and
+`severity_number`, the trace context (`trace_id`, `span_id`, `trace_flags`),
+the instrumentation scope (`scope_name`, `scope_version`, `scope_schema_url`),
+`resource_schema_url`, and the three attribute containers. The containers stay
+**separate** — they are not merged into one bag, because their scopes mean
+different things. Each arrives as a JSON object you can index by key.
+
 ### Pipeline stages
 
 The `pipeline` is an ordered list of transform stages. Each stage is a
@@ -98,6 +106,39 @@ Filtering uses one predicate grammar — comparison leaves composed with
 `http.status_code`). You never name a physical column, the attribute blob, or a
 storage detail — those are rejected. Operators: `eq`, `ne`, `gt`, `gte`, `lt`,
 `lte`, `in`, `between`, `contains`, `regex`, `exists`.
+
+### Addressing an attribute scope
+
+OTel puts attributes at three scopes, and SignalDB stores each in its own
+container: the **resource** (the entity that emitted the telemetry), the
+**instrumentation scope** (the library that produced it), and the **record**
+itself (the log line or span).
+
+An unqualified name searches all of them:
+
+```jsonc
+{ "field": "deployment.environment", "op": "eq", "value": "prod" }
+```
+
+That is usually what you want. When a key exists at more than one scope — and
+`deployment.environment` on both the resource and the record is common — a
+prefix addresses exactly one container:
+
+| Prefix      | Reads                 | Available on |
+| ----------- | --------------------- | ------------ |
+| `resource.` | resource attributes   | logs, traces |
+| `scope.`    | scope attributes      | logs, traces |
+| `log.`      | log-record attributes | logs         |
+| `span.`     | span attributes       | traces       |
+
+```jsonc
+{ "field": "resource.deployment.environment", "op": "eq", "value": "prod" }
+```
+
+A physical column wins over a prefix, so `scope.name` is the instrumentation
+scope's name (a first-class column), not a key called `name` inside the scope
+attributes. To reach a key that literally begins with one of these prefixes,
+qualify it: `log.resource.foo` is the key `resource.foo` on the record.
 
 ### Structured operands
 
