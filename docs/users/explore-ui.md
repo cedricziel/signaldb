@@ -55,6 +55,25 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   can be bookmarked, shared, and revisited with the browser back/forward
   buttons. Tenant/dataset administration lives at `/manage`.
 
+### Reading a log line
+
+Selecting a log line expands it. Alongside the stream labels it lists the
+line's **per-line fields**: the trace context (`trace_id`, `span_id`, with a
+link through to the trace) and the log and resource attributes the record
+actually carried. Attributes appear per line, so two lines in the same stream
+show their own values rather than a shared set.
+
+These have no filter/exclude actions yet. The filter chips compile to a LogQL
+stream selector, which is the wrong shape for a field that varies line to line;
+filtering on them arrives with the Query IR migration, which builds the
+predicate server-side.
+
+One limitation to know about: the Loki wire format carries these as one flat
+map, so the three OTel attribute scopes — resource, instrumentation scope, and
+the log record — are merged in this view, and instrumentation-scope attributes
+are not shown at all. Storage keeps all three separate; see the
+[Query IR reference](querying-ir.md) to query them individually today.
+
 ### Narrowing traces
 
 The traces tab has a facet sidebar. Expanding a facet lists its values with the

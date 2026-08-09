@@ -628,13 +628,19 @@ async fn execute_ticket<S: RouterState>(
         .map_err(ApiError::from)
 }
 
+/// The attribute containers carried on a projected log row, in precedence
+/// order: a key present in both resolves to the log-scoped value, matching
+/// how the query path coalesces them.
+const ATTR_CONTAINERS: &[&str] = &["resource_attributes", "log_attributes"];
+
 /// Group the projected log rows into Loki streams by their label set,
 /// preserving row order (the querier already sorts by direction).
 ///
-/// `trace_id`/`span_id` ride along as each entry's structured metadata
-/// rather than a stream label: their value varies line to line, so putting
-/// them in the label set would fragment every trace into its own stream
-/// instead of grouping by something stable like `service_name`.
+/// `trace_id`/`span_id` and the row's attributes ride along as each entry's
+/// structured metadata rather than stream labels: their values vary line to
+/// line, so putting them in the label set would fragment every distinct
+/// combination into its own stream instead of grouping by something stable
+/// like `service_name`.
 fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
     // Preserve first-seen label-set order for stable output.
     let mut order: Vec<String> = Vec::new();
@@ -649,6 +655,20 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
         let severity = str_col(batch, "severity_text");
         let trace_id = str_col(batch, "trace_id");
         let span_id = str_col(batch, "span_id");
+        // A container the projection omitted, or one stored in a form this
+        // build cannot read, degrades to "no attributes from that container"
+        // rather than failing the query.
+        let attrs: Vec<Vec<Option<common::attrs::AttrDocument>>> = ATTR_CONTAINERS
+            .iter()
+            .filter(|name| batch.column_by_name(name).is_some())
+            .filter_map(|name| match common::attrs::attr_documents(batch, name) {
+                Ok(docs) => Some(docs),
+                Err(error) => {
+                    tracing::warn!(?error, container = name, "skipping attribute container");
+                    None
+                }
+            })
+            .collect();
 
         for i in 0..batch.num_rows() {
             let mut label_set: HashMap<String, String> = HashMap::new();
@@ -661,6 +681,14 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
             let key = label_key(&label_set);
 
             let mut metadata: HashMap<String, String> = HashMap::new();
+            for docs in &attrs {
+                if let Some(Some(doc)) = docs.get(i) {
+                    metadata.extend(doc.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
+            // Written after the attributes: these come from dedicated columns
+            // and a same-named attribute must not shadow them — the UI's trace
+            // link follows `trace_id`.
             if let Some(v) = value_at(&trace_id, i) {
                 metadata.insert("trace_id".to_string(), v);
             }
@@ -910,7 +938,8 @@ mod tests {
             parse_timestamp_ns, series_from_batches, string_column,
         };
         use datafusion::arrow::array::{
-            Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
+            ArrayRef, Float64Array, MapBuilder, RecordBatch, StringArray, StringBuilder,
+            TimestampNanosecondArray,
         };
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use std::sync::Arc;
@@ -1019,6 +1048,140 @@ mod tests {
                     )])
                 )
             );
+        }
+
+        /// Build a logs batch carrying attribute containers, in whichever
+        /// storage form the caller asks for.
+        fn batch_with_attrs(map_typed: bool) -> RecordBatch {
+            let mut fields = vec![
+                Field::new(
+                    "timestamp",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new("body", DataType::Utf8, true),
+                Field::new("service_name", DataType::Utf8, true),
+                Field::new("severity_text", DataType::Utf8, true),
+                Field::new("trace_id", DataType::Utf8, true),
+            ];
+            let mut columns: Vec<ArrayRef> = vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 200])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(StringArray::from(vec!["api", "api"])),
+                Arc::new(StringArray::from(vec!["error", "error"])),
+                Arc::new(StringArray::from(vec![Some("trace-1"), None])),
+            ];
+
+            let log_rows = vec![
+                vec![("http.method", "GET"), ("user.id", "u-1")],
+                vec![("http.method", "POST")],
+            ];
+            let resource_rows = vec![
+                vec![("deployment.environment", "prod")],
+                vec![("deployment.environment", "prod")],
+            ];
+
+            for (name, rows) in [
+                ("log_attributes", log_rows),
+                ("resource_attributes", resource_rows),
+            ] {
+                let array: ArrayRef = if map_typed {
+                    let mut builder =
+                        MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+                    for pairs in &rows {
+                        for (k, v) in pairs {
+                            builder.keys().append_value(*k);
+                            builder.values().append_value(*v);
+                        }
+                        builder.append(true).unwrap();
+                    }
+                    Arc::new(builder.finish())
+                } else {
+                    let json: Vec<String> = rows
+                        .iter()
+                        .map(|pairs| {
+                            let obj: serde_json::Map<String, serde_json::Value> = pairs
+                                .iter()
+                                .map(|(k, v)| ((*k).to_string(), serde_json::json!(v)))
+                                .collect();
+                            serde_json::Value::Object(obj).to_string()
+                        })
+                        .collect();
+                    Arc::new(StringArray::from(json))
+                };
+                fields.push(Field::new(name, array.data_type().clone(), true));
+                columns.push(array);
+            }
+
+            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+        }
+
+        /// The defect this fixes: the querier projects `log_attributes` and
+        /// `resource_attributes` (LOG_COLUMNS), but the conversion dropped
+        /// them, so a log line reached the UI carrying only `service_name`,
+        /// `level`, `trace_id` and `span_id` however many attributes it had.
+        ///
+        /// They belong in structured metadata, not the label set: their values
+        /// vary line to line, so promoting them to labels would fragment every
+        /// distinct attribute combination into its own stream.
+        #[test]
+        fn log_and_resource_attributes_become_structured_metadata() {
+            for map_typed in [true, false] {
+                let streams = batches_to_streams(&[batch_with_attrs(map_typed)]);
+                assert_eq!(
+                    streams.len(),
+                    1,
+                    "attributes must not fragment the label set (map_typed={map_typed})"
+                );
+                let stream = &streams[0];
+                assert!(
+                    !stream.stream.contains_key("http.method"),
+                    "an attribute must not become a stream label"
+                );
+
+                let first = &stream.values[0];
+                assert_eq!(first.metadata["http.method"], "GET");
+                assert_eq!(first.metadata["user.id"], "u-1");
+                assert_eq!(first.metadata["deployment.environment"], "prod");
+                assert_eq!(first.metadata["trace_id"], "trace-1");
+
+                // Per-row, not per-stream: the second line has its own value
+                // and does not inherit the first line's `user.id`.
+                let second = &stream.values[1];
+                assert_eq!(second.metadata["http.method"], "POST");
+                assert!(!second.metadata.contains_key("user.id"));
+                assert!(!second.metadata.contains_key("trace_id"));
+            }
+        }
+
+        /// `trace_id`/`span_id` are read from their own columns, so an
+        /// attribute of the same name must not overwrite the column value —
+        /// the UI's trace link follows that key.
+        #[test]
+        fn column_trace_id_wins_over_a_same_named_attribute() {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(
+                    "timestamp",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new("body", DataType::Utf8, true),
+                Field::new("trace_id", DataType::Utf8, true),
+                Field::new("log_attributes", DataType::Utf8, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(TimestampNanosecondArray::from(vec![100])),
+                    Arc::new(StringArray::from(vec!["a"])),
+                    Arc::new(StringArray::from(vec![Some("from-column")])),
+                    Arc::new(StringArray::from(vec![Some(r#"{"trace_id":"from-attr"}"#)])),
+                ],
+            )
+            .unwrap();
+
+            let streams = batches_to_streams(&[batch]);
+            assert_eq!(streams[0].values[0].metadata["trace_id"], "from-column");
         }
 
         #[test]

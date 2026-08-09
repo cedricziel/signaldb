@@ -236,16 +236,16 @@ available for machine clients and ingestion.
 
 **Loki API Endpoints** (logs, nested at `/loki`; see epic #366):
 
-| Endpoint                                                         | Status                                                                                                      |
-| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `GET /loki/api/v1/query`                                         | Implemented -- log query over a one-hour window ending at `time`                                            |
-| `GET /loki/api/v1/query_range`                                   | Implemented -- transpiles LogQL to a querier filter, returns Loki streams                                   |
-| `GET /loki/api/v1/labels`                                        | Implemented -- known + attribute label names via Querier                                                    |
-| `GET /loki/api/v1/label/{name}/values`                           | Implemented -- distinct label values via Querier                                                            |
-| `GET /loki/api/v1/series`                                        | Implemented -- label sets matching a selector via Querier                                                   |
-| `GET /loki/api/v1/detected_fields`                               | Implemented -- sampled attribute-field discovery (name, type, cardinality)                                  |
-| `GET /loki/api/v1/tail`                                          | Not implemented (WebSocket streaming, #380)                                                                 |
-| LogQL metric queries (`rate`, `count_over_time`, `sum by (...)`) | Implemented via `query_range` -- `date_bin(step)` bucketed matrix (no binary ops / `topk` / `quantile` yet) |
+| Endpoint                                                         | Status                                                                                                                                                                                                             |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /loki/api/v1/query`                                         | Implemented -- log query over a one-hour window ending at `time`                                                                                                                                                   |
+| `GET /loki/api/v1/query_range`                                   | Implemented -- transpiles LogQL to a querier filter, returns Loki streams; trace context and log/resource attributes ride as per-entry structured metadata (flattened -- the wire format has no scope distinction) |
+| `GET /loki/api/v1/labels`                                        | Implemented -- known + attribute label names via Querier                                                                                                                                                           |
+| `GET /loki/api/v1/label/{name}/values`                           | Implemented -- distinct label values via Querier                                                                                                                                                                   |
+| `GET /loki/api/v1/series`                                        | Implemented -- label sets matching a selector via Querier                                                                                                                                                          |
+| `GET /loki/api/v1/detected_fields`                               | Implemented -- sampled attribute-field discovery (name, type, cardinality)                                                                                                                                         |
+| `GET /loki/api/v1/tail`                                          | Not implemented (WebSocket streaming, #380)                                                                                                                                                                        |
+| LogQL metric queries (`rate`, `count_over_time`, `sum by (...)`) | Implemented via `query_range` -- `date_bin(step)` bucketed matrix (no binary ops / `topk` / `quantile` yet)                                                                                                        |
 
 **Prometheus API Endpoints** (metrics, nested at `/prometheus`; see epic #328):
 

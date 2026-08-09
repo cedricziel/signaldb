@@ -132,9 +132,12 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                         </span>
                       </div>
                     ))}
-                    {/* Structured metadata varies line to line, so a stream
-                        selector cannot match on it — shown, but with no
-                        filter actions. */}
+                    {/* Per-line fields: `trace_id`/`span_id` plus the row's
+                        log and resource attributes. Shown without filter
+                        actions for now — the label-filter model compiles to a
+                        stream selector, which is the wrong shape for these.
+                        Filtering on them arrives with the Query IR migration,
+                        where the predicate is built server-side. */}
                     {Object.entries(row.metadata).map(([k, v]) => (
                       <div className="attr-row" data-scope="metadata" key={k}>
                         <dt>{k}</dt>

@@ -1404,78 +1404,18 @@ fn distinct_non_empty(batches: &[RecordBatch], column: &str) -> Result<Vec<Strin
     Ok(values.into_iter().collect())
 }
 
-/// Read an attribute column's per-row documents as string key/value maps,
-/// handling both storage forms: legacy Utf8 columns holding flat JSON
-/// objects, and typed `Map<Utf8, Utf8>` columns (new tables). Null,
-/// unparseable, or non-object rows yield `None`.
+/// Read an attribute column's per-row documents as string key/value maps.
+///
+/// Delegates to [`common::attrs::attr_documents`], which owns the decode of
+/// both storage forms (legacy JSON-string columns and typed `Map<Utf8, Utf8>`
+/// columns) — the router shapes the same columns for the Loki API, and the
+/// two readers must not drift.
 pub(super) fn attr_documents(
     batch: &RecordBatch,
     name: &str,
 ) -> Result<Vec<Option<BTreeMap<String, String>>>, QuerierError> {
-    use datafusion::arrow::array::MapArray;
-
-    let column = batch
-        .column_by_name(name)
-        .ok_or_else(|| QuerierError::InvalidInput(format!("missing column '{name}'")))?;
-
-    if let Some(map) = column.as_any().downcast_ref::<MapArray>() {
-        let mut out = Vec::with_capacity(map.len());
-        for i in 0..map.len() {
-            if map.is_null(i) {
-                out.push(None);
-                continue;
-            }
-            let entries = map.value(i);
-            let keys = entries
-                .column(0)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| {
-                    QuerierError::InvalidInput(format!("'{name}' map keys are not strings"))
-                })?;
-            let values = entries
-                .column(1)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| {
-                    QuerierError::InvalidInput(format!("'{name}' map values are not strings"))
-                })?;
-            let mut doc = BTreeMap::new();
-            for j in 0..entries.len() {
-                if !keys.is_null(j) && !values.is_null(j) {
-                    doc.insert(keys.value(j).to_string(), values.value(j).to_string());
-                }
-            }
-            out.push(Some(doc));
-        }
-        return Ok(out);
-    }
-
-    let attrs = string_column(batch, name)?;
-    let mut out = Vec::with_capacity(attrs.len());
-    for i in 0..attrs.len() {
-        if attrs.is_null(i) {
-            out.push(None);
-            continue;
-        }
-        match serde_json::from_str::<serde_json::Value>(attrs.value(i)) {
-            Ok(serde_json::Value::Object(map)) => {
-                let doc = map
-                    .into_iter()
-                    .map(|(k, v)| {
-                        let rendered = match v {
-                            serde_json::Value::String(s) => s,
-                            other => other.to_string(),
-                        };
-                        (k, rendered)
-                    })
-                    .collect();
-                out.push(Some(doc));
-            }
-            _ => out.push(None),
-        }
-    }
-    Ok(out)
+    common::attrs::attr_documents(batch, name)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))
 }
 
 fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, QuerierError> {
