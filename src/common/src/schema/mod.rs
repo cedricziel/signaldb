@@ -6,6 +6,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub mod logical;
 pub mod schema_parser;
 
 // Re-export iceberg modules for backward compatibility
