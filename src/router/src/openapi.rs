@@ -79,6 +79,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::list_memberships,
         crate::endpoints::management::upsert_membership,
         crate::endpoints::management::remove_membership,
+        crate::endpoints::session::whoami,
         // Tempo-compatible trace query endpoints
         crate::endpoints::tempo::search,
         crate::endpoints::tempo::query_single_trace,
@@ -131,6 +132,9 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::ManageCreatedApiKey,
         crate::endpoints::management::MembershipResponse,
         crate::endpoints::management::UpsertMembershipRequest,
+        // authenticated identity
+        crate::endpoints::session::WhoamiIdentityResponse,
+        crate::endpoints::session::WhoamiTenant,
         // shared enums
         common::catalog::MembershipRole,
         // Tempo-compatible trace query DTOs

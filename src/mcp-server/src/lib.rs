@@ -6,12 +6,11 @@
 //! platform only through the SDK, it is always a separate service (a sidecar),
 //! never an in-process route on the router.
 //!
-//! It is a pure credential-forwarding client: it checks that a request carries a
-//! bearer token and `X-Tenant-ID`, pins each MCP session to that identity, and
-//! forwards the caller's credential to the router on every downstream call. The
-//! router is the sole authority on whether the credential is valid and what it
-//! may access — an invalid or revoked token is rejected downstream and surfaces
-//! as a clean MCP error.
+//! It validates each caller credential with the router, pins each MCP session to
+//! that identity, and forwards the original request headers to the router on
+//! every downstream call. The router is the sole authority on whether the
+//! credential is valid and what it may access; rejected credentials become an
+//! HTTP `401` so MCP clients can refresh them.
 //!
 //! MCP is served over Streamable HTTP at `/mcp` on this service's own port.
 
@@ -85,12 +84,13 @@ impl OAuthResource {
     }
 }
 
-/// The identity a session is pinned to on its first request: the tenant it
-/// declared and a hash of the credential it presented.
+/// The stable identity a session is pinned to. API keys remain tied to their
+/// exact credential, while OAuth access-token refreshes preserve the router-
+/// resolved user and tenant.
 #[derive(Clone, PartialEq, Eq)]
-struct SessionBinding {
-    tenant_id: String,
-    token_hash: u64,
+enum SessionBinding {
+    ApiKey { tenant_id: String, token_hash: u64 },
+    OAuth { user_id: String, tenant_id: String },
 }
 
 /// Shared state for the MCP HTTP surface. Holds no credential of its own —
@@ -138,7 +138,7 @@ impl McpAppState {
 }
 
 /// Build the axum router that serves MCP over Streamable HTTP at `/mcp`, gated
-/// by a lightweight credential-presence + session-binding check.
+/// by router-validated credentials and session binding.
 ///
 /// `allowed_hosts` configures the Streamable HTTP transport's DNS-rebinding
 /// guard, which validates the inbound `Host` header. The transport defaults to
@@ -168,8 +168,8 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
         config,
     );
 
-    // The `/mcp` transport is gated by the credential-presence + session-binding
-    // check; the Protected Resource Metadata document is public (it is how an
+    // The `/mcp` transport is gated by router-validated credentials and session
+    // binding; the Protected Resource Metadata document is public (it is how an
     // unauthenticated client discovers where to authenticate).
     let mcp = Router::new()
         .nest_service("/mcp", service)
@@ -229,11 +229,10 @@ fn unauthorized_challenge(state: &McpAppState, message: &'static str) -> Respons
     response
 }
 
-/// Require a bearer token before the request reaches the MCP transport, and pin
-/// the session to the presented identity. The MCP server does not validate the
-/// credential itself — that is the router's job; this only rejects requests
-/// that carry no credential (`401`, with a discovery challenge) and refuses a
-/// session reused under a different identity (`403`).
+/// Require a router-validated bearer token before the request reaches the MCP
+/// transport, then pin the session to the presented identity. A router-rejected
+/// credential becomes an HTTP `401` with a discovery challenge, allowing MCP
+/// clients to refresh it before a JSON-RPC response is produced.
 ///
 /// An OAuth access token (recognized by its prefix) carries its own tenant, so
 /// `X-Tenant-ID` is not required for it. An API key still requires the tenant
@@ -243,13 +242,15 @@ async fn mcp_auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let headers = req.headers();
-    let token = headers
+    let (parts, body) = req.into_parts();
+    let token = parts
+        .headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_owned);
-    let tenant_id = headers
+    let tenant_id = parts
+        .headers
         .get("x-tenant-id")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
@@ -271,17 +272,53 @@ async fn mcp_auth_middleware(
         tenant_id
     };
 
+    let validation_client =
+        match sdk_client_for(&parts, &state.router_base_url, None, state.router_timeout) {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::error!(%error, "failed to construct router validation client");
+                return (StatusCode::BAD_GATEWAY, "failed to validate credential").into_response();
+            }
+        };
+    let identity = match validation_client.whoami().send().await {
+        Ok(response) => response.into_inner(),
+        Err(error) => match error.status().map(|status| status.as_u16()) {
+            Some(401) => return unauthorized_challenge(&state, "credential rejected by router"),
+            Some(403) => {
+                return (StatusCode::FORBIDDEN, "credential denied by router").into_response();
+            }
+            _ => {
+                tracing::warn!(%error, "router credential validation failed");
+                return (StatusCode::BAD_GATEWAY, "credential validation unavailable")
+                    .into_response();
+            }
+        },
+    };
+
     // Pin the session to this identity. A request that carries an established
     // `mcp-session-id` but resolves to a different tenant or credential is a
     // session-reuse attempt and is refused.
-    if let Some(session_id) = headers
+    if let Some(session_id) = parts
+        .headers
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned)
     {
-        let binding = SessionBinding {
-            tenant_id: bound_tenant.clone(),
-            token_hash: token_hash(&token),
+        let binding = if is_oauth {
+            if identity.user_id.is_empty() {
+                tracing::error!("router returned no user ID for an OAuth credential");
+                return (StatusCode::BAD_GATEWAY, "credential identity unavailable")
+                    .into_response();
+            }
+            SessionBinding::OAuth {
+                user_id: identity.user_id,
+                tenant_id: identity.tenant.id,
+            }
+        } else {
+            SessionBinding::ApiKey {
+                tenant_id: bound_tenant,
+                token_hash: token_hash(&token),
+            }
         };
         if let Some(existing) = state.session_bindings.get(&session_id) {
             if *existing != binding {
@@ -297,7 +334,7 @@ async fn mcp_auth_middleware(
         }
     }
 
-    next.run(req).await
+    next.run(Request::from_parts(parts, body)).await
 }
 
 /// Build a [`signaldb_sdk::Client`] that forwards the caller's credential to the
@@ -355,6 +392,108 @@ mod tests {
     use super::*;
     use axum::http::request::Builder as RequestBuilder;
     use tower::ServiceExt;
+
+    async fn spawn_whoami_router(
+        status: &'static str,
+        request_count: usize,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let handle = tokio::spawn(async move {
+            let mut requests = Vec::with_capacity(request_count);
+            for _ in 0..request_count {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let read = socket.read(&mut buffer).await.expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let body = if status == "200 OK" {
+                    b"{\"user_id\":\"user-a\",\"tenant\":{\"id\":\"acme\",\"slug\":\"acme\",\"name\":\"Acme\"},\"dataset\":\"production\"}".as_slice()
+                } else {
+                    b"".as_slice()
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("write response headers");
+                socket.write_all(body).await.expect("write response body");
+                requests.push(String::from_utf8(request).expect("request is UTF-8"));
+            }
+            requests
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    async fn spawn_oauth_identity_router(
+        identities: Vec<(&'static str, &'static str, &'static str)>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let handle = tokio::spawn(async move {
+            for (token, user_id, tenant_id) in identities {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let read = socket.read(&mut buffer).await.expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(request).expect("request is UTF-8");
+                assert!(
+                    request.contains(&format!("authorization: Bearer {token}")),
+                    "unexpected router request: {request}"
+                );
+                let body = format!(
+                    "{{\"user_id\":\"{user_id}\",\"tenant\":{{\"id\":\"{tenant_id}\",\"slug\":\"{tenant_id}\",\"name\":\"{tenant_id}\"}},\"dataset\":\"production\"}}"
+                );
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("write response headers");
+                socket
+                    .write_all(body.as_bytes())
+                    .await
+                    .expect("write response body");
+            }
+        });
+        (format!("http://{addr}"), handle)
+    }
 
     fn test_state() -> McpAppState {
         McpAppState::new("http://localhost:3000".to_string())
@@ -422,10 +561,141 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn router_rejected_bearer_is_an_http_401_with_oauth_challenge() {
+        let (router_url, router) = spawn_whoami_router("401 Unauthorized", 1).await;
+        let state = McpAppState::new(router_url).with_oauth(
+            "https://signaldb.example.com/mcp".to_string(),
+            "https://signaldb.example.com".to_string(),
+        );
+        let app = mcp_http_router(state.clone(), &[]);
+
+        let response = app
+            .oneshot(
+                RequestBuilder::new()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", "Bearer sdb_at_expired")
+                    .header("mcp-session-id", "expired-session")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+                    ))
+                    .expect("build request"),
+            )
+            .await
+            .expect("MCP response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value
+                    .contains("https://signaldb.example.com/.well-known/oauth-protected-resource"))
+        );
+        assert!(
+            state.session_bindings.is_empty(),
+            "a rejected credential must not create a session binding"
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn router_accepted_bearer_reaches_the_mcp_transport_unchanged() {
+        let (router_url, router) = spawn_whoami_router("200 OK", 1).await;
+        let app = mcp_http_router(McpAppState::new(router_url), &[]);
+
+        let response = app
+            .oneshot(
+                RequestBuilder::new()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", "Bearer sk-acme")
+                    .header("x-tenant-id", "acme")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+                    ))
+                    .expect("build request"),
+            )
+            .await
+            .expect("MCP response");
+
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+        let mut requests = router.await.expect("mock router task panicked");
+        let request = requests.pop().expect("mock router received a request");
+        assert!(request.starts_with("GET /api/v1/whoami "), "{request}");
+        assert!(
+            request.contains("authorization: Bearer sk-acme"),
+            "{request}"
+        );
+        assert!(request.contains("x-tenant-id: acme"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn oauth_session_allows_token_rotation_only_for_the_same_resolved_identity() {
+        let (router_url, router) = spawn_oauth_identity_router(vec![
+            ("sdb_at_original", "user-a", "acme"),
+            ("sdb_at_refreshed", "user-a", "acme"),
+            ("sdb_at_other_user", "user-b", "acme"),
+            ("sdb_at_other_tenant", "user-a", "globex"),
+        ])
+        .await;
+        let app = mcp_http_router(McpAppState::new(router_url), &[]);
+        let request = |token| {
+            RequestBuilder::new()
+                .method("POST")
+                .uri("/mcp")
+                .header("authorization", format!("Bearer {token}"))
+                .header("mcp-session-id", "oauth-session")
+                .body(Body::empty())
+                .expect("build request")
+        };
+
+        let original = app
+            .clone()
+            .oneshot(request("sdb_at_original"))
+            .await
+            .expect("MCP response");
+        assert_ne!(original.status(), StatusCode::FORBIDDEN);
+
+        let refreshed = app
+            .clone()
+            .oneshot(request("sdb_at_refreshed"))
+            .await
+            .expect("MCP response");
+        assert_ne!(refreshed.status(), StatusCode::FORBIDDEN);
+
+        let other_user = app
+            .clone()
+            .oneshot(request("sdb_at_other_user"))
+            .await
+            .expect("MCP response");
+        assert_eq!(other_user.status(), StatusCode::FORBIDDEN);
+
+        let other_tenant = app
+            .oneshot(request("sdb_at_other_tenant"))
+            .await
+            .expect("MCP response");
+        assert_eq!(other_tenant.status(), StatusCode::FORBIDDEN);
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
     async fn oauth_bearer_does_not_require_tenant_header() {
-        let app = mcp_http_router(test_state_with_oauth(), &[]);
-        // An OAuth access token carries its own tenant; no X-Tenant-ID needed,
-        // so the request clears the presence check and reaches the transport.
+        let (router_url, router) = spawn_whoami_router("200 OK", 1).await;
+        let app = mcp_http_router(
+            McpAppState::new(router_url).with_oauth(
+                "https://signaldb.example.com/mcp".to_string(),
+                "https://signaldb.example.com".to_string(),
+            ),
+            &[],
+        );
+        // An OAuth access token carries its own tenant, so a router-validated
+        // OAuth request reaches the transport without X-Tenant-ID.
         let res = app
             .oneshot(
                 RequestBuilder::new()
@@ -442,6 +712,7 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        router.await.expect("mock router task panicked");
     }
 
     #[tokio::test]
@@ -498,10 +769,9 @@ mod tests {
 
     #[tokio::test]
     async fn present_credential_reaches_transport() {
-        // With a bearer + tenant present, the request clears the presence check
-        // and reaches the MCP transport — validation is the router's job, so the
-        // response is no longer a 401 produced by this layer.
-        let app = mcp_http_router(test_state(), &[]);
+        let (router_url, router) = spawn_whoami_router("200 OK", 1).await;
+        // A router-validated bearer + tenant reaches the MCP transport.
+        let app = mcp_http_router(McpAppState::new(router_url), &[]);
         let res = app
             .oneshot(
                 RequestBuilder::new()
@@ -519,13 +789,15 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        router.await.expect("mock router task panicked");
     }
 
     #[tokio::test]
     async fn session_bound_to_first_identity() {
         // A session pinned to tenant `acme` cannot be reused by a different
         // identity (tenant `other`, different token) on the same session id.
-        let app = mcp_http_router(test_state(), &[]);
+        let (router_url, router) = spawn_whoami_router("200 OK", 2).await;
+        let app = mcp_http_router(McpAppState::new(router_url), &[]);
 
         let first = app
             .clone()
@@ -557,6 +829,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reused.status(), StatusCode::FORBIDDEN);
+        router.await.expect("mock router task panicked");
     }
 
     /// Helper: an authenticated `initialize` POST carrying an explicit `Host`.
@@ -579,34 +852,43 @@ mod tests {
     async fn non_loopback_host_rejected_by_default() {
         // With no configured allowlist, the transport's DNS-rebinding guard
         // accepts only loopback hosts — a non-loopback `Host` is refused.
-        let app = mcp_http_router(test_state(), &[]);
+        let (router_url, router) = spawn_whoami_router("200 OK", 1).await;
+        let app = mcp_http_router(McpAppState::new(router_url), &[]);
         let res = app
             .oneshot(init_request_with_host("signaldb.example.com"))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        router.await.expect("mock router task panicked");
     }
 
     #[tokio::test]
     async fn configured_host_is_allowed() {
         // Naming the host in the allowlist lets its requests clear the guard.
-        let app = mcp_http_router(test_state(), &["signaldb.example.com".to_string()]);
+        let (router_url, router) = spawn_whoami_router("200 OK", 1).await;
+        let app = mcp_http_router(
+            McpAppState::new(router_url),
+            &["signaldb.example.com".to_string()],
+        );
         let res = app
             .oneshot(init_request_with_host("signaldb.example.com"))
             .await
             .unwrap();
         assert_ne!(res.status(), StatusCode::FORBIDDEN);
+        router.await.expect("mock router task panicked");
     }
 
     #[tokio::test]
     async fn wildcard_disables_host_guard() {
         // The `*` sentinel drops the guard, so any `Host` clears it.
-        let app = mcp_http_router(test_state(), &["*".to_string()]);
+        let (router_url, router) = spawn_whoami_router("200 OK", 1).await;
+        let app = mcp_http_router(McpAppState::new(router_url), &["*".to_string()]);
         let res = app
             .oneshot(init_request_with_host("10.0.0.5:30228"))
             .await
             .unwrap();
         assert_ne!(res.status(), StatusCode::FORBIDDEN);
+        router.await.expect("mock router task panicked");
     }
 
     /// Overall request timeout used by tests that expect a response.

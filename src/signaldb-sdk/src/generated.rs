@@ -2182,6 +2182,83 @@ pub mod types {
             Default::default()
         }
     }
+    ///The non-null identity contract shared by generated clients.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The non-null identity contract shared by generated clients.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "dataset",
+    ///    "tenant",
+    ///    "user_id"
+    ///  ],
+    ///  "properties": {
+    ///    "dataset": {
+    ///      "type": "string"
+    ///    },
+    ///    "tenant": {
+    ///      "$ref": "#/components/schemas/WhoamiTenant"
+    ///    },
+    ///    "user_id": {
+    ///      "description": "Stable authenticated user ID. Empty for API key credentials.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct WhoamiIdentityResponse {
+        pub dataset: ::std::string::String,
+        pub tenant: WhoamiTenant,
+        ///Stable authenticated user ID. Empty for API key credentials.
+        pub user_id: ::std::string::String,
+    }
+    impl WhoamiIdentityResponse {
+        pub fn builder() -> builder::WhoamiIdentityResponse {
+            Default::default()
+        }
+    }
+    ///`WhoamiTenant`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id",
+    ///    "name",
+    ///    "slug"
+    ///  ],
+    ///  "properties": {
+    ///    "id": {
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "type": "string"
+    ///    },
+    ///    "slug": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct WhoamiTenant {
+        pub id: ::std::string::String,
+        pub name: ::std::string::String,
+        pub slug: ::std::string::String,
+    }
+    impl WhoamiTenant {
+        pub fn builder() -> builder::WhoamiTenant {
+            Default::default()
+        }
+    }
     /// Types for composing complex structures.
     pub mod builder {
         #[derive(Clone, Debug)]
@@ -5342,6 +5419,142 @@ pub mod types {
                 }
             }
         }
+        #[derive(Clone, Debug)]
+        pub struct WhoamiIdentityResponse {
+            dataset: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tenant: ::std::result::Result<super::WhoamiTenant, ::std::string::String>,
+            user_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for WhoamiIdentityResponse {
+            fn default() -> Self {
+                Self {
+                    dataset: Err("no value supplied for dataset".to_string()),
+                    tenant: Err("no value supplied for tenant".to_string()),
+                    user_id: Err("no value supplied for user_id".to_string()),
+                }
+            }
+        }
+        impl WhoamiIdentityResponse {
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn tenant<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::WhoamiTenant>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant: {e}"));
+                self
+            }
+            pub fn user_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.user_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for user_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<WhoamiIdentityResponse> for super::WhoamiIdentityResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: WhoamiIdentityResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset: value.dataset?,
+                    tenant: value.tenant?,
+                    user_id: value.user_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::WhoamiIdentityResponse> for WhoamiIdentityResponse {
+            fn from(value: super::WhoamiIdentityResponse) -> Self {
+                Self {
+                    dataset: Ok(value.dataset),
+                    tenant: Ok(value.tenant),
+                    user_id: Ok(value.user_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct WhoamiTenant {
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            slug: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for WhoamiTenant {
+            fn default() -> Self {
+                Self {
+                    id: Err("no value supplied for id".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    slug: Err("no value supplied for slug".to_string()),
+                }
+            }
+        }
+        impl WhoamiTenant {
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn slug<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.slug = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for slug: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<WhoamiTenant> for super::WhoamiTenant {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: WhoamiTenant,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    id: value.id?,
+                    name: value.name?,
+                    slug: value.slug?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::WhoamiTenant> for WhoamiTenant {
+            fn from(value: super::WhoamiTenant) -> Self {
+                Self {
+                    id: Ok(value.id),
+                    name: Ok(value.name),
+                    slug: Ok(value.slug),
+                }
+            }
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -5775,6 +5988,23 @@ impl Client {
     ```*/
     pub fn query_ir(&self) -> builder::QueryIr<'_> {
         builder::QueryIr::new(self)
+    }
+    /**GET /api/v1/whoami
+
+    Returns the authenticated tenant with its datasets and default dataset,
+    resolved from the same sources the [`common::auth::Authenticator`] uses
+    (config tenants first, then catalog tenants). Strictly scoped to the
+    tenant in the request's [`common::auth::TenantContext`].
+
+    Sends a `GET` request to `/api/v1/whoami`
+
+    ```ignore
+    let response = client.whoami()
+        .send()
+        .await;
+    ```*/
+    pub fn whoami(&self) -> builder::Whoami<'_> {
+        builder::Whoami::new(self)
     }
     /**GET /loki/api/v1/label/{name}/values — list values of one label
 
@@ -8104,6 +8334,50 @@ pub mod builder {
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::whoami`]
+
+    [`Client::whoami`]: super::Client::whoami*/
+    #[derive(Debug, Clone)]
+    pub struct Whoami<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> Whoami<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/whoami`
+        pub async fn send(self) -> Result<ResponseValue<types::WhoamiIdentityResponse>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/whoami", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "whoami",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
