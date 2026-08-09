@@ -2617,6 +2617,98 @@
           }
         }
       },
+      "HeatmapAxisX": {
+        "type": "object",
+        "description": "Complete axes plus one non-zero heatmap cell. Missing declared coordinates\nrepresent zero, making the Flight payload sparse without hiding the window.",
+        "required": [
+          "step_ns",
+          "align"
+        ],
+        "properties": {
+          "align": {
+            "type": "string"
+          },
+          "step_ns": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "HeatmapAxisY": {
+        "type": "object",
+        "required": [
+          "of",
+          "type",
+          "bounds",
+          "overflow"
+        ],
+        "properties": {
+          "bounds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "of": {
+            "type": "string"
+          },
+          "overflow": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "HeatmapCell": {
+        "type": "object",
+        "required": [
+          "time_bucket_ns",
+          "duration_bucket",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "duration_bucket": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "time_bucket_ns": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "HeatmapResult": {
+        "type": "object",
+        "required": [
+          "x",
+          "y",
+          "value",
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HeatmapCell"
+            }
+          },
+          "value": {
+            "type": "string"
+          },
+          "x": {
+            "$ref": "#/components/schemas/HeatmapAxisX"
+          },
+          "y": {
+            "$ref": "#/components/schemas/HeatmapAxisY"
+          }
+        }
+      },
       "ListApiKeysResponse": {
         "type": "object",
         "description": "Response containing a list of API keys.",
@@ -2959,6 +3051,9 @@
             "items": {
               "$ref": "#/components/schemas/ResultColumn"
             }
+          },
+          "heatmap": {
+            "$ref": "#/components/schemas/HeatmapResult"
           },
           "result": {
             "type": "string",

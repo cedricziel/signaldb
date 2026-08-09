@@ -73,11 +73,22 @@ pub struct Series {
     pub step_ns: i64,
 }
 
+/// A sparse two-dimensional count relation with declared axes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heatmap {
+    pub x_step_ns: i64,
+    pub y_of: String,
+    pub y_type: ValueType,
+    pub y_bounds: Vec<i64>,
+    pub value: String,
+}
+
 /// The type of a relation flowing between stages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationType {
     RowSet(RowSet),
     Series(Series),
+    Heatmap(Heatmap),
 }
 
 impl RelationType {
@@ -87,6 +98,7 @@ impl RelationType {
             RelationType::RowSet(rs) if rs.aggregated => "table (aggregated row-set)".to_string(),
             RelationType::RowSet(_) => "rows (row-set)".to_string(),
             RelationType::Series(_) => "series".to_string(),
+            RelationType::Heatmap(_) => "heatmap".to_string(),
         }
     }
 
@@ -95,6 +107,7 @@ impl RelationType {
         match self {
             RelationType::RowSet(rs) => rs.columns.iter().find(|c| c.name == name),
             RelationType::Series(_) => None,
+            RelationType::Heatmap(_) => None,
         }
     }
 }

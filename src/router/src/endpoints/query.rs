@@ -4,7 +4,7 @@
 //! posts a versioned IR document (see the `query-ir-core` capability); the
 //! router stamps the server clock, forwards it to a querier as a
 //! `query_ir:{tenant}:{dataset}:{json}` Flight ticket, and shapes the returned
-//! RecordBatches into the declared result envelope (`rows` | `series` | `table`).
+//! RecordBatches into the declared result envelope (`rows` | `series` | `table` | `heatmap`).
 //!
 //! Auth and tenant scoping are identical to the Tempo/LogQL/Prometheus
 //! surfaces: the endpoint sits behind the auth middleware and derives the
@@ -101,6 +101,60 @@ pub struct ResultSeries {
     pub points: Vec<[serde_json::Value; 2]>,
 }
 
+/// Complete axes plus one non-zero heatmap cell. Missing declared coordinates
+/// represent zero, making the Flight payload sparse without hiding the window.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct HeatmapAxisX {
+    pub step_ns: i64,
+    pub align: String,
+}
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct HeatmapAxisY {
+    pub of: String,
+    #[serde(rename = "type")]
+    pub value_type: String,
+    pub bounds: Vec<i64>,
+    pub overflow: bool,
+}
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct HeatmapCell {
+    pub time_bucket_ns: i64,
+    pub duration_bucket: i64,
+    pub count: i64,
+}
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct HeatmapResult {
+    pub x: HeatmapAxisX,
+    pub y: HeatmapAxisY,
+    pub value: String,
+    pub cells: Vec<HeatmapCell>,
+}
+
+impl Default for HeatmapResult {
+    fn default() -> Self {
+        Self {
+            x: HeatmapAxisX {
+                step_ns: 0,
+                align: String::new(),
+            },
+            y: HeatmapAxisY {
+                of: String::new(),
+                value_type: String::new(),
+                bounds: Vec::new(),
+                overflow: false,
+            },
+            value: String::new(),
+            cells: Vec::new(),
+        }
+    }
+}
+
+impl HeatmapResult {
+    fn is_empty(&self) -> bool {
+        self.x.step_ns == 0
+    }
+}
+
 /// The single canonical response contract. `result` discriminates which fields
 /// are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
 /// `series` + `step_ns`.
@@ -119,6 +173,8 @@ pub struct QueryIrResponse {
     pub series: Vec<ResultSeries>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_ns: Option<i64>,
+    #[serde(default, skip_serializing_if = "HeatmapResult::is_empty")]
+    pub heatmap: HeatmapResult,
 }
 
 /// Submit a native Query IR document.
@@ -156,7 +212,7 @@ pub async fn query_ir<S: RouterState>(
     // The IR document is the request re-serialized; the querier validates it.
     let document = serde_json::to_value(&req)
         .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
-    let payload = serde_json::json!({ "document": document, "now_ns": now });
+    let payload = serde_json::json!({ "document": document.clone(), "now_ns": now });
     let payload = serde_json::to_string(&payload)
         .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
     let ticket = format!(
@@ -165,7 +221,7 @@ pub async fn query_ir<S: RouterState>(
     );
 
     let batches = execute_ticket(&state, ticket).await?;
-    let response = build_envelope(&req.result, window, &batches)?;
+    let response = build_envelope(&req.result, window, &batches, &document)?;
     Ok(axum::Json(response))
 }
 
@@ -267,6 +323,7 @@ fn build_envelope(
     result: &str,
     window: ResolvedWindow,
     batches: &[RecordBatch],
+    document: &serde_json::Value,
 ) -> Result<QueryIrResponse, ApiError> {
     match result {
         "series" => {
@@ -278,6 +335,7 @@ fn build_envelope(
                 rows: Vec::new(),
                 series,
                 step_ns,
+                heatmap: HeatmapResult::default(),
             })
         }
         "rows" | "table" => {
@@ -289,12 +347,86 @@ fn build_envelope(
                 rows,
                 series: Vec::new(),
                 step_ns: None,
+                heatmap: HeatmapResult::default(),
+            })
+        }
+        "heatmap" => {
+            let doc: common::query_ir::Document = serde_json::from_value(document.clone())
+                .map_err(|e| ApiError::bad_request(format!("invalid heatmap document: {e}")))?;
+            let stage = doc
+                .pipeline
+                .iter()
+                .find_map(|stage| match stage {
+                    common::query_ir::Stage::Heatmap(stage) => Some(stage),
+                    _ => None,
+                })
+                .ok_or_else(|| ApiError::bad_request("heatmap result requires a heatmap stage"))?;
+            let step_ns = common::query_ir::parse_duration_ns(&stage.x.step)
+                .ok_or_else(|| ApiError::bad_request("invalid heatmap step"))?;
+            let bounds = stage
+                .y
+                .bounds
+                .iter()
+                .map(
+                    |bound| match common::query_ir::coerce(bound, &ValueType::DurationNs) {
+                        Ok(Literal::Duration(value)) => Ok(value),
+                        _ => Err(ApiError::bad_request("invalid heatmap duration bound")),
+                    },
+                )
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(QueryIrResponse {
+                result: result.to_string(),
+                window,
+                columns: Vec::new(),
+                rows: Vec::new(),
+                series: Vec::new(),
+                step_ns: None,
+                heatmap: HeatmapResult {
+                    x: HeatmapAxisX {
+                        step_ns,
+                        align: stage.x.align.clone(),
+                    },
+                    y: HeatmapAxisY {
+                        of: stage.y.of.clone(),
+                        value_type: "duration_ns".into(),
+                        bounds,
+                        overflow: stage.y.overflow,
+                    },
+                    value: stage.value.as_name.clone(),
+                    cells: to_heatmap_cells(batches)?,
+                },
             })
         }
         other => Err(ApiError::bad_request(format!(
             "unsupported result envelope '{other}'"
         ))),
     }
+}
+
+fn to_heatmap_cells(batches: &[RecordBatch]) -> Result<Vec<HeatmapCell>, ApiError> {
+    let mut cells = Vec::new();
+    for batch in batches {
+        let time = batch
+            .column_by_name("time_bucket_ns")
+            .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+            .ok_or_else(|| ApiError::bad_request("heatmap result is missing time_bucket_ns"))?;
+        let duration = batch
+            .column_by_name("duration_bucket")
+            .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+            .ok_or_else(|| ApiError::bad_request("heatmap result is missing duration_bucket"))?;
+        let count = batch
+            .column_by_name("count")
+            .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+            .ok_or_else(|| ApiError::bad_request("heatmap result is missing count"))?;
+        for row in 0..batch.num_rows() {
+            cells.push(HeatmapCell {
+                time_bucket_ns: time.value(row),
+                duration_bucket: duration.value(row),
+                count: count.value(row),
+            });
+        }
+    }
+    Ok(cells)
 }
 
 /// Column name + IR value type for a batch field.
@@ -601,29 +733,50 @@ mod row_encoding {
 
 #[cfg(test)]
 mod tests {
+    use super::{ResolvedWindow, build_envelope};
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use common::catalog::Catalog;
-    use common::config::{ApiKeyConfig, Configuration, TenantConfig};
+    use common::config::{ApiKeyConfig, Configuration, DatasetConfig, TenantConfig};
     use tower::ServiceExt;
 
     fn test_config() -> Configuration {
         let mut config = Configuration::default();
         config.auth = common::config::AuthConfig {
-            tenants: vec![TenantConfig {
-                id: "acme".to_string(),
-                slug: "acme".to_string(),
-                name: "Acme".to_string(),
-                default_dataset: Some("default".to_string()),
-                datasets: vec![],
-                api_keys: vec![ApiKeyConfig {
-                    key: "sk-test-key".to_string(),
-                    name: Some("test".to_string()),
-                }],
-                schema_config: None,
-                limits: None,
-            }],
+            tenants: vec![
+                TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme".to_string(),
+                    default_dataset: Some("default".to_string()),
+                    datasets: vec![DatasetConfig {
+                        id: "alternate".into(),
+                        slug: "alternate".into(),
+                        is_default: false,
+                        storage: None,
+                    }],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "sk-test-key".to_string(),
+                        name: Some("test".to_string()),
+                    }],
+                    schema_config: None,
+                    limits: None,
+                },
+                TenantConfig {
+                    id: "other".into(),
+                    slug: "other".into(),
+                    name: "Other".into(),
+                    default_dataset: Some("default".into()),
+                    datasets: vec![],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "sk-other-key".into(),
+                        name: Some("other".into()),
+                    }],
+                    schema_config: None,
+                    limits: None,
+                },
+            ],
             ..Default::default()
         };
         config
@@ -672,6 +825,39 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn heatmap_query_authenticates_each_tenant_dataset_context() {
+        let app = test_app().await;
+        let heatmap = || {
+            Body::from(serde_json::to_vec(&serde_json::json!({
+            "irVersion": 2, "from": "traces", "range": { "from": "now-1h", "to": "now" }, "result": "heatmap",
+            "pipeline": [{ "heatmap": { "x": { "step": "1m", "align": "epoch" }, "y": { "of": "duration", "bounds": ["1ms"], "overflow": true }, "value": { "fn": "count", "as": "count" } }}]
+        })).unwrap())
+        };
+        for (key, tenant, dataset) in [
+            ("sk-test-key", "acme", Some("alternate")),
+            ("sk-other-key", "other", None),
+        ] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/v1/query")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {key}"))
+                .header("x-tenant-id", tenant);
+            if let Some(dataset) = dataset {
+                request = request.header("x-dataset-id", dataset);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(heatmap()).unwrap())
+                .await
+                .unwrap();
+            // Both independently authenticated contexts reach the native query
+            // boundary. The no-querier fixture stops before execution.
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+    }
+
     // Task 6.1 — a valid request with no querier surfaces 503, not 200.
     #[tokio::test]
     async fn ir_query_without_a_querier_is_service_unavailable() {
@@ -694,5 +880,41 @@ mod tests {
             .await
             .unwrap();
         assert!(resp.status().is_client_error(), "got {}", resp.status());
+    }
+
+    #[test]
+    fn heatmap_envelope_shapes_sparse_flight_cells() {
+        use datafusion::arrow::array::{Int64Array, RecordBatch};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("time_bucket_ns", DataType::Int64, false),
+                Field::new("duration_bucket", DataType::Int64, false),
+                Field::new("count", DataType::Int64, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![0])),
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(Int64Array::from(vec![2])),
+            ],
+        )
+        .unwrap();
+        let document = serde_json::json!({
+            "irVersion": 2, "from": "traces", "range": { "from": "0", "to": "60" }, "result": "heatmap",
+            "pipeline": [{ "heatmap": { "x": { "step": "1m", "align": "epoch" }, "y": { "of": "duration", "bounds": ["1ms"], "overflow": true }, "value": { "fn": "count", "as": "count" } }}]
+        });
+        let response = build_envelope(
+            "heatmap",
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 60,
+            },
+            &[batch],
+            &document,
+        )
+        .unwrap();
+        assert_eq!(response.heatmap.cells[0].count, 2);
+        assert_eq!(response.heatmap.y.bounds, vec![1_000_000]);
     }
 }

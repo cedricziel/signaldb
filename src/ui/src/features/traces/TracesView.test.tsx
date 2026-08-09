@@ -834,21 +834,14 @@ describe("TracesView span-volume chart", () => {
     expect(volumeQueries()).toBe(queryCount);
   });
 
-  it("fetches latency only when switching to the accessible status heatmap", async () => {
+  it("submits a v2 native IR heatmap only when switching views", async () => {
     stubFetchRoutes(routes);
     renderView();
     await screen.findByRole("img", { name: /span volume/i });
-
-    const volumeQueries = () =>
-      vi
-        .mocked(globalThis.fetch)
-        .mock.calls.map(([input]) => input)
-        .filter(
-          (input): input is Request =>
-            input instanceof Request && input.url.includes("/api/v1/query"),
-        ).length;
-    const queryCount = volumeQueries();
-    expect(queryCount).toBeGreaterThan(0);
+    const heatmapFetch = stubFetchRoutes([{ match: "/api/v1/query", body: {
+        result: "heatmap", window: { start_ns: 0, end_ns: 60_000_000_000 },
+        heatmap: { x: { step_ns: 60_000_000_000, align: "epoch" }, y: { of: "duration", type: "duration_ns", bounds: [10_000_000], overflow: true }, value: "count", cells: [{ time_bucket_ns: 0, duration_bucket: 0, count: 2 }] },
+      } }]);
 
     await userEvent.click(screen.getByRole("button", { name: "Heatmap" }));
 
@@ -861,33 +854,35 @@ describe("TracesView span-volume chart", () => {
     expect(
       within(heatmap).getAllByTestId("trace-volume-heatmap-cell").length,
     ).toBeGreaterThan(0);
-    const error = within(heatmap).getByLabelText(/error,.*average latency/i);
-    expect(error).toHaveAttribute("fill", "var(--err-bar)");
+    const cell = within(heatmap).getByLabelText(/2 spans/i);
+    expect(cell).toHaveAttribute("fill", "var(--info-bar)");
     expect(
-      within(heatmap).getByText(/intensity represents average latency/i),
+      within(heatmap).getByText(/intensity represents span count/i),
     ).toBeInTheDocument();
-    expect(volumeQueries()).toBe(queryCount + 1);
-    const docs = await Promise.all(
-      vi
-        .mocked(globalThis.fetch)
-        .mock.calls.map(([input]) => input)
+    const requests = heatmapFetch.mock.calls.map(([input]) => input)
+      .filter(
+        (input): input is Request =>
+          input instanceof Request &&
+          input.url.includes("/api/v1/query"),
+      );
+    expect(requests).toHaveLength(1);
+    const [body] = await Promise.all(
+      heatmapFetch.mock.calls.map(([input]) => input)
         .filter(
           (input): input is Request =>
-            input instanceof Request && input.url.includes("/api/v1/query"),
+            input instanceof Request &&
+            input.url.includes("/api/v1/query"),
         )
         .map((request) => request.clone().json()),
     );
-    expect(docs).toContainEqual(
-      expect.objectContaining({
-        pipeline: expect.arrayContaining([
-          expect.objectContaining({
-            aggregate: expect.objectContaining({
-              aggs: [{ fn: "avg", of: "duration.nanos", as: "latency" }],
-            }),
-          }),
-        ]),
+    expect(body).toEqual(expect.objectContaining({ irVersion: 2, result: "heatmap" }));
+    expect(body.pipeline.at(-1)).toEqual({
+      heatmap: expect.objectContaining({
+        x: { step: expect.any(String), align: "epoch" },
+        y: expect.objectContaining({ of: "duration", overflow: true }),
+        value: { fn: "count", as: "count" },
       }),
-    );
+    });
   });
 
   it("asks for the volume aggregate without a row limit", async () => {

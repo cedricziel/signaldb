@@ -818,4 +818,23 @@ mod tests {
             assert!(router.has_route(name), "tool `{name}` must be registered");
         }
     }
+
+    #[test]
+    fn generic_query_ir_tool_parameters_accept_a_v2_heatmap_document() {
+        let params: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": {
+                "irVersion": 2, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+                "result": "heatmap", "pipeline": [{ "heatmap": {
+                    "x": { "step": "1m", "align": "epoch" },
+                    "y": { "of": "duration", "bounds": ["1ms"], "overflow": true },
+                    "value": { "fn": "count", "as": "count" }
+                }}]
+            }
+        }))
+        .unwrap();
+        let request: signaldb_sdk::types::QueryIrRequest =
+            serde_json::from_value(params.query).unwrap();
+        assert_eq!(request.ir_version, 2);
+        assert_eq!(request.result, "heatmap");
+    }
 }

@@ -7,14 +7,18 @@
  * truncation artefact the volume chart exists to avoid. The IR aggregate is
  * evaluated server-side over the whole window with no limit on the path.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { HeatmapResult, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { facetField, type TraceFilter } from "../lib/traceFilters";
 import type { VolumeSeries } from "../features/explore/SignalHistogram";
+export type TraceLatencyHeatmap = HeatmapResult & { window: { start_ns: number; end_ns: number } };
 
-/** Average span latency points, keyed by normalized status and measured in ms. */
-export type TraceLatencySeries = VolumeSeries;
+// Geometric millisecond bounds provide useful resolution from sub-ms spans to
+// slow requests without letting callers create an unbounded result matrix.
+export const LATENCY_BUCKET_BOUNDS_NS = [
+  1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000,
+].map((ms) => ms * 1_000_000);
 
 /** Stacking order, bottom to top. */
 export const STATUS_ORDER = ["ok", "unset", "error"];
@@ -80,32 +84,20 @@ function traceFilterStages(filters: TraceFilter[]): Record<string, unknown>[] {
   });
 }
 
-/** Build the separate single-aggregate stepped query used by the latency heatmap. */
-export function buildTraceLatencyDoc(
+/** Build the v2 terminal heatmap relation over the full selected window. */
+export function buildTraceLatencyHeatmapDoc(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
 ): QueryIrRequest {
-  const where = traceFilterStages(filters);
   return {
-    irVersion: 1,
+    irVersion: 2,
     from: "traces",
-    range: {
-      from: String(msToNanos(range.fromMs)),
-      to: String(msToNanos(range.toMs)),
-    },
-    result: "series",
+    range: { from: String(msToNanos(range.fromMs)), to: String(msToNanos(range.toMs)) },
+    result: "heatmap",
     pipeline: [
-      ...where,
-      {
-        aggregate: {
-          by: ["status.code"],
-          // Stepped aggregates accept one output only, so latency cannot share
-          // the count query used to distinguish empty buckets.
-          aggs: [{ fn: "avg", of: "duration.nanos", as: "latency" }],
-          step,
-        },
-      },
+      ...traceFilterStages(filters),
+      { heatmap: { x: { step, align: "epoch" }, y: { of: "duration", bounds: LATENCY_BUCKET_BOUNDS_NS.map(String), overflow: true }, value: { fn: "count", as: "count" } } },
     ],
   };
 }
@@ -131,19 +123,6 @@ export function seriesFromIrResponse(res: QueryIrResponse): VolumeSeries[] {
   }));
 }
 
-/** Decode a duration average series, converting its nanosecond values to ms. */
-export function latencySeriesFromIrResponse(
-  res: QueryIrResponse,
-): TraceLatencySeries[] {
-  return (res.series ?? []).map((s) => ({
-    key: normalizeStatus(statusLabel(s.labels)),
-    points: s.points.flatMap((p): [number, number][] => {
-      const [tNs, valueNs] = p as [unknown, unknown];
-      if (typeof tNs !== "number" || typeof valueNs !== "number") return [];
-      return [[Math.round(tNs / 1e6), valueNs / 1e6]];
-    }),
-  }));
-}
 
 export async function fetchTraceVolume(
   range: ResolvedRange,
@@ -155,12 +134,13 @@ export async function fetchTraceVolume(
   );
 }
 
-export async function fetchTraceLatency(
+export async function fetchTraceLatencyHeatmap(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
-): Promise<TraceLatencySeries[]> {
-  return latencySeriesFromIrResponse(
-    await runIrQuery(buildTraceLatencyDoc(range, step, filters)),
-  );
+): Promise<TraceLatencyHeatmap> {
+  const response = await runIrQuery(buildTraceLatencyHeatmapDoc(range, step, filters));
+  const heatmap = response.heatmap as HeatmapResult | undefined;
+  if (!heatmap) throw new Error("IR heatmap response omitted heatmap data");
+  return { ...heatmap, window: response.window };
 }

@@ -1,67 +1,40 @@
-import {
-  bucketizeSeries,
-  padBuckets,
-  type VolumeSeries,
-} from "../explore/SignalHistogram";
 import { axisLabelFormatter } from "../../lib/time";
 import { formatDurationMs } from "../../lib/waterfall";
+import type { TraceLatencyHeatmap } from "../../api/traceVolume";
 
 interface Props {
-  series: VolumeSeries[];
-  latency: VolumeSeries[];
-  order: string[];
-  colors: Record<string, string>;
-  rangeMs: { fromMs: number; toMs: number };
-  stepMs: number;
+  heatmap: TraceLatencyHeatmap;
   label: string;
 }
 
 const WIDTH = 720;
-const HEIGHT = 64;
-const PADDING = { top: 3, right: 8, bottom: 14, left: 48 };
+const HEIGHT = 220;
+const PADDING = { top: 3, right: 8, bottom: 14, left: 78 };
 export function TraceVolumeHeatmap({
-  series,
-  latency,
-  order,
-  colors,
-  rangeMs,
-  stepMs,
+  heatmap,
   label,
 }: Props) {
-  let buckets = bucketizeSeries(series);
-  if (buckets.length > 0) {
-    buckets = padBuckets(buckets, rangeMs.fromMs, rangeMs.toMs, stepMs);
-  }
-  if (buckets.length === 0 || buckets.every((bucket) => bucket.total === 0)) {
-    return <div className="trace-heatmap-empty">No volume in range</div>;
-  }
-
-  const latencyByStatusAndTime = new Map(
-    latency.flatMap((s) =>
-      s.points.map(([tMs, value]) => [`${s.key}|${tMs}`, value] as const),
-    ),
-  );
-  // One shared maximum makes equal intensity mean equal latency across statuses.
-  const max = Math.max(
-    0,
-    ...order.flatMap((key) =>
-      buckets.flatMap((bucket) => {
-        const value = latencyByStatusAndTime.get(`${key}|${bucket.tMs}`);
-        return (bucket.counts[key] ?? 0) > 0 && value !== undefined
-          ? [value]
-          : [];
-      }),
-    ),
-  );
+  const start = Math.floor(heatmap.window.start_ns / heatmap.x.step_ns) * heatmap.x.step_ns;
+  const times: number[] = [];
+  for (let t = start; t < heatmap.window.end_ns; t += heatmap.x.step_ns) times.push(t);
+  const rows = heatmap.y.bounds.length + 1;
+  if (heatmap.cells.length === 0) return <div className="trace-heatmap-empty">No spans in range</div>;
+  const cells = new Map(heatmap.cells.map((cell) => [`${cell.time_bucket_ns}|${cell.duration_bucket}`, cell.count]));
+  const max = Math.max(...heatmap.cells.map((cell) => cell.count));
   const formatAxis = axisLabelFormatter(
-    buckets[0]!.tMs,
-    buckets[buckets.length - 1]!.tMs,
+    times[0]! / 1e6,
+    times[times.length - 1]! / 1e6,
   );
   const plotWidth = WIDTH - PADDING.left - PADDING.right;
   const plotHeight = HEIGHT - PADDING.top - PADDING.bottom;
-  const cellWidth = plotWidth / buckets.length;
-  const cellHeight = plotHeight / order.length;
-  const summary = `${label} heatmap. Rows are status. Columns are time buckets. Color identifies status and intensity represents average latency relative to the maximum of ${formatDurationMs(max)}. Empty cells have no spans.`;
+  const cellWidth = plotWidth / times.length;
+  const cellHeight = plotHeight / rows;
+  const bucketLabel = (row: number) => {
+    const lower = row === 0 ? 0 : heatmap.y.bounds[row - 1]! / 1e6;
+    const upper = heatmap.y.bounds[row] === undefined ? undefined : heatmap.y.bounds[row]! / 1e6;
+    return upper === undefined ? `${formatDurationMs(lower)}+` : `${formatDurationMs(lower)}-${formatDurationMs(upper)}`;
+  };
+  const summary = `${label} heatmap. Rows are latency buckets. Columns are time buckets. Color intensity represents span count. Empty cells have no spans.`;
 
   return (
     <div
@@ -72,41 +45,35 @@ export function TraceVolumeHeatmap({
       aria-describedby="trace-volume-heatmap-summary"
     >
       <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="none">
-        {order.map((key, row) => (
-          <g key={key}>
+        {Array.from({ length: rows }, (_, row) => (
+          <g key={row}>
             <text
               className="trace-heatmap-ylabel"
               x={PADDING.left - 5}
               y={PADDING.top + cellHeight * (row + 0.5) + 3}
             >
-              {key}
+              {bucketLabel(row)}
             </text>
-            {buckets.map((bucket, column) => {
-              const count = bucket.counts[key] ?? 0;
-              const latencyMs = latencyByStatusAndTime.get(
-                `${key}|${bucket.tMs}`,
-              );
-              const hasLatency = count > 0 && latencyMs !== undefined;
-              const intensity = !hasLatency || max === 0 ? 0 : latencyMs / max;
+            {times.map((time, column) => {
+              const count = cells.get(`${time}|${row}`) ?? 0;
+              const intensity = count / max;
               return (
                 <rect
-                  key={bucket.tMs}
+                  key={time}
                   className="trace-heatmap-cell"
                   data-testid="trace-volume-heatmap-cell"
-                  data-status={key}
                   data-count={count}
-                  data-latency={latencyMs}
                   data-intensity={intensity.toFixed(3)}
                   x={PADDING.left + cellWidth * column}
                   y={PADDING.top + cellHeight * row}
                   width={cellWidth}
                   height={cellHeight}
-                  fill={colors[key]}
-                  fillOpacity={hasLatency ? 0.12 + intensity * 0.88 : 0}
+                  fill="var(--info-bar)"
+                  fillOpacity={count > 0 ? 0.12 + intensity * 0.88 : 0}
                   aria-label={
-                    hasLatency
-                      ? `${key}, ${formatAxis(bucket.tMs)}: average latency ${formatDurationMs(latencyMs ?? 0)}`
-                      : `${key}, ${formatAxis(bucket.tMs)}: no data`
+                    count > 0
+                      ? `${formatAxis(time / 1e6)}, ${bucketLabel(row)}: ${count} spans`
+                      : `${formatAxis(time / 1e6)}, ${bucketLabel(row)}: no spans`
                   }
                 />
               );
@@ -114,7 +81,7 @@ export function TraceVolumeHeatmap({
           </g>
         ))}
         <text className="trace-heatmap-xlabel" x={PADDING.left} y={HEIGHT - 3}>
-          {formatAxis(buckets[0]!.tMs)}
+          {formatAxis(times[0]! / 1e6)}
         </text>
         <text
           className="trace-heatmap-xlabel"
@@ -122,7 +89,7 @@ export function TraceVolumeHeatmap({
           y={HEIGHT - 3}
           textAnchor="end"
         >
-          {formatAxis(buckets[buckets.length - 1]!.tMs)}
+          {formatAxis(times[times.length - 1]! / 1e6)}
         </text>
       </svg>
       <div className="trace-heatmap-summary" id="trace-volume-heatmap-summary">

@@ -55,12 +55,16 @@ struct TestServices {
 }
 
 fn test_tenant_context() -> TenantContext {
+    tenant_context("test-tenant", "test-dataset", "test-key-123")
+}
+
+fn tenant_context(tenant: &str, dataset: &str, key: &str) -> TenantContext {
     TenantContext {
-        tenant_id: "test-tenant".to_string(),
-        dataset_id: "test-dataset".to_string(),
-        tenant_slug: "test-tenant".to_string(),
-        dataset_slug: "test-dataset".to_string(),
-        api_key_name: Some("test-key".to_string()),
+        tenant_id: tenant.to_string(),
+        dataset_id: dataset.to_string(),
+        tenant_slug: tenant.to_string(),
+        dataset_slug: dataset.to_string(),
+        api_key_name: Some(key.to_string()),
         api_key_scopes: None,
         api_key_dataset_id: None,
         user_id: None,
@@ -80,19 +84,39 @@ fn test_config(catalog_dsn: &str) -> Configuration {
         ttl: Duration::from_secs(30),
     });
     config.auth = common::config::AuthConfig {
-        tenants: vec![common::config::TenantConfig {
-            id: "test-tenant".to_string(),
-            slug: "test-tenant".to_string(),
-            name: "Test Tenant".to_string(),
-            default_dataset: Some("test-dataset".to_string()),
-            datasets: vec![],
-            api_keys: vec![common::config::ApiKeyConfig {
-                key: "test-key-123".to_string(),
-                name: Some("test-key".to_string()),
-            }],
-            schema_config: None,
-            limits: None,
-        }],
+        tenants: vec![
+            common::config::TenantConfig {
+                id: "test-tenant".to_string(),
+                slug: "test-tenant".to_string(),
+                name: "Test Tenant".to_string(),
+                default_dataset: Some("test-dataset".to_string()),
+                datasets: vec![common::config::DatasetConfig {
+                    id: "other-dataset".into(),
+                    slug: "other-dataset".into(),
+                    is_default: false,
+                    storage: None,
+                }],
+                api_keys: vec![common::config::ApiKeyConfig {
+                    key: "test-key-123".to_string(),
+                    name: Some("test-key".to_string()),
+                }],
+                schema_config: None,
+                limits: None,
+            },
+            common::config::TenantConfig {
+                id: "other-tenant".into(),
+                slug: "other-tenant".into(),
+                name: "Other Tenant".into(),
+                default_dataset: Some("test-dataset".into()),
+                datasets: vec![],
+                api_keys: vec![common::config::ApiKeyConfig {
+                    key: "other-key-123".into(),
+                    name: Some("other-key".into()),
+                }],
+                schema_config: None,
+                limits: None,
+            },
+        ],
         admin_api_key: None,
         internal_service_key: None,
         ..Default::default()
@@ -169,13 +193,18 @@ async fn setup() -> TestServices {
     // Pre-create the Iceberg namespace so the querier resolves the dataset.
     {
         use iceberg_rust::catalog::namespace::Namespace;
-        let namespace =
-            Namespace::try_new(&["test-tenant".to_string(), "test-dataset".to_string()]).unwrap();
-        catalog_manager
-            .catalog()
-            .create_namespace(&namespace, None)
-            .await
-            .expect("pre-create namespace");
+        for (tenant, dataset) in [
+            ("test-tenant", "test-dataset"),
+            ("test-tenant", "other-dataset"),
+            ("other-tenant", "test-dataset"),
+        ] {
+            let namespace = Namespace::try_new(&[tenant.to_string(), dataset.to_string()]).unwrap();
+            catalog_manager
+                .catalog()
+                .create_namespace(&namespace, None)
+                .await
+                .expect("pre-create namespace");
+        }
     }
 
     // Querier Flight service.
@@ -390,12 +419,26 @@ async fn build_router(services: &TestServices) -> Router {
 
 /// POST an IR document to `/api/v1/query` and parse the JSON body.
 async fn post_ir(app: &Router, doc: serde_json::Value) -> (StatusCode, serde_json::Value) {
-    let request = Request::builder()
+    post_ir_as(app, doc, "test-key-123", "test-tenant", None).await
+}
+
+async fn post_ir_as(
+    app: &Router,
+    doc: serde_json::Value,
+    key: &str,
+    tenant: &str,
+    dataset: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let mut request = Request::builder()
         .method("POST")
         .uri("/api/v1/query")
-        .header("Authorization", "Bearer test-key-123")
-        .header("X-Tenant-ID", "test-tenant")
-        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {key}"))
+        .header("X-Tenant-ID", tenant)
+        .header("Content-Type", "application/json");
+    if let Some(dataset) = dataset {
+        request = request.header("X-Dataset-ID", dataset);
+    }
+    let request = request
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
@@ -553,6 +596,119 @@ async fn traces_ir_query_end_to_end() {
     assert_eq!(rows.len(), 1, "topk(1) returns one span: {body}");
     // The slowest checkout span is `GET /b` (900ms).
     assert_eq!(rows[0][0], "GET /b", "expected the slowest span: {body}");
+}
+
+#[tokio::test]
+async fn trace_heatmap_end_to_end_uses_native_query_ir_without_list_limit() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "checkout",
+                vec![
+                    span("fast", 1, 50_000_000),
+                    span("edge", 2, 100_000_000),
+                    span("overflow", 3, 900_000_000),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest spans");
+    let app = build_router(&services).await;
+    let document = serde_json::json!({
+        "irVersion": 2, "from": "traces", "range": range(), "result": "heatmap",
+        "pipeline": [{ "heatmap": {
+            "x": { "step": "1m", "align": "epoch" },
+            "y": { "of": "duration", "bounds": ["100ms", "500ms"], "overflow": true },
+            "value": { "fn": "count", "as": "count" }
+        }}]
+    });
+    let mut last = serde_json::Value::Null;
+    for _ in 0..40 {
+        let (status, body) = post_ir(&app, document.clone()).await;
+        if status == StatusCode::OK
+            && body["heatmap"]["cells"]
+                .as_array()
+                .is_some_and(|cells| !cells.is_empty())
+        {
+            assert_eq!(body["result"], "heatmap");
+            let cells = body["heatmap"]["cells"].as_array().unwrap();
+            assert_eq!(
+                cells
+                    .iter()
+                    .map(|cell| cell["count"].as_i64().unwrap())
+                    .sum::<i64>(),
+                3
+            );
+            return;
+        }
+        last = body;
+        sleep(Duration::from_millis(500)).await;
+    }
+    panic!("heatmap did not return persisted cells: {last}");
+}
+
+#[tokio::test]
+async fn trace_heatmap_isolated_by_authenticated_tenant_and_dataset() {
+    let services = setup().await;
+    for (context, duration) in [
+        (
+            tenant_context("test-tenant", "test-dataset", "test-key-123"),
+            10_000_000,
+        ),
+        (
+            tenant_context("test-tenant", "other-dataset", "test-key-123"),
+            20_000_000,
+        ),
+        (
+            tenant_context("other-tenant", "test-dataset", "other-key-123"),
+            30_000_000,
+        ),
+    ] {
+        services
+            .trace_handler
+            .handle_grpc_otlp_traces(
+                &context,
+                traces_request("isolated", vec![span("only-here", 1, duration)]),
+            )
+            .await
+            .unwrap();
+    }
+    let app = build_router(&services).await;
+    let doc = serde_json::json!({ "irVersion": 2, "from": "traces", "range": range(), "result": "heatmap", "pipeline": [{ "heatmap": {
+        "x": { "step": "1m", "align": "epoch" }, "y": { "of": "duration", "bounds": ["15ms", "25ms"], "overflow": true }, "value": { "fn": "count", "as": "count" }
+    }}] });
+    let contexts = [
+        ("test-key-123", "test-tenant", None, 0),
+        ("test-key-123", "test-tenant", Some("other-dataset"), 1),
+        ("other-key-123", "other-tenant", None, 2),
+    ];
+    for (key, tenant, dataset, expected_bucket) in contexts {
+        let mut body = serde_json::Value::Null;
+        for _ in 0..40 {
+            let (status, response) = post_ir_as(&app, doc.clone(), key, tenant, dataset).await;
+            if status == StatusCode::OK
+                && response["heatmap"]["cells"]
+                    .as_array()
+                    .is_some_and(|cells| cells.len() == 1)
+            {
+                body = response;
+                break;
+            }
+            sleep(Duration::from_millis(500)).await;
+        }
+        let cells = body["heatmap"]["cells"]
+            .as_array()
+            .expect("one isolated heatmap cell");
+        assert_eq!(cells[0]["count"], 1, "context leaked rows: {body}");
+        assert_eq!(
+            cells[0]["duration_bucket"], expected_bucket,
+            "wrong context result: {body}"
+        );
+    }
 }
 
 /// Read a `table` envelope as `(group, measure)` pairs, sorted — addressing

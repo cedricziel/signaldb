@@ -653,6 +653,173 @@ pub mod types {
             Default::default()
         }
     }
+    /**Complete axes plus one non-zero heatmap cell. Missing declared coordinates
+    represent zero, making the Flight payload sparse without hiding the window.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Complete axes plus one non-zero heatmap cell. Missing declared coordinates\nrepresent zero, making the Flight payload sparse without hiding the window.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "align",
+    ///    "step_ns"
+    ///  ],
+    ///  "properties": {
+    ///    "align": {
+    ///      "type": "string"
+    ///    },
+    ///    "step_ns": {
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct HeatmapAxisX {
+        pub align: ::std::string::String,
+        pub step_ns: i64,
+    }
+    impl HeatmapAxisX {
+        pub fn builder() -> builder::HeatmapAxisX {
+            Default::default()
+        }
+    }
+    ///`HeatmapAxisY`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "bounds",
+    ///    "of",
+    ///    "overflow",
+    ///    "type"
+    ///  ],
+    ///  "properties": {
+    ///    "bounds": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "integer",
+    ///        "format": "int64"
+    ///      }
+    ///    },
+    ///    "of": {
+    ///      "type": "string"
+    ///    },
+    ///    "overflow": {
+    ///      "type": "boolean"
+    ///    },
+    ///    "type": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct HeatmapAxisY {
+        pub bounds: ::std::vec::Vec<i64>,
+        pub of: ::std::string::String,
+        pub overflow: bool,
+        #[serde(rename = "type")]
+        pub type_: ::std::string::String,
+    }
+    impl HeatmapAxisY {
+        pub fn builder() -> builder::HeatmapAxisY {
+            Default::default()
+        }
+    }
+    ///`HeatmapCell`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "count",
+    ///    "duration_bucket",
+    ///    "time_bucket_ns"
+    ///  ],
+    ///  "properties": {
+    ///    "count": {
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "duration_bucket": {
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "time_bucket_ns": {
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct HeatmapCell {
+        pub count: i64,
+        pub duration_bucket: i64,
+        pub time_bucket_ns: i64,
+    }
+    impl HeatmapCell {
+        pub fn builder() -> builder::HeatmapCell {
+            Default::default()
+        }
+    }
+    ///`HeatmapResult`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "cells",
+    ///    "value",
+    ///    "x",
+    ///    "y"
+    ///  ],
+    ///  "properties": {
+    ///    "cells": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/HeatmapCell"
+    ///      }
+    ///    },
+    ///    "value": {
+    ///      "type": "string"
+    ///    },
+    ///    "x": {
+    ///      "$ref": "#/components/schemas/HeatmapAxisX"
+    ///    },
+    ///    "y": {
+    ///      "$ref": "#/components/schemas/HeatmapAxisY"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct HeatmapResult {
+        pub cells: ::std::vec::Vec<HeatmapCell>,
+        pub value: ::std::string::String,
+        pub x: HeatmapAxisX,
+        pub y: HeatmapAxisY,
+    }
+    impl HeatmapResult {
+        pub fn builder() -> builder::HeatmapResult {
+            Default::default()
+        }
+    }
     ///Response containing a list of API keys.
     ///
     /// <details><summary>JSON schema</summary>
@@ -1368,6 +1535,9 @@ pub mod types {
     ///        "$ref": "#/components/schemas/ResultColumn"
     ///      }
     ///    },
+    ///    "heatmap": {
+    ///      "$ref": "#/components/schemas/HeatmapResult"
+    ///    },
     ///    "result": {
     ///      "description": "The result envelope: `rows`, `series`, or `table`.",
     ///      "type": "string"
@@ -1403,6 +1573,8 @@ pub mod types {
     pub struct QueryIrResponse {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub columns: ::std::vec::Vec<ResultColumn>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub heatmap: ::std::option::Option<HeatmapResult>,
         ///The result envelope: `rows`, `series`, or `table`.
         pub result: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -3208,6 +3380,293 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct HeatmapAxisX {
+            align: ::std::result::Result<::std::string::String, ::std::string::String>,
+            step_ns: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for HeatmapAxisX {
+            fn default() -> Self {
+                Self {
+                    align: Err("no value supplied for align".to_string()),
+                    step_ns: Err("no value supplied for step_ns".to_string()),
+                }
+            }
+        }
+        impl HeatmapAxisX {
+            pub fn align<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.align = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for align: {e}"));
+                self
+            }
+            pub fn step_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.step_ns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for step_ns: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<HeatmapAxisX> for super::HeatmapAxisX {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: HeatmapAxisX,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    align: value.align?,
+                    step_ns: value.step_ns?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::HeatmapAxisX> for HeatmapAxisX {
+            fn from(value: super::HeatmapAxisX) -> Self {
+                Self {
+                    align: Ok(value.align),
+                    step_ns: Ok(value.step_ns),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct HeatmapAxisY {
+            bounds: ::std::result::Result<::std::vec::Vec<i64>, ::std::string::String>,
+            of: ::std::result::Result<::std::string::String, ::std::string::String>,
+            overflow: ::std::result::Result<bool, ::std::string::String>,
+            type_: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for HeatmapAxisY {
+            fn default() -> Self {
+                Self {
+                    bounds: Err("no value supplied for bounds".to_string()),
+                    of: Err("no value supplied for of".to_string()),
+                    overflow: Err("no value supplied for overflow".to_string()),
+                    type_: Err("no value supplied for type_".to_string()),
+                }
+            }
+        }
+        impl HeatmapAxisY {
+            pub fn bounds<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.bounds = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for bounds: {e}"));
+                self
+            }
+            pub fn of<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.of = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for of: {e}"));
+                self
+            }
+            pub fn overflow<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.overflow = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for overflow: {e}"));
+                self
+            }
+            pub fn type_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.type_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for type_: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<HeatmapAxisY> for super::HeatmapAxisY {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: HeatmapAxisY,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    bounds: value.bounds?,
+                    of: value.of?,
+                    overflow: value.overflow?,
+                    type_: value.type_?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::HeatmapAxisY> for HeatmapAxisY {
+            fn from(value: super::HeatmapAxisY) -> Self {
+                Self {
+                    bounds: Ok(value.bounds),
+                    of: Ok(value.of),
+                    overflow: Ok(value.overflow),
+                    type_: Ok(value.type_),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct HeatmapCell {
+            count: ::std::result::Result<i64, ::std::string::String>,
+            duration_bucket: ::std::result::Result<i64, ::std::string::String>,
+            time_bucket_ns: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for HeatmapCell {
+            fn default() -> Self {
+                Self {
+                    count: Err("no value supplied for count".to_string()),
+                    duration_bucket: Err("no value supplied for duration_bucket".to_string()),
+                    time_bucket_ns: Err("no value supplied for time_bucket_ns".to_string()),
+                }
+            }
+        }
+        impl HeatmapCell {
+            pub fn count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for count: {e}"));
+                self
+            }
+            pub fn duration_bucket<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.duration_bucket = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for duration_bucket: {e}")
+                });
+                self
+            }
+            pub fn time_bucket_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.time_bucket_ns = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for time_bucket_ns: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<HeatmapCell> for super::HeatmapCell {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: HeatmapCell,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    count: value.count?,
+                    duration_bucket: value.duration_bucket?,
+                    time_bucket_ns: value.time_bucket_ns?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::HeatmapCell> for HeatmapCell {
+            fn from(value: super::HeatmapCell) -> Self {
+                Self {
+                    count: Ok(value.count),
+                    duration_bucket: Ok(value.duration_bucket),
+                    time_bucket_ns: Ok(value.time_bucket_ns),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct HeatmapResult {
+            cells:
+                ::std::result::Result<::std::vec::Vec<super::HeatmapCell>, ::std::string::String>,
+            value: ::std::result::Result<::std::string::String, ::std::string::String>,
+            x: ::std::result::Result<super::HeatmapAxisX, ::std::string::String>,
+            y: ::std::result::Result<super::HeatmapAxisY, ::std::string::String>,
+        }
+        impl ::std::default::Default for HeatmapResult {
+            fn default() -> Self {
+                Self {
+                    cells: Err("no value supplied for cells".to_string()),
+                    value: Err("no value supplied for value".to_string()),
+                    x: Err("no value supplied for x".to_string()),
+                    y: Err("no value supplied for y".to_string()),
+                }
+            }
+        }
+        impl HeatmapResult {
+            pub fn cells<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::HeatmapCell>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cells = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cells: {e}"));
+                self
+            }
+            pub fn value<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.value = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for value: {e}"));
+                self
+            }
+            pub fn x<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::HeatmapAxisX>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.x = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for x: {e}"));
+                self
+            }
+            pub fn y<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::HeatmapAxisY>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.y = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for y: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<HeatmapResult> for super::HeatmapResult {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: HeatmapResult,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    cells: value.cells?,
+                    value: value.value?,
+                    x: value.x?,
+                    y: value.y?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::HeatmapResult> for HeatmapResult {
+            fn from(value: super::HeatmapResult) -> Self {
+                Self {
+                    cells: Ok(value.cells),
+                    value: Ok(value.value),
+                    x: Ok(value.x),
+                    y: Ok(value.y),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ListApiKeysResponse {
             api_keys: ::std::result::Result<
                 ::std::vec::Vec<super::ApiKeyResponse>,
@@ -4185,6 +4644,10 @@ pub mod types {
         pub struct QueryIrResponse {
             columns:
                 ::std::result::Result<::std::vec::Vec<super::ResultColumn>, ::std::string::String>,
+            heatmap: ::std::result::Result<
+                ::std::option::Option<super::HeatmapResult>,
+                ::std::string::String,
+            >,
             result: ::std::result::Result<::std::string::String, ::std::string::String>,
             rows: ::std::result::Result<
                 ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
@@ -4199,6 +4662,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     columns: Ok(Default::default()),
+                    heatmap: Ok(Default::default()),
                     result: Err("no value supplied for result".to_string()),
                     rows: Ok(Default::default()),
                     series: Ok(Default::default()),
@@ -4216,6 +4680,16 @@ pub mod types {
                 self.columns = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for columns: {e}"));
+                self
+            }
+            pub fn heatmap<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::HeatmapResult>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.heatmap = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for heatmap: {e}"));
                 self
             }
             pub fn result<T>(mut self, value: T) -> Self
@@ -4276,6 +4750,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     columns: value.columns?,
+                    heatmap: value.heatmap?,
                     result: value.result?,
                     rows: value.rows?,
                     series: value.series?,
@@ -4288,6 +4763,7 @@ pub mod types {
             fn from(value: super::QueryIrResponse) -> Self {
                 Self {
                     columns: Ok(value.columns),
+                    heatmap: Ok(value.heatmap),
                     result: Ok(value.result),
                     rows: Ok(value.rows),
                     series: Ok(value.series),

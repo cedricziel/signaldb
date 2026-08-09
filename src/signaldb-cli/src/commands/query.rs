@@ -356,6 +356,35 @@ mod tests {
         assert_eq!(response.window.end_ns, 3_600_000_000_000);
     }
 
+    #[tokio::test]
+    async fn ir_query_accepts_v2_heatmap_without_a_dedicated_command() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/query")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "irVersion": 2, "result": "heatmap"
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":"heatmap","window":{"start_ns":0,"end_ns":60},"heatmap":{"x":{"step_ns":60,"align":"epoch"},"y":{"of":"duration","type":"duration_ns","bounds":[1],"overflow":true},"value":"count","cells":[{"time_bucket_ns":0,"duration_bucket":0,"count":2}]}}"#)
+            .create_async().await;
+        let request: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 2, "from": "traces", "range": { "from": "0", "to": "60" },
+            "result": "heatmap", "pipeline": [{ "heatmap": {
+                "x": { "step": "1m", "align": "epoch" },
+                "y": { "of": "duration", "bounds": ["1ms"], "overflow": true },
+                "value": { "fn": "count", "as": "count" }
+            }}]
+        }))
+        .unwrap();
+        let response = submit_ir(&server.url(), None, None, None, request)
+            .await
+            .unwrap();
+        mock.assert_async().await;
+        assert_eq!(response.result, "heatmap");
+        assert_eq!(response.heatmap.expect("heatmap envelope").value, "count");
+    }
+
     fn sql_args(flight_url: &str, query: Option<&str>) -> QueryArgs {
         QueryArgs {
             query: query.map(str::to_string),

@@ -40,10 +40,10 @@ body. The response is the declared result envelope (see
 
 ```jsonc
 {
-  "irVersion": 1, // versioned; the server accepts a bounded range
+  "irVersion": 1, // versioned; use 2 for heatmap
   "from": "logs", // a registered source: "logs" or "traces"
   "range": { "from": "now-1h", "to": "now" },
-  "result": "series", // declared envelope: "rows" | "series" | "table"
+  "result": "series", // v1: rows | series | table; v2 adds heatmap
   "fields": ["service.name"], // optional curated projection (rows/table)
   "pipeline": [/* ordered transform stages */],
 }
@@ -84,6 +84,7 @@ single-key object naming the stage:
 | `topk` / `bottomk` | `{ n, of }`                      | rank by a numeric column                         |
 | `order`            | `[{ of, dir }]`                  | sort                                             |
 | `limit`            | integer                          | bound the row count                              |
+| `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate    |
 
 An unknown stage, or a stage illegal for the source (e.g. `extract` on
 `traces`), is rejected by name during validation — never silently dropped.
@@ -241,6 +242,37 @@ An attribute container is typed `map<string,string>` and arrives as a JSON
 object, so you index a key rather than parse a rendering. A `null` cell means
 the row carried no such container; `{}` means it carried one holding no
 attributes.
+
+### Heatmap envelope (IR v2)
+
+Use the terminal `heatmap` stage to count spans by epoch-aligned time and a
+numeric or duration field. It is currently available for `traces`; `duration`
+accepts duration literals for its bounds.
+
+```json
+{
+  "irVersion": 2,
+  "from": "traces",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "heatmap",
+  "pipeline": [{
+    "heatmap": {
+      "x": { "step": "1m", "align": "epoch" },
+      "y": { "of": "duration", "bounds": ["1ms", "5ms", "25ms", "100ms", "1s"], "overflow": true },
+      "value": { "fn": "count", "as": "count" }
+    }
+  }]
+}
+```
+
+The response has `result: "heatmap"` and a `heatmap` object containing `x`
+(`step_ns`, `align`), `y` (`of`, `type`, integer-nanosecond `bounds`,
+`overflow`), and sparse `{time_bucket_ns, duration_bucket, count}` cells.
+Bounds are lower-inclusive and upper-exclusive. Values below the first bound
+use bucket zero; values at or above the final bound use the final overflow
+bucket. Missing cells inside the declared window are zero. The server accepts
+at most 32 y-axis bounds and rejects non-positive steps or non-increasing
+bounds before execution.
 
 ## Worked example — error-log volume by service (logs → series)
 

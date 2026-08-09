@@ -30,8 +30,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use common::query_ir::{
-    Aggregate, ComparisonOp, Document, Extract, FieldResolver, Leaf, Literal, Parser, Predicate,
-    Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType, coerce, validate,
+    Aggregate, ComparisonOp, Document, Extract, FieldResolver, Heatmap, Leaf, Literal, Parser,
+    Predicate, Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType,
+    coerce, validate,
 };
 use datafusion::arrow::array::{
     Array, LargeStringArray, StringArray, StringBuilder, StringViewArray,
@@ -236,7 +237,16 @@ impl SchemaResolver {
 impl FieldResolver for SchemaResolver {
     fn resolve(&self, _source: &str, field: &str) -> Option<Resolved> {
         match self.column_for(field) {
-            Some((name, value_type)) => Some(Resolved::Column { name, value_type }),
+            Some((name, value_type)) => Some(Resolved::Column {
+                name,
+                // Persisted trace durations are Int64 nanoseconds, but their
+                // logical IR name carries duration literal coercion semantics.
+                value_type: if matches!(field, "duration" | "duration_nano") {
+                    ValueType::DurationNs
+                } else {
+                    value_type
+                },
+            }),
             // An unpromoted attribute: a String extraction from the container.
             None => Some(Resolved::JsonPath {
                 container: self.container.clone(),
@@ -355,6 +365,7 @@ impl IrService {
 
         // Resolve the time window once against the injected clock.
         let window = resolve_window(doc, now_ns)?;
+        validate_heatmap_window(doc, &window)?;
 
         let mut lowering = Lowering {
             source: &source,
@@ -379,6 +390,29 @@ impl IrService {
         df = lowering.apply_projection(df, doc)?;
         Ok(Some((df, window)))
     }
+}
+
+fn validate_heatmap_window(doc: &Document, window: &ResolvedWindow) -> Result<(), QuerierError> {
+    const MAX_TIME_BUCKETS: i64 = 512;
+    for stage in &doc.pipeline {
+        let Stage::Heatmap(heatmap) = stage else {
+            continue;
+        };
+        let step = common::query_ir::parse_duration_ns(&heatmap.x.step)
+            .ok_or_else(|| QuerierError::InvalidInput("invalid heatmap step".into()))?;
+        if window.start_ns >= window.end_ns || step <= 0 {
+            return Err(QuerierError::InvalidInput(
+                "heatmap requires a positive step and non-empty range".into(),
+            ));
+        }
+        let buckets = (window.end_ns - window.start_ns).saturating_add(step - 1) / step;
+        if buckets > MAX_TIME_BUCKETS {
+            return Err(QuerierError::InvalidInput(format!(
+                "heatmap has {buckets} time buckets; maximum is {MAX_TIME_BUCKETS}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the document's range to an absolute window.
@@ -495,6 +529,7 @@ impl Lowering<'_> {
                 .limit(0, Some(*n as usize))
                 .map_err(QuerierError::QueryFailed),
             Stage::Extract(extract) => self.lower_extract(df, extract),
+            Stage::Heatmap(heatmap) => self.lower_heatmap(df, heatmap),
         }
     }
 
@@ -601,6 +636,69 @@ impl Lowering<'_> {
             return df.sort(sort).map_err(QuerierError::QueryFailed);
         }
         Ok(df)
+    }
+
+    fn lower_heatmap(
+        &mut self,
+        df: DataFrame,
+        heatmap: &Heatmap,
+    ) -> Result<DataFrame, QuerierError> {
+        let step_ns = common::query_ir::parse_duration_ns(&heatmap.x.step).ok_or_else(|| {
+            QuerierError::InvalidInput(format!("invalid heatmap step '{}'", heatmap.x.step))
+        })?;
+        let y_type = self
+            .resolver
+            .resolve("", &heatmap.y.of)
+            .ok_or_else(|| {
+                QuerierError::InvalidInput(format!("unknown heatmap field '{}'", heatmap.y.of))
+            })?
+            .value_type()
+            .clone();
+        let bounds = heatmap
+            .y
+            .bounds
+            .iter()
+            .map(|bound| {
+                common::query_ir::coerce(bound, &y_type)
+                    .map_err(|e| QuerierError::InvalidInput(e.to_string()))
+                    .and_then(|value| match value {
+                        Literal::Duration(ns) | Literal::Int64(ns) => Ok(ns),
+                        _ => Err(QuerierError::InvalidInput(
+                            "heatmap bounds must be integer or duration values".into(),
+                        )),
+                    })
+            })
+            .collect::<Result<Vec<_>, QuerierError>>()?;
+        // Integer division defines epoch-aligned buckets without timezone or calendar semantics.
+        let time_bucket = (col(self.source.time_col) / lit(step_ns)) * lit(step_ns);
+        let mut duration_bucket = lit(bounds.len() as i64);
+        for (index, bound) in bounds.iter().enumerate().rev() {
+            duration_bucket = datafusion::logical_expr::when(
+                self.value_expr(&heatmap.y.of)?.lt(lit(*bound)),
+                lit(index as i64),
+            )
+            .otherwise(duration_bucket)
+            .map_err(QuerierError::QueryFailed)?;
+        }
+        self.aggregated = true;
+        self.col_of = HashMap::from([
+            ("time_bucket_ns".into(), "time_bucket_ns".into()),
+            ("duration_bucket".into(), "duration_bucket".into()),
+            ("count".into(), "count".into()),
+        ]);
+        df.aggregate(
+            vec![
+                time_bucket.alias("time_bucket_ns"),
+                duration_bucket.alias("duration_bucket"),
+            ],
+            vec![count(lit(1i64)).alias("count")],
+        )
+        .map_err(QuerierError::QueryFailed)?
+        .sort(vec![
+            col("time_bucket_ns").sort(true, false),
+            col("duration_bucket").sort(true, false),
+        ])
+        .map_err(QuerierError::QueryFailed)
     }
 
     fn agg_expr(&self, a: &common::query_ir::Agg) -> Result<Expr, QuerierError> {
@@ -864,7 +962,9 @@ impl Lowering<'_> {
 
     fn apply_projection(&self, df: DataFrame, doc: &Document) -> Result<DataFrame, QuerierError> {
         // Series results are already shaped by the step aggregate.
-        if doc.result == ResultEnvelope::Series || self.series_shaped {
+        if matches!(doc.result, ResultEnvelope::Series | ResultEnvelope::Heatmap)
+            || self.series_shaped
+        {
             return Ok(df);
         }
         let projection: Vec<Expr> = match &doc.fields {
@@ -1828,6 +1928,70 @@ mod tests {
             .unwrap()
             .value(0);
         assert_eq!(dur, 900);
+    }
+
+    #[tokio::test]
+    async fn trace_heatmap_uses_epoch_buckets_and_duration_boundary_overflow_bins() {
+        let svc = IrService::new(traces_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 2, "from": "traces", "range": { "from": 0, "to": 40 },
+            "result": "heatmap", "pipeline": [{ "heatmap": {
+                "x": { "step": "10ns", "align": "epoch" },
+                "y": { "of": "duration", "bounds": [100, 500, 900], "overflow": true },
+                "value": { "fn": "count", "as": "count" }
+            }}]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains("start_time_unix_nano"),
+            "precise range predicate is retained: {plan}"
+        );
+        let batches = df.collect().await.unwrap();
+        let mut cells = Vec::new();
+        for batch in batches {
+            let time = batch
+                .column_by_name("time_bucket_ns")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let bucket = batch
+                .column_by_name("duration_bucket")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let count = batch
+                .column_by_name("count")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                cells.push((time.value(row), bucket.value(row), count.value(row)));
+            }
+        }
+        assert_eq!(cells, vec![(10, 1, 1), (20, 3, 1), (30, 2, 1)]);
+    }
+
+    #[tokio::test]
+    async fn trace_heatmap_keeps_partition_pruning_predicates() {
+        let svc = IrService::new(traces_partitioned_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 2, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "heatmap", "pipeline": [{ "heatmap": {
+                "x": { "step": "1us", "align": "epoch" },
+                "y": { "of": "duration", "bounds": ["1ns"], "overflow": true },
+                "value": { "fn": "count", "as": "count" }
+            }}]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains(".timestamp >=") && plan.contains(".timestamp <="),
+            "partition bounds missing: {plan}"
+        );
     }
 
     /// A logs table whose `body` holds JSON documents, for `extract`.

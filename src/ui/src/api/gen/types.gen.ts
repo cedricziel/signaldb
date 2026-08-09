@@ -239,6 +239,35 @@ export type DatasetResponse = {
 };
 
 /**
+ * Complete axes plus one non-zero heatmap cell. Missing declared coordinates
+ * represent zero, making the Flight payload sparse without hiding the window.
+ */
+export type HeatmapAxisX = {
+    align: string;
+    step_ns: number;
+};
+
+export type HeatmapAxisY = {
+    bounds: Array<number>;
+    of: string;
+    overflow: boolean;
+    type: string;
+};
+
+export type HeatmapCell = {
+    count: number;
+    duration_bucket: number;
+    time_bucket_ns: number;
+};
+
+export type HeatmapResult = {
+    cells: Array<HeatmapCell>;
+    value: string;
+    x: HeatmapAxisX;
+    y: HeatmapAxisY;
+};
+
+/**
  * Response containing a list of API keys.
  */
 export type ListApiKeysResponse = {
@@ -393,6 +422,7 @@ export type QueryIrRequest = {
  */
 export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
+    heatmap?: HeatmapResult;
     /**
      * The result envelope: `rows`, `series`, or `table`.
      */

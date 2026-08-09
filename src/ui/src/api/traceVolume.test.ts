@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   STATUS_COLORS,
   STATUS_ORDER,
-  buildTraceLatencyDoc,
+  LATENCY_BUCKET_BOUNDS_NS,
+  buildTraceLatencyHeatmapDoc,
   buildTraceVolumeDoc,
-  latencySeriesFromIrResponse,
   normalizeStatus,
   seriesFromIrResponse,
 } from "./traceVolume";
@@ -39,39 +39,27 @@ describe("buildTraceVolumeDoc", () => {
   });
 });
 
-describe("buildTraceLatencyDoc", () => {
-  it("asks for a separately stepped average duration grouped by span status", () => {
-    const doc = buildTraceLatencyDoc(
+describe("buildTraceLatencyHeatmapDoc", () => {
+  it("builds a v2 terminal count heatmap with duration bounds", () => {
+    const doc = buildTraceLatencyHeatmapDoc(
       { fromMs: 1_000_000, toMs: 4_600_000 },
       "1h",
       [{ field: "service.name", value: "signaldb-ui" }],
     );
     expect(doc).toEqual({
-      irVersion: 1,
+      irVersion: 2,
       from: "traces",
       range: { from: "1000000000000", to: "4600000000000" },
-      result: "series",
+      result: "heatmap",
       pipeline: [
-        {
-          where: {
-            field: "service.name",
-            op: "eq",
-            value: "signaldb-ui",
-          },
-        },
-        {
-          aggregate: {
-            by: ["status.code"],
-            aggs: [{ fn: "avg", of: "duration.nanos", as: "latency" }],
-            step: "1h",
-          },
-        },
+        { where: { field: "service.name", op: "eq", value: "signaldb-ui" } },
+        { heatmap: { x: { step: "1h", align: "epoch" }, y: { of: "duration", bounds: LATENCY_BUCKET_BOUNDS_NS.map(String), overflow: true }, value: { fn: "count", as: "count" } } },
       ],
     });
   });
 
   it("carries no limit stage", () => {
-    const doc = buildTraceLatencyDoc({ fromMs: 0, toMs: 1000 }, "1m");
+    const doc = buildTraceLatencyHeatmapDoc({ fromMs: 0, toMs: 1000 }, "1m");
     expect(JSON.stringify(doc)).not.toContain("limit");
   });
 });
@@ -166,25 +154,6 @@ describe("seriesFromIrResponse", () => {
       ],
     });
     expect(series).toEqual([{ key: "error", points: [[1, 4]] }]);
-  });
-});
-
-describe("latencySeriesFromIrResponse", () => {
-  it("keys by status and converts average duration from nanoseconds to milliseconds", () => {
-    expect(
-      latencySeriesFromIrResponse({
-        result: "series",
-        window: { start_ns: 0, end_ns: 1 },
-        series: [
-          {
-            labels: { status_code: "Error" },
-            points: [[1_786_089_600_000_000_000, 12_500_000]],
-          },
-        ],
-      }),
-    ).toEqual([
-      { key: "error", points: [[1_786_089_600_000, 12.5]] },
-    ]);
   });
 });
 

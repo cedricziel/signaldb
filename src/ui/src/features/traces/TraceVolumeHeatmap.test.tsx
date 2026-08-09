@@ -1,49 +1,36 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { VolumeSeries } from "../explore/SignalHistogram";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
 
 describe("TraceVolumeHeatmap", () => {
-  const props: {
-    series: VolumeSeries[];
-    latency: VolumeSeries[];
-    order: string[];
-    colors: Record<string, string>;
-    rangeMs: { fromMs: number; toMs: number };
-    stepMs: number;
-    label: string;
-  } = {
-    series: [
-      { key: "ok", points: [[0, 2], [60_000, 1]] },
-      { key: "error", points: [[0, 1]] },
-    ],
-    latency: [
-      { key: "ok", points: [[0, 10], [60_000, 0]] },
-      { key: "error", points: [[0, 100]] },
-    ],
-    order: ["ok", "unset", "error"],
-    colors: { ok: "green", unset: "gray", error: "red" },
-    rangeMs: { fromMs: 0, toMs: 60_000 },
-    stepMs: 60_000,
+  const props = {
+    heatmap: {
+      window: { start_ns: 0, end_ns: 120_000_000_000 },
+      x: { step_ns: 60_000_000_000, align: "epoch" },
+      y: { of: "duration", type: "duration_ns", bounds: [10_000_000, 100_000_000], overflow: true },
+      value: "count",
+      cells: [
+        { time_bucket_ns: 0, duration_bucket: 0, count: 2 },
+        { time_bucket_ns: 0, duration_bucket: 1, count: 1 },
+        { time_bucket_ns: 60_000_000_000, duration_bucket: 2, count: 4 },
+      ],
+    },
     label: "Span latency",
   };
 
-  it("encodes average latency in the cell label and intensity", () => {
+  it("uses latency buckets as rows and counts as intensity", () => {
     render(<TraceVolumeHeatmap {...props} />);
 
-    const error = screen.getByLabelText(/error,.*average latency 100 ms/i);
-    expect(error).toHaveAttribute("data-intensity", "1.000");
-    expect(screen.getByText(/intensity represents average latency/i)).toBeInTheDocument();
+    const cell = screen.getByLabelText(/0.*10 ms.*2 spans/i);
+    expect(cell).toHaveAttribute("data-intensity", "0.500");
+    expect(screen.getByText(/intensity represents span count/i)).toBeInTheDocument();
   });
 
-  it("keeps zero-count buckets empty even when their average is zero", () => {
+  it("renders sparse cells as empty", () => {
     render(<TraceVolumeHeatmap {...props} />);
 
-    const missing = screen.getByLabelText(/error,.*no data/i);
+    const missing = screen.getByLabelText(/10 ms.*100 ms.*no spans/i);
     expect(missing).toHaveAttribute("data-count", "0");
     expect(missing).toHaveAttribute("fill-opacity", "0");
-    const zeroLatency = screen.getByLabelText(/ok,.*average latency 0 µs/i);
-    expect(zeroLatency).toHaveAttribute("data-count", "1");
-    expect(zeroLatency).toHaveAttribute("fill-opacity", "0.12");
   });
 });
