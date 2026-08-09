@@ -15,7 +15,7 @@
 //! letting an untyped literal reach the engine. See the module's
 //! [`FieldResolver::resolve`] contract.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::value::ValueType;
 
@@ -62,6 +62,13 @@ pub trait FieldResolver: Send + Sync {
     fn is_known(&self, source: &str, field: &str) -> bool {
         self.resolve(source, field).is_some()
     }
+
+    /// Whether a name belongs to the physical realization of a source but is
+    /// not necessarily a logical field. Validation uses this to reject clients
+    /// addressing storage aliases without relying on name spelling.
+    fn is_physical_name(&self, _source: &str, _field: &str) -> bool {
+        false
+    }
 }
 
 /// A per-attribute entry in the [`InMemoryResolver`].
@@ -88,6 +95,7 @@ enum Entry {
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryResolver {
     entries: HashMap<(String, String), Entry>,
+    physical_names: HashMap<String, HashSet<String>>,
 }
 
 impl InMemoryResolver {
@@ -104,6 +112,12 @@ impl InMemoryResolver {
         physical: &str,
         value_type: ValueType,
     ) -> Self {
+        if logical != physical {
+            self.physical_names
+                .entry(source.to_string())
+                .or_default()
+                .insert(physical.to_string());
+        }
         self.entries.insert(
             (source.to_string(), logical.to_string()),
             Entry::Column {
@@ -125,6 +139,10 @@ impl InMemoryResolver {
         value_type: ValueType,
         promoted: bool,
     ) -> Self {
+        self.physical_names
+            .entry(source.to_string())
+            .or_default()
+            .insert(container.to_string());
         self.entries.insert(
             (source.to_string(), logical.to_string()),
             Entry::Attribute {
@@ -133,6 +151,15 @@ impl InMemoryResolver {
                 promoted,
             },
         );
+        self
+    }
+
+    /// Declare an implementation-only storage name with no logical field.
+    pub fn with_physical_name(mut self, source: &str, name: &str) -> Self {
+        self.physical_names
+            .entry(source.to_string())
+            .or_default()
+            .insert(name.to_string());
         self
     }
 }
@@ -169,6 +196,12 @@ impl FieldResolver for InMemoryResolver {
                 }
             }
         }
+    }
+
+    fn is_physical_name(&self, source: &str, field: &str) -> bool {
+        self.physical_names
+            .get(source)
+            .is_some_and(|names| names.contains(field))
     }
 }
 

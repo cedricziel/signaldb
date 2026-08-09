@@ -24,25 +24,6 @@ use super::stage::{
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 
-/// Physical/storage column names and prefixes that the logical namespace guard
-/// rejects — the attribute blobs, map containers, and internal columns a client
-/// must never address directly.
-const STORAGE_DENYLIST: &[&str] = &[
-    "attributes_json",
-    "resource_json",
-    "scope_json",
-    "data_json",
-    "samples_json",
-    "stacktraces_json",
-    "span_attributes",
-    "resource_attributes",
-    "log_attributes",
-    "scope_attributes",
-    "attributes",
-    "events",
-    "attr_tokens",
-];
-
 /// Errors raised while validating an IR document.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IrError {
@@ -216,7 +197,7 @@ impl InferCtx<'_> {
                 operand: name.to_string(),
             });
         }
-        guard_logical_name(name)?;
+        self.guard_logical_name(name)?;
         match &self.relation {
             RelationType::Series(_) | RelationType::Heatmap(_) => Err(IrError::UnknownReference {
                 name: name.to_string(),
@@ -329,7 +310,7 @@ impl InferCtx<'_> {
         }
         let mut new_cols = Vec::new();
         for f in &extract.as_fields {
-            guard_logical_name(&f.name)?;
+            self.guard_logical_name(&f.name)?;
             // No silent shadowing: collide with a registry field, an earlier
             // derived/agg name, or an existing column → rejected.
             let collides = self.names.iter().any(|n| n == &f.name)
@@ -491,7 +472,7 @@ impl InferCtx<'_> {
     }
 
     fn check_agg(&self, a: &Agg, group_cols: &[Column]) -> Result<Column, IrError> {
-        guard_logical_name(&a.as_name)?;
+        self.guard_logical_name(&a.as_name)?;
         // Uniqueness: against earlier introduced names, group fields, and any
         // source column.
         let collides = self.names.iter().any(|n| n == &a.as_name)
@@ -591,6 +572,17 @@ impl InferCtx<'_> {
         }
         Ok(())
     }
+
+    fn guard_logical_name(&self, name: &str) -> Result<(), IrError> {
+        if self.resolver.is_physical_name(self.source, name)
+            && !self.resolver.is_known(self.source, name)
+        {
+            return Err(IrError::PhysicalAddressing {
+                field: name.to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 fn coerce_for(field: &str, value: &serde_json::Value, target: &ValueType) -> Result<(), IrError> {
@@ -614,20 +606,6 @@ fn is_numeric(t: &ValueType) -> bool {
         t,
         ValueType::Int64 | ValueType::Float64 | ValueType::DurationNs | ValueType::TimestampNs
     )
-}
-
-/// The logical-namespace guard: reject a name that addresses a physical/storage
-/// column directly.
-fn guard_logical_name(name: &str) -> Result<(), IrError> {
-    let reject =
-        STORAGE_DENYLIST.contains(&name) || name.starts_with("label_") || name.ends_with("_json");
-    if reject {
-        Err(IrError::PhysicalAddressing {
-            field: name.to_string(),
-        })
-    } else {
-        Ok(())
-    }
 }
 
 fn validate_envelope(declared: ResultEnvelope, terminal: &RelationType) -> Result<(), IrError> {
@@ -683,6 +661,8 @@ mod tests {
                 ValueType::Int64,
             )
             .with_column("logs", "service.name", "service_name", ValueType::String)
+            .with_physical_name("logs", "attributes_json")
+            .with_physical_name("logs", "attr_tokens")
             .with_column("logs", "body", "body", ValueType::String)
             .with_attribute(
                 "logs",
@@ -1001,6 +981,24 @@ mod tests {
             matches!(err, IrError::PhysicalAddressing { .. }),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn physical_alias_is_rejected_but_its_logical_field_is_allowed() {
+        let physical = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [ { "where": { "field": "service_name", "op": "eq", "value": "api" } } ]
+        }))
+        .unwrap_err();
+        assert!(matches!(physical, IrError::PhysicalAddressing { .. }));
+
+        validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [ { "where": { "field": "service.name", "op": "eq", "value": "api" } } ]
+        }))
+        .unwrap();
     }
 
     // Task 2.2 — structured operands.
