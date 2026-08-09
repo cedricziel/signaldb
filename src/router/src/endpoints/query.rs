@@ -17,7 +17,7 @@ use tracing::Instrument;
 
 use arrow_flight::Ticket;
 use axum::{Router, extract::State, http::StatusCode, routing::post};
-use common::auth::TenantContextExtractor;
+use common::auth::{TenantContext, TenantContextExtractor};
 use common::flight::transport::ServiceCapability;
 use common::query_ir::{Literal, ValueType, coerce};
 use datafusion::arrow::array::{
@@ -60,7 +60,7 @@ pub struct QueryIrRequest {
     /// IR document version (the server accepts a bounded range).
     #[serde(rename = "irVersion")]
     pub ir_version: i64,
-    /// The registered signal source: `logs` or `traces`.
+    /// The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
     #[schema(example = "logs")]
     pub from: String,
     pub range: QueryRange,
@@ -101,8 +101,7 @@ pub struct ResultSeries {
     pub points: Vec<[serde_json::Value; 2]>,
 }
 
-/// Complete axes plus one non-zero heatmap cell. Missing declared coordinates
-/// represent zero, making the Flight payload sparse without hiding the window.
+/// Epoch-aligned time axis with a fixed nanosecond step.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct HeatmapAxisX {
     pub step_ns: i64,
@@ -122,6 +121,8 @@ pub struct HeatmapCell {
     pub duration_bucket: i64,
     pub count: i64,
 }
+/// Complete axes plus one non-zero heatmap cell. Missing declared coordinates
+/// represent zero, making the Flight payload sparse without hiding the window.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct HeatmapResult {
     pub x: HeatmapAxisX,
@@ -157,10 +158,10 @@ impl HeatmapResult {
 
 /// The single canonical response contract. `result` discriminates which fields
 /// are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
-/// `series` + `step_ns`.
+/// `series` + `step_ns`; `heatmap` fills `heatmap`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct QueryIrResponse {
-    /// The result envelope: `rows`, `series`, or `table`.
+    /// The result envelope: `rows`, `series`, `table`, or `heatmap`.
     pub result: String,
     /// The resolved absolute window the query ran over.
     pub window: ResolvedWindow,
@@ -204,6 +205,10 @@ pub async fn query_ir<S: RouterState>(
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
     let ctx = &tenant_ctx.0;
 
+    // Query IR covers several signal tables, so its authorization must be
+    // selected from the source before the ticket can reach a querier.
+    source_read_scope(ctx, &req.from)?;
+
     // Stamp the server clock once, at the ticket boundary, so relative anchors
     // resolve to a single absolute window every stage of the plan sees.
     let now = now_ns();
@@ -223,6 +228,26 @@ pub async fn query_ir<S: RouterState>(
     let batches = execute_ticket(&state, ticket).await?;
     let response = build_envelope(&req.result, window, &batches, &document)?;
     Ok(axum::Json(response))
+}
+
+/// Require the read scope associated with a registered Query IR source.
+fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
+    let signal = match source {
+        "logs" | "traces" | "profiles" => source,
+        _ => {
+            return Err(ApiError::bad_request(format!(
+                "unknown query source '{source}'"
+            )));
+        }
+    };
+    if ctx.can_read(signal) {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            format!("missing {signal}:read scope"),
+        ))
+    }
 }
 
 /// Resolve a range to an absolute window using the server-stamped clock.
@@ -409,15 +434,30 @@ fn to_heatmap_cells(batches: &[RecordBatch]) -> Result<Vec<HeatmapCell>, ApiErro
         let time = batch
             .column_by_name("time_bucket_ns")
             .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
-            .ok_or_else(|| ApiError::bad_request("heatmap result is missing time_bucket_ns"))?;
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "heatmap result is missing time_bucket_ns",
+                )
+            })?;
         let duration = batch
             .column_by_name("duration_bucket")
             .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
-            .ok_or_else(|| ApiError::bad_request("heatmap result is missing duration_bucket"))?;
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "heatmap result is missing duration_bucket",
+                )
+            })?;
         let count = batch
             .column_by_name("count")
             .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
-            .ok_or_else(|| ApiError::bad_request("heatmap result is missing count"))?;
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "heatmap result is missing count",
+                )
+            })?;
         for row in 0..batch.num_rows() {
             cells.push(HeatmapCell {
                 time_bucket_ns: time.value(row),
@@ -733,11 +773,13 @@ mod row_encoding {
 
 #[cfg(test)]
 mod tests {
-    use super::{ResolvedWindow, build_envelope};
+    use super::{ResolvedWindow, build_envelope, source_read_scope};
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use common::auth::{TenantContext, TenantSource};
     use common::catalog::Catalog;
+    use common::catalog::MembershipRole;
     use common::config::{ApiKeyConfig, Configuration, DatasetConfig, TenantConfig};
     use tower::ServiceExt;
 
@@ -811,6 +853,27 @@ mod tests {
                 .header("x-tenant-id", "acme");
         }
         b.body(body).unwrap()
+    }
+
+    fn scoped_context(scopes: Vec<&str>) -> TenantContext {
+        TenantContext::new(
+            "acme".into(),
+            "default".into(),
+            "acme".into(),
+            "default".into(),
+            None,
+            TenantSource::Database,
+        )
+        .with_user("u1".into(), MembershipRole::Member, false, None)
+        .with_api_key_restrictions(Some(scopes.into_iter().map(str::to_string).collect()), None)
+    }
+
+    #[test]
+    fn ir_source_scopes_are_checked_before_dispatch() {
+        let profiles = scoped_context(vec!["profiles:read"]);
+        assert!(source_read_scope(&profiles, "profiles").is_ok());
+        assert!(source_read_scope(&profiles, "logs").is_err());
+        assert!(source_read_scope(&profiles, "traces").is_err());
     }
 
     // Task 6.1 — unauthenticated requests are rejected.

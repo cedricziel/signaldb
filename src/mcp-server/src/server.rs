@@ -836,5 +836,25 @@ mod tests {
             serde_json::from_value(params.query).unwrap();
         assert_eq!(request.ir_version, 2);
         assert_eq!(request.result, "heatmap");
+        assert!(
+            request.pipeline.len() == 1 && request.pipeline[0].contains_key("heatmap"),
+            "the heatmap stage must survive the conversion: {:?}",
+            request.pipeline
+        );
+    }
+
+    #[test]
+    fn generic_query_ir_tool_parameters_accept_a_profiles_document() {
+        let params: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": {
+                "irVersion": 1, "from": "profiles",
+                "range": { "from": "now-1h", "to": "now" },
+                "result": "rows", "pipeline": []
+            }
+        }))
+        .unwrap();
+        let request: signaldb_sdk::types::QueryIrRequest =
+            serde_json::from_value(params.query).unwrap();
+        assert_eq!(request.from, "profiles");
     }
 }

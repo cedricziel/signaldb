@@ -9,6 +9,7 @@ import type { TraceGroup } from "../../api/traceGroups";
 import * as traceGroupMembersApi from "../../api/traceGroupMembers";
 import type { TraceGroupMember } from "../../api/traceGroupMembers";
 import * as unresolvedGroupApi from "./unresolvedGroup";
+import * as traceVolumeApi from "../../api/traceVolume";
 
 // The group table is a server-side aggregate (see api/traceGroups) — mocked
 // at the module boundary rather than at the network layer, the way the rest
@@ -41,6 +42,7 @@ const fetchTraceGroupMembers = vi.mocked(
 const fetchWindowTotal = vi.mocked(unresolvedGroupApi.fetchWindowTotal);
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -793,9 +795,10 @@ describe("TracesView span-volume chart", () => {
     stubFetchRoutes(routes);
     renderView();
     await screen.findByRole("img", { name: /span volume/i });
-    expect(
-      screen.getByRole("button", { name: "Histogram" }),
-    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Histogram" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     const cols = screen.getAllByTestId("svol-col");
     expect(cols.length).toBeGreaterThan(1);
     // 2018 unset, then 41 unset + 7 error.
@@ -838,10 +841,26 @@ describe("TracesView span-volume chart", () => {
     stubFetchRoutes(routes);
     renderView();
     await screen.findByRole("img", { name: /span volume/i });
-    const heatmapFetch = stubFetchRoutes([{ match: "/api/v1/query", body: {
-        result: "heatmap", window: { start_ns: 0, end_ns: 60_000_000_000 },
-        heatmap: { x: { step_ns: 60_000_000_000, align: "epoch" }, y: { of: "duration", type: "duration_ns", bounds: [10_000_000], overflow: true }, value: "count", cells: [{ time_bucket_ns: 0, duration_bucket: 0, count: 2 }] },
-      } }]);
+    const heatmapFetch = stubFetchRoutes([
+      {
+        match: "/api/v1/query",
+        body: {
+          result: "heatmap",
+          window: { start_ns: 0, end_ns: 60_000_000_000 },
+          heatmap: {
+            x: { step_ns: 60_000_000_000, align: "epoch" },
+            y: {
+              of: "duration",
+              type: "duration_ns",
+              bounds: [10_000_000],
+              overflow: true,
+            },
+            value: "count",
+            cells: [{ time_bucket_ns: 0, duration_bucket: 0, count: 2 }],
+          },
+        },
+      },
+    ]);
 
     await userEvent.click(screen.getByRole("button", { name: "Heatmap" }));
 
@@ -859,23 +878,17 @@ describe("TracesView span-volume chart", () => {
     expect(
       within(heatmap).getByText(/intensity represents span count/i),
     ).toBeInTheDocument();
-    const requests = heatmapFetch.mock.calls.map(([input]) => input)
+    const requests = heatmapFetch.mock.calls
+      .map(([input]) => input)
       .filter(
         (input): input is Request =>
-          input instanceof Request &&
-          input.url.includes("/api/v1/query"),
+          input instanceof Request && input.url.includes("/api/v1/query"),
       );
     expect(requests).toHaveLength(1);
-    const [body] = await Promise.all(
-      heatmapFetch.mock.calls.map(([input]) => input)
-        .filter(
-          (input): input is Request =>
-            input instanceof Request &&
-            input.url.includes("/api/v1/query"),
-        )
-        .map((request) => request.clone().json()),
+    const body = await requests[0]!.clone().json();
+    expect(body).toEqual(
+      expect.objectContaining({ irVersion: 2, result: "heatmap" }),
     );
-    expect(body).toEqual(expect.objectContaining({ irVersion: 2, result: "heatmap" }));
     expect(body.pipeline.at(-1)).toEqual({
       heatmap: expect.objectContaining({
         x: { step: expect.any(String), align: "epoch" },
@@ -883,6 +896,22 @@ describe("TracesView span-volume chart", () => {
         value: { fn: "count", as: "count" },
       }),
     });
+  });
+
+  it("renders the heatmap when the independent volume query fails", async () => {
+    vi.spyOn(traceVolumeApi, "fetchTraceVolume").mockRejectedValue(new Error("volume failed"));
+    vi.spyOn(traceVolumeApi, "fetchTraceLatencyHeatmap").mockResolvedValue({
+      window: { start_ns: 0, end_ns: 60_000_000_000 },
+      x: { step_ns: 60_000_000_000, align: "epoch" },
+      y: { of: "duration", type: "duration_ns", bounds: [10_000_000], overflow: true },
+      value: "count",
+      cells: [{ time_bucket_ns: 0, duration_bucket: 0, count: 2 }],
+    });
+    renderView();
+
+    await userEvent.click(screen.getByRole("button", { name: "Heatmap" }));
+
+    expect(await screen.findByTestId("trace-volume-heatmap")).toBeInTheDocument();
   });
 
   it("asks for the volume aggregate without a row limit", async () => {

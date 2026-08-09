@@ -53,7 +53,17 @@ describe("buildTraceLatencyHeatmapDoc", () => {
       result: "heatmap",
       pipeline: [
         { where: { field: "service.name", op: "eq", value: "signaldb-ui" } },
-        { heatmap: { x: { step: "1h", align: "epoch" }, y: { of: "duration", bounds: LATENCY_BUCKET_BOUNDS_NS.map(String), overflow: true }, value: { fn: "count", as: "count" } } },
+        {
+          heatmap: {
+            x: { step: "1h", align: "epoch" },
+            y: {
+              of: "duration",
+              bounds: LATENCY_BUCKET_BOUNDS_NS.map((bound) => `${bound}ns`),
+              overflow: true,
+            },
+            value: { fn: "count", as: "count" },
+          },
+        },
       ],
     });
   });

@@ -10,16 +10,25 @@ interface Props {
 const WIDTH = 720;
 const HEIGHT = 220;
 const PADDING = { top: 3, right: 8, bottom: 14, left: 78 };
-export function TraceVolumeHeatmap({
-  heatmap,
-  label,
-}: Props) {
-  const start = Math.floor(heatmap.window.start_ns / heatmap.x.step_ns) * heatmap.x.step_ns;
+export function TraceVolumeHeatmap({ heatmap, label }: Props) {
+  const start =
+    Math.floor(heatmap.window.start_ns / heatmap.x.step_ns) * heatmap.x.step_ns;
   const times: number[] = [];
-  for (let t = start; t < heatmap.window.end_ns; t += heatmap.x.step_ns) times.push(t);
+  for (let t = start; t < heatmap.window.end_ns; t += heatmap.x.step_ns)
+    times.push(t);
   const rows = heatmap.y.bounds.length + 1;
-  if (heatmap.cells.length === 0) return <div className="trace-heatmap-empty">No spans in range</div>;
-  const cells = new Map(heatmap.cells.map((cell) => [`${cell.time_bucket_ns}|${cell.duration_bucket}`, cell.count]));
+  if (heatmap.cells.length === 0)
+    return <div className="trace-heatmap-empty">No spans in range</div>;
+  // Epoch nanoseconds exceed JavaScript's safe integer range, so use relative
+  // bucket positions rather than independently-rounded absolute coordinates.
+  const columnOf = (time: number) =>
+    Math.round((time - start) / heatmap.x.step_ns);
+  const cells = new Map(
+    heatmap.cells.map((cell) => [
+      `${columnOf(cell.time_bucket_ns)}|${cell.duration_bucket}`,
+      cell.count,
+    ]),
+  );
   const max = Math.max(...heatmap.cells.map((cell) => cell.count));
   const formatAxis = axisLabelFormatter(
     times[0]! / 1e6,
@@ -31,8 +40,13 @@ export function TraceVolumeHeatmap({
   const cellHeight = plotHeight / rows;
   const bucketLabel = (row: number) => {
     const lower = row === 0 ? 0 : heatmap.y.bounds[row - 1]! / 1e6;
-    const upper = heatmap.y.bounds[row] === undefined ? undefined : heatmap.y.bounds[row]! / 1e6;
-    return upper === undefined ? `${formatDurationMs(lower)}+` : `${formatDurationMs(lower)}-${formatDurationMs(upper)}`;
+    const upper =
+      heatmap.y.bounds[row] === undefined
+        ? undefined
+        : heatmap.y.bounds[row]! / 1e6;
+    return upper === undefined
+      ? `${formatDurationMs(lower)}+`
+      : `${formatDurationMs(lower)}-${formatDurationMs(upper)}`;
   };
   const summary = `${label} heatmap. Rows are latency buckets. Columns are time buckets. Color intensity represents span count. Empty cells have no spans.`;
 
@@ -55,7 +69,7 @@ export function TraceVolumeHeatmap({
               {bucketLabel(row)}
             </text>
             {times.map((time, column) => {
-              const count = cells.get(`${time}|${row}`) ?? 0;
+              const count = cells.get(`${column}|${row}`) ?? 0;
               const intensity = count / max;
               return (
                 <rect

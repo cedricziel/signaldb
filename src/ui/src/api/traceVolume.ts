@@ -12,7 +12,9 @@ import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { facetField, type TraceFilter } from "../lib/traceFilters";
 import type { VolumeSeries } from "../features/explore/SignalHistogram";
-export type TraceLatencyHeatmap = HeatmapResult & { window: { start_ns: number; end_ns: number } };
+export type TraceLatencyHeatmap = HeatmapResult & {
+  window: { start_ns: number; end_ns: number };
+};
 
 // Geometric millisecond bounds provide useful resolution from sub-ms spans to
 // slow requests without letting callers create an unbounded result matrix.
@@ -93,11 +95,24 @@ export function buildTraceLatencyHeatmapDoc(
   return {
     irVersion: 2,
     from: "traces",
-    range: { from: String(msToNanos(range.fromMs)), to: String(msToNanos(range.toMs)) },
+    range: {
+      from: String(msToNanos(range.fromMs)),
+      to: String(msToNanos(range.toMs)),
+    },
     result: "heatmap",
     pipeline: [
       ...traceFilterStages(filters),
-      { heatmap: { x: { step, align: "epoch" }, y: { of: "duration", bounds: LATENCY_BUCKET_BOUNDS_NS.map(String), overflow: true }, value: { fn: "count", as: "count" } } },
+      {
+        heatmap: {
+          x: { step, align: "epoch" },
+          y: {
+            of: "duration",
+            bounds: LATENCY_BUCKET_BOUNDS_NS.map((bound) => `${bound}ns`),
+            overflow: true,
+          },
+          value: { fn: "count", as: "count" },
+        },
+      },
     ],
   };
 }
@@ -123,7 +138,6 @@ export function seriesFromIrResponse(res: QueryIrResponse): VolumeSeries[] {
   }));
 }
 
-
 export async function fetchTraceVolume(
   range: ResolvedRange,
   step: string,
@@ -139,7 +153,9 @@ export async function fetchTraceLatencyHeatmap(
   step: string,
   filters: TraceFilter[] = [],
 ): Promise<TraceLatencyHeatmap> {
-  const response = await runIrQuery(buildTraceLatencyHeatmapDoc(range, step, filters));
+  const response = await runIrQuery(
+    buildTraceLatencyHeatmapDoc(range, step, filters),
+  );
   const heatmap = response.heatmap as HeatmapResult | undefined;
   if (!heatmap) throw new Error("IR heatmap response omitted heatmap data");
   return { ...heatmap, window: response.window };

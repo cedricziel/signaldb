@@ -440,9 +440,9 @@ impl InferCtx<'_> {
             return Err(IrError::Invalid("heatmap x.step must be > 0".into()));
         }
         let ty = self.ref_type(&heatmap.y.of)?;
-        if !is_numeric(&ty) {
+        if ty != ValueType::DurationNs {
             return Err(IrError::Invalid(format!(
-                "heatmap y.of requires a numeric or duration field, got {ty}"
+                "heatmap y.of requires a duration field, got {ty}"
             )));
         }
         if heatmap.value.func != AggFn::Count || heatmap.value.as_name != "count" {
@@ -471,11 +471,8 @@ impl InferCtx<'_> {
         let bounds = bounds
             .iter()
             .map(|v| match v {
-                super::value::Literal::Duration(n) | super::value::Literal::Int64(n) => Ok(*n),
-                super::value::Literal::Float64(_) => Err(IrError::Invalid(
-                    "heatmap floating point bounds are not yet representable".into(),
-                )),
-                _ => Err(IrError::Invalid("heatmap bounds must be numeric".into())),
+                super::value::Literal::Duration(n) => Ok(*n),
+                _ => Err(IrError::Invalid("heatmap bounds must be durations".into())),
             })
             .collect::<Result<Vec<_>, _>>()?;
         if bounds.windows(2).any(|p| p[0] >= p[1]) {
@@ -661,6 +658,7 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
     for field in fields {
         // A field is valid iff it is present in the terminal relation — a
         // closed column when aggregated, or a resolvable logical field when not.
+        guard_logical_name(field)?;
         if ctx.ref_type(field).is_err() {
             return Err(IrError::FieldNotInTerminal {
                 field: field.clone(),
@@ -701,6 +699,32 @@ mod tests {
             )
             .with_column("traces", "service.name", "service_name", ValueType::String)
             .with_column("traces", "name", "name", ValueType::String)
+    }
+
+    fn profiles_resolver() -> InMemoryResolver {
+        InMemoryResolver::new()
+            .with_column("profiles", "profile.id", "profile_id", ValueType::String)
+            .with_column("profiles", "timestamp", "timestamp", ValueType::TimestampNs)
+            .with_column(
+                "profiles",
+                "duration",
+                "duration_nano",
+                ValueType::DurationNs,
+            )
+            .with_column("profiles", "sample.type", "sample_type", ValueType::String)
+            .with_column(
+                "profiles",
+                "service.name",
+                "service_name",
+                ValueType::String,
+            )
+            .with_attribute(
+                "profiles",
+                "resource.deployment.environment",
+                "resource_attributes",
+                ValueType::String,
+                false,
+            )
     }
 
     fn doc(v: serde_json::Value) -> Document {
@@ -841,6 +865,21 @@ mod tests {
     }
 
     #[test]
+    fn heatmap_rejects_non_duration_y_axes() {
+        let mut document = heatmap_doc(2, json!([1, 5]));
+        document["pipeline"][0]["heatmap"]["y"]["of"] = json!("numeric");
+
+        let resolver =
+            logs_resolver().with_column("traces", "numeric", "numeric", ValueType::Int64);
+        let err = validate(&doc(document), &SourceRegistry::core(), &resolver).unwrap_err();
+
+        assert!(
+            matches!(err, IrError::Invalid(ref message) if message.contains("duration field")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
     fn heatmap_envelope_requires_terminal_heatmap_relation() {
         let err = validate_json(json!({
             "irVersion": 2, "from": "traces", "range": { "from": "now-1h", "to": "now" },
@@ -904,6 +943,49 @@ mod tests {
         });
         // Same document, unchanged shape, still validates.
         assert!(validate(&d, &sources, &logs_resolver()).is_ok());
+    }
+
+    #[test]
+    fn profiles_is_registered_as_a_summary_row_source() {
+        let sources = SourceRegistry::core();
+        let source = sources
+            .resolve("profiles")
+            .expect("profiles source is registered");
+        assert_eq!(source.grain, Grain::Event);
+        assert!(!source.allows_extract);
+    }
+
+    #[test]
+    fn profiles_accept_registered_summary_fields_and_resource_attributes() {
+        let document = doc(json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "fields": ["profile.id", "timestamp", "duration", "sample.type", "service.name"],
+            "pipeline": [{ "where": { "field": "resource.deployment.environment", "op": "eq", "value": "prod" } }]
+        }));
+        assert!(validate(&document, &SourceRegistry::core(), &profiles_resolver()).is_ok());
+    }
+
+    #[test]
+    fn profiles_reject_payload_json_and_log_extraction() {
+        let payload = doc(json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "fields": ["samples_json"], "pipeline": []
+        }));
+        assert!(matches!(
+            validate(&payload, &SourceRegistry::core(), &profiles_resolver()),
+            Err(IrError::PhysicalAddressing { .. })
+        ));
+
+        let extract = doc(json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [{ "extract": { "parser": "json", "as": [{ "name": "x", "type": "string" }] } }]
+        }));
+        assert!(matches!(
+            validate(&extract, &SourceRegistry::core(), &profiles_resolver()),
+            Err(IrError::IllegalStage { stage, .. }) if stage == "extract"
+        ));
     }
 
     // Task 2.1 — logical-namespace guard.

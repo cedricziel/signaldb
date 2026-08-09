@@ -653,14 +653,13 @@ pub mod types {
             Default::default()
         }
     }
-    /**Complete axes plus one non-zero heatmap cell. Missing declared coordinates
-    represent zero, making the Flight payload sparse without hiding the window.*/
+    ///Epoch-aligned time axis with a fixed nanosecond step.
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Complete axes plus one non-zero heatmap cell. Missing declared coordinates\nrepresent zero, making the Flight payload sparse without hiding the window.",
+    ///  "description": "Epoch-aligned time axis with a fixed nanosecond step.",
     ///  "type": "object",
     ///  "required": [
     ///    "align",
@@ -775,12 +774,14 @@ pub mod types {
             Default::default()
         }
     }
-    ///`HeatmapResult`
+    /**Complete axes plus one non-zero heatmap cell. Missing declared coordinates
+    represent zero, making the Flight payload sparse without hiding the window.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
+    ///  "description": "Complete axes plus one non-zero heatmap cell. Missing declared coordinates\nrepresent zero, making the Flight payload sparse without hiding the window.",
     ///  "type": "object",
     ///  "required": [
     ///    "cells",
@@ -1459,7 +1460,7 @@ pub mod types {
     ///      }
     ///    },
     ///    "from": {
-    ///      "description": "The registered signal source: `logs` or `traces`.",
+    ///      "description": "The registered signal source: `logs`, `traces`, or profile-summary `profiles`.",
     ///      "examples": [
     ///        "logs"
     ///      ],
@@ -1496,7 +1497,7 @@ pub mod types {
         ///Curated projection (logical field names) for `rows`/`table`.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub fields: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-        ///The registered signal source: `logs` or `traces`.
+        ///The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
         pub from: ::std::string::String,
         ///IR document version (the server accepts a bounded range).
         #[serde(rename = "irVersion")]
@@ -1516,13 +1517,13 @@ pub mod types {
     }
     /**The single canonical response contract. `result` discriminates which fields
     are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
-    `series` + `step_ns`.*/
+    `series` + `step_ns`; `heatmap` fills `heatmap`.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`.",
+    ///  "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`.",
     ///  "type": "object",
     ///  "required": [
     ///    "result",
@@ -1539,7 +1540,7 @@ pub mod types {
     ///      "$ref": "#/components/schemas/HeatmapResult"
     ///    },
     ///    "result": {
-    ///      "description": "The result envelope: `rows`, `series`, or `table`.",
+    ///      "description": "The result envelope: `rows`, `series`, `table`, or `heatmap`.",
     ///      "type": "string"
     ///    },
     ///    "rows": {
@@ -1575,7 +1576,7 @@ pub mod types {
         pub columns: ::std::vec::Vec<ResultColumn>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub heatmap: ::std::option::Option<HeatmapResult>,
-        ///The result envelope: `rows`, `series`, or `table`.
+        ///The result envelope: `rows`, `series`, `table`, or `heatmap`.
         pub result: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub rows: ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,

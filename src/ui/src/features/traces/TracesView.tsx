@@ -153,9 +153,7 @@ export function TracesView({ state, update }: Props) {
 function TraceSearch({ state, update }: Props) {
   const [volumeView, setVolumeView] = useState<
     "histogram" | "area" | "heatmap"
-  >(
-    "histogram",
-  );
+  >("histogram");
   const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
   const filters = state.traceFilters;
   const traceql = compileTraceQL(filters);
@@ -174,7 +172,11 @@ function TraceSearch({ state, update }: Props) {
   const latencyHeatmap = useQuery({
     queryKey: ["trace-latency", rangeKey, step, traceql],
     queryFn: () =>
-      fetchTraceLatencyHeatmap(resolveRange(state.range, Date.now()), step, filters),
+      fetchTraceLatencyHeatmap(
+        resolveRange(state.range, Date.now()),
+        step,
+        filters,
+      ),
     enabled: volumeView === "heatmap",
   });
 
@@ -190,64 +192,39 @@ function TraceSearch({ state, update }: Props) {
 
   return (
     <div className="traces-search">
-      {volume.data && (
-        <div className="histo-wrap">
-          <div className="trace-volume-head">
-            <span>Span volume</span>
-            <div
-              className="trace-volume-mode"
-              role="group"
-              aria-label="Trace volume visualization"
+      <div className="histo-wrap">
+        <div className="trace-volume-head">
+          <span>Span volume</span>
+          <div
+            className="trace-volume-mode"
+            role="group"
+            aria-label="Trace volume visualization"
+          >
+            <button
+              type="button"
+              aria-pressed={volumeView === "histogram"}
+              onClick={() => setVolumeView("histogram")}
             >
-              <button
-                type="button"
-                aria-pressed={volumeView === "histogram"}
-                onClick={() => setVolumeView("histogram")}
-              >
-                Histogram
-              </button>
-              <button
-                type="button"
-                aria-pressed={volumeView === "area"}
-                onClick={() => setVolumeView("area")}
-              >
-                Area
-              </button>
-              <button
-                type="button"
-                aria-pressed={volumeView === "heatmap"}
-                onClick={() => setVolumeView("heatmap")}
-              >
-                Heatmap
-              </button>
-            </div>
+              Histogram
+            </button>
+            <button
+              type="button"
+              aria-pressed={volumeView === "area"}
+              onClick={() => setVolumeView("area")}
+            >
+              Area
+            </button>
+            <button
+              type="button"
+              aria-pressed={volumeView === "heatmap"}
+              onClick={() => setVolumeView("heatmap")}
+            >
+              Heatmap
+            </button>
           </div>
-          {volumeView === "histogram" ? (
-            <SignalHistogram
-              series={volume.data}
-              order={STATUS_ORDER}
-              colors={STATUS_COLORS}
-              rangeMs={resolvedForStep}
-              stepMs={(durationToSeconds(step) ?? 60) * 1000}
-              scale={state.scale}
-              unit="spans"
-              label="Span volume over time by status"
-              onScaleChange={(scale) => update({ scale })}
-              step={state.step}
-              stepOptions={stepOptionsForRange(resolvedForStep)}
-              onStepChange={(step) => update({ step })}
-            />
-          ) : volumeView === "area" ? (
-            <TraceVolumeAreaChart
-              series={volume.data}
-              order={STATUS_ORDER}
-              colors={STATUS_COLORS}
-              rangeMs={resolvedForStep}
-              stepMs={(durationToSeconds(step) ?? 60) * 1000}
-              unit="spans"
-              label="Span volume"
-            />
-          ) : latencyHeatmap.data ? (
+        </div>
+        {volumeView === "heatmap" ? (
+          latencyHeatmap.data ? (
             <TraceVolumeHeatmap
               heatmap={latencyHeatmap.data}
               label="Span latency"
@@ -258,9 +235,34 @@ function TraceSearch({ state, update }: Props) {
             <div className="trace-heatmap-empty" role="alert">
               Latency query failed: {(latencyHeatmap.error as Error).message}
             </div>
-          ) : null}
-        </div>
-      )}
+          ) : null
+        ) : volume.data && volumeView === "histogram" ? (
+          <SignalHistogram
+            series={volume.data}
+            order={STATUS_ORDER}
+            colors={STATUS_COLORS}
+            rangeMs={resolvedForStep}
+            stepMs={(durationToSeconds(step) ?? 60) * 1000}
+            scale={state.scale}
+            unit="spans"
+            label="Span volume over time by status"
+            onScaleChange={(scale) => update({ scale })}
+            step={state.step}
+            stepOptions={stepOptionsForRange(resolvedForStep)}
+            onStepChange={(step) => update({ step })}
+          />
+        ) : volume.data && volumeView === "area" ? (
+          <TraceVolumeAreaChart
+            series={volume.data}
+            order={STATUS_ORDER}
+            colors={STATUS_COLORS}
+            rangeMs={resolvedForStep}
+            stepMs={(durationToSeconds(step) ?? 60) * 1000}
+            unit="spans"
+            label="Span volume"
+          />
+        ) : null}
+      </div>
       {filters.length > 0 && (
         <div className="trace-chips" aria-label="Active filters">
           {filters.map((f) => (
@@ -991,18 +993,27 @@ function SpanEventItem({ event }: { event: SpanEventView }) {
           <span className="span-event-name">exception</span>
           {type !== undefined && (
             <span className="span-event-type">
-              <AttributeValue value={String(type)} label="value for exception.type" />
+              <AttributeValue
+                value={String(type)}
+                label="value for exception.type"
+              />
             </span>
           )}
         </div>
         {message !== undefined && (
           <div className="span-event-msg">
-            <AttributeValue value={String(message)} label="value for exception.message" />
+            <AttributeValue
+              value={String(message)}
+              label="value for exception.message"
+            />
           </div>
         )}
         {stacktrace !== undefined && String(stacktrace) !== "" && (
           <div className="span-event-trace">
-            <AttributeValue value={String(stacktrace)} label="value for exception.stacktrace" />
+            <AttributeValue
+              value={String(stacktrace)}
+              label="value for exception.stacktrace"
+            />
           </div>
         )}
         {rest.map(([k, v]) => (

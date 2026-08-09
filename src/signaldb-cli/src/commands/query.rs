@@ -385,6 +385,32 @@ mod tests {
         assert_eq!(response.heatmap.expect("heatmap envelope").value, "count");
     }
 
+    #[tokio::test]
+    async fn ir_query_forwards_profiles_without_a_dedicated_transport() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/query")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({ "from": "profiles" }),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":"rows","window":{"start_ns":0,"end_ns":60},"columns":[],"rows":[]}"#,
+            )
+            .create_async()
+            .await;
+        let request: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "0", "to": "60" },
+            "result": "rows", "pipeline": []
+        }))
+        .unwrap();
+        submit_ir(&server.url(), None, None, None, request)
+            .await
+            .unwrap();
+        mock.assert_async().await;
+    }
+
     fn sql_args(flight_url: &str, query: Option<&str>) -> QueryArgs {
         QueryArgs {
             query: query.map(str::to_string),
