@@ -25,7 +25,6 @@
 //! `get_trace` additionally ships an interactive waterfall view via the MCP
 //! Apps extension; see [`crate::apps`].
 
-use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::schemars::JsonSchema;
@@ -225,21 +224,18 @@ impl McpServer {
         &self,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        // The caller's identity travels in the request headers, forwarded
-        // verbatim to the router; the MCP server does not resolve or validate it.
-        let header = |name: &str| {
-            parts
-                .headers
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned)
-        };
+        let identity = self
+            .router_client(&parts, None)?
+            .whoami()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "server_info"))?
+            .into_inner();
         let info = serde_json::json!({
             "server": "signaldb-mcp",
             "version": env!("CARGO_PKG_VERSION"),
-            "credential_present": parts.headers.contains_key(AUTHORIZATION),
-            "tenant": header("x-tenant-id"),
-            "dataset": header("x-dataset-id"),
+            "tenant": identity.tenant.id,
+            "dataset": identity.dataset,
         });
         json_result(&info)
     }
@@ -661,6 +657,105 @@ fn map_sdk_err(err: signaldb_sdk::Error<()>, what: &str) -> ErrorData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::AUTHORIZATION;
+    use axum::http::request::Builder as RequestBuilder;
+
+    #[tokio::test]
+    async fn server_info_rejects_a_credential_the_router_rejects() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(request_len > 0, "mock router received an empty request");
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write rejection");
+        });
+        let parts = RequestBuilder::new()
+            .header(AUTHORIZATION, "Bearer expired-token")
+            .body(())
+            .expect("build request")
+            .into_parts()
+            .0;
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+
+        let error = server
+            .server_info(Extension(parts))
+            .await
+            .expect_err("server_info must reject a credential rejected by the router");
+
+        assert!(
+            error.message.contains("credential expired or was revoked"),
+            "unexpected error: {}",
+            error.message
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn server_info_reports_identity_resolved_by_the_router() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(
+                std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .starts_with("GET /api/v1/whoami "),
+                "server_info must validate through the router whoami endpoint"
+            );
+            let body = b"{\"user_id\":\"user-a\",\"tenant\":{\"id\":\"acme\",\"slug\":\"acme\",\"name\":\"Acme\"},\"dataset\":\"production\"}";
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write response headers");
+            socket.write_all(body).await.expect("write identity");
+        });
+        let parts = RequestBuilder::new()
+            .header(AUTHORIZATION, "Bearer valid-token")
+            .body(())
+            .expect("build request")
+            .into_parts()
+            .0;
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+
+        let result = server
+            .server_info(Extension(parts))
+            .await
+            .expect("router accepted credential");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("server_info returns a text result");
+        };
+        let identity: serde_json::Value =
+            serde_json::from_str(&text.text).expect("server_info returns JSON");
+        assert_eq!(identity["tenant"], "acme");
+        assert_eq!(identity["dataset"], "production");
+        router.await.expect("mock router task panicked");
+    }
 
     /// Text is what the model (and every non-UI client) reads, so it is present
     /// either way; `structuredContent` is what the app renders from, so it

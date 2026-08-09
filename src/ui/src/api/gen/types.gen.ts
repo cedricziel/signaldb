@@ -633,6 +633,24 @@ export type UserResponse = {
     instance_admin: boolean;
 };
 
+/**
+ * The non-null identity contract shared by generated clients.
+ */
+export type WhoamiIdentityResponse = {
+    dataset: string;
+    tenant: WhoamiTenant;
+    /**
+     * Stable authenticated user ID. Empty for API key credentials.
+     */
+    user_id: string;
+};
+
+export type WhoamiTenant = {
+    id: string;
+    name: string;
+    slug: string;
+};
+
 export type ListTenantsData = {
     body?: never;
     path?: never;
@@ -1521,6 +1539,29 @@ export type QueryIrResponses = {
 };
 
 export type QueryIrResponse2 = QueryIrResponses[keyof QueryIrResponses];
+
+export type WhoamiData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/whoami';
+};
+
+export type WhoamiErrors = {
+    /**
+     * Invalid or expired credential
+     */
+    401: unknown;
+};
+
+export type WhoamiResponses = {
+    /**
+     * Resolved authenticated tenant and dataset
+     */
+    200: WhoamiIdentityResponse;
+};
+
+export type WhoamiResponse = WhoamiResponses[keyof WhoamiResponses];
 
 export type LogqlLabelValuesData = {
     body?: never;

@@ -311,7 +311,7 @@ fn error_response(status: u16, message: String) -> Response {
         .into_response()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WhoamiTenant {
     pub id: String,
     pub slug: String,
@@ -331,6 +331,11 @@ pub struct WhoamiResponse {
     pub user: Option<WhoamiUser>,
     pub memberships: Vec<WhoamiMembership>,
     pub tenant: WhoamiTenant,
+    /// Authenticated human user ID. Empty for API key credentials.
+    pub user_id: String,
+    /// Dataset resolved by the authentication middleware from the requested
+    /// header or the tenant default.
+    pub dataset: String,
     pub datasets: Vec<WhoamiDataset>,
     pub default_dataset: Option<String>,
 }
@@ -349,12 +354,32 @@ pub struct WhoamiMembership {
     pub role: MembershipRole,
 }
 
+/// The non-null identity contract shared by generated clients.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct WhoamiIdentityResponse {
+    pub tenant: WhoamiTenant,
+    pub dataset: String,
+    /// Stable authenticated user ID. Empty for API key credentials.
+    pub user_id: String,
+}
+
 /// GET /api/v1/whoami
 ///
 /// Returns the authenticated tenant with its datasets and default dataset,
 /// resolved from the same sources the [`common::auth::Authenticator`] uses
 /// (config tenants first, then catalog tenants). Strictly scoped to the
 /// tenant in the request's [`common::auth::TenantContext`].
+#[utoipa::path(
+    get,
+    path = "/api/v1/whoami",
+    operation_id = "whoami",
+    tag = "tenants",
+    security(("bearerAuth" = [])),
+    responses(
+        (status = 200, description = "Resolved authenticated tenant and dataset", body = WhoamiIdentityResponse),
+        (status = 401, description = "Invalid or expired credential"),
+    )
+)]
 pub async fn whoami<S: RouterState>(
     State(state): State<S>,
     TenantContextExtractor(ctx): TenantContextExtractor,
@@ -459,6 +484,8 @@ pub async fn whoami<S: RouterState>(
                 slug: tc.slug.clone(),
                 name: tc.name.clone(),
             },
+            user_id: ctx.user_id.clone().unwrap_or_default(),
+            dataset: ctx.dataset_id.clone(),
             datasets,
             default_dataset,
         };
@@ -493,6 +520,8 @@ pub async fn whoami<S: RouterState>(
             slug: tenant.id.clone(),
             name: tenant.name,
         },
+        user_id: ctx.user_id.clone().unwrap_or_default(),
+        dataset: ctx.dataset_id.clone(),
         datasets: datasets
             .into_iter()
             .map(|d| WhoamiDataset {

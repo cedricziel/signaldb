@@ -1465,6 +1465,36 @@
         ]
       }
     },
+    "/api/v1/whoami": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /api/v1/whoami",
+        "description": "Returns the authenticated tenant with its datasets and default dataset,\nresolved from the same sources the [`common::auth::Authenticator`] uses\n(config tenants first, then catalog tenants). Strictly scoped to the\ntenant in the request's [`common::auth::TenantContext`].",
+        "operationId": "whoami",
+        "responses": {
+          "200": {
+            "description": "Resolved authenticated tenant and dataset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhoamiIdentityResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credential"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/loki/api/v1/label/{name}/values": {
       "get": {
         "tags": [
@@ -3357,6 +3387,46 @@
           "instance_admin": {
             "type": "boolean",
             "description": "Whether the user is an instance administrator."
+          }
+        }
+      },
+      "WhoamiIdentityResponse": {
+        "type": "object",
+        "description": "The non-null identity contract shared by generated clients.",
+        "required": [
+          "tenant",
+          "dataset",
+          "user_id"
+        ],
+        "properties": {
+          "dataset": {
+            "type": "string"
+          },
+          "tenant": {
+            "$ref": "#/components/schemas/WhoamiTenant"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Stable authenticated user ID. Empty for API key credentials."
+          }
+        }
+      },
+      "WhoamiTenant": {
+        "type": "object",
+        "required": [
+          "id",
+          "slug",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
           }
         }
       }
