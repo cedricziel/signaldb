@@ -108,7 +108,9 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                     </button>
                   </div>
                   <dl className="attr-grid">
-                    {Object.entries(row.labels).map(([k, v]) => (
+                    {Object.entries(row.labels)
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([k, v]) => (
                       <div className="attr-row" data-scope="label" key={k}>
                         <dt>{k}</dt>
                         <dd>{v}</dd>
@@ -131,20 +133,22 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                           </button>
                         </span>
                       </div>
-                    ))}
+                      ))}
                     {/* Per-line fields: `trace_id`/`span_id` plus the row's
                         log and resource attributes. Shown without filter
                         actions for now — the label-filter model compiles to a
                         stream selector, which is the wrong shape for these.
                         Filtering on them arrives with the Query IR migration,
                         where the predicate is built server-side. */}
-                    {Object.entries(row.metadata).map(([k, v]) => (
+                    {Object.entries(row.metadata)
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([k, v]) => (
                       <div className="attr-row" data-scope="metadata" key={k}>
                         <dt>{k}</dt>
                         <dd>{v}</dd>
                         <span className="attr-scope">per-line</span>
                       </div>
-                    ))}
+                      ))}
                   </dl>
                 </div>
               )}

@@ -511,7 +511,7 @@ span.level-debug {
 
 .attr-row {
   display: grid;
-  grid-template-columns: minmax(120px, max-content) 1fr max-content;
+  grid-template-columns: minmax(120px, 220px) minmax(0, 1fr) max-content;
   gap: 0 14px;
   font-size: 11.5px;
 }
@@ -519,6 +519,10 @@ span.level-debug {
 .attr-row dt {
   font-family: var(--mono);
   color: var(--dim);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .attr-row dd {

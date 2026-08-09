@@ -84,6 +84,34 @@ describe("LogList", () => {
     });
   });
 
+  it("sorts expanded attributes alphabetically within each scope", async () => {
+    const { container } = render(
+      <LogList
+        rows={[
+          row({
+            labels: { zebra: "last", alpha: "first" },
+            metadata: { omega: "last", beta: "first" },
+          }),
+        ]}
+        onAddFilter={() => {}}
+        onOpenTrace={() => {}}
+      />,
+    );
+
+    await userEvent.click(screen.getByText("hello"));
+
+    expect(
+      [...container.querySelectorAll(".attr-row[data-scope='label'] dt")].map(
+        (element) => element.textContent,
+      ),
+    ).toEqual(["alpha", "zebra"]);
+    expect(
+      [...container.querySelectorAll(".attr-row[data-scope='metadata'] dt")].map(
+        (element) => element.textContent,
+      ),
+    ).toEqual(["beta", "omega"]);
+  });
+
   it("supports exclude filters from the detail view", async () => {
     const onAddFilter = vi.fn();
     render(
