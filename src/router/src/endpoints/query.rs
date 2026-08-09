@@ -21,8 +21,8 @@ use common::auth::TenantContextExtractor;
 use common::flight::transport::ServiceCapability;
 use common::query_ir::{Literal, ValueType, coerce};
 use datafusion::arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
-    TimestampNanosecondArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, MapArray, RecordBatch,
+    StringArray, TimestampNanosecondArray,
 };
 use datafusion::arrow::compute::cast;
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
@@ -312,6 +312,11 @@ fn column_meta(field: &datafusion::arrow::datatypes::Field) -> ResultColumn {
         DataType::Float16 | DataType::Float32 | DataType::Float64 => "float64",
         DataType::Timestamp(_, _) => "timestamp_ns",
         DataType::Binary | DataType::LargeBinary | DataType::BinaryView => "bytes",
+        // Attribute containers (`resource_attributes`, `scope_attributes`,
+        // `log_attributes`, `span_attributes`). Not an IR `ValueType`: a
+        // container is a result column, never a predicate operand — a query
+        // addresses a key inside it, not the container itself.
+        DataType::Map(_, _) => MAP_TYPE,
         _ => "string",
     };
     ResultColumn {
@@ -324,15 +329,23 @@ fn column_meta(field: &datafusion::arrow::datatypes::Field) -> ResultColumn {
 /// by the IR value type `column_meta` declares. Casting once here means `cell`
 /// only handles a fixed set — so DataFusion's `Utf8View`, dictionary, wider
 /// integer, and non-nanosecond timestamp encodings never fall through to null.
-fn canonical_arrow_type(ir_type: &str) -> DataType {
-    match ir_type {
+/// The result-metadata type name for an attribute container column.
+const MAP_TYPE: &str = "map<string,string>";
+
+/// The Arrow type a result column is canonicalized to before encoding, or
+/// `None` for a column that must be encoded from its original array — a Map
+/// has no canonical scalar form, and casting it would either fail (leaving the
+/// original silently) or flatten it to a display string.
+fn canonical_arrow_type(ir_type: &str) -> Option<DataType> {
+    Some(match ir_type {
         "int64" => DataType::Int64,
         "float64" => DataType::Float64,
         "bool" => DataType::Boolean,
         "timestamp_ns" => DataType::Timestamp(TimeUnit::Nanosecond, None),
         "bytes" => DataType::Binary,
+        MAP_TYPE => return None,
         _ => DataType::Utf8,
-    }
+    })
 }
 
 /// Extract one cell of an already-canonicalized array as JSON, following the IR
@@ -369,6 +382,28 @@ fn cell(array: &dyn Array, row: usize) -> serde_json::Value {
         use base64::Engine as _;
         return Value::String(base64::engine::general_purpose::STANDARD.encode(a.value(row)));
     }
+    // Attribute containers arrive as `Map<Utf8, Utf8>` and encode as a JSON
+    // object, so the client can index a key rather than parse a rendering.
+    // A container whose keys or values are not strings falls through to the
+    // formatter below rather than being dropped.
+    if let Some(a) = downcast!(MapArray) {
+        let entries = a.value(row);
+        if let (Some(keys), Some(values)) = (
+            entries.column(0).as_any().downcast_ref::<StringArray>(),
+            entries.column(1).as_any().downcast_ref::<StringArray>(),
+        ) {
+            let mut object = serde_json::Map::with_capacity(entries.len());
+            for i in 0..entries.len() {
+                if !keys.is_null(i) && !values.is_null(i) {
+                    object.insert(
+                        keys.value(i).to_string(),
+                        Value::String(values.value(i).to_string()),
+                    );
+                }
+            }
+            return Value::Object(object);
+        }
+    }
     // Last resort (an un-castable type, e.g. a struct/list left as-is): a string
     // rendering, so the column's data is never silently dropped as null.
     ArrayFormatter::try_new(array, &FormatOptions::default())
@@ -392,15 +427,21 @@ fn to_rows(batches: &[RecordBatch]) -> (Vec<ResultColumn>, Vec<Vec<serde_json::V
         .iter()
         .map(|f| column_meta(f))
         .collect();
-    let targets: Vec<DataType> = columns
+    let targets: Vec<Option<DataType>> = columns
         .iter()
         .map(|c| canonical_arrow_type(&c.value_type))
         .collect();
     for batch in batches {
         // Normalize each column to the canonical Arrow type its declared IR type
-        // maps to; keep the original array if a cast is unsupported.
+        // maps to; keep the original array if a cast is unsupported, or if the
+        // column has no canonical form (an attribute container).
         let casted: Vec<ArrayRef> = (0..batch.num_columns())
-            .map(|c| cast(batch.column(c), &targets[c]).unwrap_or_else(|_| batch.column(c).clone()))
+            .map(|c| match &targets[c] {
+                Some(target) => {
+                    cast(batch.column(c), target).unwrap_or_else(|_| batch.column(c).clone())
+                }
+                None => batch.column(c).clone(),
+            })
             .collect();
         for r in 0..batch.num_rows() {
             let row = casted.iter().map(|a| cell(a.as_ref(), r)).collect();
@@ -432,10 +473,14 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
             .fields()
             .iter()
             .enumerate()
-            .map(|(c, f)| {
-                let target = canonical_arrow_type(&column_meta(f).value_type);
-                cast(batch.column(c), &target).unwrap_or_else(|_| batch.column(c).clone())
-            })
+            .map(
+                |(c, f)| match canonical_arrow_type(&column_meta(f).value_type) {
+                    Some(target) => {
+                        cast(batch.column(c), &target).unwrap_or_else(|_| batch.column(c).clone())
+                    }
+                    None => batch.column(c).clone(),
+                },
+            )
             .collect();
         for r in 0..batch.num_rows() {
             let mut labels = BTreeMap::new();
@@ -477,6 +522,81 @@ fn now_ns() -> i64 {
     chrono::Utc::now()
         .timestamp_nanos_opt()
         .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() * 1_000_000)
+}
+
+#[cfg(test)]
+mod row_encoding {
+    use super::{column_meta, to_rows};
+    use datafusion::arrow::array::{ArrayRef, MapBuilder, RecordBatch, StringBuilder};
+    use datafusion::arrow::datatypes::{Field, Schema};
+    use std::sync::Arc;
+
+    /// A `Map<Utf8, Utf8>` column named `name`; `None` is a null row.
+    fn map_batch(name: &str, rows: Vec<Option<Vec<(&str, &str)>>>) -> RecordBatch {
+        let mut builder = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+        for row in rows {
+            match row {
+                Some(pairs) => {
+                    for (k, v) in pairs {
+                        builder.keys().append_value(k);
+                        builder.values().append_value(v);
+                    }
+                    builder.append(true).unwrap();
+                }
+                None => builder.append(false).unwrap(),
+            }
+        }
+        let array: ArrayRef = Arc::new(builder.finish());
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            name,
+            array.data_type().clone(),
+            true,
+        )]));
+        RecordBatch::try_new(schema, vec![array]).unwrap()
+    }
+
+    /// Attribute containers are Arrow `Map` columns. Without a Map branch the
+    /// canonicalizing cast to Utf8 fails, the original array survives, and the
+    /// cell falls through to `ArrayFormatter` — so the client receives the
+    /// string `"{http.method: GET}"` instead of an object it can index.
+    #[test]
+    fn map_columns_encode_as_json_objects() {
+        let batch = map_batch(
+            "log_attributes",
+            vec![Some(vec![("http.method", "GET"), ("user.id", "u-1")]), None],
+        );
+        let (columns, rows) = to_rows(&[batch]);
+
+        assert_eq!(columns[0].value_type, "map<string,string>");
+        assert_eq!(
+            rows[0][0],
+            serde_json::json!({ "http.method": "GET", "user.id": "u-1" }),
+            "a map cell must be a JSON object, not a rendered string"
+        );
+        assert_eq!(
+            rows[1][0],
+            serde_json::Value::Null,
+            "a null map row stays null rather than becoming an empty object"
+        );
+    }
+
+    /// An empty map is distinct from a null one: the row carried the container
+    /// but it held no attributes.
+    #[test]
+    fn empty_map_encodes_as_an_empty_object() {
+        let batch = map_batch("scope_attributes", vec![Some(vec![])]);
+        let (_, rows) = to_rows(&[batch]);
+        assert_eq!(rows[0][0], serde_json::json!({}));
+    }
+
+    #[test]
+    fn map_column_metadata_declares_the_map_type() {
+        let batch = map_batch("resource_attributes", vec![Some(vec![("a", "b")])]);
+        let field = batch.schema();
+        let meta = column_meta(field.field(0));
+        assert_eq!(meta.name, "resource_attributes");
+        assert_eq!(meta.value_type, "map<string,string>");
+    }
 }
 
 #[cfg(test)]
