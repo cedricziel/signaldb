@@ -21,7 +21,7 @@ use opentelemetry_proto::tonic::profiles::v1development::{
 use serde_json::Map;
 
 use crate::flight::conversion::conversion_common::{
-    extract_resource_json, extract_service_name, extract_value,
+    extract_resource_json, extract_service_name, extract_value_with_string_table,
 };
 use crate::flight::schema::FlightSchemas;
 use crate::model::profile::{Frame, Profile, ProfileLink, Sample, Stacktrace, ValueType};
@@ -132,7 +132,10 @@ fn resolve_attributes(
         if key.is_empty() {
             continue;
         }
-        map.insert(key, extract_value(&attribute.value));
+        map.insert(
+            key,
+            extract_value_with_string_table(&attribute.value, Some(&dictionary.string_table)),
+        );
     }
 
     if map.is_empty() {
@@ -534,6 +537,24 @@ mod tests {
         let attrs = profile.samples[0].attributes.as_ref().expect("attributes");
         assert_eq!(attrs["thread.name"], "worker-1");
         assert!(profile.samples[1].attributes.is_none());
+    }
+
+    #[test]
+    fn resolves_interned_attribute_values_from_the_profiles_dictionary() {
+        let mut request = sample_request();
+        let dictionary = request.dictionary.as_mut().expect("dictionary");
+        dictionary.string_table.push("worker-2".to_string());
+        dictionary.attribute_table[1].value = Some(AnyValue {
+            value: Some(any_value::Value::StringValueStrindex(8)),
+        });
+
+        let profiles = otlp_profiles_to_model(&request);
+
+        let attrs = profiles[0].samples[0]
+            .attributes
+            .as_ref()
+            .expect("attributes");
+        assert_eq!(attrs["thread.name"], "worker-2");
     }
 
     #[test]

@@ -34,10 +34,12 @@ scattered across multiple typed homes.
 
 Lossless preservation SHALL hold from the OTLP boundary, not merely from the
 storage write. The OTLP→internal conversion SHALL preserve `BytesValue` as bytes
-(distinct from a string) and preserve string-table-indexed values — rather than
-mapping bytes to a possibly-invalid string or dropping interned values to null.
-**Phase scoping:** bytes and interned-string fidelity are delivered in phase 1
-(the `extract_value` fix). Preservation of **duplicate keys and key order**
+(distinct from a string). `StringValueStrindex` is an OTLP Profiles-only variant:
+the Profiles converter SHALL resolve it through the request's `ProfilesDictionary`
+rather than dropping it to null; non-Profiles receivers SHALL process it as a
+non-fatal absent value, as required by OTLP. **Phase scoping:** bytes and
+Profiles interned-string fidelity are delivered in phase 1 (the `extract_value`
+fix). Preservation of **duplicate keys and key order**
 requires the binary residue to be constructed before the JSON-in-Utf8 wire
 serialization collapses them (a `serde_json::Map` sorts and de-duplicates); this
 change SHALL either build the residue at the acceptor from the OTLP `KeyValueList`

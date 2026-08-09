@@ -1,12 +1,21 @@
+use base64::Engine as _;
 use opentelemetry_proto::tonic::{
     common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList, any_value::Value},
     resource::v1::Resource,
 };
 use serde_json::{Map, Value as JsonValue};
 
-/// Extract AnyValue to JsonValue
+/// Extract AnyValue to its JSON wire carrier.
 pub fn extract_value(
     attr_val: &Option<opentelemetry_proto::tonic::common::v1::AnyValue>,
+) -> JsonValue {
+    extract_value_with_string_table(attr_val, None)
+}
+
+/// Extract an AnyValue using a Profiles dictionary when indexed strings are valid.
+pub fn extract_value_with_string_table(
+    attr_val: &Option<opentelemetry_proto::tonic::common::v1::AnyValue>,
+    string_table: Option<&[String]>,
 ) -> JsonValue {
     match attr_val {
         Some(val) => match &val.value {
@@ -24,7 +33,10 @@ pub fn extract_value(
                 Value::ArrayValue(array_value) => {
                     let mut vals = vec![];
                     for item in array_value.values.iter() {
-                        vals.push(extract_value(&Some(item.clone())));
+                        vals.push(extract_value_with_string_table(
+                            &Some(item.clone()),
+                            string_table,
+                        ));
                     }
                     JsonValue::Array(vals)
                 }
@@ -33,18 +45,23 @@ pub fn extract_value(
                     for item in key_value_list.values.iter() {
                         vals.insert(
                             item.key.clone(),
-                            extract_value(&item.value.as_ref().cloned()),
+                            extract_value_with_string_table(
+                                &item.value.as_ref().cloned(),
+                                string_table,
+                            ),
                         );
                     }
                     JsonValue::Object(vals)
                 }
-                Value::BytesValue(vec) => {
-                    let s = String::from_utf8(vec.to_owned()).unwrap_or_default();
-                    JsonValue::String(s)
-                }
-                // Interned string references (OTLP string interning) cannot be
-                // resolved here without the enclosing message's string table.
-                Value::StringValueStrindex(_) => JsonValue::Null,
+                Value::BytesValue(bytes) => serde_json::json!({
+                    "$otlp_type": "bytes",
+                    "base64": base64::engine::general_purpose::STANDARD.encode(bytes),
+                }),
+                Value::StringValueStrindex(index) => string_table
+                    .and_then(|table| usize::try_from(*index).ok().and_then(|i| table.get(i)))
+                    .cloned()
+                    .map(JsonValue::String)
+                    .unwrap_or(JsonValue::Null),
             },
             None => JsonValue::Null,
         },
@@ -147,6 +164,21 @@ pub fn json_value_to_any_value(json_val: &JsonValue) -> AnyValue {
                 value: Some(Value::ArrayValue(ArrayValue { values })),
             }
         }
+        JsonValue::Object(obj)
+            if obj.get("$otlp_type") == Some(&JsonValue::String("bytes".to_string())) =>
+        {
+            obj.get("base64")
+                .and_then(JsonValue::as_str)
+                .and_then(|encoded| {
+                    base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .ok()
+                })
+                .map(|bytes| AnyValue {
+                    value: Some(Value::BytesValue(bytes)),
+                })
+                .unwrap_or(AnyValue { value: None })
+        }
         JsonValue::Object(obj) => {
             let values = obj
                 .iter()
@@ -161,5 +193,25 @@ pub fn json_value_to_any_value(json_val: &JsonValue) -> AnyValue {
                 value: Some(Value::KvlistValue(KeyValueList { values })),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preserves_bytes_in_a_distinguishable_json_carrier() {
+        let value = Some(AnyValue {
+            value: Some(Value::BytesValue(vec![0, 255, b'x'])),
+        });
+
+        let extracted = extract_value(&value);
+
+        assert_eq!(extracted["$otlp_type"], "bytes");
+        assert_eq!(
+            json_value_to_any_value(&extracted).value,
+            Some(Value::BytesValue(vec![0, 255, b'x']))
+        );
     }
 }
