@@ -24,8 +24,8 @@ datafusion = { version = "54.1.0", default-features = false, features = [
 arrow = { version = "58.3.0", features = ["prettyprint"] }
 parquet = { version = "58.3.0", features = ["arrow", "async"] }
 
-datafusion_iceberg = { git = "https://github.com/cedricziel/iceberg-rust", rev = "98b8f88d65856eb32a58673f5a5ba0ee46bfde08" }
-iceberg-rust = { git = "https://github.com/cedricziel/iceberg-rust", rev = "98b8f88d65856eb32a58673f5a5ba0ee46bfde08" }
+datafusion_iceberg = { git = "https://github.com/cedricziel/iceberg-rust", rev = "46c41afdff93ac92ef540bddc258db7173f38c9d" }
+iceberg-rust = { git = "https://github.com/cedricziel/iceberg-rust", rev = "46c41afdff93ac92ef540bddc258db7173f38c9d" }
 
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "fs", "sync", "time", "macros", "io-util"] }
 futures = "0.3.31"

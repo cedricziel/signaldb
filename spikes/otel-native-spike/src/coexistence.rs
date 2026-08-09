@@ -3,14 +3,14 @@
 //! SignalDB is switching to the typed attribute layout in one breaking step
 //! (no legacy `Map<String,String>` coexistence, no migration read-path). What
 //! still has to be de-risked against the pinned `datafusion_iceberg` provider
-//! (fork rev `98b8f88`, DataFusion 54.1) is:
+//! (fork rev `46c41af`, DataFusion 54.1) is:
 //!
 //! 1. **Typed layout viability.** A table whose attributes live in per-type
 //!    maps — `attributes_str: Map<String,Utf8>`, `attributes_int:
 //!    Map<String,Int64>`, `attributes_double: Map<String,Float64>`,
-//!    `attributes_bool: Map<String,Boolean>` — plus a binary residue column
-//!    `attributes_residue: Map<String,Binary>` (CBOR-encoded off-type
-//!    occurrences). Do those columns round-trip through the fork's Arrow
+//!    `attributes_bool: Map<String,Boolean>` — plus a top-level binary residue
+//!    column `attributes_residue: Binary` (a CBOR-encoded per-row map of
+//!    off-type occurrences). Do those columns round-trip through the fork's Arrow
 //!    conversion, is map access reachable from SQL and/or expr level, does the
 //!    Binary residue survive, and how do typed-map predicates behave.
 //!
@@ -25,12 +25,9 @@
 //!    promotion file's existing typed columns still read correctly after the
 //!    column count changed. Demotion (dropping the column) is probed too.
 //!
-//! Residue encoding choice: `Map<String,Binary>` (not a single `Binary`
-//! column). The residue is a per-attribute tail — a handful of keys whose
-//! value on a given row did not match the column's home type — so keying it by
-//! attribute name preserves *which* key was off-type and admits several at
-//! once, while a lone `Binary` blob would need its own internal framing. The
-//! value bytes are CBOR (compact, self-describing, no schema registry).
+//! Residue encoding choice: a top-level `Binary` column holding a CBOR map per
+//! row. The map preserves which keys were off-type and admits several at once
+//! while avoiding the provider's nested Binary map projection bug.
 //!
 //! Throwaway evidence: every probe records PASS/FAIL with a note instead of
 //! aborting, so one broken capability still lets the rest run.
@@ -140,9 +137,9 @@ fn optional_map(field_id: i32, name: &str, value: PrimitiveType) -> StructField 
 }
 
 /// The typed attribute layout SignalDB is moving to: id/timestamp subset plus
-/// per-type attribute maps and a binary residue map. Each map consumes three
-/// field ids (field + key + value), allocated contiguously so nested ids never
-/// collide (the `common` convention). `last_column_id` ends at 18.
+/// per-type attribute maps and a top-level binary residue. Each map consumes
+/// three field ids (field + key + value), allocated contiguously so nested ids
+/// never collide (the `common` convention). `last_column_id` ends at 16.
 fn typed_schema() -> Schema {
     let fields = vec![
         required(1, "timestamp", PrimitiveType::Timestamp),
@@ -152,7 +149,7 @@ fn typed_schema() -> Schema {
         optional_map(7, "attributes_int", PrimitiveType::Long),   // 7,8,9
         optional_map(10, "attributes_double", PrimitiveType::Double), // 10,11,12
         optional_map(13, "attributes_bool", PrimitiveType::Boolean), // 13,14,15
-        optional_map(16, "attributes_residue", PrimitiveType::Binary), // 16,17,18
+        optional(16, "attributes_residue", PrimitiveType::Binary),
     ];
     Schema::from_struct_type(StructType::new(fields), 0, None)
 }
@@ -462,28 +459,18 @@ fn bool_map(
     fit(Arc::new(b.finish()), field)
 }
 
-/// Build a `Map<String,Binary>` residue array (CBOR-encoded off-type values).
-fn binary_map(
+/// Build a top-level `Binary` residue array (one CBOR document per row).
+fn binary_residue(
     schema: &ArrowSchemaRef,
     name: &str,
-    rows: &[Option<Vec<(&str, Vec<u8>)>>],
+    rows: &[Option<Vec<u8>>],
 ) -> Result<ArrayRef> {
     let field = field_of(schema, name);
-    let mut b = MapBuilder::new(
-        Some(map_names(field)),
-        StringBuilder::new(),
-        BinaryBuilder::new(),
-    );
+    let mut b = BinaryBuilder::new();
     for row in rows {
         match row {
-            Some(kvs) => {
-                for (k, v) in kvs {
-                    b.keys().append_value(k);
-                    b.values().append_value(v);
-                }
-                b.append(true)?;
-            }
-            None => b.append(false)?,
+            Some(value) => b.append_value(value),
+            None => b.append_null(),
         }
     }
     fit(Arc::new(b.finish()), field)
@@ -501,12 +488,36 @@ fn arrow_schema_of(schema: &Schema) -> Result<ArrowSchemaRef> {
     Ok(Arc::new(arrow))
 }
 
-/// CBOR-encode an off-type residue value `{ "type": ..., "value": ... }`.
-fn cbor(type_tag: &str, value: &str) -> Vec<u8> {
+/// CBOR-encode all off-type values on a row as `{ key: { type, value } }`.
+fn residue_cbor(entries: &[(&str, &str, &str)]) -> Vec<u8> {
     let mut buf = Vec::new();
-    let doc = serde_json::json!({ "type": type_tag, "value": value });
+    let doc = entries
+        .iter()
+        .map(|(key, type_tag, value)| {
+            (
+                (*key).to_string(),
+                serde_json::json!({ "type": type_tag, "value": value }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
     ciborium::into_writer(&doc, &mut buf).expect("cbor encode");
     buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn residue_document_preserves_the_attribute_key_and_value() {
+        let encoded = residue_cbor(&[("http.response.status_code", "string", "OK")]);
+        let decoded: serde_json::Value = ciborium::from_reader(encoded.as_slice()).unwrap();
+
+        assert_eq!(
+            decoded["http.response.status_code"]["value"],
+            serde_json::Value::String("OK".to_string())
+        );
+    }
 }
 
 fn ts(values: &[i64]) -> ArrayRef {
@@ -612,7 +623,7 @@ pub async fn run() -> Result<Report> {
 
     // --- generation 1: typed layout, PRE-promotion --------------------------
     // status_code lives in attributes_int as a native Int64. One row also
-    // carries an off-type occurrence (the string "OK") in the residue map.
+    // carries an off-type occurrence (the string "OK") in the residue.
     let mut table = load_table(catalog.clone(), &identifier).await?;
     let typed_arrow = arrow_schema_of(table.current_schema().unwrap())?;
     let gen1 = RecordBatch::try_new(
@@ -653,12 +664,16 @@ pub async fn run() -> Result<Report> {
                     Some(vec![("cache.hit", false)]),
                 ],
             )?,
-            binary_map(
+            binary_residue(
                 &typed_arrow,
                 "attributes_residue",
                 &[
                     None,
-                    Some(vec![("http.response.status_code", cbor("string", "OK"))]),
+                    Some(residue_cbor(&[(
+                        "http.response.status_code",
+                        "string",
+                        "OK",
+                    )])),
                 ],
             )?,
         ],
@@ -667,7 +682,7 @@ pub async fn run() -> Result<Report> {
     write_generation(&mut table, gen1).await?;
     probes.push(Probe::ok(
         "typed_layout_write",
-        "per-type maps + Map<String,Binary> residue written & committed (gen-1, pre-promotion)",
+        "per-type maps + top-level Binary residue written & committed (gen-1, pre-promotion)",
     ));
 
     // --- typed-layout read probes (one scan, gen-1 only so far) -------------
@@ -750,7 +765,7 @@ pub async fn run() -> Result<Report> {
                     Some(vec![("cache.hit", true)]),
                 ],
             )?,
-            binary_map(&evolved_arrow, "attributes_residue", &[None, None])?,
+            binary_residue(&evolved_arrow, "attributes_residue", &[None, None])?,
             // the promoted column, populated for gen-2 rows
             i64opt(&[Some(200), Some(404)]),
         ],
@@ -853,14 +868,14 @@ async fn first_working<'a>(
     Err(errs)
 }
 
-/// Do all four typed maps survive the provider's Arrow conversion in a plain
-/// scan (columns come back as Map arrays, no error)?
+/// Do all four typed maps and the top-level binary residue survive the provider's
+/// Arrow conversion in a plain scan?
 async fn probe_typed_roundtrip(ctx: &SessionContext, probes: &mut Vec<Probe>) {
     let sql = "SELECT attributes_str, attributes_int, attributes_double, attributes_bool, attributes_residue FROM events";
     match first_working(ctx, &[sql]).await {
         Ok((_, batches)) => {
             let schema = batches.first().map(|b| b.schema());
-            let all_maps = schema
+            let types_preserved = schema
                 .as_ref()
                 .map(|s| {
                     [
@@ -868,7 +883,6 @@ async fn probe_typed_roundtrip(ctx: &SessionContext, probes: &mut Vec<Probe>) {
                         "attributes_int",
                         "attributes_double",
                         "attributes_bool",
-                        "attributes_residue",
                     ]
                     .iter()
                     .all(|n| {
@@ -876,16 +890,20 @@ async fn probe_typed_roundtrip(ctx: &SessionContext, probes: &mut Vec<Probe>) {
                             s.field_with_name(n).map(|f| f.data_type()),
                             Ok(DataType::Map(_, _))
                         )
-                    })
+                    }) && matches!(
+                        s.field_with_name("attributes_residue")
+                            .map(|f| f.data_type()),
+                        Ok(DataType::Binary)
+                    )
                 })
                 .unwrap_or(false);
             probes.push(Probe {
                 name: "typed_maps_roundtrip",
-                pass: all_maps,
+                pass: types_preserved,
                 note: format!(
-                    "all four per-type maps + binary residue returned as Arrow Map columns \
-                     through the fork ({})",
-                    if all_maps {
+                    "all four per-type maps + top-level Binary residue returned through \
+                      the fork ({})",
+                    if types_preserved {
                         "types preserved"
                     } else {
                         "TYPE LOST"
@@ -961,11 +979,8 @@ async fn probe_typed_predicate(ctx: &SessionContext, probes: &mut Vec<Probe>) {
 }
 
 async fn probe_residue(ctx: &SessionContext, probes: &mut Vec<Probe>) {
-    let candidates = [
-        "SELECT attributes_residue['http.response.status_code'] AS v FROM events WHERE attributes_residue IS NOT NULL",
-        "SELECT element_at(attributes_residue, 'http.response.status_code') AS v FROM events WHERE attributes_residue IS NOT NULL",
-        "SELECT map_extract(attributes_residue, 'http.response.status_code')[1] AS v FROM events WHERE attributes_residue IS NOT NULL",
-    ];
+    let candidates =
+        ["SELECT attributes_residue AS v FROM events WHERE attributes_residue IS NOT NULL"];
     match first_working(ctx, &candidates).await {
         Ok((sql, batches)) => {
             let mut decoded = None;
@@ -998,7 +1013,9 @@ async fn probe_residue(ctx: &SessionContext, probes: &mut Vec<Probe>) {
                 }
             }
             match decoded {
-                Some(v) if v.get("value").and_then(|x| x.as_str()) == Some("OK") => {
+                Some(v)
+                    if v["http.response.status_code"]["value"].as_str() == Some("OK") =>
+                {
                     probes.push(Probe {
                         name: "residue_cbor_roundtrip",
                         pass: true,
@@ -1015,7 +1032,7 @@ async fn probe_residue(ctx: &SessionContext, probes: &mut Vec<Probe>) {
         }
         Err(e) => probes.push(Probe::fail(
             "residue_cbor_roundtrip",
-            format!("could not read Binary-valued residue map:{e}"),
+            format!("could not read top-level Binary residue:{e}"),
         )),
     }
 }
