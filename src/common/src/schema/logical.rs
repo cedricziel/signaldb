@@ -17,6 +17,8 @@ pub enum LogicalType {
     Bool,
     Int64,
     Float64,
+    TimestampNs,
+    DurationNs,
     Bytes,
     AnyValue,
 }
@@ -194,8 +196,8 @@ impl LogicalSchema {
     /// realization is deliberately absent from this declaration.
     pub fn core() -> Self {
         let mut fields = vec![
-            LogicalField::record_metadata("logs", "timestamp", LogicalType::Int64),
-            LogicalField::record_metadata("logs", "observed_timestamp", LogicalType::Int64),
+            LogicalField::record_metadata("logs", "timestamp", LogicalType::TimestampNs),
+            LogicalField::record_metadata("logs", "observed_timestamp", LogicalType::TimestampNs),
             LogicalField::record_metadata("logs", "severity_number", LogicalType::Int64),
             LogicalField::record_metadata("logs", "severity_text", LogicalType::String),
             LogicalField::record_metadata("logs", "trace_flags", LogicalType::Int64),
@@ -205,11 +207,57 @@ impl LogicalSchema {
             LogicalField::record_metadata("traces", "dropped_attributes_count", LogicalType::Int64),
             LogicalField::record_metadata("traces", "dropped_events_count", LogicalType::Int64),
             LogicalField::record_metadata("traces", "dropped_links_count", LogicalType::Int64),
+            LogicalField::record_metadata("traces", "parent_span_id", LogicalType::String),
+            LogicalField::record_metadata(
+                "traces",
+                "start_time_unix_nano",
+                LogicalType::TimestampNs,
+            ),
+            LogicalField::record_metadata("traces", "end_time_unix_nano", LogicalType::TimestampNs),
+            LogicalField::record_metadata("traces", "span_kind", LogicalType::String),
+            LogicalField::record_metadata("traces", "status_message", LogicalType::String),
+            LogicalField::record_metadata("traces", "is_root", LogicalType::Bool),
+            LogicalField::record_metadata("traces", "trace_state", LogicalType::String),
+            LogicalField::record_metadata("traces", "name", LogicalType::String),
+            LogicalField::record_metadata("traces", "span.name", LogicalType::String),
+            LogicalField::record_metadata("traces", "duration", LogicalType::DurationNs),
+            LogicalField::record_metadata("traces", "duration_nano", LogicalType::DurationNs),
+            LogicalField::record_metadata("traces", "status.code", LogicalType::String),
         ];
         for source in ["logs", "traces"] {
             fields.push(LogicalField::join_key(source, "trace_id"));
             fields.push(LogicalField::join_key(source, "span_id"));
             fields.push(LogicalField::signaldb_resource_identity(source));
+            fields.push(LogicalField::attribute(
+                source,
+                AttributeLevel::Resource,
+                "service.name",
+                LogicalType::String,
+            ));
+            fields.push(LogicalField::attribute(
+                source,
+                AttributeLevel::Resource,
+                "schema_url",
+                LogicalType::String,
+            ));
+            fields.push(LogicalField::attribute(
+                source,
+                AttributeLevel::Scope,
+                "name",
+                LogicalType::String,
+            ));
+            fields.push(LogicalField::attribute(
+                source,
+                AttributeLevel::Scope,
+                "version",
+                LogicalType::String,
+            ));
+            fields.push(LogicalField::attribute(
+                source,
+                AttributeLevel::Scope,
+                "schema_url",
+                LogicalType::String,
+            ));
         }
         Self::new(fields)
     }
@@ -301,6 +349,10 @@ mod tests {
         assert_eq!(
             schema.resolve("traces", "trace_id").unwrap().kind,
             LogicalFieldKind::JoinKey
+        );
+        assert_eq!(
+            schema.resolve("logs", "service.name").unwrap().value_type,
+            LogicalType::String
         );
     }
 
