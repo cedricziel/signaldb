@@ -13,6 +13,9 @@ import { msToNanos, type ResolvedRange } from "../lib/time";
 import { facetField, type TraceFilter } from "../lib/traceFilters";
 import type { VolumeSeries } from "../features/explore/SignalHistogram";
 
+/** Average span latency points, keyed by normalized status and measured in ms. */
+export type TraceLatencySeries = VolumeSeries;
+
 /** Stacking order, bottom to top. */
 export const STATUS_ORDER = ["ok", "unset", "error"];
 
@@ -45,13 +48,7 @@ export function buildTraceVolumeDoc(
 ): QueryIrRequest {
   // The chart must describe the same traces the list shows, so the active
   // filters narrow it too.
-  const where = filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet) return [];
-    return [
-      { where: { field: facet.irField, op: "eq", value: f.value } },
-    ] as Record<string, unknown>[];
-  });
+  const where = traceFilterStages(filters);
   return {
     irVersion: 1,
     from: "traces",
@@ -66,6 +63,46 @@ export function buildTraceVolumeDoc(
         aggregate: {
           by: ["status.code"],
           aggs: [{ fn: "count", as: "n" }],
+          step,
+        },
+      },
+    ],
+  };
+}
+
+function traceFilterStages(filters: TraceFilter[]): Record<string, unknown>[] {
+  return filters.flatMap((f) => {
+    const facet = facetField(f.field);
+    if (!facet) return [];
+    return [
+      { where: { field: facet.irField, op: "eq", value: f.value } },
+    ] as Record<string, unknown>[];
+  });
+}
+
+/** Build the separate single-aggregate stepped query used by the latency heatmap. */
+export function buildTraceLatencyDoc(
+  range: ResolvedRange,
+  step: string,
+  filters: TraceFilter[] = [],
+): QueryIrRequest {
+  const where = traceFilterStages(filters);
+  return {
+    irVersion: 1,
+    from: "traces",
+    range: {
+      from: String(msToNanos(range.fromMs)),
+      to: String(msToNanos(range.toMs)),
+    },
+    result: "series",
+    pipeline: [
+      ...where,
+      {
+        aggregate: {
+          by: ["status.code"],
+          // Stepped aggregates accept one output only, so latency cannot share
+          // the count query used to distinguish empty buckets.
+          aggs: [{ fn: "avg", of: "duration.nanos", as: "latency" }],
           step,
         },
       },
@@ -94,6 +131,20 @@ export function seriesFromIrResponse(res: QueryIrResponse): VolumeSeries[] {
   }));
 }
 
+/** Decode a duration average series, converting its nanosecond values to ms. */
+export function latencySeriesFromIrResponse(
+  res: QueryIrResponse,
+): TraceLatencySeries[] {
+  return (res.series ?? []).map((s) => ({
+    key: normalizeStatus(statusLabel(s.labels)),
+    points: s.points.flatMap((p): [number, number][] => {
+      const [tNs, valueNs] = p as [unknown, unknown];
+      if (typeof tNs !== "number" || typeof valueNs !== "number") return [];
+      return [[Math.round(tNs / 1e6), valueNs / 1e6]];
+    }),
+  }));
+}
+
 export async function fetchTraceVolume(
   range: ResolvedRange,
   step: string,
@@ -101,5 +152,15 @@ export async function fetchTraceVolume(
 ): Promise<VolumeSeries[]> {
   return seriesFromIrResponse(
     await runIrQuery(buildTraceVolumeDoc(range, step, filters)),
+  );
+}
+
+export async function fetchTraceLatency(
+  range: ResolvedRange,
+  step: string,
+  filters: TraceFilter[] = [],
+): Promise<TraceLatencySeries[]> {
+  return latencySeriesFromIrResponse(
+    await runIrQuery(buildTraceLatencyDoc(range, step, filters)),
   );
 }

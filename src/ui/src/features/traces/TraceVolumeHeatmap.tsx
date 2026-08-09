@@ -4,29 +4,28 @@ import {
   type VolumeSeries,
 } from "../explore/SignalHistogram";
 import { axisLabelFormatter } from "../../lib/time";
+import { formatDurationMs } from "../../lib/waterfall";
 
 interface Props {
   series: VolumeSeries[];
+  latency: VolumeSeries[];
   order: string[];
   colors: Record<string, string>;
   rangeMs: { fromMs: number; toMs: number };
   stepMs: number;
-  unit: string;
   label: string;
 }
 
 const WIDTH = 720;
 const HEIGHT = 64;
 const PADDING = { top: 3, right: 8, bottom: 14, left: 48 };
-const number = new Intl.NumberFormat();
-
 export function TraceVolumeHeatmap({
   series,
+  latency,
   order,
   colors,
   rangeMs,
   stepMs,
-  unit,
   label,
 }: Props) {
   let buckets = bucketizeSeries(series);
@@ -37,10 +36,21 @@ export function TraceVolumeHeatmap({
     return <div className="trace-heatmap-empty">No volume in range</div>;
   }
 
-  // One shared maximum makes equal intensity mean equal count across statuses.
+  const latencyByStatusAndTime = new Map(
+    latency.flatMap((s) =>
+      s.points.map(([tMs, value]) => [`${s.key}|${tMs}`, value] as const),
+    ),
+  );
+  // One shared maximum makes equal intensity mean equal latency across statuses.
   const max = Math.max(
+    0,
     ...order.flatMap((key) =>
-      buckets.map((bucket) => bucket.counts[key] ?? 0),
+      buckets.flatMap((bucket) => {
+        const value = latencyByStatusAndTime.get(`${key}|${bucket.tMs}`);
+        return (bucket.counts[key] ?? 0) > 0 && value !== undefined
+          ? [value]
+          : [];
+      }),
     ),
   );
   const formatAxis = axisLabelFormatter(
@@ -51,7 +61,7 @@ export function TraceVolumeHeatmap({
   const plotHeight = HEIGHT - PADDING.top - PADDING.bottom;
   const cellWidth = plotWidth / buckets.length;
   const cellHeight = plotHeight / order.length;
-  const summary = `${label} heatmap. Rows are status. Columns are time buckets. Color identifies status and intensity represents each count relative to the maximum of ${number.format(max)} ${unit}.`;
+  const summary = `${label} heatmap. Rows are status. Columns are time buckets. Color identifies status and intensity represents average latency relative to the maximum of ${formatDurationMs(max)}. Empty cells have no spans.`;
 
   return (
     <div
@@ -73,7 +83,11 @@ export function TraceVolumeHeatmap({
             </text>
             {buckets.map((bucket, column) => {
               const count = bucket.counts[key] ?? 0;
-              const intensity = max === 0 ? 0 : count / max;
+              const latencyMs = latencyByStatusAndTime.get(
+                `${key}|${bucket.tMs}`,
+              );
+              const hasLatency = count > 0 && latencyMs !== undefined;
+              const intensity = !hasLatency || max === 0 ? 0 : latencyMs / max;
               return (
                 <rect
                   key={bucket.tMs}
@@ -81,14 +95,19 @@ export function TraceVolumeHeatmap({
                   data-testid="trace-volume-heatmap-cell"
                   data-status={key}
                   data-count={count}
+                  data-latency={latencyMs}
                   data-intensity={intensity.toFixed(3)}
                   x={PADDING.left + cellWidth * column}
                   y={PADDING.top + cellHeight * row}
                   width={cellWidth}
                   height={cellHeight}
                   fill={colors[key]}
-                  fillOpacity={0.12 + intensity * 0.88}
-                  aria-label={`${key}, ${formatAxis(bucket.tMs)}: ${number.format(count)} ${unit}`}
+                  fillOpacity={hasLatency ? 0.12 + intensity * 0.88 : 0}
+                  aria-label={
+                    hasLatency
+                      ? `${key}, ${formatAxis(bucket.tMs)}: average latency ${formatDurationMs(latencyMs ?? 0)}`
+                      : `${key}, ${formatAxis(bucket.tMs)}: no data`
+                  }
                 />
               );
             })}

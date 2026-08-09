@@ -8,6 +8,7 @@ import {
 import {
   STATUS_COLORS,
   STATUS_ORDER,
+  fetchTraceLatency,
   fetchTraceVolume,
 } from "../../api/traceVolume";
 import { SignalHistogram } from "../explore/SignalHistogram";
@@ -170,6 +171,12 @@ function TraceSearch({ state, update }: Props) {
     queryFn: () =>
       fetchTraceVolume(resolveRange(state.range, Date.now()), step, filters),
   });
+  const latency = useQuery({
+    queryKey: ["trace-latency", rangeKey, step, traceql],
+    queryFn: () =>
+      fetchTraceLatency(resolveRange(state.range, Date.now()), step, filters),
+    enabled: volumeView === "heatmap",
+  });
 
   const addFilter = (f: TraceFilter) =>
     update({ traceFilters: upsertTraceFilter(filters, f), group: "" });
@@ -240,17 +247,23 @@ function TraceSearch({ state, update }: Props) {
               unit="spans"
               label="Span volume"
             />
-          ) : (
+          ) : latency.data ? (
             <TraceVolumeHeatmap
               series={volume.data}
+              latency={latency.data}
               order={STATUS_ORDER}
               colors={STATUS_COLORS}
               rangeMs={resolvedForStep}
               stepMs={(durationToSeconds(step) ?? 60) * 1000}
-              unit="spans"
-              label="Span volume"
+              label="Span latency"
             />
-          )}
+          ) : latency.isPending ? (
+            <div className="trace-heatmap-empty">Loading latency...</div>
+          ) : latency.isError ? (
+            <div className="trace-heatmap-empty" role="alert">
+              Latency query failed: {(latency.error as Error).message}
+            </div>
+          ) : null}
         </div>
       )}
       {filters.length > 0 && (

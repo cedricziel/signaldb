@@ -834,7 +834,7 @@ describe("TracesView span-volume chart", () => {
     expect(volumeQueries()).toBe(queryCount);
   });
 
-  it("switches to an accessible status heatmap without refetching", async () => {
+  it("fetches latency only when switching to the accessible status heatmap", async () => {
     stubFetchRoutes(routes);
     renderView();
     await screen.findByRole("img", { name: /span volume/i });
@@ -848,6 +848,7 @@ describe("TracesView span-volume chart", () => {
             input instanceof Request && input.url.includes("/api/v1/query"),
         ).length;
     const queryCount = volumeQueries();
+    expect(queryCount).toBeGreaterThan(0);
 
     await userEvent.click(screen.getByRole("button", { name: "Heatmap" }));
 
@@ -856,20 +857,37 @@ describe("TracesView span-volume chart", () => {
       "true",
     );
     const heatmap = screen.getByTestId("trace-volume-heatmap");
-    expect(heatmap).toHaveAccessibleName(/span volume heatmap/i);
+    expect(heatmap).toHaveAccessibleName(/span latency heatmap/i);
     expect(
       within(heatmap).getAllByTestId("trace-volume-heatmap-cell").length,
     ).toBeGreaterThan(0);
-    const error = within(heatmap).getByLabelText(/error,.*7 spans/i);
+    const error = within(heatmap).getByLabelText(/error,.*average latency/i);
     expect(error).toHaveAttribute("fill", "var(--err-bar)");
-    expect(error).toHaveAttribute("data-intensity", "0.003");
     expect(
-      within(heatmap).getByLabelText(/unset,.*2,018 spans/i),
-    ).toHaveAttribute("data-intensity", "1.000");
-    expect(
-      within(heatmap).getByText(/color identifies status and intensity/i),
+      within(heatmap).getByText(/intensity represents average latency/i),
     ).toBeInTheDocument();
-    expect(volumeQueries()).toBe(queryCount);
+    expect(volumeQueries()).toBe(queryCount + 1);
+    const docs = await Promise.all(
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.map(([input]) => input)
+        .filter(
+          (input): input is Request =>
+            input instanceof Request && input.url.includes("/api/v1/query"),
+        )
+        .map((request) => request.clone().json()),
+    );
+    expect(docs).toContainEqual(
+      expect.objectContaining({
+        pipeline: expect.arrayContaining([
+          expect.objectContaining({
+            aggregate: expect.objectContaining({
+              aggs: [{ fn: "avg", of: "duration.nanos", as: "latency" }],
+            }),
+          }),
+        ]),
+      }),
+    );
   });
 
   it("asks for the volume aggregate without a row limit", async () => {
