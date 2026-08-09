@@ -226,9 +226,13 @@ describe("LogList structured metadata", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "Copy value for span_id" }),
     );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Copy log message" }),
+    );
 
     expect(writeText).toHaveBeenNthCalledWith(1, "checkout");
     expect(writeText).toHaveBeenNthCalledWith(2, "def456");
+    expect(writeText).toHaveBeenNthCalledWith(3, "checkout timed out");
   });
 
   it("copies metadata as well as labels", async () => {

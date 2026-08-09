@@ -9,7 +9,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { runIrQuery } from "../../api/queryIr";
-import { CopyValueButton } from "../../components/CopyValueButton";
+import { AttributeValue } from "../../components/AttributeValue";
 import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
 import { FilterChips } from "../logs/FilterChips";
 import type { LabelFilter } from "../../lib/filters";
@@ -174,10 +174,7 @@ function RowsTable({ data, topN }: { data: QueryIrResponse; topN: boolean }) {
               const value = formatCell(cell);
               return (
                 <td key={j}>
-                  <span className="copy-value">
-                    <span className="copy-value-text">{value}</span>
-                    <CopyValueButton value={value} label={`cell ${value}`} />
-                  </span>
+                  <AttributeValue value={value} label={`cell ${value}`} />
                 </td>
               );
             })}
@@ -197,9 +194,8 @@ function SeriesChart({ data }: { data: QueryIrResponse }) {
         const labels = labelString(s.labels);
         return (
           <div key={i} className="ir-series-row">
-            <span className="ir-series-label copy-value">
-              <span className="copy-value-text">{labels}</span>
-              <CopyValueButton value={labels} label={`series ${labels}`} />
+            <span className="ir-series-label">
+              <AttributeValue value={labels} label={`series ${labels}`} />
             </span>
             <span className="ir-series-points">{s.points.length} points</span>
           </div>

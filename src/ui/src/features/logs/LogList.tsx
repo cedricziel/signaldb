@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useRef, useState } from "react";
 import type { LogRow } from "../../api/loki";
+import { AttributeValue } from "../../components/AttributeValue";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import type { LabelFilter } from "../../lib/filters";
 import { formatTimestamp } from "../../lib/time";
@@ -93,6 +94,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                         View trace {traceId.slice(0, 8)}…
                       </button>
                     )}
+                    <CopyValueButton value={row.line} label="log message" />
                     <button
                       className="act"
                       onClick={() =>
@@ -115,10 +117,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                       <div className="attr-row" data-scope="label" key={k}>
                         <dt>{k}</dt>
                         <dd>
-                          <span className="copy-value">
-                            <span className="copy-value-text">{v}</span>
-                            <CopyValueButton value={v} label={`value for ${k}`} />
-                          </span>
+                          <AttributeValue value={v} label={`value for ${k}`} />
                         </dd>
                         <span className="attr-actions">
                           <button
@@ -152,10 +151,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                       <div className="attr-row" data-scope="metadata" key={k}>
                         <dt>{k}</dt>
                         <dd>
-                          <span className="copy-value">
-                            <span className="copy-value-text">{v}</span>
-                            <CopyValueButton value={v} label={`value for ${k}`} />
-                          </span>
+                          <AttributeValue value={v} label={`value for ${k}`} />
                         </dd>
                         <span className="attr-scope">per-line</span>
                       </div>

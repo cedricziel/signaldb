@@ -11,7 +11,7 @@ import {
   fetchTraceVolume,
 } from "../../api/traceVolume";
 import { SignalHistogram } from "../explore/SignalHistogram";
-import { CopyValueButton } from "../../components/CopyValueButton";
+import { AttributeValue } from "../../components/AttributeValue";
 import { TraceFacets } from "./TraceFacets";
 import {
   compileTraceQL,
@@ -893,10 +893,7 @@ function SpanDetail({
           <div key={k}>
             <dt>{k}</dt>
             <dd>
-              <span className="copy-value">
-                <span className="copy-value-text">{String(v)}</span>
-                <CopyValueButton value={String(v)} label={`value for ${k}`} />
-              </span>
+              <AttributeValue value={String(v)} label={`value for ${k}`} />
             </dd>
           </div>
         ))}
@@ -926,44 +923,25 @@ function SpanEventItem({ event }: { event: SpanEventView }) {
         <div className="span-event-head">
           <span className="span-event-name">exception</span>
           {type !== undefined && (
-            <span className="span-event-type copy-value">
-              <span className="copy-value-text">{String(type)}</span>
-              <CopyValueButton
-                value={String(type)}
-                label="value for exception.type"
-              />
+            <span className="span-event-type">
+              <AttributeValue value={String(type)} label="value for exception.type" />
             </span>
           )}
         </div>
         {message !== undefined && (
           <div className="span-event-msg">
-            <span className="copy-value">
-              <span className="copy-value-text">{String(message)}</span>
-              <CopyValueButton
-                value={String(message)}
-                label="value for exception.message"
-              />
-            </span>
+            <AttributeValue value={String(message)} label="value for exception.message" />
           </div>
         )}
         {stacktrace !== undefined && String(stacktrace) !== "" && (
-          <pre className="span-event-trace">
-            <span className="copy-value">
-              <span className="copy-value-text">{String(stacktrace)}</span>
-              <CopyValueButton
-                value={String(stacktrace)}
-                label="value for exception.stacktrace"
-            />
-            </span>
-          </pre>
+          <div className="span-event-trace">
+            <AttributeValue value={String(stacktrace)} label="value for exception.stacktrace" />
+          </div>
         )}
         {rest.map(([k, v]) => (
           <div className="span-event-attr" key={k}>
             <span>{k}</span>
-            <span className="copy-value">
-              <span className="copy-value-text">{String(v)}</span>
-              <CopyValueButton value={String(v)} label={`value for ${k}`} />
-            </span>
+            <AttributeValue value={String(v)} label={`value for ${k}`} />
           </div>
         ))}
       </li>
@@ -977,10 +955,7 @@ function SpanEventItem({ event }: { event: SpanEventView }) {
       {Object.entries(event.attributes).map(([k, v]) => (
         <div className="span-event-attr" key={k}>
           <span>{k}</span>
-          <span className="copy-value">
-            <span className="copy-value-text">{String(v)}</span>
-            <CopyValueButton value={String(v)} label={`value for ${k}`} />
-          </span>
+          <AttributeValue value={String(v)} label={`value for ${k}`} />
         </div>
       ))}
     </li>

@@ -170,6 +170,69 @@ select:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.attribute-value {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.attribute-value .copy-value {
+  max-width: 100%;
+}
+
+.attribute-value[data-expanded] {
+  display: block;
+}
+
+.attribute-value[data-expanded] .copy-value {
+  display: flex;
+  align-items: flex-start;
+}
+
+.attribute-value-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attribute-value-toggle {
+  flex: none;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 10px;
+}
+
+.attribute-value-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.attribute-value-json {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: min(100%, 720px);
+  max-height: 300px;
+  margin: 0;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-inset, rgba(127, 127, 127, 0.08));
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json-key { color: var(--accent); }
+.json-string { color: var(--ok); }
+.json-number { color: var(--warn); }
+.json-boolean { color: var(--err); }
+.json-null { color: var(--faint); }
+
 .copy-value-button {
   flex: none;
   display: inline-flex;

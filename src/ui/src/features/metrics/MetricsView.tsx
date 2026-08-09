@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { promQueryRange, seriesName } from "../../api/prom";
-import { CopyValueButton } from "../../components/CopyValueButton";
+import { AttributeValue } from "../../components/AttributeValue";
 import {
   durationToSeconds,
   rangeToParam,
@@ -197,10 +197,7 @@ export function MetricsView({ state, update }: Props) {
               return (
                 <li key={name}>
                   <i style={{ background: seriesColorVar(i) }} />
-                  <span className="copy-value">
-                    <span className="copy-value-text">{name}</span>
-                    <CopyValueButton value={name} label={`series ${name}`} />
-                  </span>
+                  <AttributeValue value={name} label={`series ${name}`} />
                 </li>
               );
             })}
