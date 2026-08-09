@@ -657,7 +657,7 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
     for field in fields {
         // A field is valid iff it is present in the terminal relation — a
         // closed column when aggregated, or a resolvable logical field when not.
-        guard_logical_name(field)?;
+        ctx.guard_logical_name(field)?;
         if ctx.ref_type(field).is_err() {
             return Err(IrError::FieldNotInTerminal {
                 field: field.clone(),
@@ -727,6 +727,7 @@ mod tests {
                 "service_name",
                 ValueType::String,
             )
+            .with_physical_name("profiles", "samples_json")
             .with_attribute(
                 "profiles",
                 "resource.deployment.environment",
