@@ -55,6 +55,8 @@ pub struct FieldDefinition {
     pub required: bool,
     #[serde(default)]
     pub computed: Option<String>,
+    #[serde(default)]
+    pub physical_only: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +80,7 @@ pub struct ResolvedField {
     pub field_type: String,
     pub required: bool,
     pub computed: Option<String>,
+    pub physical_only: bool,
     pub field_id: usize,
 }
 
@@ -138,6 +141,7 @@ impl SchemaDefinitions {
                     field_type: field.field_type.clone(),
                     required: field.required,
                     computed: field.computed.clone(),
+                    physical_only: field.physical_only || field.computed.is_some(),
                     field_id,
                 };
                 field_names.insert(field.name.clone(), resolved_fields.len());
@@ -162,6 +166,7 @@ impl SchemaDefinitions {
                 field_type: addition.field_type.clone(),
                 required: addition.required,
                 computed: addition.computed.clone(),
+                physical_only: addition.physical_only || addition.computed.is_some(),
                 field_id: resolved_fields.len() + 1,
             };
             field_names.insert(addition.name.clone(), resolved_fields.len());
@@ -336,6 +341,7 @@ mod tests {
                     field_type: "timestamp_ns".to_string(),
                     required: true,
                     computed: None,
+                    physical_only: false,
                     field_id: 1,
                 },
                 ResolvedField {
@@ -343,6 +349,7 @@ mod tests {
                     field_type: "string".to_string(),
                     required: false,
                     computed: None,
+                    physical_only: false,
                     field_id: 2,
                 },
             ],
@@ -387,6 +394,7 @@ mod tests {
                     field_type: "timestamp_ns".to_string(),
                     required: true,
                     computed: None,
+                    physical_only: false,
                     field_id: 1,
                 },
                 ResolvedField {
@@ -394,6 +402,7 @@ mod tests {
                     field_type: "map<string,string>".to_string(),
                     required: false,
                     computed: None,
+                    physical_only: false,
                     field_id: 2,
                 },
             ],
@@ -493,5 +502,6 @@ fields = [
         assert_eq!(v2.fields[1].name, "span_name"); // Renamed from "name"
         assert_eq!(v2.fields[2].name, "timestamp");
         assert_eq!(v2.fields[2].computed, Some("start_time".to_string()));
+        assert!(v2.fields[2].physical_only);
     }
 }
