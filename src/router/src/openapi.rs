@@ -154,6 +154,10 @@ impl Modify for SecurityAddon {
         crate::endpoints::query::ResolvedWindow,
         crate::endpoints::query::ResultColumn,
         crate::endpoints::query::ResultSeries,
+        crate::endpoints::query::HeatmapAxisX,
+        crate::endpoints::query::HeatmapAxisY,
+        crate::endpoints::query::HeatmapCell,
+        crate::endpoints::query::HeatmapResult,
         // OAuth 2.1 connector consent DTOs
         crate::endpoints::oauth::ConsentDecision,
         crate::endpoints::oauth::ConsentDecisionResponse,

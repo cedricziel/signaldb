@@ -7,11 +7,20 @@
  * truncation artefact the volume chart exists to avoid. The IR aggregate is
  * evaluated server-side over the whole window with no limit on the path.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { HeatmapResult, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { facetField, type TraceFilter } from "../lib/traceFilters";
 import type { VolumeSeries } from "../features/explore/SignalHistogram";
+export type TraceLatencyHeatmap = HeatmapResult & {
+  window: { start_ns: number; end_ns: number };
+};
+
+// Geometric millisecond bounds provide useful resolution from sub-ms spans to
+// slow requests without letting callers create an unbounded result matrix.
+export const LATENCY_BUCKET_BOUNDS_NS = [
+  1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000,
+].map((ms) => ms * 1_000_000);
 
 /** Stacking order, bottom to top. */
 export const STATUS_ORDER = ["ok", "unset", "error"];
@@ -45,13 +54,7 @@ export function buildTraceVolumeDoc(
 ): QueryIrRequest {
   // The chart must describe the same traces the list shows, so the active
   // filters narrow it too.
-  const where = filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet) return [];
-    return [
-      { where: { field: facet.irField, op: "eq", value: f.value } },
-    ] as Record<string, unknown>[];
-  });
+  const where = traceFilterStages(filters);
   return {
     irVersion: 1,
     from: "traces",
@@ -67,6 +70,47 @@ export function buildTraceVolumeDoc(
           by: ["status.code"],
           aggs: [{ fn: "count", as: "n" }],
           step,
+        },
+      },
+    ],
+  };
+}
+
+function traceFilterStages(filters: TraceFilter[]): Record<string, unknown>[] {
+  return filters.flatMap((f) => {
+    const facet = facetField(f.field);
+    if (!facet) return [];
+    return [
+      { where: { field: facet.irField, op: "eq", value: f.value } },
+    ] as Record<string, unknown>[];
+  });
+}
+
+/** Build the v2 terminal heatmap relation over the full selected window. */
+export function buildTraceLatencyHeatmapDoc(
+  range: ResolvedRange,
+  step: string,
+  filters: TraceFilter[] = [],
+): QueryIrRequest {
+  return {
+    irVersion: 2,
+    from: "traces",
+    range: {
+      from: String(msToNanos(range.fromMs)),
+      to: String(msToNanos(range.toMs)),
+    },
+    result: "heatmap",
+    pipeline: [
+      ...traceFilterStages(filters),
+      {
+        heatmap: {
+          x: { step, align: "epoch" },
+          y: {
+            of: "duration",
+            bounds: LATENCY_BUCKET_BOUNDS_NS.map((bound) => `${bound}ns`),
+            overflow: true,
+          },
+          value: { fn: "count", as: "count" },
         },
       },
     ],
@@ -102,4 +146,17 @@ export async function fetchTraceVolume(
   return seriesFromIrResponse(
     await runIrQuery(buildTraceVolumeDoc(range, step, filters)),
   );
+}
+
+export async function fetchTraceLatencyHeatmap(
+  range: ResolvedRange,
+  step: string,
+  filters: TraceFilter[] = [],
+): Promise<TraceLatencyHeatmap> {
+  const response = await runIrQuery(
+    buildTraceLatencyHeatmapDoc(range, step, filters),
+  );
+  const heatmap = response.heatmap as HeatmapResult | undefined;
+  if (!heatmap) throw new Error("IR heatmap response omitted heatmap data");
+  return { ...heatmap, window: response.window };
 }

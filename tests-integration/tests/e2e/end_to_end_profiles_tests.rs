@@ -656,3 +656,68 @@ async fn pyroscope_render_endpoint_returns_flamegraph_for_ingested_profile() {
         render_response.flamebearer.names
     );
 }
+
+/// Native Query IR reads profile metadata through the router while keeping the
+/// storage payload columns out of the generic response.
+#[tokio::test]
+async fn query_ir_returns_profile_summary_without_raw_payloads() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let services = setup_services().await;
+    send_test_profile(&services).await;
+    wait_for_objects_persisted(&services.object_store, Duration::from_secs(15)).await;
+
+    let catalog = Catalog::new(&services.config.discovery.as_ref().unwrap().dsn)
+        .await
+        .unwrap();
+    let app = create_router(RouterAppState::new_with_flight_transport(
+        catalog,
+        services.config.clone(),
+        (*services.flight_transport).clone(),
+    ));
+    let body = serde_json::json!({
+        "irVersion": 1,
+        "from": "profiles",
+        "range": { "from": "1699999999000000000", "to": "1700000030000000000" },
+        "result": "rows",
+        "fields": ["profile.id", "service.name", "sample.type"],
+        "pipeline": []
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/query")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer test-key-123")
+            .header("x-tenant-id", TEST_TENANT)
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        if response.status() == StatusCode::OK {
+            let value: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            let names: Vec<&str> = value["columns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|column| column["name"].as_str())
+                .collect();
+            assert_eq!(names, vec!["profile_id", "service_name", "sample_type"]);
+            assert!(!value.to_string().contains("samples_json"));
+            assert!(!value.to_string().contains("stacktraces_json"));
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("profile summary IR query did not become queryable before timeout");
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+}

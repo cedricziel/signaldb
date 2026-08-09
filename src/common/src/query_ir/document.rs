@@ -22,6 +22,7 @@ pub enum ResultEnvelope {
     Rows,
     Series,
     Table,
+    Heatmap,
 }
 
 impl ResultEnvelope {
@@ -30,6 +31,7 @@ impl ResultEnvelope {
             ResultEnvelope::Rows => "rows",
             ResultEnvelope::Series => "series",
             ResultEnvelope::Table => "table",
+            ResultEnvelope::Heatmap => "heatmap",
         }
     }
 }

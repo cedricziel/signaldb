@@ -28,11 +28,12 @@ pub mod version;
 
 pub use document::{Document, Range, ResultEnvelope};
 pub use predicate::{ComparisonOp, Leaf, Predicate, Record};
-pub use relation::{Column, Grain, RelationType, RowSet, Series};
+pub use relation::{Column, Grain, Heatmap as HeatmapRelation, RelationType, RowSet, Series};
 pub use resolver::{FieldResolver, InMemoryResolver, Resolved};
 pub use source::{SourceDef, SourceRegistry};
 pub use stage::{
-    Agg, AggFn, Aggregate, DerivedField, Direction, Extract, Order, Parser, Rank, Stage,
+    Agg, AggFn, Aggregate, DerivedField, Direction, Extract, Heatmap, HeatmapAxisX, HeatmapAxisY,
+    HeatmapValue, Order, Parser, Rank, Stage,
 };
 pub use validate::{IrError, Validated, parse_document, validate};
 pub use value::{

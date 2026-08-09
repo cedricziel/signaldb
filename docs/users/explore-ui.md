@@ -43,7 +43,8 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   type in the highlight box to light up matching frames — e.g. a crate
   prefix like `common::` — while everything else dims, with a matched-share
   readout for finding your code in a library-heavy profile.
-- **Query** — a native [Query IR](querying-ir.md) builder for `logs`/`traces`:
+- **Query** — a native [Query IR](querying-ir.md) builder for `logs`, `traces`,
+  and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
   structured, versioned IR document (no dialect string) via the generated API
   client, rendering the declared `rows`/`series`/`table` result.

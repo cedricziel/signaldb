@@ -16,10 +16,12 @@
 
 use super::document::{Document, Range, ResultEnvelope};
 use super::predicate::{ComparisonOp, Leaf, Predicate};
-use super::relation::{Column, Grain, RelationType, RowSet, Series};
+use super::relation::{Column, Grain, Heatmap as HeatmapRelation, RelationType, RowSet, Series};
 use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry};
-use super::stage::{Agg, AggFn, Aggregate, Extract, Order, Rank, Stage, is_expression_string};
+use super::stage::{
+    Agg, AggFn, Aggregate, Extract, Heatmap, Order, Rank, Stage, is_expression_string,
+};
 use super::value::{ValueType, coerce, parse_duration_ns};
 
 /// Physical/storage column names and prefixes that the logical namespace guard
@@ -87,7 +89,7 @@ pub enum IrError {
     #[error("topk/bottomk `n` must be an integer > 0, got {n}")]
     InvalidRankSize { n: i64 },
 
-    #[error("`fields` projection is only valid for rows/table results, not series")]
+    #[error("`fields` projection is only valid for rows/table results, not series or heatmap")]
     FieldsOnSeries,
 
     #[error("`fields` entry '{field}' is not present in the terminal relation")]
@@ -121,6 +123,17 @@ pub fn validate(
             min: super::version::MIN_IR_VERSION,
             max: super::version::MAX_IR_VERSION,
         });
+    }
+    if doc.ir_version < 2
+        && (doc.result == ResultEnvelope::Heatmap
+            || doc
+                .pipeline
+                .iter()
+                .any(|stage| matches!(stage, Stage::Heatmap(_))))
+    {
+        return Err(IrError::Invalid(
+            "heatmap stage and result envelope require irVersion 2".to_string(),
+        ));
     }
 
     // 2. Source resolution — unknown source is a clear error, not a parse fail.
@@ -181,13 +194,14 @@ impl InferCtx<'_> {
             Stage::Bottomk(rank) => self.apply_rank("bottomk", rank),
             Stage::Order(keys) => self.apply_order(keys),
             Stage::Limit(_) => Ok(()),
+            Stage::Heatmap(heatmap) => self.apply_heatmap(heatmap),
         }
     }
 
     fn require_rowset(&self, stage: &str) -> Result<&RowSet, IrError> {
         match &self.relation {
             RelationType::RowSet(rs) => Ok(rs),
-            RelationType::Series(_) => Err(IrError::IllegalStage {
+            RelationType::Series(_) | RelationType::Heatmap(_) => Err(IrError::IllegalStage {
                 stage: stage.to_string(),
                 reason: "expects a row-set input but the pipeline is a series".to_string(),
             }),
@@ -204,7 +218,7 @@ impl InferCtx<'_> {
         }
         guard_logical_name(name)?;
         match &self.relation {
-            RelationType::Series(_) => Err(IrError::UnknownReference {
+            RelationType::Series(_) | RelationType::Heatmap(_) => Err(IrError::UnknownReference {
                 name: name.to_string(),
             }),
             RelationType::RowSet(rs) => {
@@ -401,6 +415,81 @@ impl InferCtx<'_> {
         Ok(())
     }
 
+    fn apply_heatmap(&mut self, heatmap: &Heatmap) -> Result<(), IrError> {
+        if self.source != "traces" {
+            return Err(IrError::IllegalStage {
+                stage: "heatmap".into(),
+                reason: "is currently supported for traces only".into(),
+            });
+        }
+        if self.require_rowset("heatmap")?.aggregated {
+            return Err(IrError::IllegalStage {
+                stage: "heatmap".into(),
+                reason: "cannot aggregate an already-aggregated relation".into(),
+            });
+        }
+        if heatmap.x.align != "epoch" {
+            return Err(IrError::Invalid("heatmap x.align must be 'epoch'".into()));
+        }
+        let step_ns = parse_duration_ns(&heatmap.x.step).ok_or_else(|| IrError::Coercion {
+            field: "heatmap.x.step".into(),
+            value: heatmap.x.step.clone(),
+            target: ValueType::DurationNs.to_string(),
+        })?;
+        if step_ns <= 0 {
+            return Err(IrError::Invalid("heatmap x.step must be > 0".into()));
+        }
+        let ty = self.ref_type(&heatmap.y.of)?;
+        if ty != ValueType::DurationNs {
+            return Err(IrError::Invalid(format!(
+                "heatmap y.of requires a duration field, got {ty}"
+            )));
+        }
+        if heatmap.value.func != AggFn::Count || heatmap.value.as_name != "count" {
+            return Err(IrError::Invalid(
+                "heatmap value must be { fn: 'count', as: 'count' }".into(),
+            ));
+        }
+        if !heatmap.y.overflow {
+            return Err(IrError::Invalid("heatmap y.overflow must be true".into()));
+        }
+        if heatmap.y.bounds.is_empty() || heatmap.y.bounds.len() > 32 {
+            return Err(IrError::Invalid("heatmap requires 1..=32 y bounds".into()));
+        }
+        let bounds = heatmap
+            .y
+            .bounds
+            .iter()
+            .map(|v| {
+                coerce(v, &ty).map_err(|_| IrError::Coercion {
+                    field: heatmap.y.of.clone(),
+                    value: v.to_string(),
+                    target: ty.to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let bounds = bounds
+            .iter()
+            .map(|v| match v {
+                super::value::Literal::Duration(n) => Ok(*n),
+                _ => Err(IrError::Invalid("heatmap bounds must be durations".into())),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if bounds.windows(2).any(|p| p[0] >= p[1]) {
+            return Err(IrError::Invalid(
+                "heatmap y.bounds must be strictly increasing".into(),
+            ));
+        }
+        self.relation = RelationType::Heatmap(HeatmapRelation {
+            x_step_ns: step_ns,
+            y_of: heatmap.y.of.clone(),
+            y_type: ty,
+            y_bounds: bounds,
+            value: "count".into(),
+        });
+        Ok(())
+    }
+
     fn check_agg(&self, a: &Agg, group_cols: &[Column]) -> Result<Column, IrError> {
         guard_logical_name(&a.as_name)?;
         // Uniqueness: against earlier introduced names, group fields, and any
@@ -546,6 +635,7 @@ fn validate_envelope(declared: ResultEnvelope, terminal: &RelationType) -> Resul
         (ResultEnvelope::Rows, RelationType::RowSet(rs)) => !rs.aggregated,
         (ResultEnvelope::Table, RelationType::RowSet(rs)) => rs.aggregated,
         (ResultEnvelope::Series, RelationType::Series(_)) => true,
+        (ResultEnvelope::Heatmap, RelationType::Heatmap(_)) => true,
         _ => false,
     };
     if ok {
@@ -562,12 +652,13 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
     let Some(fields) = &doc.fields else {
         return Ok(());
     };
-    if doc.result == ResultEnvelope::Series {
+    if matches!(doc.result, ResultEnvelope::Series | ResultEnvelope::Heatmap) {
         return Err(IrError::FieldsOnSeries);
     }
     for field in fields {
         // A field is valid iff it is present in the terminal relation — a
         // closed column when aggregated, or a resolvable logical field when not.
+        guard_logical_name(field)?;
         if ctx.ref_type(field).is_err() {
             return Err(IrError::FieldNotInTerminal {
                 field: field.clone(),
@@ -608,6 +699,32 @@ mod tests {
             )
             .with_column("traces", "service.name", "service_name", ValueType::String)
             .with_column("traces", "name", "name", ValueType::String)
+    }
+
+    fn profiles_resolver() -> InMemoryResolver {
+        InMemoryResolver::new()
+            .with_column("profiles", "profile.id", "profile_id", ValueType::String)
+            .with_column("profiles", "timestamp", "timestamp", ValueType::TimestampNs)
+            .with_column(
+                "profiles",
+                "duration",
+                "duration_nano",
+                ValueType::DurationNs,
+            )
+            .with_column("profiles", "sample.type", "sample_type", ValueType::String)
+            .with_column(
+                "profiles",
+                "service.name",
+                "service_name",
+                ValueType::String,
+            )
+            .with_attribute(
+                "profiles",
+                "resource.deployment.environment",
+                "resource_attributes",
+                ValueType::String,
+                false,
+            )
     }
 
     fn doc(v: serde_json::Value) -> Document {
@@ -708,9 +825,68 @@ mod tests {
             IrError::UnsupportedVersion {
                 found: 99,
                 min: 1,
-                max: 1
+                max: 2
             }
         );
+    }
+
+    fn heatmap_doc(version: i64, bounds: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": version, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "heatmap", "pipeline": [{ "heatmap": {
+                "x": { "step": "1m", "align": "epoch" },
+                "y": { "of": "duration_nano", "bounds": bounds, "overflow": true },
+                "value": { "fn": "count", "as": "count" }
+            }}]
+        })
+    }
+
+    #[test]
+    fn v2_duration_heatmap_parses_coerces_bounds_and_infers_relation() {
+        let validated = validate_json(heatmap_doc(2, json!(["1ms", "5ms", "1s"]))).unwrap();
+        assert!(
+            matches!(validated.terminal, RelationType::Heatmap(ref heatmap)
+            if heatmap.y_bounds == vec![1_000_000, 5_000_000, 1_000_000_000])
+        );
+    }
+
+    #[test]
+    fn v1_rejects_heatmap_stage_and_envelope() {
+        let err = validate_json(heatmap_doc(1, json!(["1ms"]))).unwrap_err();
+        assert!(matches!(err, IrError::Invalid(message) if message.contains("irVersion 2")));
+    }
+
+    #[test]
+    fn heatmap_rejects_non_increasing_duration_bounds() {
+        let err = validate_json(heatmap_doc(2, json!(["5ms", "5ms"]))).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(message) if message.contains("strictly increasing"))
+        );
+    }
+
+    #[test]
+    fn heatmap_rejects_non_duration_y_axes() {
+        let mut document = heatmap_doc(2, json!([1, 5]));
+        document["pipeline"][0]["heatmap"]["y"]["of"] = json!("numeric");
+
+        let resolver =
+            logs_resolver().with_column("traces", "numeric", "numeric", ValueType::Int64);
+        let err = validate(&doc(document), &SourceRegistry::core(), &resolver).unwrap_err();
+
+        assert!(
+            matches!(err, IrError::Invalid(ref message) if message.contains("duration field")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn heatmap_envelope_requires_terminal_heatmap_relation() {
+        let err = validate_json(json!({
+            "irVersion": 2, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "heatmap", "pipeline": []
+        }))
+        .unwrap_err();
+        assert!(matches!(err, IrError::EnvelopeMismatch { .. }));
     }
 
     // Task 1.5 — declared-envelope validation.
@@ -767,6 +943,49 @@ mod tests {
         });
         // Same document, unchanged shape, still validates.
         assert!(validate(&d, &sources, &logs_resolver()).is_ok());
+    }
+
+    #[test]
+    fn profiles_is_registered_as_a_summary_row_source() {
+        let sources = SourceRegistry::core();
+        let source = sources
+            .resolve("profiles")
+            .expect("profiles source is registered");
+        assert_eq!(source.grain, Grain::Event);
+        assert!(!source.allows_extract);
+    }
+
+    #[test]
+    fn profiles_accept_registered_summary_fields_and_resource_attributes() {
+        let document = doc(json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "fields": ["profile.id", "timestamp", "duration", "sample.type", "service.name"],
+            "pipeline": [{ "where": { "field": "resource.deployment.environment", "op": "eq", "value": "prod" } }]
+        }));
+        assert!(validate(&document, &SourceRegistry::core(), &profiles_resolver()).is_ok());
+    }
+
+    #[test]
+    fn profiles_reject_payload_json_and_log_extraction() {
+        let payload = doc(json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "fields": ["samples_json"], "pipeline": []
+        }));
+        assert!(matches!(
+            validate(&payload, &SourceRegistry::core(), &profiles_resolver()),
+            Err(IrError::PhysicalAddressing { .. })
+        ));
+
+        let extract = doc(json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [{ "extract": { "parser": "json", "as": [{ "name": "x", "type": "string" }] } }]
+        }));
+        assert!(matches!(
+            validate(&extract, &SourceRegistry::core(), &profiles_resolver()),
+            Err(IrError::IllegalStage { stage, .. }) if stage == "extract"
+        ));
     }
 
     // Task 2.1 — logical-namespace guard.

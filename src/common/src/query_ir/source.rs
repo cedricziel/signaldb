@@ -1,8 +1,8 @@
 //! # Extensible signal-source model
 //!
 //! The IR `from` source references a **registered** signal source, not a
-//! hardcoded enum. Logs and traces are the core sources; the registry lets a
-//! later change add `metrics`/`profiles` without reshaping the IR document.
+//! hardcoded enum. Logs, traces, and profiles are core sources; the registry
+//! lets a later change add metrics without reshaping the IR document.
 
 use std::collections::BTreeMap;
 
@@ -26,7 +26,8 @@ pub struct SourceRegistry {
 }
 
 impl SourceRegistry {
-    /// The core registry for this capability: `logs` and `traces`.
+    /// The core registry for this capability: `logs`, `traces`, and profile
+    /// summary rows.
     pub fn core() -> Self {
         let mut sources = BTreeMap::new();
         sources.insert(
@@ -42,6 +43,14 @@ impl SourceRegistry {
             SourceDef {
                 name: "traces".to_string(),
                 grain: Grain::Span,
+                allows_extract: false,
+            },
+        );
+        sources.insert(
+            "profiles".to_string(),
+            SourceDef {
+                name: "profiles".to_string(),
+                grain: Grain::Event,
                 allows_extract: false,
             },
         );

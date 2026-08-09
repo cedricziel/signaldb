@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { promQueryRange, seriesName } from "../../api/prom";
+import { AttributeValue } from "../../components/AttributeValue";
 import {
   durationToSeconds,
   rangeToParam,
@@ -191,12 +192,15 @@ export function MetricsView({ state, update }: Props) {
             <MetricsChart series={chart.data} />
           </div>
           <ul className="mlegend" aria-label="Series">
-            {chart.data.map((s, i) => (
-              <li key={seriesName(s.labels)}>
-                <i style={{ background: seriesColorVar(i) }} />
-                {seriesName(s.labels)}
-              </li>
-            ))}
+            {chart.data.map((s, i) => {
+              const name = seriesName(s.labels);
+              return (
+                <li key={name}>
+                  <i style={{ background: seriesColorVar(i) }} />
+                  <AttributeValue value={name} label={`series ${name}`} />
+                </li>
+              );
+            })}
           </ul>
         </>
       )}

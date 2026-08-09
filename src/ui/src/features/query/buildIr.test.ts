@@ -67,6 +67,20 @@ describe("buildIrDocument", () => {
     expect(JSON.stringify(doc)).not.toMatch(/\{[a-z_]+=/); // no `{label="..."}` selector
   });
 
+  it("emits a profile summary document", () => {
+    const doc = buildIrDocument({
+      source: "profiles",
+      result: "table",
+      range: { from: "now-1h", to: "now" },
+      filters: [],
+      aggregate: { by: ["service.name"], aggs: [{ fn: "count", as: "n" }] },
+    });
+    expect(doc.from).toBe("profiles");
+    expect(doc.pipeline).toEqual([
+      { aggregate: { by: ["service.name"], aggs: [{ fn: "count", as: "n" }] } },
+    ]);
+  });
+
   it("omits the value for an `exists` predicate", () => {
     const doc = buildIrDocument({
       source: "logs",

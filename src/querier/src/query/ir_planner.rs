@@ -1,7 +1,7 @@
 //! # IR → DataFusion planner (single-signal)
 //!
 //! Lowers a validated [`Document`](common::query_ir::Document) over a single
-//! signal (`logs`/`traces`) to a DataFusion `DataFrame`, satisfying the IR's
+//! signal (`logs`/`traces`/`profiles`) to a DataFusion `DataFrame`, satisfying the IR's
 //! denotational semantics. The DataFrame API is used throughout (as in the
 //! LogQL/trace planners), so user-controlled query values never enter a SQL
 //! string.
@@ -30,8 +30,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use common::query_ir::{
-    Aggregate, ComparisonOp, Document, Extract, FieldResolver, Leaf, Literal, Parser, Predicate,
-    Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType, coerce, validate,
+    Aggregate, ComparisonOp, Document, Extract, FieldResolver, Heatmap, Leaf, Literal, Parser,
+    Predicate, Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType,
+    coerce, validate,
 };
 use datafusion::arrow::array::{
     Array, LargeStringArray, StringArray, StringBuilder, StringViewArray,
@@ -149,6 +150,47 @@ impl SourcePlan {
                     ("status.code", "status_code"),
                 ],
             }),
+            "profiles" => Some(SourcePlan {
+                table: "profiles",
+                time_col: "timestamp",
+                time_is_timestamp: true,
+                containers: &[
+                    "profile_attributes",
+                    "scope_attributes",
+                    "resource_attributes",
+                ],
+                attr_prefixes: &[
+                    ("profile.", "profile_attributes"),
+                    ("scope.", "scope_attributes"),
+                    ("resource.", "resource_attributes"),
+                ],
+                // Summary rows intentionally omit profile payload columns
+                // (`samples_json`/`stacktraces_json`) and attribute containers.
+                row_defaults: &[
+                    "profile_id",
+                    "timestamp",
+                    "duration_nano",
+                    "sample_type",
+                    "sample_unit",
+                    "period_type",
+                    "period_unit",
+                    "period",
+                    "service_name",
+                    "trace_id",
+                    "span_id",
+                ],
+                aliases: &[
+                    ("profile.id", "profile_id"),
+                    ("duration", "duration_nano"),
+                    ("sample.type", "sample_type"),
+                    ("sample.unit", "sample_unit"),
+                    ("period.type", "period_type"),
+                    ("period.unit", "period_unit"),
+                    ("service.name", "service_name"),
+                    ("trace.id", "trace_id"),
+                    ("span.id", "span_id"),
+                ],
+            }),
             _ => None,
         }
     }
@@ -236,7 +278,16 @@ impl SchemaResolver {
 impl FieldResolver for SchemaResolver {
     fn resolve(&self, _source: &str, field: &str) -> Option<Resolved> {
         match self.column_for(field) {
-            Some((name, value_type)) => Some(Resolved::Column { name, value_type }),
+            Some((name, value_type)) => Some(Resolved::Column {
+                name,
+                // Persisted trace durations are Int64 nanoseconds, but their
+                // logical IR name carries duration literal coercion semantics.
+                value_type: if matches!(field, "duration" | "duration_nano") {
+                    ValueType::DurationNs
+                } else {
+                    value_type
+                },
+            }),
             // An unpromoted attribute: a String extraction from the container.
             None => Some(Resolved::JsonPath {
                 container: self.container.clone(),
@@ -355,6 +406,7 @@ impl IrService {
 
         // Resolve the time window once against the injected clock.
         let window = resolve_window(doc, now_ns)?;
+        validate_heatmap_window(doc, &window)?;
 
         let mut lowering = Lowering {
             source: &source,
@@ -379,6 +431,42 @@ impl IrService {
         df = lowering.apply_projection(df, doc)?;
         Ok(Some((df, window)))
     }
+}
+
+fn validate_heatmap_window(doc: &Document, window: &ResolvedWindow) -> Result<(), QuerierError> {
+    const MAX_TIME_BUCKETS: i64 = 512;
+    for stage in &doc.pipeline {
+        let Stage::Heatmap(heatmap) = stage else {
+            continue;
+        };
+        let step = common::query_ir::parse_duration_ns(&heatmap.x.step)
+            .ok_or_else(|| QuerierError::InvalidInput("invalid heatmap step".into()))?;
+        if window.start_ns >= window.end_ns || step <= 0 {
+            return Err(QuerierError::InvalidInput(
+                "heatmap requires a positive step and non-empty range".into(),
+            ));
+        }
+        let buckets = heatmap_bucket_count(window.start_ns, window.end_ns, step)?;
+        if buckets > MAX_TIME_BUCKETS {
+            return Err(QuerierError::InvalidInput(format!(
+                "heatmap has {buckets} time buckets; maximum is {MAX_TIME_BUCKETS}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Count epoch-aligned buckets that intersect the inclusive query window.
+fn heatmap_bucket_count(start_ns: i64, end_ns: i64, step_ns: i64) -> Result<i64, QuerierError> {
+    if start_ns >= end_ns || step_ns <= 0 {
+        return Err(QuerierError::InvalidInput(
+            "heatmap requires a positive step and non-empty range".into(),
+        ));
+    }
+    let first = start_ns.div_euclid(step_ns) as i128;
+    let last = end_ns.div_euclid(step_ns) as i128;
+    i64::try_from(last - first + 1)
+        .map_err(|_| QuerierError::InvalidInput("heatmap time bucket count overflows i64".into()))
 }
 
 /// Resolve the document's range to an absolute window.
@@ -495,6 +583,7 @@ impl Lowering<'_> {
                 .limit(0, Some(*n as usize))
                 .map_err(QuerierError::QueryFailed),
             Stage::Extract(extract) => self.lower_extract(df, extract),
+            Stage::Heatmap(heatmap) => self.lower_heatmap(df, heatmap),
         }
     }
 
@@ -601,6 +690,76 @@ impl Lowering<'_> {
             return df.sort(sort).map_err(QuerierError::QueryFailed);
         }
         Ok(df)
+    }
+
+    fn lower_heatmap(
+        &mut self,
+        df: DataFrame,
+        heatmap: &Heatmap,
+    ) -> Result<DataFrame, QuerierError> {
+        let step_ns = common::query_ir::parse_duration_ns(&heatmap.x.step).ok_or_else(|| {
+            QuerierError::InvalidInput(format!("invalid heatmap step '{}'", heatmap.x.step))
+        })?;
+        let y_type = self
+            .resolver
+            .resolve("", &heatmap.y.of)
+            .ok_or_else(|| {
+                QuerierError::InvalidInput(format!("unknown heatmap field '{}'", heatmap.y.of))
+            })?
+            .value_type()
+            .clone();
+        let bounds = heatmap
+            .y
+            .bounds
+            .iter()
+            .map(|bound| {
+                common::query_ir::coerce(bound, &y_type)
+                    .map_err(|e| QuerierError::InvalidInput(e.to_string()))
+                    .and_then(|value| match value {
+                        Literal::Duration(ns) => Ok(ns),
+                        _ => Err(QuerierError::InvalidInput(
+                            "heatmap bounds must be duration values".into(),
+                        )),
+                    })
+            })
+            .collect::<Result<Vec<_>, QuerierError>>()?;
+        // DataFusion integer division truncates negative values toward zero.
+        // Offset negative timestamps before division to retain epoch floor semantics.
+        let time = col(self.source.time_col);
+        let time_bucket = datafusion::logical_expr::when(
+            time.clone().lt(lit(0i64)),
+            ((time.clone() + lit(1i64)) / lit(step_ns) - lit(1i64)) * lit(step_ns),
+        )
+        .otherwise((time / lit(step_ns)) * lit(step_ns))
+        .map_err(QuerierError::QueryFailed)?;
+        let mut duration_bucket = lit(bounds.len() as i64);
+        for (index, bound) in bounds.iter().enumerate().rev() {
+            duration_bucket = datafusion::logical_expr::when(
+                self.value_expr(&heatmap.y.of)?.lt(lit(*bound)),
+                lit(index as i64),
+            )
+            .otherwise(duration_bucket)
+            .map_err(QuerierError::QueryFailed)?;
+        }
+        self.aggregated = true;
+        self.col_of = HashMap::from([
+            ("time_bucket_ns".into(), "time_bucket_ns".into()),
+            ("duration_bucket".into(), "duration_bucket".into()),
+            ("count".into(), "count".into()),
+        ]);
+        df.aggregate(
+            vec![
+                time_bucket.alias("time_bucket_ns"),
+                duration_bucket.alias("duration_bucket"),
+            ],
+            vec![count(lit(1i64)).alias("count")],
+        )
+        .map_err(QuerierError::QueryFailed)?
+        .sort(vec![
+            col("time_bucket_ns").sort(true, false),
+            col("duration_bucket").sort(true, false),
+        ])
+        .map_err(QuerierError::QueryFailed)
     }
 
     fn agg_expr(&self, a: &common::query_ir::Agg) -> Result<Expr, QuerierError> {
@@ -864,7 +1023,9 @@ impl Lowering<'_> {
 
     fn apply_projection(&self, df: DataFrame, doc: &Document) -> Result<DataFrame, QuerierError> {
         // Series results are already shaped by the step aggregate.
-        if doc.result == ResultEnvelope::Series || self.series_shaped {
+        if matches!(doc.result, ResultEnvelope::Series | ResultEnvelope::Heatmap)
+            || self.series_shaped
+        {
             return Ok(df);
         }
         let projection: Vec<Expr> = match &doc.fields {
@@ -1325,6 +1486,70 @@ mod tests {
         ctx
     }
 
+    fn profiles_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("profile_id", DataType::Utf8, false),
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("duration_nano", DataType::Int64, false),
+            Field::new("sample_type", DataType::Utf8, false),
+            Field::new("sample_unit", DataType::Utf8, false),
+            Field::new("period_type", DataType::Utf8, true),
+            Field::new("period_unit", DataType::Utf8, true),
+            Field::new("period", DataType::Int64, true),
+            Field::new("service_name", DataType::Utf8, false),
+            map_field_named("profile_attributes"),
+            map_field_named("scope_attributes"),
+            map_field_named("resource_attributes"),
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("span_id", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["p1", "p2", "p3"])),
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20, 30])),
+                Arc::new(Int64Array::from(vec![100_i64, 200, 300])),
+                Arc::new(StringArray::from(vec!["cpu", "cpu", "heap"])),
+                Arc::new(StringArray::from(vec!["nanoseconds"; 3])),
+                Arc::new(StringArray::from(vec![Some("cpu"); 3])),
+                Arc::new(StringArray::from(vec![Some("nanoseconds"); 3])),
+                Arc::new(Int64Array::from(vec![Some(10_i64); 3])),
+                Arc::new(StringArray::from(vec!["api", "api", "web"])),
+                build_map(&[
+                    &[("profile.kind", "cpu")],
+                    &[("profile.kind", "cpu")],
+                    &[("profile.kind", "heap")],
+                ]),
+                build_map(&[
+                    &[("otel.scope.name", "profiler")],
+                    &[("otel.scope.name", "profiler")],
+                    &[("otel.scope.name", "profiler")],
+                ]),
+                build_map(&[
+                    &[("deployment.environment", "prod")],
+                    &[("deployment.environment", "prod")],
+                    &[("deployment.environment", "staging")],
+                ]),
+                Arc::new(StringArray::from(vec![Some("t1"), Some("t2"), None])),
+                Arc::new(StringArray::from(vec![Some("s1"), Some("s2"), None])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("profiles".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
     fn doc(v: serde_json::Value) -> Document {
         serde_json::from_value(v).unwrap()
     }
@@ -1362,6 +1587,56 @@ mod tests {
         assert!(plan.contains("date_bin"), "plan:\n{plan}");
         // Executes.
         let _ = df.collect().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn profiles_summary_rows_grouped_tables_and_series_execute() {
+        let svc = IrService::new(profiles_ctx());
+        let rows = doc(serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["profile.id", "duration", "sample.type", "service.name"],
+            "pipeline": [{ "where": { "field": "resource.deployment.environment", "op": "eq", "value": "prod" } }]
+        }));
+        let (df, _) = svc.plan(&rows, "t", "d", 0).await.unwrap().unwrap();
+        assert_eq!(
+            df.collect()
+                .await
+                .unwrap()
+                .iter()
+                .map(|b| b.num_rows())
+                .sum::<usize>(),
+            2
+        );
+
+        let table = doc(serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
+            "result": "table", "pipeline": [{ "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } }]
+        }));
+        let (df, _) = svc.plan(&table, "t", "d", 0).await.unwrap().unwrap();
+        assert_eq!(
+            df.collect()
+                .await
+                .unwrap()
+                .iter()
+                .map(|b| b.num_rows())
+                .sum::<usize>(),
+            2
+        );
+
+        let series = doc(serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
+            "result": "series", "pipeline": [{ "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }], "step": "1ms" } }]
+        }));
+        let (df, _) = svc.plan(&series, "t", "d", 0).await.unwrap().unwrap();
+        assert_eq!(
+            df.collect()
+                .await
+                .unwrap()
+                .iter()
+                .map(|b| b.num_rows())
+                .sum::<usize>(),
+            2
+        );
     }
 
     // ---- OTel-native attribute scopes ----
@@ -1694,14 +1969,20 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(StringArray::from(vec!["t1", "t2", "t3"])),
-                Arc::new(StringArray::from(vec!["s1", "s2", "s3"])),
-                Arc::new(StringArray::from(vec![Some("p1"), None, Some("p3")])),
-                Arc::new(StringArray::from(vec!["GET /a", "GET /b", "POST /c"])),
-                Arc::new(StringArray::from(vec!["api", "api", "web"])),
-                Arc::new(Int64Array::from(vec![10_i64, 20, 30])),
-                Arc::new(Int64Array::from(vec![100_i64, 900, 500])),
+                Arc::new(StringArray::from(vec!["t0", "t1", "t2", "t3"])),
+                Arc::new(StringArray::from(vec!["s0", "s1", "s2", "s3"])),
+                Arc::new(StringArray::from(vec![None, Some("p1"), None, Some("p3")])),
                 Arc::new(StringArray::from(vec![
+                    "GET /before",
+                    "GET /a",
+                    "GET /b",
+                    "POST /c",
+                ])),
+                Arc::new(StringArray::from(vec!["api", "api", "api", "web"])),
+                Arc::new(Int64Array::from(vec![-1_i64, 10, 20, 30])),
+                Arc::new(Int64Array::from(vec![100_i64, 100, 900, 500])),
+                Arc::new(StringArray::from(vec![
+                    Some("OK"),
                     Some("OK"),
                     Some("ERROR"),
                     Some("OK"),
@@ -1828,6 +2109,81 @@ mod tests {
             .unwrap()
             .value(0);
         assert_eq!(dur, 900);
+    }
+
+    #[tokio::test]
+    async fn trace_heatmap_uses_epoch_buckets_and_duration_boundary_overflow_bins() {
+        let svc = IrService::new(traces_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 2, "from": "traces", "range": { "from": -10, "to": 40 },
+            "result": "heatmap", "pipeline": [{ "heatmap": {
+                "x": { "step": "10ns", "align": "epoch" },
+                "y": { "of": "duration", "bounds": [100, 500, 900], "overflow": true },
+                "value": { "fn": "count", "as": "count" }
+            }}]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains("start_time_unix_nano"),
+            "precise range predicate is retained: {plan}"
+        );
+        let batches = df.collect().await.unwrap();
+        let mut cells = Vec::new();
+        for batch in batches {
+            let time = batch
+                .column_by_name("time_bucket_ns")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let bucket = batch
+                .column_by_name("duration_bucket")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let count = batch
+                .column_by_name("count")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                cells.push((time.value(row), bucket.value(row), count.value(row)));
+            }
+        }
+        assert_eq!(cells, vec![(-10, 1, 1), (10, 1, 1), (20, 3, 1), (30, 2, 1)]);
+    }
+
+    #[test]
+    fn heatmap_window_counts_aligned_buckets_inclusive_of_end() {
+        assert_eq!(heatmap_bucket_count(1, 5121, 10).unwrap(), 513);
+    }
+
+    #[test]
+    fn heatmap_window_rejects_extreme_timestamp_ranges() {
+        let err = heatmap_bucket_count(i64::MIN, i64::MAX, 1).unwrap_err();
+        assert!(err.to_string().contains("overflows"));
+    }
+
+    #[tokio::test]
+    async fn trace_heatmap_keeps_partition_pruning_predicates() {
+        let svc = IrService::new(traces_partitioned_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 2, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "heatmap", "pipeline": [{ "heatmap": {
+                "x": { "step": "1us", "align": "epoch" },
+                "y": { "of": "duration", "bounds": ["1ns"], "overflow": true },
+                "value": { "fn": "count", "as": "count" }
+            }}]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains(".timestamp >=") && plan.contains(".timestamp <="),
+            "partition bounds missing: {plan}"
+        );
     }
 
     /// A logs table whose `body` holds JSON documents, for `extract`.
@@ -2203,6 +2559,18 @@ mod tests {
             &SourcePlan::for_source("traces").unwrap(),
             &trace_cols,
             "traces",
+        );
+
+        let profiles = common::iceberg::schemas::create_profiles_schema().unwrap();
+        let profile_cols: HashSet<String> = profiles
+            .fields()
+            .iter()
+            .map(|field| field.name.to_string())
+            .collect();
+        check(
+            &SourcePlan::for_source("profiles").unwrap(),
+            &profile_cols,
+            "profiles",
         );
     }
 

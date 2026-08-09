@@ -8,10 +8,14 @@ import {
 import {
   STATUS_COLORS,
   STATUS_ORDER,
+  fetchTraceLatencyHeatmap,
   fetchTraceVolume,
 } from "../../api/traceVolume";
 import { SignalHistogram } from "../explore/SignalHistogram";
+import { AttributeValue } from "../../components/AttributeValue";
 import { TraceFacets } from "./TraceFacets";
+import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
+import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
 import {
   compileTraceQL,
   upsertTraceFilter,
@@ -147,6 +151,9 @@ export function TracesView({ state, update }: Props) {
 }
 
 function TraceSearch({ state, update }: Props) {
+  const [volumeView, setVolumeView] = useState<
+    "histogram" | "area" | "heatmap"
+  >("histogram");
   const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
   const filters = state.traceFilters;
   const traceql = compileTraceQL(filters);
@@ -162,6 +169,16 @@ function TraceSearch({ state, update }: Props) {
     queryFn: () =>
       fetchTraceVolume(resolveRange(state.range, Date.now()), step, filters),
   });
+  const latencyHeatmap = useQuery({
+    queryKey: ["trace-latency", rangeKey, step, traceql],
+    queryFn: () =>
+      fetchTraceLatencyHeatmap(
+        resolveRange(state.range, Date.now()),
+        step,
+        filters,
+      ),
+    enabled: volumeView === "heatmap",
+  });
 
   const addFilter = (f: TraceFilter) =>
     update({ traceFilters: upsertTraceFilter(filters, f), group: "" });
@@ -175,8 +192,51 @@ function TraceSearch({ state, update }: Props) {
 
   return (
     <div className="traces-search">
-      {volume.data && (
-        <div className="histo-wrap">
+      <div className="histo-wrap">
+        <div className="trace-volume-head">
+          <span>Span volume</span>
+          <div
+            className="trace-volume-mode"
+            role="group"
+            aria-label="Trace volume visualization"
+          >
+            <button
+              type="button"
+              aria-pressed={volumeView === "histogram"}
+              onClick={() => setVolumeView("histogram")}
+            >
+              Histogram
+            </button>
+            <button
+              type="button"
+              aria-pressed={volumeView === "area"}
+              onClick={() => setVolumeView("area")}
+            >
+              Area
+            </button>
+            <button
+              type="button"
+              aria-pressed={volumeView === "heatmap"}
+              onClick={() => setVolumeView("heatmap")}
+            >
+              Heatmap
+            </button>
+          </div>
+        </div>
+        {volumeView === "heatmap" ? (
+          latencyHeatmap.data ? (
+            <TraceVolumeHeatmap
+              heatmap={latencyHeatmap.data}
+              label="Span latency"
+            />
+          ) : latencyHeatmap.isPending ? (
+            <div className="trace-heatmap-empty">Loading latency...</div>
+          ) : latencyHeatmap.isError ? (
+            <div className="trace-heatmap-empty" role="alert">
+              Latency query failed: {(latencyHeatmap.error as Error).message}
+            </div>
+          ) : null
+        ) : volume.data && volumeView === "histogram" ? (
           <SignalHistogram
             series={volume.data}
             order={STATUS_ORDER}
@@ -191,8 +251,18 @@ function TraceSearch({ state, update }: Props) {
             stepOptions={stepOptionsForRange(resolvedForStep)}
             onStepChange={(step) => update({ step })}
           />
-        </div>
-      )}
+        ) : volume.data && volumeView === "area" ? (
+          <TraceVolumeAreaChart
+            series={volume.data}
+            order={STATUS_ORDER}
+            colors={STATUS_COLORS}
+            rangeMs={resolvedForStep}
+            stepMs={(durationToSeconds(step) ?? 60) * 1000}
+            unit="spans"
+            label="Span volume"
+          />
+        ) : null}
+      </div>
       {filters.length > 0 && (
         <div className="trace-chips" aria-label="Active filters">
           {filters.map((f) => (
@@ -891,7 +961,9 @@ function SpanDetail({
         {attrs.map(([k, v]) => (
           <div key={k}>
             <dt>{k}</dt>
-            <dd>{String(v)}</dd>
+            <dd>
+              <AttributeValue value={String(v)} label={`value for ${k}`} />
+            </dd>
           </div>
         ))}
       </dl>
@@ -920,19 +992,34 @@ function SpanEventItem({ event }: { event: SpanEventView }) {
         <div className="span-event-head">
           <span className="span-event-name">exception</span>
           {type !== undefined && (
-            <span className="span-event-type">{String(type)}</span>
+            <span className="span-event-type">
+              <AttributeValue
+                value={String(type)}
+                label="value for exception.type"
+              />
+            </span>
           )}
         </div>
         {message !== undefined && (
-          <div className="span-event-msg">{String(message)}</div>
+          <div className="span-event-msg">
+            <AttributeValue
+              value={String(message)}
+              label="value for exception.message"
+            />
+          </div>
         )}
         {stacktrace !== undefined && String(stacktrace) !== "" && (
-          <pre className="span-event-trace">{String(stacktrace)}</pre>
+          <div className="span-event-trace">
+            <AttributeValue
+              value={String(stacktrace)}
+              label="value for exception.stacktrace"
+            />
+          </div>
         )}
         {rest.map(([k, v]) => (
           <div className="span-event-attr" key={k}>
             <span>{k}</span>
-            <span>{String(v)}</span>
+            <AttributeValue value={String(v)} label={`value for ${k}`} />
           </div>
         ))}
       </li>
@@ -946,7 +1033,7 @@ function SpanEventItem({ event }: { event: SpanEventView }) {
       {Object.entries(event.attributes).map(([k, v]) => (
         <div className="span-event-attr" key={k}>
           <span>{k}</span>
-          <span>{String(v)}</span>
+          <AttributeValue value={String(v)} label={`value for ${k}`} />
         </div>
       ))}
     </li>

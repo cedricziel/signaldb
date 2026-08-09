@@ -112,6 +112,21 @@ describe("MetricsView", () => {
     expect(legend).toHaveTextContent('up{service_name="payments"}');
   });
 
+  it("copies a rendered series label", async () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
+    renderView({ promql: "up" });
+
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: 'Copy series up{service_name="checkout"}',
+      }),
+    );
+
+    expect(writeText).toHaveBeenCalledWith('up{service_name="checkout"}');
+  });
+
   it("shows an empty state for zero series", async () => {
     stubFetchRoutes([
       {

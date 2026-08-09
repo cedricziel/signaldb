@@ -5,6 +5,7 @@ status: living
 sources:
   - src/router/src/endpoints/query.rs
   - src/common/src/query_ir/**
+  - src/querier/src/query/ir_planner.rs
   - src/signaldb-cli/src/commands/query.rs
 ---
 
@@ -17,8 +18,8 @@ Grafana and existing clients; the IR is what the SignalDB UI and CLI build
 directly, without formulating a dialect string.
 
 This page is the reference for the IR at its foundational scope: **single-signal
-queries over `logs` and `traces`**. Cross-signal correlation, structural trace
-matching, and metrics are separate, later capabilities (see
+queries over `logs`, `traces`, and profile summaries**. Cross-signal correlation,
+structural trace matching, and metrics are separate, later capabilities (see
 [Roadmap](#roadmap)).
 
 ## The endpoint
@@ -40,18 +41,17 @@ body. The response is the declared result envelope (see
 
 ```jsonc
 {
-  "irVersion": 1, // versioned; the server accepts a bounded range
-  "from": "logs", // a registered source: "logs" or "traces"
+  "irVersion": 1, // versioned; use 2 for heatmap
+  "from": "logs", // a registered source: "logs", "traces", or "profiles"
   "range": { "from": "now-1h", "to": "now" },
-  "result": "series", // declared envelope: "rows" | "series" | "table"
+  "result": "series", // v1: rows | series | table; v2 adds heatmap
   "fields": ["service.name"], // optional curated projection (rows/table)
   "pipeline": [/* ordered transform stages */],
 }
 ```
 
-- **`from`** selects a _registered signal source_. It is not a fixed enum —
-  later releases add sources (metrics, profiles) without changing the document
-  shape.
+- **`from`** selects a _registered signal source_. It is not a fixed enum, so
+  later releases can add sources without changing the document shape.
 - **`range`** bounds the query in time. `from`/`to` are timestamp literals:
   RFC3339, a relative anchor (`now`, `now-1h`, `now+30m`), or integer
   nanoseconds. Relative anchors are resolved **once**, against the server clock,
@@ -84,6 +84,7 @@ single-key object naming the stage:
 | `topk` / `bottomk` | `{ n, of }`                      | rank by a numeric column                         |
 | `order`            | `[{ of, dir }]`                  | sort                                             |
 | `limit`            | integer                          | bound the row count                              |
+| `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate    |
 
 An unknown stage, or a stage illegal for the source (e.g. `extract` on
 `traces`), is rejected by name during validation — never silently dropped.
@@ -130,6 +131,7 @@ prefix addresses exactly one container:
 | `scope.`    | scope attributes      | logs, traces |
 | `log.`      | log-record attributes | logs         |
 | `span.`     | span attributes       | traces       |
+| `profile.`  | profile attributes    | profiles     |
 
 ```jsonc
 { "field": "resource.deployment.environment", "op": "eq", "value": "prod" }
@@ -241,6 +243,56 @@ An attribute container is typed `map<string,string>` and arrives as a JSON
 object, so you index a key rather than parse a rendering. A `null` cell means
 the row carried no such container; `{}` means it carried one holding no
 attributes.
+
+## Profile summaries
+
+`profiles` reads one metadata row per stored profile. It supports the same
+filtering, aggregation, ranking, ordering, and rows/table/series envelopes as
+the other scalar sources. Profile IR requests require the `profiles:read` scope;
+the authenticated tenant and dataset still determine the table scanned.
+
+The registered scalar fields are `profile.id`, `timestamp`, `duration`,
+`sample.type`, `sample.unit`, `period.type`, `period.unit`, `period`,
+`service.name`, `trace.id`, and `span.id`, plus registered profile, scope, and
+resource attributes. The default rows projection contains only those scalar
+metadata values.
+
+Profile IR deliberately does not expose `samples_json`, `stacktraces_json`, or
+attribute payload columns. Use the Pyroscope-compatible APIs for flamegraphs,
+diffs, label discovery, profile extraction, and heatmaps; those payload-oriented
+operations remain specialized APIs rather than generic Query IR fields.
+
+### Heatmap envelope (IR v2)
+
+Use the terminal `heatmap` stage to count spans by epoch-aligned time and
+duration. It is currently available for `traces`; `duration` accepts duration
+literals for its bounds.
+
+```json
+{
+  "irVersion": 2,
+  "from": "traces",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "heatmap",
+  "pipeline": [{
+    "heatmap": {
+      "x": { "step": "1m", "align": "epoch" },
+      "y": { "of": "duration", "bounds": ["1ms", "5ms", "25ms", "100ms", "1s"], "overflow": true },
+      "value": { "fn": "count", "as": "count" }
+    }
+  }]
+}
+```
+
+The response has `result: "heatmap"` and a `heatmap` object containing `x`
+(`step_ns`, `align`), `y` (`of: "duration"`, `type: "duration_ns"`,
+integer-nanosecond `bounds`, `overflow`), and sparse
+`{time_bucket_ns, duration_bucket, count}` cells.
+Bounds are lower-inclusive and upper-exclusive. Values below the first bound
+use bucket zero; values at or above the final bound use the final overflow
+bucket. Missing cells inside the declared window are zero. The server accepts
+at most 32 y-axis bounds and rejects non-positive steps or non-increasing
+bounds before execution.
 
 ## Worked example — error-log volume by service (logs → series)
 

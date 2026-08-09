@@ -84,6 +84,34 @@ describe("LogList", () => {
     });
   });
 
+  it("sorts expanded attributes alphabetically within each scope", async () => {
+    const { container } = render(
+      <LogList
+        rows={[
+          row({
+            labels: { zebra: "last", alpha: "first" },
+            metadata: { omega: "last", beta: "first" },
+          }),
+        ]}
+        onAddFilter={() => {}}
+        onOpenTrace={() => {}}
+      />,
+    );
+
+    await userEvent.click(screen.getByText("hello"));
+
+    expect(
+      [...container.querySelectorAll(".attr-row[data-scope='label'] dt")].map(
+        (element) => element.textContent,
+      ),
+    ).toEqual(["alpha", "zebra"]);
+    expect(
+      [...container.querySelectorAll(".attr-row[data-scope='metadata'] dt")].map(
+        (element) => element.textContent,
+      ),
+    ).toEqual(["beta", "omega"]);
+  });
+
   it("supports exclude filters from the detail view", async () => {
     const onAddFilter = vi.fn();
     render(
@@ -175,6 +203,36 @@ describe("LogList structured metadata", () => {
         name: "Filter for service_name = checkout",
       }),
     ).toBeInTheDocument();
+  });
+
+  it("copies individual label and metadata values", async () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    render(
+      <LogList
+        rows={[metaRow]}
+        onAddFilter={() => {}}
+        onOpenTrace={() => {}}
+      />,
+    );
+
+    await userEvent.click(screen.getByText("checkout timed out"));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Copy value for service_name" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Copied value for service_name" }),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Copy value for span_id" }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Copy log message" }),
+    );
+
+    expect(writeText).toHaveBeenNthCalledWith(1, "checkout");
+    expect(writeText).toHaveBeenNthCalledWith(2, "def456");
+    expect(writeText).toHaveBeenNthCalledWith(3, "checkout timed out");
   });
 
   it("copies metadata as well as labels", async () => {

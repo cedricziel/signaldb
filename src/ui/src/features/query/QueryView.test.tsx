@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithClient } from "../../test/render";
 import { resetApiClient, stubApiFetch } from "../../test/apiClient";
@@ -50,5 +51,66 @@ describe("QueryView", () => {
 
     // The rows envelope renders.
     await screen.findByText("checkout");
+  });
+
+  it("selects profile summaries and renders their generic rows envelope", async () => {
+    const calls = stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "profile_id", type: "string" }],
+      rows: [["profile-1"]],
+    });
+    renderWithClient(<QueryView />);
+
+    fireEvent.change(screen.getByLabelText("source"), {
+      target: { value: "profiles" },
+    });
+    fireEvent.click(screen.getByText("Run"));
+
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    expect((calls[0]!.body as { from?: string }).from).toBe("profiles");
+    await screen.findByText("profile-1");
+  });
+
+  it("copies rendered table cells", async () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "service_name", type: "string" }],
+      rows: [["checkout"]],
+    });
+    renderWithClient(<QueryView />);
+
+    fireEvent.click(screen.getByText("Run"));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Copy cell checkout" }),
+    );
+
+    expect(writeText).toHaveBeenCalledWith("checkout");
+  });
+
+  it("copies rendered series labels", async () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    stubApiFetch({
+      result: "series",
+      window: { start_ns: 0, end_ns: 1 },
+      series: [{ labels: { service_name: "checkout" }, points: [] }],
+    });
+    renderWithClient(<QueryView />);
+
+    fireEvent.change(screen.getByLabelText("result"), {
+      target: { value: "series" },
+    });
+    fireEvent.click(screen.getByText("Run"));
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "Copy series service_name=checkout",
+      }),
+    );
+
+    expect(writeText).toHaveBeenCalledWith("service_name=checkout");
   });
 });

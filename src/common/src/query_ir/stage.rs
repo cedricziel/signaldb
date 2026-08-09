@@ -137,6 +137,40 @@ pub struct Extract {
     pub as_fields: Vec<DerivedField>,
 }
 
+/// A terminal two-dimensional count aggregate, available in IR v2.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeatmapAxisX {
+    pub step: String,
+    pub align: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeatmapAxisY {
+    pub of: String,
+    pub bounds: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub overflow: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeatmapValue {
+    #[serde(rename = "fn")]
+    pub func: AggFn,
+    #[serde(rename = "as")]
+    pub as_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Heatmap {
+    pub x: HeatmapAxisX,
+    pub y: HeatmapAxisY,
+    pub value: HeatmapValue,
+}
+
 /// A transform stage in the pipeline. Externally tagged: a single-key object
 /// whose key names the stage. An unknown key is an unsupported stage and is
 /// rejected by name.
@@ -150,6 +184,7 @@ pub enum Stage {
     Bottomk(Rank),
     Order(Vec<Order>),
     Limit(u64),
+    Heatmap(Heatmap),
 }
 
 impl Stage {
@@ -163,6 +198,7 @@ impl Stage {
             Stage::Bottomk(_) => "bottomk",
             Stage::Order(_) => "order",
             Stage::Limit(_) => "limit",
+            Stage::Heatmap(_) => "heatmap",
         }
     }
 }

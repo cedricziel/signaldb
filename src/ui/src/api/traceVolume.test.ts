@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   STATUS_COLORS,
   STATUS_ORDER,
+  LATENCY_BUCKET_BOUNDS_NS,
+  buildTraceLatencyHeatmapDoc,
   buildTraceVolumeDoc,
   normalizeStatus,
   seriesFromIrResponse,
@@ -33,6 +35,41 @@ describe("buildTraceVolumeDoc", () => {
   // The chart must not be bounded by the trace list's row limit.
   it("carries no limit stage", () => {
     const doc = buildTraceVolumeDoc({ fromMs: 0, toMs: 1000 }, "1m");
+    expect(JSON.stringify(doc)).not.toContain("limit");
+  });
+});
+
+describe("buildTraceLatencyHeatmapDoc", () => {
+  it("builds a v2 terminal count heatmap with duration bounds", () => {
+    const doc = buildTraceLatencyHeatmapDoc(
+      { fromMs: 1_000_000, toMs: 4_600_000 },
+      "1h",
+      [{ field: "service.name", value: "signaldb-ui" }],
+    );
+    expect(doc).toEqual({
+      irVersion: 2,
+      from: "traces",
+      range: { from: "1000000000000", to: "4600000000000" },
+      result: "heatmap",
+      pipeline: [
+        { where: { field: "service.name", op: "eq", value: "signaldb-ui" } },
+        {
+          heatmap: {
+            x: { step: "1h", align: "epoch" },
+            y: {
+              of: "duration",
+              bounds: LATENCY_BUCKET_BOUNDS_NS.map((bound) => `${bound}ns`),
+              overflow: true,
+            },
+            value: { fn: "count", as: "count" },
+          },
+        },
+      ],
+    });
+  });
+
+  it("carries no limit stage", () => {
+    const doc = buildTraceLatencyHeatmapDoc({ fromMs: 0, toMs: 1000 }, "1m");
     expect(JSON.stringify(doc)).not.toContain("limit");
   });
 });
