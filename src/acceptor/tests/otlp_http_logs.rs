@@ -221,6 +221,47 @@ async fn otlp_http_logs_json_with_auth_lands_in_wal() {
     );
 }
 
+/// Regression test for #1134: a JSON `AnyValue` with none of its oneof
+/// fields set (`{}`) is explicitly valid per the OTLP spec ("considered to
+/// be empty"), but `opentelemetry-proto`'s hand-rolled JSON deserializer
+/// rejected it outright. Real clients send this — this is a trimmed-down
+/// version of a payload from `signaldb-ui`'s browser OTel SDK
+/// auto-instrumentation: an event-style log record with an empty `body`
+/// and an attribute whose value is an empty `AnyValue`.
+#[tokio::test]
+async fn otlp_http_logs_json_with_empty_any_value_lands_in_wal() {
+    let (app, wal_manager, _temp_dir) = setup_logs_test().await;
+
+    let body = r#"{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"signaldb-ui"}}]},"scopeLogs":[{"scope":{"name":"@opentelemetry/browser-instrumentation/resource-timing"},"logRecords":[{"timeUnixNano":"1786482914799000000","severityNumber":9,"body":{},"eventName":"browser.resource_timing","attributes":[{"key":"browser.resource_timing.render_blocking_status","value":{}}]}]}]}]}"#;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/logs")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+        .header("X-Tenant-ID", TEST_TENANT)
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    let status = response.status();
+    if status != StatusCode::OK {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        panic!(
+            "Expected 200 OK for a JSON logs export with empty AnyValue objects, got {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+    assert_eq!(
+        logs_wal_entry_count(&wal_manager).await,
+        1,
+        "Expected the logs export to be durably recorded in the WAL"
+    );
+}
+
 #[tokio::test]
 async fn otlp_http_logs_invalid_api_key_is_unauthorized() {
     let (app, wal_manager, _temp_dir) = setup_logs_test().await;
