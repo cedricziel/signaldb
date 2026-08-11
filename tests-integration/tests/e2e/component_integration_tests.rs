@@ -479,6 +479,84 @@ async fn test_querier_integration() {
         .unwrap();
 }
 
+/// Regression test for #1131: the acceptor's OTLP/gRPC servers must accept
+/// gzip-compressed requests. Gzip is the default compression for most
+/// real-world OTLP/gRPC clients (the OpenTelemetry Collector's `otlp`
+/// exporter, many language SDKs), so a client that never disables
+/// compression would otherwise hit `Unimplemented: Content is compressed
+/// with 'gzip' which isn't supported` against every export call.
+///
+/// Exercises the real production wiring (`acceptor::init_acceptor_resources`
+/// + `acceptor::serve_otlp_grpc`), not a hand-rolled server, so it catches a
+/// regression in the actual `*ServiceServer` construction.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_acceptor_grpc_accepts_gzip_compressed_requests() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_configuration(&temp_dir);
+    let wal_dir = temp_dir.path().join("wal");
+
+    let resources =
+        acceptor::init_acceptor_resources(config.clone(), "127.0.0.1:4317".to_string(), wal_dir)
+            .await
+            .expect("Failed to init acceptor resources");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let (init_tx, init_rx) = tokio::sync::oneshot::channel();
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (stopped_tx, _stopped_rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(acceptor::serve_otlp_grpc(
+        acceptor::GrpcAcceptorConfig { addr, resources },
+        init_tx,
+        shutdown_rx,
+        stopped_tx,
+    ));
+    init_rx.await.expect("acceptor did not signal init");
+
+    let endpoint = format!("http://{addr}");
+    let client = connect_trace_client_with_retry(endpoint, Duration::from_secs(10)).await;
+    // Force gzip compression on the request, matching what real-world
+    // OTLP/gRPC clients send by default.
+    let mut client = client.send_compressed(tonic::codec::CompressionEncoding::Gzip);
+
+    let trace_request = ExportTraceServiceRequest {
+        resource_spans: vec![ResourceSpans {
+            resource: None,
+            scope_spans: vec![ScopeSpans {
+                scope: None,
+                spans: vec![Span {
+                    trace_id: vec![1; 16],
+                    span_id: vec![2; 8],
+                    name: "gzip-test-span".to_string(),
+                    start_time_unix_nano: 1_000_000_000,
+                    end_time_unix_nano: 2_000_000_000,
+                    ..Default::default()
+                }],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    };
+
+    let mut request = tonic::Request::new(trace_request);
+    request.metadata_mut().insert(
+        "authorization",
+        "Bearer test-key-123".parse().expect("valid metadata value"),
+    );
+    request.metadata_mut().insert(
+        "x-tenant-id",
+        "test-tenant".parse().expect("valid metadata value"),
+    );
+
+    timeout(Duration::from_secs(5), client.export(request))
+        .await
+        .expect("Request timed out")
+        .expect("gzip-compressed export must be accepted by the acceptor");
+}
+
 /// Test: Direct Flight communication between acceptor and writer
 ///
 /// Isolates the writer's `do_put` Flight endpoint from the OTLP/WAL-forward
