@@ -4,7 +4,12 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
 import { AppRoutes } from "./routes";
 import { initTelemetry } from "./telemetry";
+import { initTheme } from "./lib/theme";
 import "./styles/global.css";
+
+// Restore the saved theme before first paint to avoid a flash of the wrong
+// theme.
+initTheme();
 
 // Start browser telemetry before anything issues a request, so the fetch
 // instrumentation is patched in and API calls carry a `traceparent`.

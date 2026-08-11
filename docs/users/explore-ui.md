@@ -238,6 +238,60 @@ current user's memberships.
 In development the Vite proxy injects credentials from `.env.local`
 instead, so no sign-in is needed.
 
+## User menu
+
+Once signed in, a user menu appears in the top bar showing an avatar
+(initials from the display name), the user's name, and a dropdown with:
+
+- **Appearance** — toggle between light and dark theme; the choice is
+  persisted in `localStorage` and restored on reload.
+- **Send data** — opens the Instrumentation page (see below).
+- **API keys** — opens the API Keys page (see below).
+- **Docs** — opens the SignalDB documentation in a new tab.
+- **Switch tenant** — opens the Tenant Selection page (see below).
+- **Sign out** — deletes the session, clears the query cache, and
+  reloads the page.
+
+The menu closes on Escape or backdrop click.
+
+### Tenant selection (`/select-tenant`)
+
+Shows every tenant the user is a member of, with their role on each.
+The current tenant is expanded by default to reveal its datasets;
+clicking a dataset navigates to `/logs` with that tenant/dataset
+selected. Other tenants are collapsed and fetch their datasets lazily
+via `whoami(tenant_id)` on expansion.
+
+### API keys (`/api-keys`)
+
+Tenant-admin-only page for managing ingestion API keys. The same API
+functions used by the admin management panel (`listApiKeys`,
+`createApiKey`, `revokeApiKey`) power this page, but it is scoped to
+the current tenant rather than requiring instance-admin privileges.
+
+Creating a key shows the secret once in a modal with a copy button;
+revoking is immediate and irreversible.
+
+### Instrumentation (`/instrumentation`)
+
+Guided, source-specific instructions for sending telemetry to
+SignalDB. A sidebar lets the user pick one of six sources:
+
+| Source         | Snippet type                    |
+| -------------- | ------------------------------- |
+| OTel SDK       | `OTEL_EXPORTER_OTLP_*` env vars |
+| OTel Collector | YAML exporter config            |
+| Kubernetes     | Helm values / kubectl manifest  |
+| Docker         | `docker run` / compose env vars |
+| journald       | Promtail config                 |
+| Prometheus     | `remote_write` config           |
+
+Every snippet is interpolated with the user's actual tenant ID and
+dataset ID from `whoami`, so they can be copied directly. A
+verification section at the bottom shows ingestion status per signal
+(metrics, logs, traces, profiles) — currently static ("Waiting for
+data"), with real checks planned.
+
 ## Availability
 
 Container images (router and monolithic) ship the UI preinstalled. For

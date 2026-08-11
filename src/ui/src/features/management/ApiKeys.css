@@ -1,0 +1,153 @@
+.api-keys-page {
+  padding: 24px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.api-keys-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.api-keys-subtitle {
+  color: var(--dim);
+  font-size: 13px;
+  margin-bottom: 24px;
+}
+
+.api-keys-create {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.api-keys-form {
+  display: grid;
+  gap: 12px;
+}
+
+.api-keys-form input,
+.api-keys-form select {
+  padding: 8px 10px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface2);
+}
+
+.api-keys-form button {
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.api-keys-form fieldset {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  margin: 0;
+}
+
+.api-keys-form fieldset label {
+  font: 11px var(--mono);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.api-keys-list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.api-key-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.api-key-row:last-child {
+  border-bottom: none;
+}
+
+.api-key-row.revoked {
+  opacity: 0.5;
+}
+
+.api-key-name {
+  font-weight: 500;
+}
+
+.api-key-name.revoked {
+  text-decoration: line-through;
+}
+
+.api-key-meta {
+  color: var(--dim);
+  font-size: 11px;
+  font-family: var(--mono);
+  margin-top: 3px;
+}
+
+.api-key-revoke {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.api-key-revoke:hover {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+.secret-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: blur(5px);
+}
+
+.secret-modal {
+  width: min(500px, 100%);
+  padding: 24px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
+}
+
+.secret-modal code {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+  padding: 12px;
+  margin: 12px 0;
+  background: var(--surface2);
+  border-radius: 6px;
+}
+
+.secret-modal-footer {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.secret-modal-footer button {
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}

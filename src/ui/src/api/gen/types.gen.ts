@@ -301,6 +301,7 @@ export type ListTenantsResponse = {
 };
 
 export type ManageApiKeyResponse = {
+    created_at: string;
     dataset_id?: string | null;
     id: string;
     name?: string | null;

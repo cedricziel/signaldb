@@ -8,7 +8,10 @@ import { Navigate, Route, Routes, useLocation, useParams } from "react-router";
 import { App } from "./App";
 import { ConsentView } from "./features/consent/ConsentView";
 import { ExploreView } from "./features/explore/ExploreView";
+import { ApiKeysRoute } from "./features/management/ApiKeysRoute";
+import { InstrumentationRoute } from "./features/management/InstrumentationRoute";
 import { ManagementRoute } from "./features/management/ManagementRoute";
+import { SelectTenantRoute } from "./features/management/SelectTenantRoute";
 import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
 
@@ -31,6 +34,9 @@ export function AppRoutes() {
       <Route path="/" element={<App />}>
         <Route index element={<Navigate to="/logs" replace />} />
         <Route path="manage" element={<ManagementRoute />} />
+        <Route path="select-tenant" element={<SelectTenantRoute />} />
+        <Route path="api-keys" element={<ApiKeysRoute />} />
+        <Route path="instrumentation" element={<InstrumentationRoute />} />
         <Route path=":signal" element={<ExploreRoute />} />
         <Route path="*" element={<Navigate to="/logs" replace />} />
       </Route>

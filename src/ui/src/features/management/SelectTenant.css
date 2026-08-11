@@ -1,0 +1,109 @@
+.select-tenant {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 100%;
+  padding-top: 32px;
+}
+
+.select-tenant-panel {
+  max-width: 520px;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  margin: 0 auto;
+}
+
+.select-tenant h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.select-tenant-subtitle {
+  margin: 0 0 20px;
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.tenant-list {
+  display: grid;
+  gap: 2px;
+}
+
+.tenant-row {
+  border-radius: 6px;
+}
+
+.tenant-row-active {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.tenant-row-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  color: var(--text);
+}
+
+.tenant-row-header:hover {
+  background: var(--surface2);
+}
+
+.tenant-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.tenant-role {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+  background: var(--surface2);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.dataset-list {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.dataset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px 8px 28px;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: var(--text);
+  text-align: left;
+}
+
+.dataset-row:hover {
+  background: var(--surface2);
+  border-radius: 5px;
+}
+
+.dataset-name {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.dataset-default {
+  font-size: 10px;
+  color: var(--faint);
+}

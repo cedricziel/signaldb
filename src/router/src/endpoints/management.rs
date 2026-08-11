@@ -388,6 +388,7 @@ pub(crate) struct ApiKeyResponse {
     dataset_id: Option<String>,
     scopes: Option<Vec<String>>,
     revoked: bool,
+    created_at: String,
 }
 
 /// 201 response body for API key creation via the management API.
@@ -432,6 +433,7 @@ pub(crate) async fn list_api_keys<S: RouterState>(
                     dataset_id: key.dataset_id,
                     scopes: key.scopes,
                     revoked: key.revoked_at.is_some(),
+                    created_at: key.created_at.to_rfc3339(),
                 })
                 .collect::<Vec<_>>(),
         )

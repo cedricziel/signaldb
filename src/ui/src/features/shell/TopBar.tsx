@@ -4,6 +4,7 @@ import { Link } from "react-router";
 import { DEFAULT_DATASET, DEFAULT_TENANT } from "../../api/http";
 import { whoami } from "../../api/session";
 import type { ExploreState } from "../../lib/urlState";
+import { UserMenu } from "./UserMenu";
 import "./TopBar.css";
 
 interface Props {
@@ -44,11 +45,13 @@ export function TopBar({ state, update }: Props) {
       </span>
       <span className="topbar-sep">/</span>
       <TenantSelector state={state} update={update} />
+      <span style={{ flex: 1 }} />
       {canManage && (
         <Link className="manage-trigger" to="/manage">
           Manage
         </Link>
       )}
+      <UserMenu state={state} update={update} />
     </header>
   );
 }
