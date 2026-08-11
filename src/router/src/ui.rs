@@ -10,10 +10,14 @@
 //! ## Runtime configuration
 //!
 //! `GET /ui/runtime-config.js` sets `window.__SIGNALDB_RUNTIME_CONFIG__` from
-//! `[self_monitoring.frontend]`. The UI's `index.html` loads it (blocking,
-//! classic script) before the app boots, so browser telemetry export can be
-//! enabled and pointed at any endpoint via config alone — one container image
-//! serves every deployment without a UI rebuild.
+//! `[self_monitoring.frontend]`, plus `service.namespace` / the running
+//! router's own `service.version` / `deployment.environment.name` (mirroring
+//! [`common::self_monitoring`]'s backend resource, so the UI's `Resource`
+//! carries the same deployment identity, not just the tenant/dataset-ingest
+//! bits `FrontendMonitoringConfig` covers). The UI's `index.html` loads it
+//! (blocking, classic script) before the app boots, so browser telemetry
+//! export can be enabled and pointed at any endpoint via config alone — one
+//! container image serves every deployment without a UI rebuild.
 //!
 //! ## Trace context on the document response
 //!
@@ -46,9 +50,9 @@ const UI_DIR_ENV: &str = "SIGNALDB_UI_DIR";
 /// Panics at startup when the variable is set but the directory does not
 /// contain a built UI (`index.html`). Misconfiguration must fail loudly
 /// instead of degrading to the placeholder page.
-pub fn service_from_env(frontend: &FrontendMonitoringConfig) -> Router {
+pub fn service_from_env(frontend: &FrontendMonitoringConfig, environment: &str) -> Router {
     let dir = std::env::var(UI_DIR_ENV).ok().map(PathBuf::from);
-    service_with_dir(dir, frontend).unwrap_or_else(|e| panic!("{e}"))
+    service_with_dir(dir, frontend, environment).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// Build the `/ui` service for an explicit asset directory.
@@ -57,9 +61,12 @@ pub fn service_from_env(frontend: &FrontendMonitoringConfig) -> Router {
 /// directory without an `index.html` is a configuration error. The
 /// `runtime-config.js` route is served in all cases so the UI (or a dev
 /// server proxying to it) can always read its runtime configuration.
+/// `environment` is `[self_monitoring].environment`, the same
+/// `deployment.environment.name` value the backend's own telemetry uses.
 pub fn service_with_dir(
     dir: Option<PathBuf>,
     frontend: &FrontendMonitoringConfig,
+    environment: &str,
 ) -> anyhow::Result<Router> {
     let assets = match dir {
         Some(dir) if has_ui_assets(&dir) => {
@@ -93,7 +100,7 @@ pub fn service_with_dir(
     };
 
     // The exact route wins over the static-asset fallback below it.
-    let body: Arc<str> = Arc::from(runtime_config_js(frontend));
+    let body: Arc<str> = Arc::from(runtime_config_js(frontend, environment));
     Ok(Router::new()
         .route(
             "/runtime-config.js",
@@ -120,11 +127,18 @@ pub fn service_with_dir(
 
 /// Render the runtime-config script from the frontend telemetry config.
 ///
-/// Emits `{ telemetry: { enabled: false } }` (and, crucially, no `apiKey`)
-/// unless export is enabled with an endpoint set. Values are JSON-encoded for
-/// safe escaping.
-fn runtime_config_js(frontend: &FrontendMonitoringConfig) -> String {
-    let telemetry = if frontend.enabled && !frontend.endpoint.is_empty() {
+/// The export-credential fields (`endpoint`/`apiKey`/`tenantId`/`datasetId`/
+/// `serviceName`) are emitted only when export is enabled with an endpoint
+/// set — `{ telemetry: { enabled: false } }` (and, crucially, no `apiKey`)
+/// otherwise. `namespace`/`version`/`deploymentEnvironment` are deployment
+/// identity, not export credentials, so they are always included: they mirror
+/// the `(service.namespace, service.version, deployment.environment.name)`
+/// facts [`common::self_monitoring`]'s backend resource carries, letting the
+/// UI's `Resource` (see `telemetry/resource.ts`) describe the same
+/// deployment even when browser export itself is off. Values are
+/// JSON-encoded for safe escaping.
+fn runtime_config_js(frontend: &FrontendMonitoringConfig, environment: &str) -> String {
+    let mut telemetry = if frontend.enabled && !frontend.endpoint.is_empty() {
         serde_json::json!({
             "enabled": true,
             "endpoint": frontend.endpoint,
@@ -136,6 +150,11 @@ fn runtime_config_js(frontend: &FrontendMonitoringConfig) -> String {
     } else {
         serde_json::json!({ "enabled": false })
     };
+    // Mirrors common::self_monitoring::build_resource's hardcoded
+    // "signaldb" service.namespace literal.
+    telemetry["namespace"] = serde_json::json!("signaldb");
+    telemetry["version"] = serde_json::json!(env!("CARGO_PKG_VERSION"));
+    telemetry["deploymentEnvironment"] = serde_json::json!(environment);
     let payload = serde_json::json!({ "telemetry": telemetry });
     format!("window.__SIGNALDB_RUNTIME_CONFIG__ = {payload};\n")
 }
@@ -224,11 +243,13 @@ mod tests {
         FrontendMonitoringConfig::default()
     }
 
+    const ENV: &str = "test";
+
     #[tokio::test]
     async fn serves_index_and_assets_from_dir() {
         let dir = ui_fixture();
         let router =
-            service_with_dir(Some(dir.path().to_path_buf()), &disabled()).expect("valid dir");
+            service_with_dir(Some(dir.path().to_path_buf()), &disabled(), ENV).expect("valid dir");
 
         let res = get(router.clone(), "/").await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -248,7 +269,7 @@ mod tests {
         // current_trace_context_fields_is_none_without_otel_layer test.
         let dir = ui_fixture();
         let router =
-            service_with_dir(Some(dir.path().to_path_buf()), &disabled()).expect("valid dir");
+            service_with_dir(Some(dir.path().to_path_buf()), &disabled(), ENV).expect("valid dir");
         let res = get(router, "/").await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
@@ -291,7 +312,7 @@ mod tests {
     async fn falls_back_to_index_for_unknown_paths() {
         let dir = ui_fixture();
         let router =
-            service_with_dir(Some(dir.path().to_path_buf()), &disabled()).expect("valid dir");
+            service_with_dir(Some(dir.path().to_path_buf()), &disabled(), ENV).expect("valid dir");
         let res = get(router, "/some/deep/link").await;
         assert_eq!(res.status(), StatusCode::OK);
         assert!(body_string(res).await.contains("ui-index"));
@@ -299,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn placeholder_without_assets() {
-        let router = service_with_dir(None, &disabled()).expect("no dir is valid");
+        let router = service_with_dir(None, &disabled(), ENV).expect("no dir is valid");
         let res = get(router, "/").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         assert!(body_string(res).await.contains("UI not bundled"));
@@ -308,7 +329,7 @@ mod tests {
     #[test]
     fn configured_dir_without_index_is_an_error() {
         let empty = tempfile::tempdir().expect("tempdir");
-        let err = service_with_dir(Some(empty.path().to_path_buf()), &disabled())
+        let err = service_with_dir(Some(empty.path().to_path_buf()), &disabled(), ENV)
             .expect_err("missing index.html must fail");
         assert!(err.to_string().contains("index.html"));
     }
@@ -317,7 +338,7 @@ mod tests {
     async fn runtime_config_disabled_by_default_and_omits_key() {
         let dir = ui_fixture();
         let router =
-            service_with_dir(Some(dir.path().to_path_buf()), &disabled()).expect("valid dir");
+            service_with_dir(Some(dir.path().to_path_buf()), &disabled(), ENV).expect("valid dir");
         let res = get(router, "/runtime-config.js").await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
@@ -340,13 +361,16 @@ mod tests {
         };
         // Enabled even with no UI bundle (None): dev proxies this route to a
         // live router while serving assets itself.
-        let router = service_with_dir(None, &frontend).expect("no dir is valid");
+        let router = service_with_dir(None, &frontend, "staging").expect("no dir is valid");
         let body = body_string(get(router, "/runtime-config.js").await).await;
         assert!(body.contains("\"enabled\":true"));
         assert!(body.contains("http://signaldb.example:4318"));
         assert!(body.contains("sk-ingest"));
         assert!(body.contains("\"tenantId\":\"_system\""));
         assert!(body.contains("\"serviceName\":\"signaldb-ui\""));
+        assert!(body.contains("\"namespace\":\"signaldb\""));
+        assert!(body.contains(&format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"))));
+        assert!(body.contains("\"deploymentEnvironment\":\"staging\""));
     }
 
     #[test]
@@ -357,9 +381,14 @@ mod tests {
             api_key: Some("sk-ingest".to_string()),
             ..FrontendMonitoringConfig::default()
         };
-        let js = runtime_config_js(&frontend);
+        let js = runtime_config_js(&frontend, ENV);
         assert!(js.contains("\"enabled\":false"));
         assert!(!js.contains("sk-ingest"), "no key leaked: {js}");
+        // Deployment-identity fields are not export credentials — still
+        // present even while telemetry export is disabled.
+        assert!(js.contains("\"namespace\":\"signaldb\""));
+        assert!(js.contains(&format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"))));
+        assert!(js.contains("\"deploymentEnvironment\":\"test\""));
     }
 
     #[test]
