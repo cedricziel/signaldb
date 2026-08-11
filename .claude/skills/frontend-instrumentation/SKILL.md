@@ -6,6 +6,7 @@ sources:
   - src/ui/src/telemetry/**
   - src/ui/vite.config.ts
   - src/ui/.env.example
+  - src/router/src/ui.rs
 ---
 
 # Frontend Instrumentation
@@ -23,19 +24,22 @@ and is initialised once from `main.tsx`. Two outcomes drive the design:
    grouped and lined up against the backend's per-tenant traces.
 3. **Server → client correlation** — for the one request the client can never
    instrument (the initial HTML document), the server's trace context is read
-   back from the response's `Server-Timing: traceparent` entry and linked to
-   the `documentLoad` span.
+   from a `<meta name="traceparent">` tag the router injects into `index.html`
+   and used as the **real parent** of the `documentLoad` span; a
+   `Server-Timing: traceparent` response-header link is the fallback when the
+   tag is absent.
 
 ## Module map
 
-| File                                          | Responsibility                                                                                                                                                                |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `telemetry/index.ts`                          | `initTelemetry()` — provider, context manager, propagators, auto-instrumentations, exporter selection, error capture; exports `tracer`                                        |
-| `telemetry/session.ts`                        | `createSessionManager()` — RUM session id with sliding inactivity window + absolute cap, `localStorage`-backed                                                                |
-| `telemetry/sessionSpanProcessor.ts`           | `SpanProcessor` that stamps `session.id` / `tenant.id` / `dataset.id` on every span                                                                                           |
-| `telemetry/navigationSpanProcessor.ts`        | `SpanProcessor` that collapses the auto-instrumentation's `Navigation: <url>` span to the static name `Navigation`, moving the URL into `url.full` / `url.path` / `url.query` |
-| `telemetry/serverTiming.ts`                   | Strict parser for the `Server-Timing: traceparent` context SignalDB returns on every HTTP response (see `docs/users/response-trace-context.md`)                               |
-| `telemetry/serverCorrelationSpanProcessor.ts` | `SpanProcessor` that links the `documentLoad` span to the server span that served the document, via the navigation entry's `serverTiming`                                     |
+| File                                          | Responsibility                                                                                                                                                                        |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `telemetry/index.ts`                          | `initTelemetry()` — provider, context manager, propagators, auto-instrumentations, exporter selection, error capture; exports `tracer`                                                |
+| `telemetry/session.ts`                        | `createSessionManager()` — RUM session id with sliding inactivity window + absolute cap, `localStorage`-backed                                                                        |
+| `telemetry/sessionSpanProcessor.ts`           | `SpanProcessor` that stamps `session.id` / `tenant.id` / `dataset.id` on every span                                                                                                   |
+| `telemetry/navigationSpanProcessor.ts`        | `SpanProcessor` that collapses the auto-instrumentation's `Navigation: <url>` span to the static name `Navigation`, moving the URL into `url.full` / `url.path` / `url.query`         |
+| `telemetry/serverTiming.ts`                   | Shared `parseTraceparent()` plus a `Server-Timing`-entry-specific wrapper, for the trace context SignalDB returns on every HTTP response (see `docs/users/response-trace-context.md`) |
+| `telemetry/documentTraceContext.ts`           | Reads `<meta name="traceparent">` and builds the real parent `Context` for the `documentLoad` span, read _before_ that span is created                                                |
+| `telemetry/serverCorrelationSpanProcessor.ts` | `SpanProcessor` that **links** (never parents) `documentLoad` to the server span via the navigation entry's `serverTiming` — the fallback when the meta tag is absent                 |
 
 ## Rules
 
@@ -106,6 +110,12 @@ in `package.json` for exactly this reason. `zone.js` patches global async
 primitives, so `telemetry/index.ts` (which imports it) must only ever be
 imported from `main.tsx`, never from test or library code.
 
+This same async-boundary propagation is what makes the meta-tag → real-parent
+mechanism above work: `context.with(documentTraceParentContext(), ...)` sets
+the active context synchronously, and `ZoneContextManager` carries it into the
+`window` `load` event handler `DocumentLoadInstrumentation` registers inside
+that callback, even though the event fires much later.
+
 ### Capture errors explicitly
 
 Raw browser OTel does **not** capture uncaught errors. `initTelemetry()` adds
@@ -121,20 +131,52 @@ names **low-cardinality** (no ids/timestamps in the name — put those in
 attributes). The web auto-instrumentation's route span otherwise names itself
 after the full URL; `navigationSpanProcessor.ts` rewrites it to enforce this.
 
-### Server-returned context: link, never parent
+### Server-returned context: real parent from the meta tag, link as fallback
 
-The document request goes out before any JS runs, so it cannot carry
-`traceparent`. SignalDB returns its server span's context on every response
-(`Server-Timing: traceparent;desc="..."` + `traceresponse`; see
-`docs/users/response-trace-context.md`), and
-`serverCorrelationSpanProcessor.ts` reads it off the navigation performance
-entry to attach it to the `documentLoad` span **as a span link** — never as a
-parent. If the server sampled its span out (flags `00`) a parent would point
-at a span that is never exported and dangle the client trace; a link to an
-unexported span is harmless. Parsing is strict (version `00`, lowercase hex,
-exact widths, non-zero ids) and the whole path is best-effort: any failure
-degrades to "no link", never an error. Fetch/XHR calls do **not** need this —
-they already root the trace via the request-side `traceparent`.
+The document request goes out before any JS runs, so it cannot carry an
+outbound `traceparent`. SignalDB closes the loop two ways:
+
+1. **`<meta name="traceparent">` → real parent (primary).** The router
+   (`serve_index_html` in `src/router/src/ui.rs`) injects the server span's
+   context directly into `index.html`'s `<head>`. This is readable
+   _synchronously_, before any span exists, so `initTelemetry()` uses it as
+   the actual OTel parent of `documentLoad`: `DocumentLoadInstrumentation` is
+   constructed and registered separately from the rest of
+   `getWebAutoInstrumentations()` (which has it disabled), wrapped in
+   `context.with(documentTraceParentContext(), ...)`. This works _because_
+   `DocumentLoadInstrumentation` starts its root span with no explicit
+   context — it resolves `context.active()` inside the `window`'s `load`
+   event handler it installs during `enable()`, and `ZoneContextManager`
+   (see below) carries the context active at registration time into that
+   later async callback.
+
+   This is a **deliberate trade-off**, not an oversight: OpenTelemetry JS's
+   default sampler is `ParentBasedSampler`, which drops a span outright when
+   its parent was sampled out (`traceparent` flags `00`) — so whenever
+   SignalDB's self-monitoring sampler ratio drops the server's root span, the
+   entire `documentLoad` subtree silently stops being recorded too, not just
+   a dangling reference. Parenting was chosen anyway for the structural
+   parent-child edge it gives on the common path; see
+   `docs/users/response-trace-context.md#trace-context-in-the-document-body`
+   for the full rationale.
+
+2. **`Server-Timing: traceparent;desc="..."` header → link (fallback).**
+   Every SignalDB HTTP response, including `index.html` when it predates the
+   meta tag (older router, or a dev proxy serving the file directly) or when
+   self-monitoring's active-span check found nothing to inject, still carries
+   this header (see `docs/users/response-trace-context.md`).
+   `serverCorrelationSpanProcessor.ts` reads it off the navigation performance
+   entry and attaches it to the already-created `documentLoad` span as a
+   **link**, never a parent — a `SpanProcessor.onStart` hook fires _after_ the
+   span exists and cannot change its parent, and a link to a possibly-
+   unexported span is harmless where a parent would not be.
+
+`parseTraceparent()` in `serverTiming.ts` backs both paths (strict: version
+`00`, lowercase hex, exact widths, non-zero ids) and both are best-effort:
+any failure (missing tag, malformed value, DOM/Performance API oddity)
+degrades silently to "no parent" / "no link", never an error. Fetch/XHR calls
+do **not** need any of this — they already root the trace via the
+request-side `traceparent`.
 
 ## Backend must continue the trace
 
@@ -150,8 +192,9 @@ every response, which is what the document-load correlation above consumes.
 
 Unit-test the pure logic (`session.ts`, `sessionSpanProcessor.ts`,
 `navigationSpanProcessor.ts`, `serverTiming.ts`,
-`serverCorrelationSpanProcessor.ts`, `runtimeConfig.ts`) with injected
-clock/storage/id/entry providers — see the `.test.ts` files.
+`serverCorrelationSpanProcessor.ts`, `documentTraceContext.ts`,
+`runtimeConfig.ts`) with injected clock/storage/id/entry providers — see the
+`.test.ts` files.
 Do **not** import `telemetry/index.ts` from tests: it pulls in `zone.js` and
 patches globals. The SDK wiring is validated by `pnpm --filter signaldb-ui
 build`. For the same reason it's excluded from `vite.config.ts`'s coverage

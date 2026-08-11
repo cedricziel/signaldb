@@ -312,9 +312,14 @@ The UI is instrumented with OpenTelemetry (browser SDK). It injects a W3C
 `traceparent` into every API call so a user action correlates end-to-end with
 the backend traces it triggers, and stamps every span with a RUM `session.id`
 plus the active `tenant.id` / `dataset.id`. The initial page load is
-correlated in the reverse direction: the `documentLoad` span links to the
-server span that served the document, read back from the response's
-[`Server-Timing: traceparent`](response-trace-context.md) entry.
+correlated in the reverse direction: the router injects the server's trace
+context directly into `index.html` as a `<meta name="traceparent">` tag, and
+the UI uses it as the real parent of its `documentLoad` span (falling back to
+a same-trace-id _link_, read from the response's
+[`Server-Timing: traceparent`](response-trace-context.md) entry, when no tag
+is present). See [Trace context in the document
+body](response-trace-context.md#trace-context-in-the-document-body) for the
+sampling trade-off that comes with real parenting.
 
 Export is **opt-in**. The preferred way to turn it on is the
 `[self_monitoring.frontend]` config section — the router serves it to the

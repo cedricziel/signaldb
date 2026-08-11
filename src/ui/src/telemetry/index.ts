@@ -19,7 +19,11 @@
 // point (`main.tsx`) — never from test or library code.
 import "zone.js";
 
-import { SpanStatusCode, trace } from "@opentelemetry/api";
+import {
+  context as apiContext,
+  SpanStatusCode,
+  trace,
+} from "@opentelemetry/api";
 import {
   CompositePropagator,
   W3CBaggagePropagator,
@@ -29,6 +33,7 @@ import { ZoneContextManager } from "@opentelemetry/context-zone";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { getWebAutoInstrumentations } from "@opentelemetry/auto-instrumentations-web";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { DocumentLoadInstrumentation } from "@opentelemetry/instrumentation-document-load";
 import {
   defaultResource,
   resourceFromAttributes,
@@ -48,6 +53,7 @@ import {
 import { getDefaultSessionManager } from "./session";
 import { NavigationSpanProcessor } from "./navigationSpanProcessor";
 import { ServerCorrelationSpanProcessor } from "./serverCorrelationSpanProcessor";
+import { documentTraceParentContext } from "./documentTraceContext";
 import { SessionSpanProcessor } from "./sessionSpanProcessor";
 import { resolveExportConfig, resolveServiceName } from "./runtimeConfig";
 
@@ -130,9 +136,10 @@ export function initTelemetry(): void {
     // and exported.
     new NavigationSpanProcessor(),
     new SessionSpanProcessor(getDefaultSessionManager()),
-    // Link the documentLoad span to the server span that served the document
-    // (read back from the navigation entry's Server-Timing traceparent) —
-    // the initial HTML request cannot carry an outbound `traceparent`.
+    // Fallback correlation for deployments where documentLoad wasn't given a
+    // real parent below (no <meta name="traceparent">, e.g. an older router
+    // or a dev proxy): link it to the server span read back from the
+    // navigation entry's Server-Timing traceparent instead.
     new ServerCorrelationSpanProcessor(),
   ];
   const exporter = resolveExporter();
@@ -176,8 +183,28 @@ export function initTelemetry(): void {
         "@opentelemetry/instrumentation-xml-http-request": {
           clearTimingResources: true,
         },
+        // Registered separately below, parented to the server's span — a
+        // SpanProcessor (which is all a bundled instrumentation gets to work
+        // with) cannot change a span's parent after creation.
+        "@opentelemetry/instrumentation-document-load": { enabled: false },
       }),
     ],
+  });
+
+  // The documentLoad root span must be created with the server's span (from
+  // `<meta name="traceparent">`, see documentTraceContext.ts) already active
+  // as its parent — DocumentLoadInstrumentation calls `tracer.startSpan()`
+  // with no explicit context, so it picks up whatever `context.active()`
+  // resolves to at that moment. Registering it here, inside
+  // `context.with(...)`, relies on ZoneContextManager to carry that context
+  // into the `window.addEventListener('load', ...)` callback the
+  // instrumentation installs during `enable()`. Falls back to the ambient
+  // context (i.e. no special parent) when there is no meta tag to read.
+  apiContext.with(documentTraceParentContext() ?? apiContext.active(), () => {
+    registerInstrumentations({
+      tracerProvider: provider,
+      instrumentations: [new DocumentLoadInstrumentation()],
+    });
   });
 
   installErrorCapture();
