@@ -932,7 +932,7 @@ mod tests {
     #[test]
     fn unregistered_source_is_a_clear_error_not_a_parse_failure() {
         let err = validate_json(json!({
-            "irVersion": 1, "from": "metrics", "range": { "from": "now-1h", "to": "now" },
+            "irVersion": 1, "from": "queues", "range": { "from": "now-1h", "to": "now" },
             "result": "rows", "pipeline": []
         }))
         .unwrap_err();
@@ -947,12 +947,22 @@ mod tests {
         }));
         let mut sources = SourceRegistry::core();
         sources.register(SourceDef {
-            name: "metrics".to_string(),
+            name: "queues".to_string(),
             grain: Grain::Event,
             allows_extract: false,
         });
         // Same document, unchanged shape, still validates.
         assert!(validate(&d, &sources, &logs_resolver()).is_ok());
+    }
+
+    #[test]
+    fn metrics_is_registered_as_an_event_grain_source() {
+        let sources = SourceRegistry::core();
+        let source = sources
+            .resolve("metrics")
+            .expect("metrics source is registered");
+        assert_eq!(source.grain, Grain::Event);
+        assert!(!source.allows_extract);
     }
 
     #[test]

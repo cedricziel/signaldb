@@ -234,7 +234,22 @@ impl LogicalSchema {
             LogicalField::record_metadata("traces", "duration", LogicalType::DurationNs),
             LogicalField::record_metadata("traces", "duration_nano", LogicalType::DurationNs),
             LogicalField::record_metadata("traces", "status.code", LogicalType::String),
+            // Metrics: gauge/sum only (see ir_planner.rs's `metrics`
+            // SourcePlan) — a scalar numeric point per row, not an OTel
+            // record with resource/scope/record attribute levels the way
+            // logs/traces/profiles are, so it isn't part of the shared loop
+            // below. `metric.value`'s type must be registered (not left to
+            // the alias fallback's naive String default) or a `sum`/`avg`
+            // aggregate over it is rejected as non-numeric.
+            LogicalField::record_metadata("metrics", "metric.name", LogicalType::String),
+            LogicalField::record_metadata("metrics", "metric.value", LogicalType::Float64),
         ];
+        fields.push(LogicalField::attribute(
+            "metrics",
+            AttributeLevel::Resource,
+            "service.name",
+            LogicalType::String,
+        ));
         for source in ["logs", "traces"] {
             fields.push(LogicalField::join_key(source, "trace_id"));
             fields.push(LogicalField::join_key(source, "span_id"));

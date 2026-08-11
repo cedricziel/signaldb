@@ -63,7 +63,14 @@ use super::table_lookup::optional_table;
 /// traces v2 schema renames `name`→`span_name` and `duration_nano`→
 /// `duration_nanos`, so those idiosyncratic renames live in `aliases`.
 struct SourcePlan {
-    table: &'static str,
+    /// The logical source name (as written in a document's `from`) — used for
+    /// display/error messages, distinct from `tables` below since a source
+    /// can scan more than one physical table (metrics unions gauge + sum).
+    name: &'static str,
+    /// Physical tables scanned for this source. A dataset missing one of
+    /// several (e.g. no sum metrics ingested yet) still scans the rest; only
+    /// a dataset missing *all* of them has no rows to plan over.
+    tables: &'static [&'static str],
     /// The column carrying the row's primary timestamp.
     time_col: &'static str,
     /// Whether `time_col` is a real `Timestamp` (compare with a timestamp
@@ -87,7 +94,8 @@ impl SourcePlan {
     fn for_source(source: &str) -> Option<SourcePlan> {
         match source {
             "logs" => Some(SourcePlan {
-                table: "logs",
+                name: "logs",
+                tables: &["logs"],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &["log_attributes", "scope_attributes", "resource_attributes"],
@@ -129,7 +137,8 @@ impl SourcePlan {
                 ],
             }),
             "traces" => Some(SourcePlan {
-                table: "traces",
+                name: "traces",
+                tables: &["traces"],
                 time_col: "start_time_unix_nano",
                 time_is_timestamp: false,
                 containers: &["span_attributes", "scope_attributes", "resource_attributes"],
@@ -162,7 +171,8 @@ impl SourcePlan {
                 ],
             }),
             "profiles" => Some(SourcePlan {
-                table: "profiles",
+                name: "profiles",
+                tables: &["profiles"],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &[
@@ -202,7 +212,79 @@ impl SourcePlan {
                     ("span.id", "span_id"),
                 ],
             }),
+            "metrics" => Some(SourcePlan {
+                name: "metrics",
+                // Gauge + sum only — both share the same scalar `value`
+                // column shape. Histograms have a bucketed row shape with no
+                // IR aggregate equivalent yet (no `histogram_quantile`
+                // stage), so they're deliberately excluded here rather than
+                // scanned and misinterpreted as plain values.
+                tables: &["metrics_gauge", "metrics_sum"],
+                time_col: "timestamp",
+                time_is_timestamp: true,
+                containers: &["attributes", "resource_attributes"],
+                attr_prefixes: &[("resource.", "resource_attributes")],
+                row_defaults: &[
+                    "timestamp",
+                    "service_name",
+                    "metric_name",
+                    "value",
+                    "attributes",
+                    "resource_attributes",
+                ],
+                aliases: &[
+                    ("service.name", "service_name"),
+                    ("metric.name", "metric_name"),
+                    // "value" is itself the physical column name, which the
+                    // resolver rejects as a bare reference (a document must
+                    // name a *logical* field, not storage directly, even
+                    // when the two spellings coincide) — so it needs a
+                    // distinct logical name, same reasoning as traces'
+                    // `duration` → `duration_nanos`.
+                    ("metric.value", "value"),
+                ],
+            }),
             _ => None,
+        }
+    }
+}
+
+/// Scans every table in `source.tables`, unioning them when there's more
+/// than one (metrics: gauge + sum). A single-table source's scan keeps its
+/// full raw schema unchanged — `SchemaResolver`'s promoted-attribute
+/// discovery depends on seeing every column the table actually has, not
+/// just `row_defaults` — so the projection-then-union step only runs when
+/// there's more than one table to reconcile onto a common schema.
+async fn scan_source_tables(
+    ctx: &SessionContext,
+    tenant_slug: &str,
+    dataset_slug: &str,
+    source: &SourcePlan,
+) -> Result<Option<DataFrame>, QuerierError> {
+    let mut scanned = Vec::with_capacity(source.tables.len());
+    for table in source.tables {
+        // A missing table (e.g. no sum metrics ingested yet) is not an
+        // error — skip it. A catalog failure still is.
+        if let Some(df) = optional_table(ctx, tenant_slug, dataset_slug, table).await? {
+            scanned.push(df);
+        }
+    }
+    match scanned.len() {
+        0 => Ok(None),
+        1 => Ok(scanned.pop()),
+        _ => {
+            let mut union: Option<DataFrame> = None;
+            for df in scanned {
+                let proj: Vec<Expr> = source.row_defaults.iter().map(|c| col(*c)).collect();
+                let projected = df.select(proj).map_err(QuerierError::QueryFailed)?;
+                union = Some(match union {
+                    None => projected,
+                    Some(existing) => existing
+                        .union(projected)
+                        .map_err(QuerierError::QueryFailed)?,
+                });
+            }
+            Ok(union)
         }
     }
 }
@@ -259,7 +341,7 @@ impl SchemaResolver {
             physical_names,
             container: source.containers[0].to_string(),
             aliases: source.aliases,
-            source: source.table.to_string(),
+            source: source.name.to_string(),
             logical_schema: LogicalSchema::core(),
         }
     }
@@ -421,16 +503,11 @@ impl IrService {
         let source = SourcePlan::for_source(&doc.from)
             .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
 
-        // A dataset with no table for this source has no rows to plan over.
-        // The document's schema-dependent validation is skipped along with
-        // the scan — there is no schema to validate against.
-        let Some(base) = optional_table(
-            &self.session_context,
-            tenant_slug,
-            dataset_slug,
-            source.table,
-        )
-        .await?
+        // A dataset with none of this source's tables has no rows to plan
+        // over. The document's schema-dependent validation is skipped along
+        // with the scan — there is no schema to validate against.
+        let Some(base) =
+            scan_source_tables(&self.session_context, tenant_slug, dataset_slug, &source).await?
         else {
             return Ok(None);
         };
@@ -1382,7 +1459,7 @@ fn compile_regex_guard(pattern: &str) -> Result<(), QuerierError> {
 mod tests {
     use super::*;
     use datafusion::arrow::array::{
-        ArrayRef, Int64Array, MapBuilder, MapFieldNames, StringArray, StringBuilder,
+        ArrayRef, Float64Array, Int64Array, MapBuilder, MapFieldNames, StringArray, StringBuilder,
         TimestampNanosecondArray,
     };
     use datafusion::arrow::datatypes::{Field, Fields, Schema};
@@ -1587,6 +1664,67 @@ mod tests {
         ctx
     }
 
+    /// Two metrics tables (gauge + sum), each shaped like the real
+    /// persisted schema's common columns (`timestamp`/`service_name`/
+    /// `metric_name`/`value`/`attributes`/`resource_attributes`) — exercises
+    /// `scan_source_tables`'s union path, unlike every other fixture here
+    /// (one table each).
+    fn metrics_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+
+        let gauge_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20])),
+                Arc::new(StringArray::from(vec!["signaldb", "signaldb"])),
+                Arc::new(StringArray::from(vec![
+                    "signaldb.wal.entries_processed",
+                    "signaldb.wal.entries_processed",
+                ])),
+                Arc::new(Float64Array::from(vec![5.0, 7.0])),
+                build_map(&[&[], &[]]),
+                build_map(&[&[], &[]]),
+            ],
+        )
+        .unwrap();
+        let sum_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![15_i64])),
+                Arc::new(StringArray::from(vec!["signaldb"])),
+                Arc::new(StringArray::from(vec!["signaldb.wal.entries_processed"])),
+                Arc::new(Float64Array::from(vec![3.0])),
+                build_map(&[&[]]),
+                build_map(&[&[]]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let gauge = MemTable::try_new(schema.clone(), vec![vec![gauge_batch]]).unwrap();
+        let sum = MemTable::try_new(schema, vec![vec![sum_batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_gauge".to_string(), Arc::new(gauge))
+            .unwrap();
+        sp.register_table("metrics_sum".to_string(), Arc::new(sum))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
     fn doc(v: serde_json::Value) -> Document {
         serde_json::from_value(v).unwrap()
     }
@@ -1624,6 +1762,109 @@ mod tests {
         assert!(plan.contains("date_bin"), "plan:\n{plan}");
         // Executes.
         let _ = df.collect().await.unwrap();
+    }
+
+    /// The metrics source unions metrics_gauge + metrics_sum (2 + 1 rows
+    /// here) rather than scanning one table — the case every other source's
+    /// fixture doesn't exercise.
+    #[tokio::test]
+    async fn metrics_unions_gauge_and_sum_filters_by_name_and_aggregates() {
+        let svc = IrService::new(metrics_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "signaldb.wal.entries_processed" } },
+                { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "sum", "of": "metric.value", "as": "v" }], "step": "1ms" } }
+            ]
+        }));
+        let (df, window) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("both metrics tables are registered");
+        assert_eq!(
+            window,
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 1000
+            }
+        );
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(plan.contains("Union"), "plan:\n{plan}");
+        assert!(plan.contains("Aggregate"), "plan:\n{plan}");
+        assert!(plan.contains("Filter"), "plan:\n{plan}");
+        assert!(plan.contains("date_bin"), "plan:\n{plan}");
+        // Executes, and sums across both tables: 5 + 7 (gauge) + 3 (sum) = 15.
+        let batches = df.collect().await.unwrap();
+        let total: f64 = batches
+            .iter()
+            .map(|b| {
+                let col = b
+                    .column_by_name("v")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Float64Array>()
+                    .unwrap();
+                col.values().iter().sum::<f64>()
+            })
+            .sum();
+        assert_eq!(total, 15.0);
+    }
+
+    /// A metrics document still executes when only one of the two tables
+    /// exists — e.g. a dataset that has only ever received gauge metrics.
+    #[tokio::test]
+    async fn metrics_scans_whichever_table_exists_when_only_one_is_registered() {
+        let ctx = SessionContext::new();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64])),
+                Arc::new(StringArray::from(vec!["signaldb"])),
+                Arc::new(StringArray::from(vec!["signaldb.wal.entries_processed"])),
+                Arc::new(Float64Array::from(vec![5.0])),
+                build_map(&[&[]]),
+                build_map(&[&[]]),
+            ],
+        )
+        .unwrap();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_gauge".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [{ "aggregate": { "by": ["metric.name"], "aggs": [{ "fn": "sum", "of": "metric.value", "as": "v" }] } }]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        assert_eq!(
+            df.collect()
+                .await
+                .unwrap()
+                .iter()
+                .map(|b| b.num_rows())
+                .sum::<usize>(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -2645,6 +2886,21 @@ mod tests {
             &profile_cols,
             "profiles",
         );
+
+        // Only row_defaults needs checking against both tables — it's the
+        // common-denominator column set scan_source_tables projects onto
+        // before unioning gauge + sum, so it must exist in each.
+        let gauge = common::iceberg::schemas::create_metrics_gauge_schema().unwrap();
+        let gauge_cols: HashSet<String> =
+            gauge.fields().iter().map(|f| f.name.to_string()).collect();
+        let sum = common::iceberg::schemas::create_metrics_sum_schema().unwrap();
+        let sum_cols: HashSet<String> = sum.fields().iter().map(|f| f.name.to_string()).collect();
+        let metrics = SourcePlan::for_source("metrics").unwrap();
+        for c in metrics.row_defaults {
+            assert!(gauge_cols.contains(*c), "metrics_gauge missing '{c}'");
+            assert!(sum_cols.contains(*c), "metrics_sum missing '{c}'");
+        }
+        check(&metrics, &gauge_cols, "metrics (vs. gauge)");
     }
 
     /// Group 7 (`otel-compliant-self-tracing`): query execution decomposes
