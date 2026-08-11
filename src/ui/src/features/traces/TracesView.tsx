@@ -63,6 +63,7 @@ import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
 import { fetchWindowTotal, looksUnresolved } from "./unresolvedGroup";
 import { describeService, groupSpanAttributes } from "./spanAttributes";
+import { SortTh, sortRows, useSort, type SortValue } from "../../lib/sortTable";
 import "./traces.css";
 
 interface Props {
@@ -72,83 +73,6 @@ interface Props {
 
 function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
-}
-
-/* ---------- column sorting ---------- */
-
-type SortDir = "asc" | "desc";
-interface SortSpec {
-  key: string;
-  dir: SortDir;
-}
-
-function useSort(defaultKey: string, defaultDir: SortDir) {
-  const [sort, setSort] = useState<SortSpec>({
-    key: defaultKey,
-    dir: defaultDir,
-  });
-  const toggle = (key: string, firstDir: SortDir) =>
-    setSort((s) =>
-      s.key === key
-        ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
-        : { key, dir: firstDir },
-    );
-  return [sort, toggle] as const;
-}
-
-type SortValue = string | number | bigint;
-
-function compareValues(a: SortValue, b: SortValue): number {
-  if (typeof a === "string" || typeof b === "string") {
-    return String(a).localeCompare(String(b));
-  }
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function sortRows<T>(
-  rows: T[],
-  sort: SortSpec,
-  value: (row: T, key: string) => SortValue,
-): T[] {
-  const sign = sort.dir === "asc" ? 1 : -1;
-  return [...rows].sort(
-    (a, b) => sign * compareValues(value(a, sort.key), value(b, sort.key)),
-  );
-}
-
-function SortTh({
-  label,
-  sortKey,
-  sort,
-  toggle,
-  numeric = false,
-  firstDir,
-}: {
-  label: string;
-  sortKey: string;
-  sort: SortSpec;
-  toggle: (key: string, firstDir: SortDir) => void;
-  /** Right-aligned metric column; sorts descending on first click. */
-  numeric?: boolean;
-  /** Overrides the first-click direction (e.g. timestamps: newest first). */
-  firstDir?: SortDir;
-}) {
-  const active = sort.key === sortKey;
-  return (
-    <th
-      className={numeric ? "num" : undefined}
-      aria-sort={
-        active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined
-      }
-    >
-      <button
-        className="th-sort"
-        onClick={() => toggle(sortKey, firstDir ?? (numeric ? "desc" : "asc"))}
-      >
-        {label}
-      </button>
-    </th>
-  );
 }
 
 export function TracesView({ state, update }: Props) {
