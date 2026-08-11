@@ -24,6 +24,15 @@
 //!
 //! `get_trace` additionally ships an interactive waterfall view via the MCP
 //! Apps extension; see [`crate::apps`].
+//!
+//! Prompts (`prompts/list` / `prompts/get`, see [`crate::prompts`]) are
+//! static, argument-only templates that seed an investigation using the
+//! tools above — `investigate_trace`, `find_recent_errors`,
+//! `build_promql_query`. `completion/complete` offers live autocompletion for
+//! two of their arguments (`find_recent_errors`'s `service`, backed by Tempo
+//! tag-value discovery, and `build_promql_query`'s `metric`, backed by
+//! Prometheus label discovery); every other reference/argument pair returns
+//! no suggestions rather than an error, since completions are advisory.
 
 use axum::http::request::Parts;
 use rmcp::handler::server::wrapper::Parameters;
@@ -33,15 +42,17 @@ use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     handler::server::tool::Extension,
     model::{
-        CacheScope, CallToolResult, ContentBlock, ListResourcesResult, ListToolsResult,
-        PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
-        ReadResourceResult, ServerCapabilities, ServerInfo,
+        CacheScope, CallToolResult, CompleteRequestParams, CompleteResult, CompletionInfo,
+        ContentBlock, GetPromptRequestParams, GetPromptResponse, ListPromptsResult,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
+        ReadResourceResponse, ReadResourceResult, Reference, ServerCapabilities, ServerInfo,
     },
     tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
 
 use crate::apps;
+use crate::prompts;
 use crate::sdk_client_for;
 
 /// The SignalDB MCP server handler. One instance is created per session by the
@@ -532,6 +543,108 @@ impl McpServer {
     pub fn has_tool(name: &str) -> bool {
         Self::tool_router().has_route(name)
     }
+
+    /// Argument autocompletion, forwarding to the router when `parts` carries
+    /// a credential. Every failure mode — no credential available (e.g. a
+    /// transport that never attaches one), an unrecognized reference or
+    /// argument, or a downstream error — degrades to an empty completion list
+    /// rather than an error: completions are advisory, so a typeahead miss
+    /// must never surface as a JSON-RPC error to the user still typing.
+    async fn complete_impl(
+        &self,
+        request: CompleteRequestParams,
+        parts: Option<Parts>,
+    ) -> CompleteResult {
+        let Reference::Prompt(prompt_ref) = &request.r#ref else {
+            return CompleteResult::default();
+        };
+        let Some(source) =
+            CompletionSource::for_prompt_argument(&prompt_ref.name, &request.argument.name)
+        else {
+            return CompleteResult::default();
+        };
+        let Some(parts) = parts else {
+            return CompleteResult::default();
+        };
+        let Ok(client) = self.router_client(&parts, None) else {
+            return CompleteResult::default();
+        };
+
+        let values = match source.fetch(&client).await {
+            Ok(values) => values,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    argument = %request.argument.name,
+                    "completion lookup failed; returning no suggestions"
+                );
+                return CompleteResult::default();
+            }
+        };
+
+        let prefix = request.argument.value.as_str();
+        let matches: Vec<String> = values
+            .into_iter()
+            .filter(|v| v.starts_with(prefix))
+            .take(CompletionInfo::MAX_VALUES)
+            .collect();
+        match CompletionInfo::with_all_values(matches) {
+            Ok(info) => CompleteResult::new(info),
+            // Unreachable: bounded by `take(MAX_VALUES)` above.
+            Err(_) => CompleteResult::default(),
+        }
+    }
+}
+
+/// A live data source [`McpServer::complete_impl`] can query for a prompt
+/// argument's suggestions.
+enum CompletionSource {
+    /// `find_recent_errors`'s `service` argument — Tempo `service.name` tag values.
+    ServiceName,
+    /// `build_promql_query`'s `metric` argument — Prometheus `__name__` label values.
+    MetricName,
+}
+
+impl CompletionSource {
+    /// The source for a given prompt name + argument name, or `None` when
+    /// this server has no live data for that pair.
+    fn for_prompt_argument(prompt_name: &str, argument_name: &str) -> Option<Self> {
+        match (prompt_name, argument_name) {
+            ("find_recent_errors", "service") => Some(Self::ServiceName),
+            ("build_promql_query", "metric") => Some(Self::MetricName),
+            _ => None,
+        }
+    }
+
+    async fn fetch(
+        &self,
+        client: &signaldb_sdk::Client,
+    ) -> Result<Vec<String>, signaldb_sdk::Error<()>> {
+        match self {
+            Self::ServiceName => {
+                let resp = client
+                    .search_tag_values()
+                    .tag_name("service.name")
+                    .send()
+                    .await?;
+                Ok(resp.into_inner().tag_values)
+            }
+            Self::MetricName => {
+                let resp = client.promql_label_values().name("__name__").send().await?;
+                let values = resp
+                    .into_inner()
+                    .get("data")
+                    .and_then(|d| d.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(values)
+            }
+        }
+    }
 }
 
 /// Tools that ship a UI app, paired with the resource that renders them.
@@ -565,13 +678,15 @@ impl ServerHandler for McpServer {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
+                .enable_prompts()
+                .enable_completions()
                 .build(),
         )
         .with_instructions(
             "Query SignalDB traces, logs, and metrics for the authenticated tenant. \
              Call `server_info` first to confirm which tenant your credential resolves to. \
              Clients that negotiate the MCP Apps extension render `get_trace` results as an \
-             interactive waterfall.",
+             interactive waterfall. `prompts/list` offers ready-made investigation templates.",
         )
     }
 
@@ -632,6 +747,42 @@ impl ServerHandler for McpServer {
                 None,
             )),
         }
+    }
+
+    /// List the static prompt catalog; see [`crate::prompts`].
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        // Static, compiled-in templates — identical for every client, so a
+        // long TTL and public scope are safe, same as `list_resources`.
+        Ok(ListPromptsResult::with_all_items(prompts::list())
+            .with_ttl_ms(STATIC_RESOURCE_CACHE_TTL_MS)
+            .with_cache_scope(CacheScope::Public))
+    }
+
+    /// Render a prompt template. Rendering is pure argument substitution (no
+    /// router call), so this works even before this session's router
+    /// credential has been validated.
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        Ok(prompts::get(&request.name, request.arguments)?.into())
+    }
+
+    /// Argument autocompletion. See [`Self::complete_impl`] for the actual
+    /// logic — this override only threads the caller's forwarding credential
+    /// through from the request context.
+    async fn complete(
+        &self,
+        request: CompleteRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CompleteResult, ErrorData> {
+        let parts = context.extensions.get::<Parts>().cloned();
+        Ok(self.complete_impl(request, parts).await)
     }
 }
 
@@ -935,5 +1086,177 @@ mod tests {
             .pointer("/properties/query/type")
             .and_then(|t| t.as_str());
         assert_eq!(query_type, Some("object"));
+    }
+
+    // `complete_impl` is exercised directly (like `server_info` above) rather
+    // than through a client<->server transport: the crate's in-memory duplex
+    // test transport carries no HTTP layer, so nothing would ever populate
+    // the `Extension<Parts>` a router-forwarding completion needs. See
+    // `tests/prompts_and_completions.rs` for the completions that need no
+    // credential, which *are* tested over a real transport.
+
+    #[tokio::test]
+    async fn completion_suggests_matching_service_names() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(
+                std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .starts_with("GET /tempo/api/search/tag/service.name/values "),
+                "must query Tempo tag values for service.name"
+            );
+            let body = br#"{"tagValues":["checkout","checkout-worker","payments"]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write response headers");
+            socket.write_all(body).await.expect("write body");
+        });
+        let parts = RequestBuilder::new()
+            .header(AUTHORIZATION, "Bearer valid-token")
+            .body(())
+            .expect("build request")
+            .into_parts()
+            .0;
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+
+        let result = server
+            .complete_impl(
+                rmcp::model::CompleteRequestParams::new(
+                    Reference::for_prompt("find_recent_errors"),
+                    rmcp::model::ArgumentInfo::new("service", "checkout"),
+                ),
+                Some(parts),
+            )
+            .await;
+
+        assert_eq!(
+            result.completion.values,
+            vec!["checkout", "checkout-worker"]
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn completion_suggests_matching_metric_names() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(
+                std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .starts_with("GET /prometheus/api/v1/label/__name__/values "),
+                "must query Prometheus label values for __name__"
+            );
+            let body =
+                br#"{"status":"success","data":["http_requests_total","http_request_duration_seconds"]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write response headers");
+            socket.write_all(body).await.expect("write body");
+        });
+        let parts = RequestBuilder::new()
+            .header(AUTHORIZATION, "Bearer valid-token")
+            .body(())
+            .expect("build request")
+            .into_parts()
+            .0;
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+
+        let result = server
+            .complete_impl(
+                rmcp::model::CompleteRequestParams::new(
+                    Reference::for_prompt("build_promql_query"),
+                    rmcp::model::ArgumentInfo::new("metric", "http_request"),
+                ),
+                Some(parts),
+            )
+            .await;
+
+        assert_eq!(
+            result.completion.values,
+            vec!["http_requests_total", "http_request_duration_seconds"]
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn completion_is_empty_without_a_credential() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let result = server
+            .complete_impl(
+                rmcp::model::CompleteRequestParams::new(
+                    Reference::for_prompt("build_promql_query"),
+                    rmcp::model::ArgumentInfo::new("metric", "http"),
+                ),
+                None,
+            )
+            .await;
+
+        assert!(result.completion.values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn completion_degrades_to_empty_when_the_router_is_unreachable() {
+        let parts = RequestBuilder::new()
+            .header(AUTHORIZATION, "Bearer valid-token")
+            .body(())
+            .expect("build request")
+            .into_parts()
+            .0;
+        // Port 1 is a reserved, never-listening port.
+        let server = McpServer::new(
+            "http://127.0.0.1:1".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let result = server
+            .complete_impl(
+                rmcp::model::CompleteRequestParams::new(
+                    Reference::for_prompt("build_promql_query"),
+                    rmcp::model::ArgumentInfo::new("metric", "http"),
+                ),
+                Some(parts),
+            )
+            .await;
+
+        assert!(
+            result.completion.values.is_empty(),
+            "a downstream failure must degrade to no suggestions, not an error"
+        );
     }
 }
