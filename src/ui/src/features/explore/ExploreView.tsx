@@ -1,10 +1,15 @@
+import { Link } from "react-router";
 import { TimeRangePicker } from "../shell/TimeRangePicker";
 import { LogsView } from "../logs/LogsView";
 import { MetricsView } from "../metrics/MetricsView";
 import { ProfilesView } from "../profiles/ProfilesView";
 import { TracesView } from "../traces/TracesView";
 import { QueryView } from "../query/QueryView";
-import type { ExploreState, Signal } from "../../lib/urlState";
+import {
+  crossSignalSearch,
+  type ExploreState,
+  type Signal,
+} from "../../lib/urlState";
 import "./explore.css";
 
 const SIGNAL_TABS: { id: Signal; label: string }[] = [
@@ -26,15 +31,15 @@ export function ExploreView({ state, update }: Props) {
       <div className="explore-controls">
         <div className="signal-tabs" role="tablist" aria-label="Signal">
           {SIGNAL_TABS.map((tab) => (
-            <button
+            <Link
               key={tab.id}
               role="tab"
               className="sigtab"
               aria-selected={state.signal === tab.id}
-              onClick={() => update({ signal: tab.id })}
+              to={`/${tab.id}${crossSignalSearch(state)}`}
             >
               {tab.label}
-            </button>
+            </Link>
           ))}
         </div>
         <div className="explore-controls-right">
