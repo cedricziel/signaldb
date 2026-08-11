@@ -262,6 +262,45 @@ async fn otlp_http_logs_json_with_empty_any_value_lands_in_wal() {
     );
 }
 
+/// An `AnyValue` object containing only keys we don't recognize (e.g. a
+/// future OTLP/JSON field, `{"futureValue":"ignored"}`) must be treated the
+/// same as an empty one — the OTLP/JSON spec requires unknown fields to be
+/// ignored, not rejected, for forward compatibility. This matches the fix
+/// merged upstream in open-telemetry/opentelemetry-rust#3595.
+#[tokio::test]
+async fn otlp_http_logs_json_with_unknown_only_any_value_lands_in_wal() {
+    let (app, wal_manager, _temp_dir) = setup_logs_test().await;
+
+    let body = r#"{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"signaldb-ui"}}]},"scopeLogs":[{"scope":{},"logRecords":[{"timeUnixNano":"1786482914799000000","severityNumber":9,"body":{"stringValue":"hi"},"attributes":[{"key":"future.attr","value":{"futureValue":"ignored"}}]}]}]}]}"#;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/logs")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+        .header("X-Tenant-ID", TEST_TENANT)
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    let status = response.status();
+    if status != StatusCode::OK {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        panic!(
+            "Expected 200 OK for a JSON logs export with an unknown-only AnyValue, got {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+    assert_eq!(
+        logs_wal_entry_count(&wal_manager).await,
+        1,
+        "Expected the logs export to be durably recorded in the WAL"
+    );
+}
+
 #[tokio::test]
 async fn otlp_http_logs_invalid_api_key_is_unauthorized() {
     let (app, wal_manager, _temp_dir) = setup_logs_test().await;

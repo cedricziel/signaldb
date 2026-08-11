@@ -110,10 +110,8 @@ pub(crate) mod serializers {
                 V: de::MapAccess<'de>,
             {
                 let mut value: Option<any_value::Value> = None;
-                let mut saw_any_key = false;
 
                 while let Some(key) = map.next_key::<String>()? {
-                    saw_any_key = true;
                     let key_str = key.as_str();
                     match key_str {
                         "stringValue" => {
@@ -153,20 +151,10 @@ pub(crate) mod serializers {
                     }
                 }
 
-                if let Some(v) = value {
-                    Ok(Some(v))
-                } else if !saw_any_key {
-                    // `{}` is a valid, deliberately empty AnyValue per the
-                    // OTLP spec ("It is valid for all values to be
-                    // unspecified in which case this AnyValue is considered
-                    // to be empty"). Real clients send this — e.g. the OTel
-                    // JS browser SDK's event-style log records with no body.
-                    Ok(None)
-                } else {
-                    Err(de::Error::custom(
-                        "Invalid data for Value, no known keys found",
-                    ))
-                }
+                // An AnyValue with no selected field is valid and considered empty.
+                // Unknown fields are ignored according to the OTLP/JSON specification,
+                // so an empty or unknown-only object has the same representation.
+                Ok(value)
             }
         }
 
