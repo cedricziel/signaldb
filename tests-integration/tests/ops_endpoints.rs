@@ -6,6 +6,10 @@
 //! through real capability discovery. The compactor's own `do_action` behavior
 //! is covered by the compactor crate; the router side is a thin admin-gated
 //! forward, so a stub Flight service stands in for it here.
+//!
+//! The RPC CLIENT span the router opens around `do_action` is covered
+//! separately in `ops_endpoints_tracing.rs`, which needs process-global OTel
+//! state and so lives in its own test binary.
 
 use std::sync::Arc;
 

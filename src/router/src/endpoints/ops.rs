@@ -20,6 +20,7 @@ use common::flight::transport::ServiceCapability;
 use futures::StreamExt;
 use serde_json::Value;
 use tonic::Request;
+use tracing::Instrument;
 
 use super::api_error::ApiError;
 use crate::RouterState;
@@ -101,9 +102,9 @@ async fn do_compactor_action<S: RouterState>(
     state: &S,
     action_type: &str,
 ) -> Result<Value, ApiError> {
-    let mut client = state
+    let (mut client, server_address) = state
         .service_registry()
-        .get_flight_client_for_capability(ServiceCapability::StorageMaintenance)
+        .get_flight_client_and_address_for_capability(ServiceCapability::StorageMaintenance)
         .await
         .map_err(|e| {
             // Discovery collapses "nothing registered with the capability" and
@@ -120,24 +121,43 @@ async fn do_compactor_action<S: RouterState>(
             )
         })?;
 
-    let action = Action {
+    let mut request = Request::new(Action {
         r#type: action_type.to_string(),
         body: Bytes::new(),
-    };
+    });
+    // RPC CLIENT boundary span, named by the fully-qualified Flight method
+    // plus the low-cardinality action type, propagated to the compactor's
+    // SERVER span via the injected trace context.
+    let rpc_span = common::self_monitoring::spans::rpc_client_span(
+        common::self_monitoring::spans::FLIGHT_DO_ACTION,
+        Some(action_type),
+        Some(&server_address),
+    );
+    rpc_span.in_scope(|| common::flight::trace_context::inject_context_into_request(&mut request));
+    let record_span = rpc_span.clone();
 
     // Bound the round-trip so a hung compactor can't hang the request.
-    let result = tokio::time::timeout(OPS_TIMEOUT, async {
-        let mut stream = client
-            .do_action(Request::new(action))
-            .await
-            .map_err(|s| ApiError::from_flight(&s, action_type))?
-            .into_inner();
-        stream
-            .next()
-            .await
-            .ok_or_else(|| ApiError::new(StatusCode::BAD_GATEWAY, "compactor returned no result"))?
-            .map_err(|s| ApiError::from_flight(&s, action_type))
-    })
+    let result = tokio::time::timeout(
+        OPS_TIMEOUT,
+        async {
+            let mut stream = client
+                .do_action(request)
+                .await
+                .map_err(|s| ApiError::from_flight(&s, action_type))?
+                .into_inner();
+            let result = stream.next().await.ok_or_else(|| {
+                ApiError::new(StatusCode::BAD_GATEWAY, "compactor returned no result")
+            })?;
+            let result = result.map_err(|s| ApiError::from_flight(&s, action_type))?;
+            common::self_monitoring::spans::record_rpc_result(
+                &record_span,
+                common::self_monitoring::spans::RpcBoundary::Client,
+                tonic::Code::Ok,
+            );
+            Ok::<_, ApiError>(result)
+        }
+        .instrument(rpc_span),
+    )
     .await
     .map_err(|_| {
         ApiError::new(
