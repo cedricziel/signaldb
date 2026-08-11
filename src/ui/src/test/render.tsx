@@ -47,34 +47,36 @@ type JsonRoute = {
  * argument's `method` field (defaulting to GET).
  */
 export function stubFetchRoutes(routes: JsonRoute[]) {
-  const fn = vi.fn().mockImplementation((input: RequestInfo | URL) => {
-    const url = String(input instanceof Request ? input.url : input);
-    const method = (
-      input instanceof Request
-        ? input.method
-        : ((input as RequestInit)?.method ?? "GET")
-    ).toUpperCase();
-    const route = [...routes].reverse().find((r) => {
-      const urlMatch =
-        typeof r.match === "string" ? url.includes(r.match) : r.match.test(url);
-      if (!urlMatch) return false;
-      if (r.method && r.method.toUpperCase() !== method) return false;
-      return true;
-    });
-    if (!route) {
+  const fn = vi
+    .fn()
+    .mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const method = (
+        input instanceof Request ? input.method : (init?.method ?? "GET")
+      ).toUpperCase();
+      const route = [...routes].reverse().find((r) => {
+        const urlMatch =
+          typeof r.match === "string"
+            ? url.includes(r.match)
+            : r.match.test(url);
+        if (!urlMatch) return false;
+        if (r.method && r.method.toUpperCase() !== method) return false;
+        return true;
+      });
+      if (!route) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: `no stub for ${url}` }), {
+            status: 404,
+          }),
+        );
+      }
       return Promise.resolve(
-        new Response(JSON.stringify({ error: `no stub for ${url}` }), {
-          status: 404,
+        new Response(JSON.stringify(route.body), {
+          status: route.status ?? 200,
+          headers: { "Content-Type": "application/json" },
         }),
       );
-    }
-    return Promise.resolve(
-      new Response(JSON.stringify(route.body), {
-        status: route.status ?? 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-  });
+    });
   vi.stubGlobal("fetch", fn);
   generatedClient.setConfig({ baseUrl: "http://localhost", fetch: fn });
   return fn;
