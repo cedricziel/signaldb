@@ -5,6 +5,14 @@ import { whoami } from "../../api/session";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import "./Instrumentation.css";
 
+// The acceptor's OTLP ports (see docs/users/sending-otlp.md); distinct from
+// the router's HTTP port, which only serves queries. Snippets append the
+// protocol-appropriate port to a bare host themselves, rather than baking a
+// single "host:port" string that some templates would then append a second
+// port to.
+const OTLP_GRPC_PORT = 4317;
+const OTLP_HTTP_PORT = 4318;
+
 type SourceId =
   | "otel-sdk"
   | "otel-collector"
@@ -19,12 +27,8 @@ interface Source {
   title: string;
   description: string;
   steps: string[];
-  snippet: (tenant: string, dataset: string, endpoint: string) => string;
-  envVars?: {
-    OTEL_EXPORTER_OTLP_ENDPOINT?: string;
-    OTEL_EXPORTER_OTLP_HEADERS?: string;
-    // others
-  };
+  /** `host` is a bare hostname (no port) — the acceptor's ingest host. */
+  snippet: (tenant: string, dataset: string, host: string) => string;
 }
 
 const SOURCES: Source[] = [
@@ -38,29 +42,36 @@ const SOURCES: Source[] = [
       "Configure the OTLP exporter to point to SignalDB",
       "Set authentication and tenant headers",
     ],
-    snippet: (tenant, dataset, endpoint) => `// Example for Go
+    snippet: (tenant, dataset, host) => `// Example for Go
 package main
 
 import (
-    "go.opentelemetry.io/otel"
+    "context"
+    "log"
+
     "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 )
 
 func main() {
     ctx := context.Background()
     exp, err := otlptracegrpc.New(ctx,
-        otlptracegrpc.WithEndpoint("${endpoint}"),
+        otlptracegrpc.WithEndpoint("${host}:${OTLP_GRPC_PORT}"),
         otlptracegrpc.WithHeaders(map[string]string{
             "Authorization": "Bearer YOUR_API_KEY",
             "X-Tenant-ID":   "${tenant}",
             "X-Dataset-ID":  "${dataset}",
         }),
     )
-    // ...
+    if err != nil {
+        log.Fatalf("failed to create exporter: %v", err)
+    }
+    defer exp.Shutdown(ctx)
+    // Register exp with a TracerProvider — see the OpenTelemetry Go docs
+    // for a full SDK setup: https://opentelemetry.io/docs/languages/go/
 }
 
-// Environment variables:
-export OTEL_EXPORTER_OTLP_ENDPOINT="http://${endpoint}"
+// Environment variables (equivalent to the code above):
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://${host}:${OTLP_GRPC_PORT}"
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer YOUR_API_KEY,X-Tenant-ID=${tenant},X-Dataset-ID=${dataset}"`,
   },
   {
@@ -73,7 +84,7 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer YOUR_API_KEY,X-Tenant-ID
       "Configure OTLP exporter pointing to SignalDB",
       "Set authentication headers",
     ],
-    snippet: (tenant, dataset, endpoint) => `# otel-collector-config.yaml
+    snippet: (tenant, dataset, host) => `# otel-collector-config.yaml
 receivers:
   otlp:
     protocols:
@@ -82,7 +93,9 @@ receivers:
 
 exporters:
   otlp:
-    endpoint: ${endpoint}:4317
+    endpoint: ${host}:${OTLP_GRPC_PORT}
+    tls:
+      insecure: true
     headers:
       Authorization: "Bearer YOUR_API_KEY"
       X-Tenant-ID: "${tenant}"
@@ -113,7 +126,7 @@ service:
     snippet: (
       tenant,
       dataset,
-      endpoint,
+      host,
     ) => `# values.yaml for opentelemetry-collector Helm chart
 config:
   receivers:
@@ -123,7 +136,9 @@ config:
         http:
   exporters:
     otlp:
-      endpoint: ${endpoint}:4317
+      endpoint: ${host}:${OTLP_GRPC_PORT}
+      tls:
+        insecure: true
       headers:
         Authorization: "Bearer YOUR_API_KEY"
         X-Tenant-ID: "${tenant}"
@@ -151,20 +166,20 @@ config:
       "Configure OTLP exporter to SignalDB",
       "Pass environment variables to application",
     ],
-    snippet: (tenant, dataset, endpoint) => `# docker-compose.yml
+    snippet: (tenant, dataset, host) => `# docker-compose.yml
 version: '3'
 services:
   app:
     image: myapp:latest
     environment:
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://${endpoint}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://${host}:${OTLP_GRPC_PORT}
       OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer YOUR_API_KEY,X-Tenant-ID=${tenant},X-Dataset-ID=${dataset}"
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     volumes:
       - ./otel-config.yaml:/etc/otel/config.yaml
     ports:
-      - "4317:4317"`,
+      - "${OTLP_GRPC_PORT}:${OTLP_GRPC_PORT}"`,
   },
   {
     id: "journald",
@@ -172,36 +187,33 @@ services:
     title: "systemd journal",
     description: "Forward system logs from journald to SignalDB.",
     steps: [
-      "Install Promtail or Vector for journal scraping",
-      "Configure OTLP exporter to SignalDB",
-      "Set authentication headers",
+      "Install the OpenTelemetry Collector (journald receiver requires otelcol-contrib)",
+      "Configure the journald receiver and an OTLP exporter to SignalDB",
+      "Set authentication and tenant headers",
     ],
-    snippet: (tenant, dataset, endpoint) => `# promtail-config.yaml
-server:
-  http_listen_port: 9080
-  grpc_listen_port: 0
+    snippet: (tenant, dataset, host) => `# otel-collector-config.yaml
+receivers:
+  journald:
+    directory: /var/log/journal
+    units:
+      - ssh
+      - kubelet
 
-positions:
-  filename: /tmp/positions.yaml
-
-clients:
-  - url: http://${endpoint}:4317/v1/logs
+exporters:
+  otlp:
+    endpoint: ${host}:${OTLP_GRPC_PORT}
+    tls:
+      insecure: true
     headers:
-      Authorization: Bearer YOUR_API_KEY
-      X-Tenant-ID: ${tenant}
-      X-Dataset-ID: ${dataset}
+      Authorization: "Bearer YOUR_API_KEY"
+      X-Tenant-ID: "${tenant}"
+      X-Dataset-ID: "${dataset}"
 
-scrape_configs:
-  - job_name: journal
-    journal:
-      path: /var/log/journal
-      labels:
-        job: journal
-    relabel_configs:
-      - source_labels: [__journal__hostname]
-        target_label: host
-    batch:
-      timeout: -1`,
+service:
+  pipelines:
+    logs:
+      receivers: [journald]
+      exporters: [otlp]`,
   },
   {
     id: "prometheus",
@@ -213,14 +225,16 @@ scrape_configs:
       "Set authentication headers",
       "Optional: use Prometheus Agent mode",
     ],
-    snippet: (tenant, dataset, endpoint) => `# prometheus.yml
+    snippet: (tenant, dataset, host) => `# prometheus.yml
 global:
   scrape_interval: 15s
 
 remote_write:
-  - url: http://${endpoint}/api/v1/prometheus/write
+  - url: http://${host}:${OTLP_HTTP_PORT}/api/v1/write
+    authorization:
+      type: Bearer
+      credentials: YOUR_API_KEY
     headers:
-      Authorization: Bearer YOUR_API_KEY
       X-Tenant-ID: ${tenant}
       X-Dataset-ID: ${dataset}
 
@@ -244,9 +258,13 @@ export function Instrumentation({ state }: Props) {
   });
 
   const tenant = who?.tenant.id ?? state.tenant;
-  const dataset = state.dataset ?? "default";
-  // In a real app we might get endpoint from config, but default to router:3000
-  const endpoint = "router:3000";
+  const dataset = state.dataset;
+  // The acceptor (ingest) typically shares a host with the router (this
+  // page) but listens on different ports — see OTLP_GRPC_PORT/OTLP_HTTP_PORT
+  // above. Default to the browser's current hostname rather than an
+  // internal-looking service name; users on a different ingest host can
+  // substitute their own.
+  const host = window.location.hostname;
 
   const source = SOURCES.find((s) => s.id === selectedSource)!;
 
@@ -283,12 +301,12 @@ export function Instrumentation({ state }: Props) {
               <div className="code-header">
                 <span>Configuration snippet</span>
                 <CopyValueButton
-                  value={source.snippet(tenant, dataset, endpoint)}
+                  value={source.snippet(tenant, dataset, host)}
                   label="Copy snippet"
                 />
               </div>
               <pre>
-                <code>{source.snippet(tenant, dataset, endpoint)}</code>
+                <code>{source.snippet(tenant, dataset, host)}</code>
               </pre>
             </div>
             <div className="verification">

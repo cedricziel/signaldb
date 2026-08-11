@@ -25,12 +25,12 @@ The system SHALL display a sidebar with selectable instrumentation sources: OTel
 
 ### Requirement: Source-specific setup instructions
 
-For each source, the system SHALL display step-by-step setup instructions with copyable code/config snippets that include the user's actual tenant and dataset from whoami data.
+For each source, the system SHALL display step-by-step setup instructions with copyable code/config snippets that include the user's actual tenant and the active dataset (the outlet state's `dataset`, not the tenant's `default_dataset`).
 
 #### Scenario: Snippets include tenant context
 
 - **WHEN** the user views any source's instructions
-- **THEN** code snippets include the user's current tenant ID and dataset ID from the whoami response
+- **THEN** code snippets include the user's current tenant ID (from the whoami response) and the active dataset ID (from outlet state)
 
 #### Scenario: Snippets are copyable
 

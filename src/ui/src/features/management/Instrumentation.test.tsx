@@ -127,4 +127,17 @@ describe("Instrumentation page", () => {
       expect(code.textContent).toMatch(/X-Dataset-ID.*production/);
     });
   });
+
+  it("snippets use the active dataset, not whoami's default_dataset", async () => {
+    // WHOAMI's default_dataset is "production", but the active dataset
+    // (from outlet state) is "staging" — snippets must reflect the latter.
+    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
+    renderInstrumentation({ state: { tenant: "acme", dataset: "staging" } });
+
+    await waitFor(() => {
+      const code = getCodeBlock();
+      expect(code.textContent).toMatch(/X-Dataset-ID.*staging/);
+      expect(code.textContent).not.toMatch(/X-Dataset-ID.*production/);
+    });
+  });
 });
