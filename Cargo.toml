@@ -99,20 +99,16 @@ object_store = { version = "0.13.2", features = ["aws"] }
 # fix we have upstream but not yet merged, so SignalDB stays functional while
 # the individual PRs are in review. Each commit on it is one open upstream PR:
 #
-#   JanKaul/iceberg-rust#382 — reclaim superseded metadata files on commit
-#   JanKaul/iceberg-rust#386 — configurable connection pool and session statements
-#   JanKaul/iceberg-rust#387 — honor the write.parquet.* writer properties
 #   JanKaul/iceberg-rust#388 — honor write.target-file-size-bytes, roll on real file size
-#   JanKaul/iceberg-rust#389 — write gzipped metadata when the table asks for it
-#   JanKaul/iceberg-rust#390 — don't panic when a datafile split has an empty side
 #
-# (#383, #384 and #385 have merged upstream and are no longer carried here.)
+# (#382, #386, #387, #389 and #390 have merged upstream and are no longer
+# carried here.)
 #
 # Drop a commit from the branch as its PR merges; revert to JanKaul/iceberg-rust
 # once the branch is empty.
-datafusion_iceberg = { git = "https://github.com/cedricziel/iceberg-rust", rev = "46c41afdff93ac92ef540bddc258db7173f38c9d" }
-iceberg-rust = { git = "https://github.com/cedricziel/iceberg-rust", rev = "46c41afdff93ac92ef540bddc258db7173f38c9d" }
-iceberg-sql-catalog = { git = "https://github.com/cedricziel/iceberg-rust", rev = "46c41afdff93ac92ef540bddc258db7173f38c9d" }
+datafusion_iceberg = { git = "https://github.com/cedricziel/iceberg-rust", rev = "beacdb971f8fd04b9959503021796c5bb8539743" }
+iceberg-rust = { git = "https://github.com/cedricziel/iceberg-rust", rev = "beacdb971f8fd04b9959503021796c5bb8539743" }
+iceberg-sql-catalog = { git = "https://github.com/cedricziel/iceberg-rust", rev = "beacdb971f8fd04b9959503021796c5bb8539743" }
 
 tonic = { version = "0.14.2", features = ["transport", "channel", "gzip", "zstd"] }
 tonic-build = "0.14.2"
