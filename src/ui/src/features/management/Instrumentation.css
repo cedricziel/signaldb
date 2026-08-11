@@ -1,5 +1,5 @@
 .instrumentation-page {
-  padding: 它們 24px;
+  padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -106,7 +106,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 態度 10px;
+  margin-bottom: 10px;
 }
 
 .code-header span {
@@ -125,7 +125,7 @@
   font-size: 12px;
   line-height: 1.45;
   white-space: pre-wrap;
-  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .code-snippet code {
