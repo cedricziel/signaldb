@@ -64,7 +64,14 @@ binaries for acceptor, router, writer, querier, and the monolithic
 `signaldb` binary (`compactor` and `mcp-server` don't define the feature).
 Compiling it in adds no allocator overhead — the `jemalloc` feature already
 builds jemalloc with `--enable-prof` — it just wires up the Rust-side
-Pyroscope/jemalloc_pprof glue, which stays inert until
-`MALLOC_CONF=prof:true` and `[self_monitoring].heap_profiles_enabled` are
-both set at runtime. See the profiling configuration in `signaldb.dist.toml`
-and [Profiles](../users/profiles.md#heap-profiles).
+Pyroscope/jemalloc_pprof glue, which stays inert until `prof:true` and
+`[self_monitoring].heap_profiles_enabled` are both set at runtime.
+`MALLOC_CONF` takes one combined value, so if background purging is also
+enabled, append rather than replace it:
+
+```bash
+MALLOC_CONF=background_thread:true,prof:true
+```
+
+See the profiling configuration in `signaldb.dist.toml` and
+[Profiles](../users/profiles.md#heap-profiles).
