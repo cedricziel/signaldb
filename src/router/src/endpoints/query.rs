@@ -234,6 +234,10 @@ pub async fn query_ir<S: RouterState>(
 fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
     let signal = match source {
         "logs" | "traces" | "profiles" | "metrics" => source,
+        // metrics_histogram is a distinct IR source (bucketed rows, not a
+        // scalar value — see ir_planner.rs) but the same signal for scoping
+        // purposes; there is no separate metrics_histogram:read scope.
+        "metrics_histogram" => "metrics",
         _ => {
             return Err(ApiError::bad_request(format!(
                 "unknown query source '{source}'"
@@ -897,6 +901,15 @@ mod tests {
 
         let profiles = scoped_context(vec!["profiles:read"]);
         assert!(source_read_scope(&profiles, "metrics").is_err());
+    }
+
+    #[test]
+    fn metrics_read_scope_also_grants_the_metrics_histogram_ir_source() {
+        let metrics = scoped_context(vec!["metrics:read"]);
+        assert!(source_read_scope(&metrics, "metrics_histogram").is_ok());
+
+        let profiles = scoped_context(vec!["profiles:read"]);
+        assert!(source_read_scope(&profiles, "metrics_histogram").is_err());
     }
 
     // Task 6.1 — unauthenticated requests are rejected.

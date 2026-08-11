@@ -243,9 +243,22 @@ impl LogicalSchema {
             // aggregate over it is rejected as non-numeric.
             LogicalField::record_metadata("metrics", "metric.name", LogicalType::String),
             LogicalField::record_metadata("metrics", "metric.value", LogicalType::Float64),
+            // metrics_histogram: a whole bucketed histogram per row, not a
+            // scalar — only reachable via the `histogram_quantile` stage
+            // (ir_planner.rs), which reads bucket_counts/explicit_bounds by
+            // physical column name directly rather than through the
+            // resolver. Only the fields a `where`/`by` clause can reference
+            // need registering here.
+            LogicalField::record_metadata("metrics_histogram", "metric.name", LogicalType::String),
         ];
         fields.push(LogicalField::attribute(
             "metrics",
+            AttributeLevel::Resource,
+            "service.name",
+            LogicalType::String,
+        ));
+        fields.push(LogicalField::attribute(
+            "metrics_histogram",
             AttributeLevel::Resource,
             "service.name",
             LogicalType::String,

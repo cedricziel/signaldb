@@ -64,6 +64,18 @@ impl SourceRegistry {
                 allows_extract: false,
             },
         );
+        sources.insert(
+            "metrics_histogram".to_string(),
+            SourceDef {
+                name: "metrics_histogram".to_string(),
+                // One whole histogram (bucket_counts/explicit_bounds) per row,
+                // not a scalar value — a separate source from `metrics` since
+                // the row shape differs; only reachable via the
+                // `histogram_quantile` stage, see ir_planner.rs.
+                grain: Grain::Event,
+                allows_extract: false,
+            },
+        );
         SourceRegistry { sources }
     }
 

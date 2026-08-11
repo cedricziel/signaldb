@@ -20,7 +20,8 @@ use super::relation::{Column, Grain, Heatmap as HeatmapRelation, RelationType, R
 use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry};
 use super::stage::{
-    Agg, AggFn, Aggregate, Extract, Heatmap, Order, Rank, Stage, is_expression_string,
+    Agg, AggFn, Aggregate, Extract, Heatmap, HistogramQuantile, Order, Rank, Stage,
+    is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 
@@ -119,6 +120,16 @@ pub fn validate(
             "heatmap stage and result envelope require irVersion 2".to_string(),
         ));
     }
+    if doc.ir_version < 3
+        && doc
+            .pipeline
+            .iter()
+            .any(|stage| matches!(stage, Stage::HistogramQuantile(_)))
+    {
+        return Err(IrError::Invalid(
+            "histogram_quantile stage requires irVersion 3".to_string(),
+        ));
+    }
 
     // 2. Source resolution — unknown source is a clear error, not a parse fail.
     let source_def = sources
@@ -179,6 +190,7 @@ impl InferCtx<'_> {
             Stage::Order(keys) => self.apply_order(keys),
             Stage::Limit(_) => Ok(()),
             Stage::Heatmap(heatmap) => self.apply_heatmap(heatmap),
+            Stage::HistogramQuantile(hq) => self.apply_histogram_quantile(hq),
         }
     }
 
@@ -487,6 +499,68 @@ impl InferCtx<'_> {
         Ok(())
     }
 
+    /// Quantile-over-histogram-buckets — legal only on `metrics_histogram`,
+    /// always produces a series (`metric.name` plus any extra `by` labels).
+    /// Distinct from `aggregate`'s `fn: "quantile"` (an approx-percentile over
+    /// independent scalar values, `check_agg` below) — different algorithm,
+    /// different source shape.
+    fn apply_histogram_quantile(&mut self, hq: &HistogramQuantile) -> Result<(), IrError> {
+        if self.source != "metrics_histogram" {
+            return Err(IrError::IllegalStage {
+                stage: "histogram_quantile".into(),
+                reason: "is only supported on the metrics_histogram source".into(),
+            });
+        }
+        if self.require_rowset("histogram_quantile")?.aggregated {
+            return Err(IrError::IllegalStage {
+                stage: "histogram_quantile".into(),
+                reason: "cannot run on an already-aggregated relation".into(),
+            });
+        }
+        if !hq.q.is_finite() || !(0.0..=1.0).contains(&hq.q) {
+            return Err(IrError::Invalid(
+                "histogram_quantile q must be within [0, 1]".to_string(),
+            ));
+        }
+        let step_ns = parse_duration_ns(&hq.step).ok_or_else(|| IrError::Coercion {
+            field: "histogram_quantile.step".into(),
+            value: hq.step.clone(),
+            target: ValueType::DurationNs.to_string(),
+        })?;
+        if step_ns <= 0 {
+            return Err(IrError::Invalid(
+                "histogram_quantile step must be > 0".into(),
+            ));
+        }
+        if hq.by.iter().any(|f| f == "metric.name") {
+            return Err(IrError::Invalid(
+                "histogram_quantile by may not include metric.name (already implicit)".to_string(),
+            ));
+        }
+        for by in &hq.by {
+            self.require_filterable(by)?;
+            let _ = self.ref_type(by)?;
+        }
+        self.guard_logical_name(&hq.as_name)?;
+        let collides = self.names.iter().any(|n| n == &hq.as_name)
+            || hq.by.iter().any(|b| b == &hq.as_name)
+            || self.resolver.is_known(self.source, &hq.as_name);
+        if collides {
+            return Err(IrError::DuplicateName {
+                name: hq.as_name.clone(),
+            });
+        }
+        self.names.push(hq.as_name.clone());
+        let mut labels = vec!["metric.name".to_string()];
+        labels.extend(hq.by.clone());
+        self.relation = RelationType::Series(Series {
+            labels,
+            value: ValueType::Float64,
+            step_ns,
+        });
+        Ok(())
+    }
+
     fn check_agg(&self, a: &Agg, group_cols: &[Column]) -> Result<Column, IrError> {
         self.guard_logical_name(&a.as_name)?;
         // Uniqueness: against earlier introduced names, group fields, and any
@@ -737,12 +811,35 @@ mod tests {
             )
     }
 
+    fn metrics_histogram_resolver() -> InMemoryResolver {
+        logs_resolver()
+            .with_column(
+                "metrics_histogram",
+                "metric.name",
+                "metric_name",
+                ValueType::String,
+            )
+            .with_column(
+                "metrics_histogram",
+                "service.name",
+                "service_name",
+                ValueType::String,
+            )
+    }
+
     fn doc(v: serde_json::Value) -> Document {
         serde_json::from_value(v).expect("document parses")
     }
 
     fn validate_json(v: serde_json::Value) -> Result<Validated, IrError> {
         validate(&doc(v), &SourceRegistry::core(), &logs_resolver())
+    }
+
+    fn validate_json_with(
+        v: serde_json::Value,
+        resolver: &InMemoryResolver,
+    ) -> Result<Validated, IrError> {
+        validate(&doc(v), &SourceRegistry::core(), resolver)
     }
 
     // Task 1.3 — relation-type inference.
@@ -835,8 +932,103 @@ mod tests {
             IrError::UnsupportedVersion {
                 found: 99,
                 min: 1,
-                max: 2
+                max: 3
             }
+        );
+    }
+
+    fn histogram_quantile_doc(version: i64, source: &str, q: f64) -> serde_json::Value {
+        json!({
+            "irVersion": version, "from": source, "range": { "from": "now-1h", "to": "now" },
+            "result": "series",
+            "pipeline": [
+                { "histogram_quantile": { "q": q, "by": ["service.name"], "step": "1m", "as": "p95" } }
+            ]
+        })
+    }
+
+    #[test]
+    fn v3_histogram_quantile_infers_series_relation() {
+        let v = validate_json_with(
+            histogram_quantile_doc(3, "metrics_histogram", 0.95),
+            &metrics_histogram_resolver(),
+        )
+        .unwrap();
+        match v.terminal {
+            RelationType::Series(s) => {
+                assert_eq!(s.labels, vec!["metric.name", "service.name"]);
+                assert_eq!(s.value, ValueType::Float64);
+                assert_eq!(s.step_ns, 60_000_000_000);
+            }
+            other => panic!("expected series, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn histogram_quantile_rejects_non_histogram_source() {
+        let err = validate_json_with(
+            histogram_quantile_doc(3, "logs", 0.95),
+            &metrics_histogram_resolver(),
+        )
+        .unwrap_err();
+        match err {
+            IrError::IllegalStage { stage, .. } => assert_eq!(stage, "histogram_quantile"),
+            other => panic!("expected IllegalStage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn histogram_quantile_rejects_q_outside_zero_one() {
+        for q in [-0.1, 1.2] {
+            let err = validate_json_with(
+                histogram_quantile_doc(3, "metrics_histogram", q),
+                &metrics_histogram_resolver(),
+            )
+            .unwrap_err();
+            assert!(matches!(err, IrError::Invalid(_)), "q={q} got {err:?}");
+        }
+    }
+
+    #[test]
+    fn v2_rejects_histogram_quantile_stage_needing_v3() {
+        let err = validate_json_with(
+            histogram_quantile_doc(2, "metrics_histogram", 0.95),
+            &metrics_histogram_resolver(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, IrError::Invalid(message) if message.contains("irVersion 3")));
+    }
+
+    #[test]
+    fn histogram_quantile_rejects_metric_name_in_by() {
+        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        document["pipeline"][0]["histogram_quantile"]["by"] = json!(["metric.name"]);
+        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn histogram_quantile_rejects_duplicate_as_name() {
+        let mut document = json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [
+                { "histogram_quantile": { "q": 0.95, "step": "1m", "as": "service.name" } }
+            ]
+        });
+        document["result"] = json!("series");
+        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::DuplicateName { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn histogram_quantile_result_rows_is_envelope_mismatch() {
+        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        document["result"] = json!("rows");
+        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::EnvelopeMismatch { .. }),
+            "got {err:?}"
         );
     }
 
@@ -961,6 +1153,16 @@ mod tests {
         let source = sources
             .resolve("metrics")
             .expect("metrics source is registered");
+        assert_eq!(source.grain, Grain::Event);
+        assert!(!source.allows_extract);
+    }
+
+    #[test]
+    fn metrics_histogram_is_registered_as_an_event_grain_source() {
+        let sources = SourceRegistry::core();
+        let source = sources
+            .resolve("metrics_histogram")
+            .expect("metrics_histogram source is registered");
         assert_eq!(source.grain, Grain::Event);
         assert!(!source.allows_extract);
     }

@@ -30,15 +30,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use common::query_ir::{
-    Aggregate, ComparisonOp, Document, Extract, FieldResolver, Heatmap, Leaf, Literal, Parser,
-    Predicate, Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType,
-    coerce, validate,
+    Aggregate, ComparisonOp, Document, Extract, FieldResolver, Heatmap, HistogramMode,
+    HistogramQuantile, Leaf, Literal, Parser, Predicate, Resolved, ResultEnvelope, SourceRegistry,
+    Stage, TimestampLiteral, ValueType, coerce, validate,
 };
 use common::schema::logical::{Filterability, LogicalSchema, LogicalType};
 use datafusion::arrow::array::{
-    Array, LargeStringArray, StringArray, StringBuilder, StringViewArray,
+    Array, Float64Array, LargeStringArray, StringArray, StringBuilder, StringViewArray,
+    TimestampNanosecondArray,
 };
-use datafusion::arrow::datatypes::{DataType, IntervalMonthDayNano, TimeUnit};
+use datafusion::arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, TimeUnit};
 use datafusion::functions::core::expr_fn::{coalesce, get_field};
 use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
@@ -53,6 +54,9 @@ use datafusion::scalar::ScalarValue;
 
 use super::IrQueryParams;
 use super::error::QuerierError;
+use super::histogram::{
+    HistogramAcc, RateHistAcc, histogram_quantile, parse_bounds_cached, parse_f64_array,
+};
 use super::table_lookup::optional_table;
 
 /// Per-source planning facts: the physical table, its time column, and the
@@ -242,6 +246,39 @@ impl SourcePlan {
                     // distinct logical name, same reasoning as traces'
                     // `duration` → `duration_nanos`.
                     ("metric.value", "value"),
+                ],
+            }),
+            "metrics_histogram" => Some(SourcePlan {
+                name: "metrics_histogram",
+                // One whole histogram (bucket_counts/explicit_bounds) per
+                // row, not a scalar value — a separate source from `metrics`
+                // since the row shape differs. Only reachable via the
+                // `histogram_quantile` stage, which reads the bucket columns
+                // by physical name directly (see `lower_histogram_quantile`)
+                // rather than through the resolver — comparing a JSON-array
+                // string in a `where` is meaningless, so they get no alias.
+                tables: &["metrics_histogram"],
+                time_col: "timestamp",
+                time_is_timestamp: true,
+                containers: &["attributes", "resource_attributes"],
+                attr_prefixes: &[("resource.", "resource_attributes")],
+                row_defaults: &[
+                    "timestamp",
+                    "service_name",
+                    "metric_name",
+                    "count",
+                    "sum",
+                    "min",
+                    "max",
+                    "bucket_counts",
+                    "explicit_bounds",
+                    "aggregation_temporality",
+                    "attributes",
+                    "resource_attributes",
+                ],
+                aliases: &[
+                    ("service.name", "service_name"),
+                    ("metric.name", "metric_name"),
                 ],
             }),
             _ => None,
@@ -540,7 +577,17 @@ impl IrService {
 
         let mut df = lowering.apply_time_window(base, &window)?;
         for stage in &doc.pipeline {
-            df = lowering.lower_stage(df, stage)?;
+            df = match stage {
+                // The only stage that needs to break the lazy DataFrame chain
+                // (merging bucket-array columns element-wise isn't expressible
+                // as a DataFusion aggregate) — see lower_histogram_quantile.
+                Stage::HistogramQuantile(hq) => {
+                    lowering
+                        .lower_histogram_quantile(&self.session_context, df, hq)
+                        .await?
+                }
+                other => lowering.lower_stage(df, other)?,
+            };
         }
         df = lowering.apply_projection(df, doc)?;
         Ok(Some((df, window)))
@@ -698,6 +745,11 @@ impl Lowering<'_> {
                 .map_err(QuerierError::QueryFailed),
             Stage::Extract(extract) => self.lower_extract(df, extract),
             Stage::Heatmap(heatmap) => self.lower_heatmap(df, heatmap),
+            // Handled directly in `plan()`'s stage loop (needs an async
+            // `.collect()` this sync method can't perform) — never reached.
+            Stage::HistogramQuantile(_) => Err(QuerierError::InvalidInput(
+                "histogram_quantile requires async lowering".into(),
+            )),
         }
     }
 
@@ -874,6 +926,204 @@ impl Lowering<'_> {
             col("duration_bucket").sort(true, false),
         ])
         .map_err(QuerierError::QueryFailed)
+    }
+
+    /// Lower a `histogram_quantile` stage. Unlike every other stage, this
+    /// breaks the lazy DataFrame chain: merging `bucket_counts`/
+    /// `explicit_bounds` element-wise across grouped rows (and, in rate mode,
+    /// tracking each group's first/last-by-timestamp counts) isn't expressible
+    /// as a DataFusion aggregate the way `count()`/`sum()` are. Instead this
+    /// collects the filtered, time-bucketed rows (the same shape
+    /// `metrics.rs`'s PromQL `histogram_query` already collects) and reuses
+    /// its exact bucket-merge/interpolation functions
+    /// ([`HistogramAcc`]/[`RateHistAcc`]/[`histogram_quantile`]) so the two
+    /// surfaces compute identical percentiles from identical data — then
+    /// reinjects the small, already-aggregated result as a fresh in-memory
+    /// DataFrame shaped exactly like `lower_aggregate`'s `step` output
+    /// (`bucket`, label columns, one value column), so every downstream stage
+    /// and the response builder need no histogram-specific handling.
+    async fn lower_histogram_quantile(
+        &mut self,
+        ctx: &SessionContext,
+        df: DataFrame,
+        hq: &HistogramQuantile,
+    ) -> Result<DataFrame, QuerierError> {
+        let step_ns = common::query_ir::parse_duration_ns(&hq.step).ok_or_else(|| {
+            QuerierError::InvalidInput(format!("invalid histogram_quantile step '{}'", hq.step))
+        })?;
+        let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
+            IntervalMonthDayNano::new(0, 0, step_ns),
+        )));
+        let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
+        let ts_ns = cast(
+            col(self.source.time_col),
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+        );
+        let mut projection = vec![
+            date_bin(stride, ts_ns, origin).alias("bucket"),
+            col("metric_name"),
+        ];
+        let by_aliases: Vec<String> = hq.by.iter().map(|by| safe_ident(by)).collect();
+        for (by, alias) in hq.by.iter().zip(&by_aliases) {
+            projection.push(cast(self.value_expr(by)?, DataType::Utf8).alias(alias.clone()));
+        }
+        projection.push(col("bucket_counts"));
+        projection.push(col("explicit_bounds"));
+        projection.push(
+            cast(
+                col(self.source.time_col),
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+            )
+            .alias("__ts"),
+        );
+
+        let batches = df
+            .select(projection)
+            .map_err(QuerierError::QueryFailed)?
+            .collect()
+            .await
+            .map_err(QuerierError::QueryFailed)?;
+
+        // Per (bucket, metric, by-labels): merged counts (instant) or
+        // first/last counts (rate). BTreeMap keeps output deterministically
+        // sorted bucket-major, matching `lower_aggregate`'s explicit sort.
+        type GroupKey = (i64, String, Vec<String>);
+        let rate_mode = matches!(hq.mode, HistogramMode::Rate);
+        let mut merged: std::collections::BTreeMap<GroupKey, HistogramAcc> =
+            std::collections::BTreeMap::new();
+        let mut rated: std::collections::BTreeMap<GroupKey, RateHistAcc> =
+            std::collections::BTreeMap::new();
+        // `explicit_bounds` is typically identical across every row of a
+        // series — cache its parse (see histogram::parse_bounds_cached).
+        let mut bounds_cache: HashMap<String, Vec<f64>> = HashMap::new();
+
+        for batch in &batches {
+            let bucket = batch
+                .column_by_name("bucket")
+                .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+                .ok_or_else(|| {
+                    QuerierError::InvalidInput("bucket column is not a timestamp".to_string())
+                })?;
+            let metric = downcast_string(batch, "metric_name")?;
+            let by_cols: Vec<&StringArray> = by_aliases
+                .iter()
+                .map(|alias| downcast_string(batch, alias))
+                .collect::<Result<_, _>>()?;
+            let counts = downcast_string(batch, "bucket_counts")?;
+            let bounds = downcast_string(batch, "explicit_bounds")?;
+            let ts = batch
+                .column_by_name("__ts")
+                .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+                .ok_or_else(|| {
+                    QuerierError::InvalidInput("__ts column is not a timestamp".to_string())
+                })?;
+
+            for i in 0..batch.num_rows() {
+                if bucket.is_null(i) || counts.is_null(i) || bounds.is_null(i) {
+                    continue;
+                }
+                let (Some(row_counts), Some(row_bounds)) = (
+                    parse_f64_array(counts.value(i)),
+                    parse_bounds_cached(&mut bounds_cache, bounds.value(i)),
+                ) else {
+                    continue;
+                };
+                // OTLP invariant: one more bucket count than bound.
+                if row_counts.len() != row_bounds.len() + 1 || row_bounds.is_empty() {
+                    continue;
+                }
+                let by_values: Vec<String> = by_cols
+                    .iter()
+                    .map(|c| {
+                        if c.is_null(i) {
+                            String::new()
+                        } else {
+                            c.value(i).to_string()
+                        }
+                    })
+                    .collect();
+                let key = (bucket.value(i), metric.value(i).to_string(), by_values);
+                if rate_mode {
+                    let t = if ts.is_null(i) { 0 } else { ts.value(i) };
+                    rated
+                        .entry(key)
+                        .or_insert_with(|| RateHistAcc::new(row_bounds, t, row_counts.clone()))
+                        .observe(t, &row_counts);
+                } else {
+                    merged
+                        .entry(key)
+                        .or_insert_with(|| HistogramAcc::new(row_bounds, row_counts.len()))
+                        .merge(&row_counts);
+                }
+            }
+        }
+
+        type HistGroup = (GroupKey, Vec<f64>, Vec<f64>);
+        let groups: Vec<HistGroup> = if rate_mode {
+            rated
+                .into_iter()
+                .map(|(k, acc)| (k, acc.bounds.clone(), acc.delta()))
+                .collect()
+        } else {
+            merged
+                .into_iter()
+                .map(|(k, acc)| (k, acc.bounds, acc.counts))
+                .collect()
+        };
+
+        let mut bucket_out = Vec::with_capacity(groups.len());
+        let mut metric_out = Vec::with_capacity(groups.len());
+        let mut by_out: Vec<Vec<String>> = vec![Vec::with_capacity(groups.len()); hq.by.len()];
+        let mut value_out = Vec::with_capacity(groups.len());
+        for ((bucket_ns, metric, by_values), bounds, counts) in groups {
+            let q = histogram_quantile(hq.q, &bounds, &counts);
+            bucket_out.push(bucket_ns);
+            metric_out.push(metric);
+            for (idx, v) in by_values.into_iter().enumerate() {
+                by_out[idx].push(v);
+            }
+            value_out.push(q);
+        }
+
+        let mut fields = vec![
+            Field::new(
+                "bucket",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("metric_name", DataType::Utf8, false),
+        ];
+        let mut arrays: Vec<datafusion::arrow::array::ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(bucket_out)),
+            Arc::new(StringArray::from(metric_out)),
+        ];
+        for (alias, values) in by_aliases.iter().zip(by_out) {
+            fields.push(Field::new(alias, DataType::Utf8, true));
+            arrays.push(Arc::new(StringArray::from(values)));
+        }
+        fields.push(Field::new(&hq.as_name, DataType::Float64, true));
+        arrays.push(Arc::new(Float64Array::from(value_out)));
+
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema, arrays)
+            .map_err(|e| QuerierError::QueryFailed(e.into()))?;
+        let new_df = ctx.read_batch(batch).map_err(QuerierError::QueryFailed)?;
+
+        self.aggregated = true;
+        self.series_shaped = true;
+        let mut new_col_of = HashMap::new();
+        new_col_of.insert("metric.name".to_string(), "metric_name".to_string());
+        for (by, alias) in hq.by.iter().zip(&by_aliases) {
+            new_col_of.insert(by.clone(), alias.clone());
+        }
+        new_col_of.insert(hq.as_name.clone(), hq.as_name.clone());
+        self.col_of = new_col_of;
+
+        let mut sort = vec![col("bucket").sort(true, false)];
+        for alias in &by_aliases {
+            sort.push(col(alias.clone()).sort(true, false));
+        }
+        new_df.sort(sort).map_err(QuerierError::QueryFailed)
     }
 
     fn agg_expr(&self, a: &common::query_ir::Agg) -> Result<Expr, QuerierError> {
@@ -1412,6 +1662,18 @@ fn literal_as_f64(literal: &Literal) -> f64 {
     }
 }
 
+/// Downcast a named `RecordBatch` column to `StringArray`, or a clear error —
+/// used by `lower_histogram_quantile`'s post-collect row walk.
+fn downcast_string<'a>(
+    batch: &'a RecordBatch,
+    name: &str,
+) -> Result<&'a StringArray, QuerierError> {
+    batch
+        .column_by_name(name)
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+        .ok_or_else(|| QuerierError::InvalidInput(format!("{name} column is not a string")))
+}
+
 /// Sanitize a logical name into a safe DataFrame column identifier (no dots,
 /// which DataFusion would read as a table qualifier).
 fn safe_ident(name: &str) -> String {
@@ -1725,6 +1987,92 @@ mod tests {
         ctx
     }
 
+    /// A `metrics_histogram` table with rows shaped for each
+    /// `histogram_quantile` scenario, distinguished by `metric_name`:
+    /// - `latency` (svcA, svcB): two points per service in one step bucket —
+    ///   instant-mode merge `[2,2,0,0]`+`[0,2,2,0]`=`[2,4,2,0]`, q=0.5 → 0.3
+    ///   (bounds `[0.1,0.5,1.0]`), for both the merge math and `by` grouping.
+    /// - `reset` (svcD): rate-mode two points, `first=[5,0]`,`last=[3,2]` —
+    ///   the first bucket decreases (a counter reset, clamped to 0) and the
+    ///   rank ends up in the `+Inf` bucket, clamped to the top finite bound
+    ///   `1.0` (bounds `[1.0]`).
+    /// - `solo` (svcC): a single rate-mode point — delta is all-zero → NaN.
+    /// - `zero` (svcA): a single instant-mode point with all-zero counts →
+    ///   NaN.
+    /// - `malformed` (svcE): `bucket_counts` has one more entry than the
+    ///   OTLP invariant allows — skipped, contributing no output row.
+    fn metrics_histogram_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("count", DataType::Int64, true),
+            Field::new("sum", DataType::Float64, true),
+            Field::new("min", DataType::Float64, true),
+            Field::new("max", DataType::Float64, true),
+            Field::new("bucket_counts", DataType::Utf8, true),
+            Field::new("explicit_bounds", DataType::Utf8, true),
+            Field::new("aggregation_temporality", DataType::Int32, true),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+
+        let rows: &[(i64, &str, &str, &str, &str)] = &[
+            (0, "svcA", "latency", "[2,2,0,0]", "[0.1,0.5,1.0]"),
+            (50, "svcA", "latency", "[0,2,2,0]", "[0.1,0.5,1.0]"),
+            (0, "svcB", "latency", "[2,2,0,0]", "[0.1,0.5,1.0]"),
+            (50, "svcB", "latency", "[0,2,2,0]", "[0.1,0.5,1.0]"),
+            (0, "svcC", "solo", "[1,1,0,0]", "[0.1,0.5,1.0]"),
+            (0, "svcD", "reset", "[5,0]", "[1.0]"),
+            (99, "svcD", "reset", "[3,2]", "[1.0]"),
+            (0, "svcE", "malformed", "[1,1,1]", "[1.0]"),
+            (0, "svcA", "zero", "[0,0,0,0]", "[0.1,0.5,1.0]"),
+        ];
+        let n = rows.len();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+                Arc::new(datafusion::arrow::array::Int64Array::from(vec![1i64; n])),
+                Arc::new(Float64Array::from(vec![0.0f64; n])),
+                Arc::new(Float64Array::from(vec![0.0f64; n])),
+                Arc::new(Float64Array::from(vec![0.0f64; n])),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.4).collect::<Vec<_>>(),
+                )),
+                Arc::new(datafusion::arrow::array::Int32Array::from(vec![2i32; n])),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_histogram".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
     fn doc(v: serde_json::Value) -> Document {
         serde_json::from_value(v).unwrap()
     }
@@ -1865,6 +2213,170 @@ mod tests {
                 .sum::<usize>(),
             1
         );
+    }
+
+    fn histogram_value(batches: &[RecordBatch], as_name: &str, label: Option<&str>) -> Vec<f64> {
+        let mut out = Vec::new();
+        for b in batches {
+            let values = b
+                .column_by_name(as_name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<datafusion::arrow::array::Float64Array>()
+                .unwrap();
+            match label {
+                None => out.extend(values.iter().map(|v| v.unwrap_or(f64::NAN))),
+                Some(want) => {
+                    let labels = b
+                        .column_by_name("service_name")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .unwrap();
+                    for i in 0..b.num_rows() {
+                        if labels.value(i) == want {
+                            out.push(values.value(i));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_instant_mode_merges_and_groups_by_service() {
+        let svc = IrService::new(metrics_histogram_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
+                { "histogram_quantile": { "q": 0.5, "by": ["service.name"], "step": "1000ms", "mode": "instant", "as": "p50" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 2, "one row per service");
+        for label in ["svcA", "svcB"] {
+            let vs = histogram_value(&batches, "p50", Some(label));
+            assert_eq!(vs.len(), 1, "{label}");
+            assert!((vs[0] - 0.3).abs() < 1e-9, "{label}: got {:?}", vs[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_rate_mode_clamps_counter_reset_and_inf_overflow() {
+        let svc = IrService::new(metrics_histogram_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "reset" } },
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "rate", "as": "p50" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let vs = histogram_value(&batches, "p50", None);
+        assert_eq!(vs.len(), 1);
+        // first=[5,0] last=[3,2]: bucket 0 decreases (reset, clamped to 0),
+        // delta=[0,2] → rank lands in the +Inf bucket → clamps to bound 1.0.
+        assert!((vs[0] - 1.0).abs() < 1e-9, "got {:?}", vs[0]);
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_single_point_in_rate_mode_is_nan() {
+        let svc = IrService::new(metrics_histogram_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "solo" } },
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "rate", "as": "p50" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let vs = histogram_value(&batches, "p50", None);
+        assert_eq!(vs.len(), 1);
+        assert!(vs[0].is_nan(), "got {:?}", vs[0]);
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_all_zero_buckets_in_instant_mode_is_nan() {
+        let svc = IrService::new(metrics_histogram_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "zero" } },
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "instant", "as": "p50" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let vs = histogram_value(&batches, "p50", None);
+        assert_eq!(vs.len(), 1);
+        assert!(vs[0].is_nan(), "got {:?}", vs[0]);
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_skips_malformed_bucket_rows() {
+        let svc = IrService::new(metrics_histogram_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "malformed" } },
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "instant", "as": "p50" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            total_rows, 0,
+            "the only row is malformed, so no group forms"
+        );
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_limit_stage_executes_on_reinjected_dataframe() {
+        let svc = IrService::new(metrics_histogram_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
+                { "histogram_quantile": { "q": 0.5, "by": ["service.name"], "step": "1000ms", "mode": "instant", "as": "p50" } },
+                { "limit": 1 }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 1, "limit narrows the 2-service result to 1");
+    }
+
+    #[tokio::test]
+    async fn metrics_histogram_missing_table_returns_none() {
+        let ctx = SessionContext::new();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "as": "p50" } }
+            ]
+        }));
+        assert!(svc.plan(&d, "t", "d", 0).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -2901,6 +3413,18 @@ mod tests {
             assert!(sum_cols.contains(*c), "metrics_sum missing '{c}'");
         }
         check(&metrics, &gauge_cols, "metrics (vs. gauge)");
+
+        let histogram = common::iceberg::schemas::create_metrics_histogram_schema().unwrap();
+        let histogram_cols: HashSet<String> = histogram
+            .fields()
+            .iter()
+            .map(|f| f.name.to_string())
+            .collect();
+        check(
+            &SourcePlan::for_source("metrics_histogram").unwrap(),
+            &histogram_cols,
+            "metrics_histogram",
+        );
     }
 
     /// Group 7 (`otel-compliant-self-tracing`): query execution decomposes

@@ -33,7 +33,7 @@ pub use resolver::{FieldResolver, InMemoryResolver, Resolved};
 pub use source::{SourceDef, SourceRegistry};
 pub use stage::{
     Agg, AggFn, Aggregate, DerivedField, Direction, Extract, Heatmap, HeatmapAxisX, HeatmapAxisY,
-    HeatmapValue, Order, Parser, Rank, Stage,
+    HeatmapValue, HistogramMode, HistogramQuantile, Order, Parser, Rank, Stage,
 };
 pub use validate::{IrError, Validated, parse_document, validate};
 pub use value::{
