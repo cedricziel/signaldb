@@ -1023,7 +1023,7 @@ function SpanDetail({
           <div className="span-detail-sec">Events</div>
           <ul className="span-events">
             {span.events.map((event, i) => (
-              <SpanEventItem key={i} event={event} />
+              <SpanEventItem key={i} event={event} spanStartNs={span.startNs} />
             ))}
           </ul>
         </>
@@ -1053,10 +1053,33 @@ function SpanDetail({
   );
 }
 
+/** Time from span start to the event, e.g. "+15 ms"; null when the event
+ * carries no timestamp (or one that doesn't parse) rather than showing NaN. */
+function eventOffsetLabel(
+  spanStartNs: string,
+  eventTimeNs: string,
+): string | null {
+  if (!eventTimeNs) return null;
+  try {
+    const offsetMs = nanosToMs(eventTimeNs) - nanosToMs(spanStartNs);
+    const sign = offsetMs < 0 ? "-" : "+";
+    return `${sign}${formatDurationMs(Math.abs(offsetMs))}`;
+  } catch {
+    return null;
+  }
+}
+
 /** One span event. Exceptions (name === "exception") get an error treatment
  * with message/type promoted and the stacktrace shown as preformatted text. */
-function SpanEventItem({ event }: { event: SpanEventView }) {
+function SpanEventItem({
+  event,
+  spanStartNs,
+}: {
+  event: SpanEventView;
+  spanStartNs: string;
+}) {
   const isException = event.name === "exception";
+  const offset = eventOffsetLabel(spanStartNs, event.timeUnixNano);
   if (isException) {
     const message = event.attributes["exception.message"];
     const type = event.attributes["exception.type"];
@@ -1073,6 +1096,7 @@ function SpanEventItem({ event }: { event: SpanEventView }) {
       <li className="span-event span-event-err">
         <div className="span-event-head">
           <span className="span-event-name">exception</span>
+          {offset && <span className="span-event-time">{offset}</span>}
           {type !== undefined && (
             <span className="span-event-type">
               <AttributeValue
@@ -1111,6 +1135,7 @@ function SpanEventItem({ event }: { event: SpanEventView }) {
     <li className="span-event">
       <div className="span-event-head">
         <span className="span-event-name">{event.name}</span>
+        {offset && <span className="span-event-time">{offset}</span>}
       </div>
       {Object.entries(event.attributes).map(([k, v]) => (
         <div className="span-event-attr" key={k}>
