@@ -18,9 +18,13 @@ Grafana and existing clients; the IR is what the SignalDB UI and CLI build
 directly, without formulating a dialect string.
 
 This page is the reference for the IR at its foundational scope: **single-signal
-queries over `logs`, `traces`, and profile summaries**. Cross-signal correlation,
-structural trace matching, and metrics are separate, later capabilities (see
-[Roadmap](#roadmap)).
+queries over `logs`, `traces`, profile summaries, and metrics**. The `metrics`
+source covers the scalar-value case — group/filter a metric by name and
+attributes, aggregate, bucket by `step` — the same as every other source;
+it does not yet cover `rate`/`irate`/`increase`, `histogram_quantile`, or
+cross-series arithmetic, which stay PromQL-only for now. Cross-signal
+correlation and structural trace matching are separate, later capabilities
+(see [Roadmap](#roadmap)).
 
 ## The endpoint
 
@@ -42,7 +46,7 @@ body. The response is the declared result envelope (see
 ```jsonc
 {
   "irVersion": 1, // versioned; use 2 for heatmap
-  "from": "logs", // a registered source: "logs", "traces", or "profiles"
+  "from": "logs", // a registered source: "logs", "traces", "profiles", or "metrics"
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap
   "fields": ["service.name"], // optional curated projection (rows/table)
@@ -270,6 +274,54 @@ attribute payload columns. Use the Pyroscope-compatible APIs for flamegraphs,
 diffs, label discovery, profile extraction, and heatmaps; those payload-oriented
 operations remain specialized APIs rather than generic Query IR fields.
 
+## Metrics
+
+`metrics` scans `metrics_gauge` and `metrics_sum` (unioned) — a scalar
+`value` per point, filtered/grouped/aggregated the same way as any other
+source. `metrics_histogram` is not included: its bucketed row shape has no
+IR aggregate equivalent yet (see [Roadmap](#roadmap)).
+
+The registered scalar fields are `metric.name`, `metric.value`, and
+`service.name`, plus resource attributes (`resource.*`). `metric.value` has
+its own logical name rather than reusing the physical `value` column
+directly — a document names a _logical_ field, never storage, even where
+the spellings would otherwise coincide.
+
+```json
+{
+  "irVersion": 1,
+  "from": "metrics",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "series",
+  "pipeline": [
+    {
+      "where": {
+        "field": "metric.name",
+        "op": "eq",
+        "value": "signaldb.wal.entries_processed"
+      }
+    },
+    {
+      "aggregate": {
+        "by": ["service.name"],
+        "aggs": [{ "fn": "sum", "of": "metric.value", "as": "v" }],
+        "step": "1m"
+      }
+    }
+  ]
+}
+```
+
+This is what makes an OTel-native dotted metric name — like
+`signaldb.wal.entries_processed`, SignalDB's own self-monitoring naming —
+queryable at all: PromQL's grammar can't lex a dot in a bare metric-name
+identifier, so the same query over `/prometheus/api/v1/query_range` 400s
+before it reaches the querier. The IR's field resolution has no such
+restriction. `rate`/`irate`/`increase`/`histogram_quantile`/cross-series
+arithmetic stay PromQL-only until they have an IR pipeline-stage
+equivalent — the explore UI's Metrics tab keeps its PromQL escape hatch for
+those.
+
 ### Heatmap envelope (IR v2)
 
 Use the terminal `heatmap` stage to count spans by epoch-aligned time and
@@ -373,7 +425,11 @@ so it is designed and reviewed on its own risk profile:
   plus live tail + pagination for results.
 - **cross-signal correlate** — a `correlate` join stage (the IR becomes a DAG).
 - **structural traces** — a `match` stage + a `trace` result envelope.
-- **metrics model** — a temporality/histogram-aware metric sub-model.
+- **metrics: counters and histograms** — a `rate`/`irate`/`increase` stage
+  equivalent (counter delta over a window), `histogram_quantile` over
+  `metrics_histogram`'s bucketed row shape, and cross-series arithmetic
+  (formulas). The scalar-value case (gauge/sum, plain aggregation) already
+  works today — see above.
 
 Also deferred: the compatibility dialects lowering _into_ the IR (one engine),
 and full attribute promotion. None of these change the document shape defined

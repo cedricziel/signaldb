@@ -234,6 +234,11 @@ high-cardinality label — one that would explode into thousands of series, like
 a pod or trace id — shows a `⚠` warning before you run it.
 
 A live preview shows the compiled PromQL beneath the row; **Run** charts it.
+With no range function and no formula, Run queries the [Query IR](querying-ir.md)
+`metrics` source instead of PromQL — same builder, same preview, no visible
+difference, except a dotted OTel-native metric name (e.g.
+`signaldb.wal.entries_processed`) now works, where PromQL's grammar can't
+lex it. Adding a range function or a formula falls back to PromQL, unchanged.
 
 ### Formulas across multiple queries
 
@@ -255,7 +260,9 @@ The **PromQL** tab is the escape hatch for anything the builder doesn't cover.
 Switching to it seeds the box with the query the builder compiled, so you can
 start visually and finish by hand. (Editing raw PromQL back into the builder
 is not supported yet.) The same PromQL runs unchanged in Grafana or against
-the [`/prometheus/api/v1` endpoints](querying-promql.md).
+the [`/prometheus/api/v1` endpoints](querying-promql.md). Unlike the builder's
+default path, this tab always uses PromQL — a dotted OTel-native metric name
+typed here directly will still 400, same as any other PromQL client.
 
 ## Signing in
 
