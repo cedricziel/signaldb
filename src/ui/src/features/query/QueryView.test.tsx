@@ -53,6 +53,34 @@ describe("QueryView", () => {
     await screen.findByText("checkout");
   });
 
+  // Regression: the query-IR validator now rejects physical column names
+  // (`service_name`) in the `fields`/`aggregate.by` list, requiring the
+  // logical OTel name (`service.name`) — for logs too, not just traces.
+  it("groups logs by the logical service.name field, not the physical column", async () => {
+    const calls = stubApiFetch({
+      result: "table",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [
+        { name: "service.name", type: "string" },
+        { name: "n", type: "int64" },
+      ],
+      rows: [["checkout", 1]],
+    });
+    renderWithClient(<QueryView />);
+
+    fireEvent.change(screen.getByLabelText("result"), {
+      target: { value: "table" },
+    });
+    fireEvent.click(screen.getByText("Run"));
+
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    const doc = calls[0]!.body as {
+      pipeline?: { aggregate?: { by?: string[] } }[];
+    };
+    const aggregateStage = doc.pipeline?.find((s) => s.aggregate)?.aggregate;
+    expect(aggregateStage?.by).toEqual(["service.name"]);
+  });
+
   it("selects profile summaries and renders their generic rows envelope", async () => {
     const calls = stubApiFetch({
       result: "rows",
