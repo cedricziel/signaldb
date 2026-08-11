@@ -18,14 +18,18 @@ function parseJsonContainer(value: string): object | null {
 
 function highlightedJson(value: string) {
   const tokens: ReactNode[] = [];
-  const token = /"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b/g;
+  const token =
+    /"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b/g;
   let previous = 0;
 
   for (const match of value.matchAll(token)) {
     const text = match[0];
     const start = match.index ?? 0;
     if (start > previous) tokens.push(value.slice(previous, start));
-    const className = value.slice(start + text.length).trimStart().startsWith(":")
+    const className = value
+      .slice(start + text.length)
+      .trimStart()
+      .startsWith(":")
       ? "json-key"
       : text.startsWith('"')
         ? "json-string"
@@ -46,15 +50,45 @@ function highlightedJson(value: string) {
   return tokens;
 }
 
+/** Above this length a plain-text value (a Rust Debug dump, a stack trace)
+ * collapses behind a disclosure control instead of flooding the panel. */
+const LONG_VALUE_THRESHOLD = 200;
+const LONG_VALUE_PREVIEW_CHARS = 160;
+
 export function AttributeValue({ value, label }: Props) {
   const parsed = parseJsonContainer(value);
   const [expanded, setExpanded] = useState(false);
 
   if (!parsed) {
+    if (value.length <= LONG_VALUE_THRESHOLD) {
+      return (
+        <span className="copy-value">
+          <span className="copy-value-text">{value}</span>
+          <CopyValueButton value={value} label={label} />
+        </span>
+      );
+    }
     return (
-      <span className="copy-value">
-        <span className="copy-value-text">{value}</span>
-        <CopyValueButton value={value} label={label} />
+      <span className="attribute-value" data-expanded={expanded || undefined}>
+        <span className="copy-value">
+          {expanded ? (
+            <pre className="attribute-value-text-block">{value}</pre>
+          ) : (
+            <span className="copy-value-text attribute-value-preview">
+              {value.slice(0, LONG_VALUE_PREVIEW_CHARS)}…
+            </span>
+          )}
+          <button
+            type="button"
+            className="attribute-value-toggle"
+            aria-label={`${expanded ? "Collapse" : "Expand"} value`}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? "Hide" : "More"}
+          </button>
+          <CopyValueButton value={value} label={label} />
+        </span>
       </span>
     );
   }
@@ -69,7 +103,9 @@ export function AttributeValue({ value, label }: Props) {
             <code>{highlightedJson(formatted)}</code>
           </pre>
         ) : (
-          <span className="copy-value-text attribute-value-preview">{compact}</span>
+          <span className="copy-value-text attribute-value-preview">
+            {compact}
+          </span>
         )}
         <button
           type="button"

@@ -16,6 +16,43 @@ describe("AttributeValue", () => {
     expect(screen.queryByRole("button", { name: "Expand JSON" })).toBeNull();
   });
 
+  it("collapses very long plain-text values behind a disclosure control", () => {
+    const long = "x".repeat(500);
+    render(<AttributeValue value={long} label="value for arrow_schema" />);
+
+    const toggle = screen.getByRole("button", { name: "Expand value" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // The full 500-char value isn't dumped inline while collapsed.
+    expect(screen.queryByText(long)).toBeNull();
+  });
+
+  it("expands a long plain-text value into a scrollable block on click", async () => {
+    const user = userEvent.setup();
+    const long = "x".repeat(500);
+    render(<AttributeValue value={long} label="value for arrow_schema" />);
+
+    await user.click(screen.getByRole("button", { name: "Expand value" }));
+
+    expect(screen.getByText(long)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Collapse value" }),
+    ).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("copies the full untruncated value for a collapsed long plain-text field", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const long = "x".repeat(500);
+    render(<AttributeValue value={long} label="value for arrow_schema" />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Copy value for arrow_schema" }),
+    );
+
+    expect(writeText).toHaveBeenCalledWith(long);
+  });
+
   it("renders object JSON as a compact preview that can be expanded", async () => {
     const user = userEvent.setup();
     render(

@@ -55,6 +55,7 @@ import { SkeletonLines, SkeletonRows } from "../explore/Skeleton";
 import type { ExploreState } from "../../lib/urlState";
 import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
 import { fetchWindowTotal, looksUnresolved } from "./unresolvedGroup";
+import { describeService, groupSpanAttributes } from "./spanAttributes";
 import "./traces.css";
 
 interface Props {
@@ -922,12 +923,12 @@ function SpanDetail({
   traceId: string;
   update: (patch: Partial<ExploreState>) => void;
 }) {
-  const attrs = Object.entries(span.attributes);
+  const groups = groupSpanAttributes(span.attributes);
   return (
     <aside className="span-detail" aria-label="Span details">
       <h4>{span.name}</h4>
       <div className="span-detail-sub">
-        {span.serviceName}
+        {describeService(span.serviceName, span.attributes)}
         {span.status === "error" && <em className="tmeta-err"> · error</em>}
       </div>
       <button
@@ -953,20 +954,27 @@ function SpanDetail({
           </ul>
         </>
       )}
-      <div className="span-detail-sec">Attributes</div>
-      {attrs.length === 0 && (
-        <div className="traces-note">No attributes recorded.</div>
+      {groups.length === 0 && (
+        <>
+          <div className="span-detail-sec">Attributes</div>
+          <div className="traces-note">No attributes recorded.</div>
+        </>
       )}
-      <dl className="span-attrs">
-        {attrs.map(([k, v]) => (
-          <div key={k}>
-            <dt>{k}</dt>
-            <dd>
-              <AttributeValue value={String(v)} label={`value for ${k}`} />
-            </dd>
-          </div>
-        ))}
-      </dl>
+      {groups.map((group) => (
+        <div key={group.label}>
+          <div className="span-detail-sec">{group.label}</div>
+          <dl className="span-attrs">
+            {group.entries.map(([k, v]) => (
+              <div key={k}>
+                <dt>{k}</dt>
+                <dd>
+                  <AttributeValue value={String(v)} label={`value for ${k}`} />
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ))}
     </aside>
   );
 }

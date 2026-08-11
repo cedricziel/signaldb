@@ -190,6 +190,7 @@ select:focus-visible {
 }
 
 .attribute-value-preview {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -227,11 +228,39 @@ select:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.json-key { color: var(--accent); }
-.json-string { color: var(--ok); }
-.json-number { color: var(--warn); }
-.json-boolean { color: var(--err); }
-.json-null { color: var(--faint); }
+.attribute-value-text-block {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: min(100%, 720px);
+  max-height: 300px;
+  margin: 0;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-inset, rgba(127, 127, 127, 0.08));
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json-key {
+  color: var(--accent);
+}
+.json-string {
+  color: var(--ok);
+}
+.json-number {
+  color: var(--warn);
+}
+.json-boolean {
+  color: var(--err);
+}
+.json-null {
+  color: var(--faint);
+}
 
 .copy-value-button {
   flex: none;
