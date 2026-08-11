@@ -26,7 +26,11 @@ members = [
 # The Grafana plugin backend is a standalone workspace: its grafana-plugin-sdk
 # pin drags in a second Arrow major version, which would otherwise be compiled
 # on every --workspace build. It has its own CI (grafana-plugin-*.yml).
-exclude = ["src/grafana-plugin/backend"]
+#
+# vendor/opentelemetry-proto is a patched copy of a crates.io dependency
+# (see vendor/opentelemetry-proto/README.md), referenced only via
+# [patch.crates-io] below — not a crate we build or test directly.
+exclude = ["src/grafana-plugin/backend", "vendor/opentelemetry-proto"]
 
 default-members = [
     "src/acceptor",
@@ -274,3 +278,18 @@ inherits = "test"
 debug = 0
 strip = true
 incremental = false
+
+# ------------------------------------------------------------
+# Patches
+# ------------------------------------------------------------
+
+# opentelemetry-proto's JSON `AnyValue` deserializer rejects the empty `{}`
+# object as an error, even though the OTLP spec explicitly allows an AnyValue
+# with none of its oneof fields set ("considered to be empty"). Real clients
+# send this: the OTel JS browser SDK's auto-instrumentation emits event-style
+# log records with an empty `body` and can emit an empty `AnyValue` for an
+# attribute whose source value is absent. `vendor/opentelemetry-proto`
+# carries that one-function fix (see vendor/opentelemetry-proto/README.md).
+# Drop this patch once fixed upstream.
+[patch.crates-io]
+opentelemetry-proto = { path = "vendor/opentelemetry-proto" }
