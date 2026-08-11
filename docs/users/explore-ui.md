@@ -32,7 +32,13 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   all sortable. Selecting a group lists just its traces; selecting a trace
   opens a waterfall with span details and error highlighting. The span
   panel lists that span's events, giving exceptions an error treatment that
-  surfaces the message, type, and stacktrace. Open-by-ID works from any level.
+  surfaces the message, type, and stacktrace, followed by its attributes —
+  split into **Span** and **Resource** sections and sorted alphabetically,
+  with the sub-header compiling service name, namespace, deployment
+  environment, and version from the resource attributes that carry them. A
+  value over ~200 characters (a Rust `Debug` dump, a stack trace) collapses
+  behind a "More" toggle rather than flooding the panel; the copy button
+  always copies the untruncated value. Open-by-ID works from any level.
 - **Metrics** — a visual query builder (metric picker, tag filters,
   aggregation, and range functions, all populated from label metadata) with
   multi-query formulas for ratios, plus a "PromQL" tab as the raw escape
@@ -84,10 +90,14 @@ a filter; filters appear as removable chips and narrow the trace list, the group
 table, and the volume chart together, so the chart always describes what the
 table shows. Filters live in the URL, so a narrowed view is shareable.
 
-Facets currently cover `service.name`, `span.name`, and `status`. These are the
-fields the query API can enumerate exactly today; attribute facets follow once
-[#1073](https://github.com/cedricziel/signaldb/issues/1073) lands, and will
-appear in the same sidebar without changing how it works.
+Facets currently cover `service.name`, `span.name`, `status`, and `span.kind`.
+These are the fields the query API can enumerate exactly today; attribute
+facets follow once [#1073](https://github.com/cedricziel/signaldb/issues/1073)
+lands, and will appear in the same sidebar without changing how it works.
+
+Both the facet sidebar and the traces' span-detail panel are resizable: drag
+the handle on the sidebar's trailing edge. The facet/field sidebar's width is
+shared between the logs and traces tabs and persists across sessions.
 
 ### The group table
 

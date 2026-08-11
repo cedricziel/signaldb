@@ -674,6 +674,60 @@ describe("TracesView detail", () => {
     expect(screen.getByText(/1 error/)).toBeInTheDocument();
   });
 
+  it("prefers preselecting an error span that recorded an exception over one that didn't", async () => {
+    stubFetchRoutes([
+      {
+        match: "/tempo/api/traces/tpropagated",
+        body: {
+          ...TRACE_BODY,
+          traceID: "tpropagated",
+          spanSets: [
+            {
+              matched: 2,
+              spans: [
+                {
+                  spanID: "root",
+                  startTimeUnixNano: "1000000000",
+                  durationNanos: "412000000",
+                  name: "POST /api/checkout",
+                  serviceName: "gateway",
+                  status: "error",
+                  attributes: {},
+                },
+                {
+                  spanID: "charge",
+                  parentSpanID: "root",
+                  startTimeUnixNano: "1040000000",
+                  durationNanos: "258000000",
+                  name: "charge",
+                  serviceName: "payments",
+                  status: "error",
+                  attributes: {},
+                  events: [
+                    {
+                      name: "exception",
+                      attributes: {
+                        "exception.message": {
+                          key: "exception.message",
+                          value: { stringValue: "card declined" },
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    renderView({ trace: "tpropagated" });
+
+    expect(
+      await screen.findByRole("heading", { name: "charge", level: 4 }),
+    ).toBeInTheDocument();
+  });
+
   it("selects a span on click and shows its details", async () => {
     stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
     renderView({ trace: "t1cafe" });

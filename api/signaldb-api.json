@@ -653,6 +653,38 @@
         ]
       }
     },
+    "/api/v1/manage/schema": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "GET /api/v1/manage/schema",
+        "description": "The registered logical (OTel-native, client-visible) schema and the\nresolved physical (storage) schema for every version of every signal\nsource — read-only, instance-admin-gated, and not tenant-scoped (the\nschema is global, not per-tenant).",
+        "operationId": "manage_get_schema",
+        "responses": {
+          "200": {
+            "description": "Logical and physical schema",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageSchemaResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Instance administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/manage/tenants": {
       "post": {
         "tags": [
@@ -2617,6 +2649,14 @@
           }
         }
       },
+      "Filterability": {
+        "type": "string",
+        "description": "Whether predicates may address a field.",
+        "enum": [
+          "filterable",
+          "retrieval_only"
+        ]
+      },
       "HeatmapAxisX": {
         "type": "object",
         "description": "Epoch-aligned time axis with a fixed nanosecond step.",
@@ -2757,6 +2797,30 @@
             "description": "List of tenant records."
           }
         }
+      },
+      "LogicalFieldKind": {
+        "type": "string",
+        "description": "The semantic role of a logical field.",
+        "enum": [
+          "attribute",
+          "record_metadata",
+          "join_key",
+          "signal_db_defined"
+        ]
+      },
+      "LogicalType": {
+        "type": "string",
+        "description": "The client-visible type of a logical field.",
+        "enum": [
+          "string",
+          "bool",
+          "int64",
+          "float64",
+          "timestamp_ns",
+          "duration_ns",
+          "bytes",
+          "any_value"
+        ]
       },
       "ManageApiKeyResponse": {
         "type": "object",
@@ -2927,6 +2991,138 @@
         "properties": {
           "error": {
             "type": "string"
+          }
+        }
+      },
+      "ManageLogicalField": {
+        "type": "object",
+        "description": "One logical (client-visible, OTel-native) field, as registered in\n[`common::schema::logical::LogicalSchema`].",
+        "required": [
+          "source",
+          "name",
+          "value_type",
+          "filterability",
+          "kind",
+          "non_native"
+        ],
+        "properties": {
+          "filterability": {
+            "$ref": "#/components/schemas/Filterability"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/LogicalFieldKind"
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`resource` | `scope` | `record`, absent when the field isn't\nattribute-scoped (a plain `String` here, not `Option<AttributeLevel>`\n— utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,\nwhich the progenitor-generated Rust SDK client can't parse)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "non_native": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "value_type": {
+            "$ref": "#/components/schemas/LogicalType"
+          }
+        }
+      },
+      "ManagePhysicalField": {
+        "type": "object",
+        "description": "One physical (storage) column, as resolved from `schemas.toml`.",
+        "required": [
+          "name",
+          "field_type",
+          "required",
+          "physical_only"
+        ],
+        "properties": {
+          "computed": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "physical_only": {
+            "type": "boolean"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ManagePhysicalSchema": {
+        "type": "object",
+        "description": "One resolved table-schema version for one signal source.",
+        "required": [
+          "source",
+          "version",
+          "is_current",
+          "description",
+          "partition_by",
+          "fields"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManagePhysicalField"
+            }
+          },
+          "is_current": {
+            "type": "boolean"
+          },
+          "partition_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ManageSchemaResponse": {
+        "type": "object",
+        "required": [
+          "logical_schema_version",
+          "logical",
+          "physical"
+        ],
+        "properties": {
+          "logical": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManageLogicalField"
+            }
+          },
+          "logical_schema_version": {
+            "type": "string"
+          },
+          "physical": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManagePhysicalSchema"
+            }
           }
         }
       },
@@ -3563,6 +3759,10 @@
     {
       "name": "memberships",
       "description": "Tenant membership management"
+    },
+    {
+      "name": "schema",
+      "description": "Read-only logical and physical schema introspection"
     },
     {
       "name": "traces",

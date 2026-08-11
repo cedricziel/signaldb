@@ -10,8 +10,8 @@
 //! - `tags`: space-separated `key=value` pairs, values optionally
 //!   double-quoted (logfmt).
 //! - `q`: `{ selector = value && ... }` where a selector is an intrinsic
-//!   (`name`, `status`, `.service.name`/`resource.service.name`), a span
-//!   attribute (`span.key` / `.key`), or a resource attribute
+//!   (`name`, `status`, `kind`, `.service.name`/`resource.service.name`), a
+//!   span attribute (`span.key` / `.key`), or a resource attribute
 //!   (`resource.key`).
 //!
 //! Intrinsics filter dedicated columns. Attributes are stored as flat
@@ -37,6 +37,8 @@ pub enum Selector {
     SpanName,
     /// The dedicated `status_code` column.
     Status,
+    /// The dedicated `span_kind` column.
+    Kind,
     /// A span attribute (JSON column `span_attributes`).
     SpanAttribute(String),
     /// A resource attribute (JSON column `resource_attributes`).
@@ -83,6 +85,21 @@ impl Condition {
                     }
                 };
                 Ok(col("status_code").eq(lit(status)))
+            }
+            Selector::Kind => {
+                let kind = match self.string_value()?.to_ascii_lowercase().as_str() {
+                    "internal" => "Internal",
+                    "server" => "Server",
+                    "client" => "Client",
+                    "producer" => "Producer",
+                    "consumer" => "Consumer",
+                    other => {
+                        return Err(QuerierError::InvalidInput(format!(
+                            "Unknown kind value '{other}' (expected internal, server, client, producer, or consumer)"
+                        )));
+                    }
+                };
+                Ok(col("span_kind").eq(lit(kind)))
             }
             Selector::SpanAttribute(key)
             | Selector::ResourceAttribute(key)
@@ -175,6 +192,7 @@ fn unscoped_selector(key: &str) -> Selector {
         "service.name" => Selector::ServiceName,
         "name" => Selector::SpanName,
         "status" => Selector::Status,
+        "kind" => Selector::Kind,
         _ => Selector::AnyAttribute(key.to_string()),
     }
 }
@@ -306,6 +324,8 @@ fn parse_traceql_clause(clause: &str) -> Result<Condition, QuerierError> {
         Selector::SpanName
     } else if lhs == "status" {
         Selector::Status
+    } else if lhs == "kind" {
+        Selector::Kind
     } else if lhs == "duration" {
         return Err(QuerierError::Unsupported(
             "TraceQL 'duration' matchers are not supported; use minDuration/maxDuration"
@@ -351,7 +371,7 @@ fn parse_traceql_value(raw: &str) -> Result<FilterValue, QuerierError> {
     {
         return Ok(FilterValue::Number(raw.to_string()));
     }
-    // Bare identifiers are only meaningful for `status`.
+    // Bare identifiers are only meaningful for `status`/`kind`.
     if !raw.is_empty() && raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Ok(FilterValue::String(raw.to_string()));
     }
@@ -467,6 +487,36 @@ mod tests {
 
         let bad = Condition {
             selector: Selector::Status,
+            value: FilterValue::String("bogus".to_string()),
+        };
+        assert!(matches!(
+            bad.to_expr(&AttrContext::default()),
+            Err(QuerierError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn traceql_kind_intrinsic_parses() {
+        let conditions = parse_traceql(r#"{ kind = server }"#).unwrap();
+        assert_eq!(conditions.len(), 1);
+        assert_eq!(conditions[0].selector, Selector::Kind);
+        assert_eq!(
+            conditions[0].value,
+            FilterValue::String("server".to_string())
+        );
+    }
+
+    #[test]
+    fn kind_maps_to_storage_values() {
+        let condition = Condition {
+            selector: Selector::Kind,
+            value: FilterValue::String("server".to_string()),
+        };
+        let expr = condition.to_expr(&AttrContext::default()).unwrap();
+        assert!(format!("{expr:?}").contains("Server"));
+
+        let bad = Condition {
+            selector: Selector::Kind,
             value: FilterValue::String("bogus".to_string()),
         };
         assert!(matches!(

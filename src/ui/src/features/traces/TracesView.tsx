@@ -894,6 +894,14 @@ function TraceDetail({ state, update }: Props) {
   const waterfall = buildWaterfall(trace.data.spans);
   const selectedRow =
     waterfall.rows.find((r) => r.span.spanId === selected) ??
+    // An error span with no recorded exception (e.g. a root span that only
+    // propagates a child's failure) would open to an empty Events section,
+    // hiding the exception on whichever span actually recorded it.
+    waterfall.rows.find(
+      (r) =>
+        r.span.status === "error" &&
+        r.span.events.some((e) => e.name === "exception"),
+    ) ??
     waterfall.rows.find((r) => r.span.status === "error") ??
     waterfall.rows[0];
 

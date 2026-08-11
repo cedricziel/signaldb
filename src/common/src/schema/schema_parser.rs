@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use iceberg_rust::spec::schema::Schema;
 use iceberg_rust::spec::types::{ListType, MapType, PrimitiveType, StructField, StructType, Type};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Schema definitions loaded from TOML
@@ -66,7 +66,7 @@ pub struct FieldRename {
 }
 
 /// A resolved schema with all inheritance applied
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResolvedSchema {
     pub version: String,
     pub description: String,
@@ -74,7 +74,7 @@ pub struct ResolvedSchema {
     pub partition_by: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResolvedField {
     pub name: String,
     pub field_type: String,
@@ -111,9 +111,13 @@ impl SchemaDefinitions {
         self.resolve_table_schema(&self.logs, version)
     }
 
-    /// Generic schema resolver that handles inheritance
+    /// Generic schema resolver that handles inheritance. Public so callers
+    /// with a source-keyed map they don't have a dedicated
+    /// `resolve_*_schema` wrapper for (e.g. admin schema introspection over
+    /// `metrics_gauge`/`metrics_sum`/`metrics_histogram`) can still resolve
+    /// it without duplicating the inheritance/rename/addition logic.
     #[allow(clippy::only_used_in_recursion)]
-    fn resolve_table_schema(
+    pub fn resolve_table_schema(
         &self,
         schemas: &HashMap<String, TableSchemaDefinition>,
         version: &str,
@@ -338,6 +342,24 @@ impl ResolvedSchema {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_table_schema_is_public_and_works_for_non_trace_log_tables() {
+        // Metrics tables have no dedicated `resolve_*_schema` wrapper (only
+        // traces/logs do); admin schema introspection needs the generic
+        // resolver directly, so it must be reachable from outside this
+        // module.
+        let defs = SchemaDefinitions::from_toml(crate::schema::SCHEMA_DEFINITIONS_TOML).unwrap();
+        let resolved = defs
+            .resolve_table_schema(&defs.metrics_gauge, "physical-v1")
+            .unwrap();
+        assert!(
+            resolved.fields.iter().any(|f| f.name == "metric_name"),
+            "expected a metric_name field, got {:?}",
+            resolved.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        assert_eq!(resolved.partition_by, vec!["timestamp".to_string()]);
+    }
 
     #[test]
     fn to_iceberg_schema_appends_materialized_label_columns() {
