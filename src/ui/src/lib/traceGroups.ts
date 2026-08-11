@@ -49,6 +49,36 @@ export function groupLabel(key: string): string {
   return key.split(KEY_SEP).join(" · ");
 }
 
+/**
+ * Encodes a multi-dimension value tuple (a trace group's, or a catalog
+ * entity's, identity) into one URL-safe string — the not-set marker stands
+ * in for null so the round trip is lossless. Not trace-group-specific
+ * despite living alongside `groupKey`: the catalog reuses it for its own
+ * `catalogPrimary`/`catalogSecondary` pins, which are the same "multiple
+ * dimension values, one URL param" problem.
+ */
+export function compositeKey(values: (string | null)[]): string {
+  return values.map((v) => v ?? NOT_SET).join(KEY_SEP);
+}
+
+/**
+ * Reverses `compositeKey`. A value equal to the not-set marker — or a
+ * dimension past the end of the encoded key, e.g. an older link generated
+ * before a dimension was added — decodes to null, not the literal string,
+ * since "(not set)" means the field is absent: drilling into it must query
+ * "not exists", not `eq "(not set)"`.
+ */
+export function parseCompositeKey(
+  key: string,
+  dims: string[],
+): (string | null)[] {
+  const parts = key.split(KEY_SEP);
+  return dims.map((_, i) => {
+    const v = parts[i];
+    return v === undefined || v === NOT_SET ? null : v;
+  });
+}
+
 /** Trace throughput over the queried range, in the unit that stays >= 1. */
 export function formatRate(count: number, rangeSeconds: number): string {
   const perSec = count / rangeSeconds;

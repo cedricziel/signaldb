@@ -1,0 +1,112 @@
+.catalog {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.catalog-main {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 16px 20px;
+}
+
+.catalog-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.catalog-title {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.catalog-sub {
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.catalog-row-drillable {
+  cursor: pointer;
+}
+
+.catalog-row-drillable:hover {
+  background: var(--surface2);
+}
+
+.entity-detail .catalog-headline {
+  justify-content: space-between;
+  margin-top: 20px;
+}
+
+.entity-detail .catalog-headline:first-of-type {
+  margin-top: 0;
+}
+
+/* The breakdown table is an EntityTable, itself a `.catalog-main` section —
+   nested directly inside the detail page's own `.catalog-main`, so it must
+   not repeat that padding/overflow a second time. */
+.entity-detail .catalog-main {
+  padding: 0;
+  overflow: visible;
+}
+
+.catalog-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.catalog-breadcrumb button {
+  color: var(--accent);
+}
+
+.catalog-breadcrumb button:hover {
+  text-decoration: underline;
+}
+
+.catalog-crumb-sep {
+  color: var(--faint);
+}
+
+.catalog-crumb-current {
+  color: var(--dim);
+}
+
+.entity-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 12px;
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.entity-kpis dt {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  margin-bottom: 3px;
+}
+
+.entity-kpis dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.entity-kpis dd.err-rate {
+  color: var(--err);
+}

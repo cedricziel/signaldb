@@ -5,6 +5,7 @@
 import { useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { DEFAULT_SCALE, isScale, type Scale } from "../features/explore/scale";
+import { DEFAULT_ENTITY_TYPE } from "../features/catalog/entityTypes";
 import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
 import {
   traceFilterFromParam,
@@ -24,7 +25,8 @@ import {
   type TimeRange,
 } from "./time";
 
-export type Signal = "logs" | "traces" | "metrics" | "profiles" | "query";
+export type Signal =
+  "logs" | "traces" | "metrics" | "profiles" | "query" | "catalog";
 
 export interface ExploreState {
   signal: Signal;
@@ -64,6 +66,20 @@ export interface ExploreState {
    */
   tenant: string;
   dataset: string;
+  /** Selected entity type on the catalog tab (an `EntityTypeDef.id`). */
+  catalogEntity: string;
+  /**
+   * Composite key (see `lib/traceGroups.ts`'s `compositeKey`) of the
+   * catalog entity drilled into — "" means the list view. Encodes the
+   * entity type's `identity` values.
+   */
+  catalogPrimary: string;
+  /**
+   * Composite key of the breakdown row drilled into, within `catalogPrimary`
+   * — "" means no further drill. Only meaningful when the selected entity
+   * type has a `breakdown`; encodes that single dimension's value.
+   */
+  catalogSecondary: string;
 }
 
 export const DEFAULT_STATE: ExploreState = {
@@ -86,6 +102,9 @@ export const DEFAULT_STATE: ExploreState = {
   profileService: "",
   tenant: "",
   dataset: "",
+  catalogEntity: DEFAULT_ENTITY_TYPE,
+  catalogPrimary: "",
+  catalogSecondary: "",
 };
 
 export const SIGNALS: Signal[] = [
@@ -94,6 +113,7 @@ export const SIGNALS: Signal[] = [
   "metrics",
   "profiles",
   "query",
+  "catalog",
 ];
 
 /** Maps a `:signal` route param to a known signal, defaulting invalid/missing values to "logs". */
@@ -136,6 +156,9 @@ export function parseExploreState(search: string): ExploreState {
     profileService: p.get("psvc") ?? "",
     tenant: p.get("tenant") ?? "",
     dataset: p.get("dataset") ?? "",
+    catalogEntity: p.get("entity") || DEFAULT_ENTITY_TYPE,
+    catalogPrimary: p.get("primary") ?? "",
+    catalogSecondary: p.get("secondary") ?? "",
   };
 }
 
@@ -176,6 +199,10 @@ export function buildSearch(state: ExploreState): string {
   if (state.profileService) p.set("psvc", state.profileService);
   if (state.tenant) p.set("tenant", state.tenant);
   if (state.dataset) p.set("dataset", state.dataset);
+  if (state.catalogEntity !== DEFAULT_ENTITY_TYPE)
+    p.set("entity", state.catalogEntity);
+  if (state.catalogPrimary) p.set("primary", state.catalogPrimary);
+  if (state.catalogSecondary) p.set("secondary", state.catalogSecondary);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }

@@ -1,11 +1,12 @@
 /**
  * Facet definitions and TraceQL compilation for the traces tab.
  *
- * The facet list is deliberately limited to the fields the backend can
- * enumerate exactly. `/api/search/tags` is a hardcoded three-name list and
- * tag-value lookup returns 501 for every attribute (#1073), so offering more
- * would mean guessing a field list from the row-limited search response — the
- * sampling bias this UI has just finished removing from its charts.
+ * Facet value counts (see api/traceFacets.ts) are a Query IR aggregate, so
+ * the backend can enumerate any attribute exactly — `/api/search/tags`'s old
+ * hardcoded three-name list (#1073) is no longer the constraint. This list
+ * is a curated set with a defined TraceQL selector and quoting rule per
+ * field, not an enumeration limit; add an entry when a field gets a UI
+ * treatment (a facet sidebar row, a catalog drill-down), not speculatively.
  */
 
 export interface TraceFilter {
@@ -14,7 +15,7 @@ export interface TraceFilter {
 }
 
 export interface FacetField {
-  /** Tempo tag name, and the filter's stored field. */
+  /** The filter's stored field, and the URL param's key. */
   field: string;
   /** Column header in the sidebar. */
   label: string;
@@ -54,6 +55,71 @@ export const FACET_FIELDS: FacetField[] = [
     irField: "span_kind",
     selector: "kind",
     quoted: false,
+  },
+  {
+    // A span attribute (db client spans set it directly, not on the
+    // resource), so the selector is `span.`-scoped, not `resource.`-scoped
+    // like service.name above.
+    field: "db.namespace",
+    label: "db.namespace",
+    irField: "db.namespace",
+    selector: "span.db.namespace",
+    quoted: true,
+  },
+  {
+    // Same reasoning as db.namespace: messaging client instrumentation sets
+    // this on the producer/consumer span, not the resource.
+    field: "messaging.destination.name",
+    label: "messaging.destination.name",
+    irField: "messaging.destination.name",
+    selector: "span.messaging.destination.name",
+    quoted: true,
+  },
+  {
+    // Unlike db.namespace/messaging.*, these describe the process emitting
+    // telemetry rather than an individual operation — OTel resource
+    // detectors (or a collector's resourcedetection processor) set them on
+    // the resource, mirroring service.name above.
+    field: "host.name",
+    label: "host.name",
+    irField: "host.name",
+    selector: "resource.host.name",
+    quoted: true,
+  },
+  {
+    field: "k8s.pod.name",
+    label: "k8s.pod.name",
+    irField: "k8s.pod.name",
+    selector: "resource.k8s.pod.name",
+    quoted: true,
+  },
+  {
+    field: "k8s.namespace.name",
+    label: "k8s.namespace.name",
+    irField: "k8s.namespace.name",
+    selector: "resource.k8s.namespace.name",
+    quoted: true,
+  },
+  {
+    field: "k8s.node.name",
+    label: "k8s.node.name",
+    irField: "k8s.node.name",
+    selector: "resource.k8s.node.name",
+    quoted: true,
+  },
+  {
+    field: "container.name",
+    label: "container.name",
+    irField: "container.name",
+    selector: "resource.container.name",
+    quoted: true,
+  },
+  {
+    field: "process.pid",
+    label: "process.pid",
+    irField: "process.pid",
+    selector: "resource.process.pid",
+    quoted: true,
   },
 ];
 

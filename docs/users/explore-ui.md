@@ -21,6 +21,9 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
 ## What it does
 
+- **Catalog** — a service/infrastructure catalog discovered by querying the
+  ingested telemetry for OTel semantic-convention resource attributes, not
+  from a fixed inventory. See [The catalog](#the-catalog).
 - **Logs** — filter chips compiled to LogQL (with an "edit as text" escape
   hatch), a per-level volume histogram, a virtualized log list with
   per-attribute filter/exclude actions, a fields sidebar, and live tail.
@@ -56,11 +59,42 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   client, rendering the declared `rows`/`series`/`table` result.
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace.
-- Every view is a URL: each signal has its own path (`/logs`, `/traces`,
-  `/metrics`, `/profiles`, `/query`), with time range, filters, and selection
-  in query parameters alongside it — so views are separately navigable and
-  can be bookmarked, shared, and revisited with the browser back/forward
-  buttons. Tenant/dataset administration lives at `/manage`.
+- Every view is a URL: each signal has its own path (`/catalog`, `/logs`,
+  `/traces`, `/metrics`, `/profiles`, `/query`), with time range, filters, and
+  selection in query parameters alongside it — so views are separately
+  navigable and can be bookmarked, shared, and revisited with the browser
+  back/forward buttons. Tenant/dataset administration lives at `/manage`.
+
+### The catalog
+
+The catalog answers "what's actually sending telemetry" by discovery, not
+configuration: it groups the traces in the selected window by the OTel
+attributes that identify a **service**, **database**,
+**message destination**, **host**, **Kubernetes pod/node**, **container**,
+or **process** — the same RED-metrics aggregate (count, error rate, p50/p95,
+last-seen) the traces group table computes — and lists whatever it finds
+under each entity type in the left nav. There is no hardcoded or sample
+data: an entity type with nothing matching in the window renders an
+explicit empty state naming the attribute it's looking for (e.g. "No hosts
+observed in this window — no matching `host.name` value seen on any span")
+rather than a placeholder row. A tenant whose telemetry starts carrying
+that attribute — an SDK resource detector, an OTel Collector with
+`resourcedetection`, Kubernetes downward-API injection — gets that entity
+type populated with no further configuration.
+
+Selecting a row opens that entity's own page: a breadcrumb, its RED numbers
+pinned to exactly that entity, a breakdown table for entity types that have
+one (services by operation, databases by `db.operation.name`, infrastructure
+entity types by which services were observed alongside them), and a list of
+real recent matching spans linking straight into their trace waterfalls. A
+breakdown row drills one level deeper the same way. "View matching traces →"
+on the entity page hands off to the Traces tab, pre-filtered — the general
+escape hatch when the catalog's own view isn't enough.
+
+"Services" is scoped to server-kind spans specifically: a service's own
+resource attributes appear on every span it emits, including calls it makes
+to its dependencies, so without that scope its request rate/latency would
+mix inbound and outbound traffic.
 
 ### Reading a log line
 

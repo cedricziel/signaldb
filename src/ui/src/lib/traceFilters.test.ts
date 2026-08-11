@@ -19,6 +19,38 @@ describe("compileTraceQL", () => {
     );
   });
 
+  it("scopes a span attribute, not a resource attribute", () => {
+    // db.namespace and messaging.destination.name are set on the span by
+    // the calling instrumentation, not on the resource — a `resource.`
+    // selector would silently match nothing.
+    expect(compileTraceQL([{ field: "db.namespace", value: "orders" }])).toBe(
+      '{ span.db.namespace = "orders" }',
+    );
+    expect(
+      compileTraceQL([
+        { field: "messaging.destination.name", value: "orders.v2" },
+      ]),
+    ).toBe('{ span.messaging.destination.name = "orders.v2" }');
+  });
+
+  it("scopes host/k8s/container/process identity as resource attributes", () => {
+    // Unlike db.namespace/messaging.*, these describe the process emitting
+    // telemetry, not an individual operation — OTel models them as resource
+    // attributes.
+    for (const [field, selector] of [
+      ["host.name", "resource.host.name"],
+      ["k8s.pod.name", "resource.k8s.pod.name"],
+      ["k8s.namespace.name", "resource.k8s.namespace.name"],
+      ["k8s.node.name", "resource.k8s.node.name"],
+      ["container.name", "resource.container.name"],
+      ["process.pid", "resource.process.pid"],
+    ] as const) {
+      expect(compileTraceQL([{ field, value: "x" }])).toBe(
+        `{ ${selector} = "x" }`,
+      );
+    }
+  });
+
   it("leaves intrinsics unscoped", () => {
     expect(compileTraceQL([{ field: "name", value: "GET /pay" }])).toBe(
       '{ name = "GET /pay" }',
@@ -57,23 +89,28 @@ describe("compileTraceQL", () => {
 });
 
 describe("FACET_FIELDS", () => {
-  // Only the fields /api/search/tags can actually enumerate — see #1073.
-  it("offers exactly the enumerable fields", () => {
+  it("offers the curated fields with a defined UI treatment", () => {
     expect(FACET_FIELDS.map((f) => f.field)).toEqual([
       "service.name",
       "name",
       "status",
       "kind",
+      "db.namespace",
+      "messaging.destination.name",
+      "host.name",
+      "k8s.pod.name",
+      "k8s.namespace.name",
+      "k8s.node.name",
+      "container.name",
+      "process.pid",
     ]);
   });
 
-  it("names the IR field each facet aggregates by", () => {
-    expect(FACET_FIELDS.map((f) => f.irField)).toEqual([
-      "service.name",
-      "span.name",
-      "status.code",
-      "span_kind",
-    ]);
+  it("aggregates non-intrinsic facets by their own field name", () => {
+    for (const f of FACET_FIELDS) {
+      if (["name", "status", "kind"].includes(f.field)) continue;
+      expect(f.irField).toBe(f.field);
+    }
   });
 });
 
