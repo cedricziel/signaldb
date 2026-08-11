@@ -528,7 +528,7 @@ async fn logs_ir_query_end_to_end() {
             "from": "logs",
             "range": range(),
             "result": "rows",
-            "fields": ["service_name", "body"],
+            "fields": ["service.name", "body"],
             "pipeline": [
                 { "where": { "field": "service.name", "op": "eq", "value": "api" } }
             ]
@@ -582,7 +582,7 @@ async fn traces_ir_query_end_to_end() {
             "from": "traces",
             "range": range(),
             "result": "rows",
-            "fields": ["span_name", "duration"],
+            "fields": ["span.name", "duration"],
             "pipeline": [
                 { "where": { "field": "service.name", "op": "eq", "value": "checkout" } },
                 { "topk": { "n": 1, "of": "duration" } }
