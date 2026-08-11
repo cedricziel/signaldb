@@ -1,11 +1,12 @@
 /**
  * Facet definitions and TraceQL compilation for the traces tab.
  *
- * The facet list is deliberately limited to the fields the backend can
- * enumerate exactly. `/api/search/tags` is a hardcoded three-name list and
- * tag-value lookup returns 501 for every attribute (#1073), so offering more
- * would mean guessing a field list from the row-limited search response — the
- * sampling bias this UI has just finished removing from its charts.
+ * Facet value counts (see api/traceFacets.ts) are a Query IR aggregate, so
+ * the backend can enumerate any attribute exactly — `/api/search/tags`'s old
+ * hardcoded three-name list (#1073) is no longer the constraint. This list
+ * is a curated set with a defined TraceQL selector and quoting rule per
+ * field, not an enumeration limit; add an entry when a field gets a UI
+ * treatment (a facet sidebar row, a catalog drill-down), not speculatively.
  */
 
 export interface TraceFilter {
@@ -14,7 +15,7 @@ export interface TraceFilter {
 }
 
 export interface FacetField {
-  /** Tempo tag name, and the filter's stored field. */
+  /** The filter's stored field, and the URL param's key. */
   field: string;
   /** Column header in the sidebar. */
   label: string;
@@ -54,6 +55,16 @@ export const FACET_FIELDS: FacetField[] = [
     irField: "span_kind",
     selector: "kind",
     quoted: false,
+  },
+  {
+    // A span attribute (db client spans set it directly, not on the
+    // resource), so the selector is `span.`-scoped, not `resource.`-scoped
+    // like service.name above.
+    field: "db.namespace",
+    label: "db.namespace",
+    irField: "db.namespace",
+    selector: "span.db.namespace",
+    quoted: true,
   },
 ];
 

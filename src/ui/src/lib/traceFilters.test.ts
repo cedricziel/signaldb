@@ -19,6 +19,14 @@ describe("compileTraceQL", () => {
     );
   });
 
+  it("scopes a span attribute, not a resource attribute", () => {
+    // db.namespace is set on the span by db-client instrumentation, not on
+    // the resource — a `resource.` selector would silently match nothing.
+    expect(compileTraceQL([{ field: "db.namespace", value: "orders" }])).toBe(
+      '{ span.db.namespace = "orders" }',
+    );
+  });
+
   it("leaves intrinsics unscoped", () => {
     expect(compileTraceQL([{ field: "name", value: "GET /pay" }])).toBe(
       '{ name = "GET /pay" }',
@@ -57,13 +65,13 @@ describe("compileTraceQL", () => {
 });
 
 describe("FACET_FIELDS", () => {
-  // Only the fields /api/search/tags can actually enumerate — see #1073.
-  it("offers exactly the enumerable fields", () => {
+  it("offers the curated fields with a defined UI treatment", () => {
     expect(FACET_FIELDS.map((f) => f.field)).toEqual([
       "service.name",
       "name",
       "status",
       "kind",
+      "db.namespace",
     ]);
   });
 
@@ -73,6 +81,7 @@ describe("FACET_FIELDS", () => {
       "span.name",
       "status.code",
       "span_kind",
+      "db.namespace",
     ]);
   });
 });
