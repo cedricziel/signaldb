@@ -33,9 +33,9 @@ use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     handler::server::tool::Extension,
     model::{
-        CallToolResult, ContentBlock, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-        ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ServerCapabilities,
-        ServerInfo,
+        CacheScope, CallToolResult, ContentBlock, ListResourcesResult, ListToolsResult,
+        PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
+        ReadResourceResult, ServerCapabilities, ServerInfo,
     },
     tool, tool_handler, tool_router,
 };
@@ -537,6 +537,14 @@ impl McpServer {
 /// Tools that ship a UI app, paired with the resource that renders them.
 const UI_TOOLS: [(&str, &str); 1] = [("get_trace", apps::TRACE_APP_URI)];
 
+/// SEP-2549 cache TTL for `tools/list`: short-lived because `_meta.ui` varies
+/// with the connecting client's negotiated capabilities.
+const TOOL_LIST_CACHE_TTL_MS: u64 = 30_000;
+
+/// SEP-2549 cache TTL for the compiled-in, client-independent UI resources
+/// (`resources/list` and `resources/read`).
+const STATIC_RESOURCE_CACHE_TTL_MS: u64 = 3_600_000;
+
 /// Whether the client on this request negotiated the MCP Apps extension.
 ///
 /// `peer_info` is `None` before `initialize` completes; treat that as no UI,
@@ -583,7 +591,15 @@ impl ServerHandler for McpServer {
                 }
             }
         }
-        Ok(ListToolsResult::with_all_items(tools))
+        // SEP-2549 (protocol 2026-07-28) requires `ttlMs`/`cacheScope` on this
+        // result; rmcp leaves them optional for older clients, but a
+        // conformant 2026-07-28 client rejects a response that omits them.
+        // `_meta.ui.resourceUri` above depends on the connecting client's
+        // negotiated capabilities, so this response is not safe for an
+        // intermediary to serve to a different client — mark it private.
+        Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(TOOL_LIST_CACHE_TTL_MS)
+            .with_cache_scope(CacheScope::Private))
     }
 
     async fn list_resources(
@@ -591,7 +607,12 @@ impl ServerHandler for McpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(ListResourcesResult::with_all_items(apps::ui_resources()))
+        // Static, compiled-in UI apps — identical for every client, so a long
+        // TTL and public scope are safe. See the `list_tools` comment for why
+        // these fields must be set at all (SEP-2549).
+        Ok(ListResourcesResult::with_all_items(apps::ui_resources())
+            .with_ttl_ms(STATIC_RESOURCE_CACHE_TTL_MS)
+            .with_cache_scope(CacheScope::Public))
     }
 
     /// Serve a UI app document. The only resources this server holds are the
@@ -602,7 +623,10 @@ impl ServerHandler for McpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
         match apps::read_ui_resource(&request.uri) {
-            Some(contents) => Ok(ReadResourceResult::new(vec![contents]).into()),
+            Some(contents) => Ok(ReadResourceResult::new(vec![contents])
+                .with_ttl_ms(STATIC_RESOURCE_CACHE_TTL_MS)
+                .with_cache_scope(CacheScope::Public)
+                .into()),
             None => Err(ErrorData::resource_not_found(
                 format!("no resource at `{}`", request.uri),
                 None,
