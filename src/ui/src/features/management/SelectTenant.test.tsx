@@ -29,6 +29,16 @@ describe("SelectTenant", () => {
     vi.clearAllMocks();
   });
 
+  // The tenant-name span renders "{arrow} {tenantId}" as separate JSX text
+  // nodes, so textContent is "▼ acme" / "▶ acme-eu" — match the exact
+  // rendered form rather than a substring, since "acme" is itself a
+  // substring of "acme-eu".
+  const tenantNameMatcher =
+    (tenantId: string) => (_c: string, el: Element | null) => {
+      const text = el?.textContent ?? "";
+      return text === `▼ ${tenantId}` || text === `▶ ${tenantId}`;
+    };
+
   const mockWhoami = (tenant?: string) => {
     if (tenant === "acme") {
       return {
@@ -109,14 +119,10 @@ describe("SelectTenant", () => {
     renderWithClient(<SelectTenant />);
     // Tenant names render in separate <span class="tenant-name"> elements
     expect(
-      await screen.findByText((_c, el) => el?.textContent === "acme"),
+      await screen.findByText(tenantNameMatcher("acme")),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText((_c, el) => el?.textContent === "acme-eu"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText((_c, el) => el?.textContent === "sandbox"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(tenantNameMatcher("acme-eu"))).toBeInTheDocument();
+    expect(screen.getByText(tenantNameMatcher("sandbox"))).toBeInTheDocument();
     // Roles render in <span class="tenant-role"> elements
     expect(screen.getByText("admin")).toBeInTheDocument();
     expect(screen.getByText("member")).toBeInTheDocument();
@@ -157,7 +163,7 @@ describe("SelectTenant", () => {
   it("other tenants are collapsed initially", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: mockWhoami() }]);
     renderWithClient(<SelectTenant />);
-    await screen.findByText((_c, el) => el?.textContent === "acme");
+    await screen.findByText(tenantNameMatcher("acme"));
     expect(screen.queryByText(/europe/)).toBeNull();
     expect(screen.queryByText(/testing/)).toBeNull();
   });
@@ -168,9 +174,7 @@ describe("SelectTenant", () => {
     // to match the scoped call and return the correct tenant data.
     stubFetchRoutes([{ match: /\/api\/v1\/whoami$/, body: mockWhoami() }]);
     renderWithClient(<SelectTenant />);
-    const tenantRow = await screen.findByText(
-      (_c, el) => el?.textContent === "acme-eu",
-    );
+    const tenantRow = await screen.findByText(tenantNameMatcher("acme-eu"));
     await userEvent.click(tenantRow);
     // The tenant row should now be expanded (aria-expanded=true)
     expect(tenantRow.closest("button")).toHaveAttribute(
