@@ -81,10 +81,15 @@ export function ApiKeys() {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
+    const selectedScopes = scopes.filter((scope) => data.has(scope));
+    if (selectedScopes.length === 0) {
+      setError("Select at least one ingestion scope.");
+      return;
+    }
     createMutation.mutate({
       name: String(data.get("name") ?? "").trim() || undefined,
       dataset_id: String(data.get("dataset") ?? "").trim() || undefined,
-      scopes: scopes.filter((scope) => data.has(scope)),
+      scopes: selectedScopes,
     });
     form.reset();
   };
@@ -154,10 +159,7 @@ export function ApiKeys() {
                   {key.scopes?.length
                     ? key.scopes.join(", ")
                     : "legacy unrestricted"}
-                  {"created_at" in key &&
-                    typeof key.created_at === "string" && (
-                      <>{` · created ${new Date(key.created_at).toLocaleDateString()}`}</>
-                    )}
+                  {` · created ${new Date(key.created_at).toLocaleDateString()}`}
                   {key.revoked && " · revoked"}
                 </div>
               </div>

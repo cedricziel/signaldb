@@ -1,14 +1,17 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { ApiKeys } from "./ApiKeys";
 
 function renderApiKeys() {
   return renderWithClient(
-    <MemoryRouter>
-      <ApiKeys />
+    <MemoryRouter initialEntries={["/api-keys"]}>
+      <Routes>
+        <Route path="/api-keys" element={<ApiKeys />} />
+        <Route path="/logs" element={<div>Logs page</div>} />
+      </Routes>
     </MemoryRouter>,
   );
 }
@@ -84,13 +87,10 @@ describe("ApiKeys page", () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_NON_ADMIN }]);
     renderApiKeys();
 
-    // Should redirect to /logs, which will navigate away.
-    // In a MemoryRouter, we can't easily test navigation, but we can assert
-    // that the component returns a Navigate element.
-    // Instead, we'll test that the admin-specific UI is absent.
     await waitFor(() =>
-      expect(screen.queryByText("API keys")).not.toBeInTheDocument(),
+      expect(screen.getByText("Logs page")).toBeInTheDocument(),
     );
+    expect(screen.queryByText("API keys")).not.toBeInTheDocument();
   });
 
   it("shows existing API keys list", async () => {
