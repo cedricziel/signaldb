@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { resolveExportConfig, resolveServiceName } from "./runtimeConfig";
+import {
+  resolveDeploymentEnvironment,
+  resolveExportConfig,
+  resolveServerVersion,
+  resolveServiceName,
+  resolveServiceNamespace,
+} from "./runtimeConfig";
 
 describe("resolveExportConfig", () => {
   it("returns null when there is no runtime config and no build-time endpoint", () => {
@@ -77,5 +83,26 @@ describe("resolveServiceName", () => {
     expect(resolveServiceName({ telemetry: {} }, "signaldb-ui")).toBe(
       "signaldb-ui",
     );
+  });
+});
+
+describe("resolveServiceNamespace / resolveServerVersion / resolveDeploymentEnvironment", () => {
+  it("reads each field from the runtime config when present", () => {
+    const runtime = {
+      telemetry: {
+        namespace: "signaldb",
+        version: "0.2.2",
+        deploymentEnvironment: "production",
+      },
+    };
+    expect(resolveServiceNamespace(runtime)).toBe("signaldb");
+    expect(resolveServerVersion(runtime)).toBe("0.2.2");
+    expect(resolveDeploymentEnvironment(runtime)).toBe("production");
+  });
+
+  it("returns undefined when the runtime config or field is absent", () => {
+    expect(resolveServiceNamespace(undefined)).toBeUndefined();
+    expect(resolveServerVersion({ telemetry: {} })).toBeUndefined();
+    expect(resolveDeploymentEnvironment({ telemetry: {} })).toBeUndefined();
   });
 });

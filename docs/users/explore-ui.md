@@ -308,13 +308,29 @@ misconfigured deployment should not silently ship without its UI.
 
 ## Telemetry
 
-The UI is instrumented with OpenTelemetry (browser SDK). It injects a W3C
-`traceparent` into every API call so a user action correlates end-to-end with
-the backend traces it triggers, and stamps every span with a RUM `session.id`
-plus the active `tenant.id` / `dataset.id`. The initial page load is
-correlated in the reverse direction: the `documentLoad` span links to the
-server span that served the document, read back from the response's
-[`Server-Timing: traceparent`](response-trace-context.md) entry.
+The UI is instrumented with OpenTelemetry (browser SDK) across two signal
+types. **Spans**: it injects a W3C `traceparent` into every API call so a user
+action correlates end-to-end with the backend traces it triggers, and stamps
+every span with a RUM `session.id` plus the active `tenant.id` / `dataset.id`.
+The initial page load is correlated in the reverse direction: the router
+injects the server's trace context directly into `index.html` as a
+`<meta name="traceparent">` tag, and the UI uses it as the real parent of its
+`documentLoad` span (falling back to a same-trace-id _link_, read from the
+response's [`Server-Timing: traceparent`](response-trace-context.md) entry,
+when no tag is present). See [Trace context in the document
+body](response-trace-context.md#trace-context-in-the-document-body) for the
+sampling trade-off that comes with real parenting.
+
+**Log records**: Core Web Vitals, navigation/resource timing, route changes,
+uncaught errors, and console `error`/`warn` calls are captured as log records
+via `@opentelemetry/browser-instrumentation`, stamped with the same
+`session.id`/`tenant.id`/`dataset.id`. Browser errors show up here (not as
+`browser.error` spans — that hand-rolled span capture was replaced by this).
+The UI's resource also carries `service.namespace`, `signaldb.server.version`
+(the backend build that served the session — distinct from the UI bundle's
+own `service.version`), and `deployment.environment.name`, all sourced from
+the same runtime config as the export settings below. Full instrumentation
+list and rationale in the `frontend-instrumentation` skill.
 
 Export is **opt-in**. The preferred way to turn it on is the
 `[self_monitoring.frontend]` config section — the router serves it to the
@@ -323,7 +339,7 @@ browser at runtime, so one image works for every deployment without a rebuild:
 ```toml
 [self_monitoring.frontend]
 enabled = true
-endpoint = "http://signaldb.example:4318"   # reachable from the browser
+endpoint = "http://signaldb.example:4318"   # reachable from the browser; both /v1/traces and /v1/logs
 api_key = "sk-ingest-only-key"               # world-readable; ingest-only
 # tenant_id / dataset_id default to _system / _monitoring
 # allowed_origins = ["http://signaldb.example:3000"]  # CORS; empty = any

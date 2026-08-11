@@ -29,20 +29,31 @@ export interface EntryWithServerTiming {
 const TRACEPARENT_RE = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
 
 /**
- * Extract the server's trace context from a performance entry's
- * `serverTiming` list. Returns `null` (never throws) when the entry carries
- * no `traceparent` metric, the description is not a strictly valid
- * version-00 traceparent, or either id is all zeros.
+ * Parse a raw W3C `traceparent` value (from a `Server-Timing` entry, a
+ * `<meta name="traceparent">` tag, or any other carrier). Returns `null`
+ * (never throws) for a missing value, a version other than `00`, non-hex or
+ * wrong-width ids, or an all-zero trace/span id.
  */
-export function serverTraceContextFromEntry(
-  entry: EntryWithServerTiming | null | undefined,
+export function parseTraceparent(
+  value: string | null | undefined,
 ): ServerTraceContext | null {
-  const metric = entry?.serverTiming?.find((m) => m.name === "traceparent");
-  const match = metric?.description.match(TRACEPARENT_RE);
+  const match = value?.match(TRACEPARENT_RE);
   if (!match) return null;
   const [, traceId, spanId, flagsHex] = match;
   if (!traceId || !spanId || !flagsHex) return null;
   if (traceId === "0".repeat(32) || spanId === "0".repeat(16)) return null;
   const traceFlags = Number.parseInt(flagsHex, 16);
   return { traceId, spanId, traceFlags, sampled: (traceFlags & 0x01) === 0x01 };
+}
+
+/**
+ * Extract the server's trace context from a performance entry's
+ * `serverTiming` list. Returns `null` (never throws) when the entry carries
+ * no `traceparent` metric or its description does not parse.
+ */
+export function serverTraceContextFromEntry(
+  entry: EntryWithServerTiming | null | undefined,
+): ServerTraceContext | null {
+  const metric = entry?.serverTiming?.find((m) => m.name === "traceparent");
+  return parseTraceparent(metric?.description);
 }

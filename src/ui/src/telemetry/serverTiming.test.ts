@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { serverTraceContextFromEntry } from "./serverTiming";
+import { parseTraceparent, serverTraceContextFromEntry } from "./serverTiming";
 
 function entryWith(desc: string | null): {
   serverTiming?: Array<{ name: string; description: string; duration: number }>;
@@ -75,5 +75,37 @@ describe("serverTraceContextFromEntry", () => {
         entryWith(`00-${TRACE_ID}-${"0".repeat(16)}-01`),
       ),
     ).toBeNull();
+  });
+});
+
+describe("parseTraceparent", () => {
+  it("parses a valid sampled traceparent value", () => {
+    expect(parseTraceparent(`00-${TRACE_ID}-${SPAN_ID}-01`)).toEqual({
+      traceId: TRACE_ID,
+      spanId: SPAN_ID,
+      traceFlags: 1,
+      sampled: true,
+    });
+  });
+
+  it("returns null for null, undefined, and malformed values", () => {
+    for (const value of [
+      null,
+      undefined,
+      "garbage",
+      "",
+      `00-${TRACE_ID}-${SPAN_ID}`,
+      `00-${"0".repeat(32)}-${SPAN_ID}-01`,
+      `00-${TRACE_ID}-${"0".repeat(16)}-01`,
+    ]) {
+      expect(parseTraceparent(value), String(value)).toBeNull();
+    }
+  });
+
+  it("backs serverTraceContextFromEntry (same parsing rules)", () => {
+    const value = `00-${TRACE_ID}-${SPAN_ID}-01`;
+    expect(serverTraceContextFromEntry(entryWith(value))).toEqual(
+      parseTraceparent(value),
+    );
   });
 });

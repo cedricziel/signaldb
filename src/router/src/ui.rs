@@ -10,11 +10,28 @@
 //! ## Runtime configuration
 //!
 //! `GET /ui/runtime-config.js` sets `window.__SIGNALDB_RUNTIME_CONFIG__` from
-//! `[self_monitoring.frontend]`. The UI's `index.html` loads it (blocking,
-//! classic script) before the app boots, so browser telemetry export can be
-//! enabled and pointed at any endpoint via config alone — one container image
-//! serves every deployment without a UI rebuild.
+//! `[self_monitoring.frontend]`, plus `service.namespace` / the running
+//! router's own `service.version` / `deployment.environment.name` (mirroring
+//! [`common::self_monitoring`]'s backend resource, so the UI's `Resource`
+//! carries the same deployment identity, not just the tenant/dataset-ingest
+//! bits `FrontendMonitoringConfig` covers). The UI's `index.html` loads it
+//! (blocking, classic script) before the app boots, so browser telemetry
+//! export can be enabled and pointed at any endpoint via config alone — one
+//! container image serves every deployment without a UI rebuild.
+//!
+//! ## Trace context on the document response
+//!
+//! `index.html` is never served as a static file: [`serve_index_html`] reads
+//! it once at startup and, on every request, injects the current server
+//! span's context as `<meta name="traceparent" content="...">` before
+//! `</head>`. The initial document request is the one call the browser can
+//! never instrument (no JS has run yet), so this is the frontend's most
+//! reliable way to link its `documentLoad` span to the server span that
+//! served the page — no dependency on the Performance API surfacing
+//! `Server-Timing` (browser/proxy support varies). See
+//! `docs/users/response-trace-context.md`.
 
+use anyhow::Context;
 use axum::Router;
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse};
@@ -22,7 +39,7 @@ use axum::routing::get;
 use common::config::FrontendMonitoringConfig;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 
 const UI_DIR_ENV: &str = "SIGNALDB_UI_DIR";
 
@@ -33,9 +50,9 @@ const UI_DIR_ENV: &str = "SIGNALDB_UI_DIR";
 /// Panics at startup when the variable is set but the directory does not
 /// contain a built UI (`index.html`). Misconfiguration must fail loudly
 /// instead of degrading to the placeholder page.
-pub fn service_from_env(frontend: &FrontendMonitoringConfig) -> Router {
+pub fn service_from_env(frontend: &FrontendMonitoringConfig, environment: &str) -> Router {
     let dir = std::env::var(UI_DIR_ENV).ok().map(PathBuf::from);
-    service_with_dir(dir, frontend).unwrap_or_else(|e| panic!("{e}"))
+    service_with_dir(dir, frontend, environment).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// Build the `/ui` service for an explicit asset directory.
@@ -44,16 +61,35 @@ pub fn service_from_env(frontend: &FrontendMonitoringConfig) -> Router {
 /// directory without an `index.html` is a configuration error. The
 /// `runtime-config.js` route is served in all cases so the UI (or a dev
 /// server proxying to it) can always read its runtime configuration.
+/// `environment` is `[self_monitoring].environment`, the same
+/// `deployment.environment.name` value the backend's own telemetry uses.
 pub fn service_with_dir(
     dir: Option<PathBuf>,
     frontend: &FrontendMonitoringConfig,
+    environment: &str,
 ) -> anyhow::Result<Router> {
     let assets = match dir {
         Some(dir) if has_ui_assets(&dir) => {
             tracing::info!(dir = %dir.display(), "Serving explore UI");
-            let index = ServeFile::new(dir.join("index.html"));
+            let template: Arc<str> = Arc::from(
+                std::fs::read_to_string(dir.join("index.html")).with_context(|| {
+                    format!("Failed to read {}", dir.join("index.html").display())
+                })?,
+            );
+            let index = get(move || {
+                let template = template.clone();
+                async move { serve_index_html(&template) }
+            });
             // Unknown paths fall back to index.html so SPA deep links work.
-            Router::new().fallback_service(ServeDir::new(&dir).fallback(index))
+            // Index-on-directory serving is disabled so every path that
+            // resolves to index.html — including `/` — goes through our
+            // handler and gets the trace-context meta tag, not ServeDir's
+            // built-in static passthrough.
+            Router::new().fallback_service(
+                ServeDir::new(&dir)
+                    .append_index_html_on_directories(false)
+                    .fallback(index),
+            )
         }
         Some(dir) => anyhow::bail!(
             "{UI_DIR_ENV} is set to {} but the directory contains no index.html; \
@@ -64,7 +100,7 @@ pub fn service_with_dir(
     };
 
     // The exact route wins over the static-asset fallback below it.
-    let body: Arc<str> = Arc::from(runtime_config_js(frontend));
+    let body: Arc<str> = Arc::from(runtime_config_js(frontend, environment));
     Ok(Router::new()
         .route(
             "/runtime-config.js",
@@ -91,11 +127,18 @@ pub fn service_with_dir(
 
 /// Render the runtime-config script from the frontend telemetry config.
 ///
-/// Emits `{ telemetry: { enabled: false } }` (and, crucially, no `apiKey`)
-/// unless export is enabled with an endpoint set. Values are JSON-encoded for
-/// safe escaping.
-fn runtime_config_js(frontend: &FrontendMonitoringConfig) -> String {
-    let telemetry = if frontend.enabled && !frontend.endpoint.is_empty() {
+/// The export-credential fields (`endpoint`/`apiKey`/`tenantId`/`datasetId`/
+/// `serviceName`) are emitted only when export is enabled with an endpoint
+/// set — `{ telemetry: { enabled: false } }` (and, crucially, no `apiKey`)
+/// otherwise. `namespace`/`version`/`deploymentEnvironment` are deployment
+/// identity, not export credentials, so they are always included: they mirror
+/// the `(service.namespace, service.version, deployment.environment.name)`
+/// facts [`common::self_monitoring`]'s backend resource carries, letting the
+/// UI's `Resource` (see `telemetry/resource.ts`) describe the same
+/// deployment even when browser export itself is off. Values are
+/// JSON-encoded for safe escaping.
+fn runtime_config_js(frontend: &FrontendMonitoringConfig, environment: &str) -> String {
+    let mut telemetry = if frontend.enabled && !frontend.endpoint.is_empty() {
         serde_json::json!({
             "enabled": true,
             "endpoint": frontend.endpoint,
@@ -107,8 +150,43 @@ fn runtime_config_js(frontend: &FrontendMonitoringConfig) -> String {
     } else {
         serde_json::json!({ "enabled": false })
     };
+    // Mirrors common::self_monitoring::build_resource's hardcoded
+    // "signaldb" service.namespace literal.
+    telemetry["namespace"] = serde_json::json!("signaldb");
+    telemetry["version"] = serde_json::json!(env!("CARGO_PKG_VERSION"));
+    telemetry["deploymentEnvironment"] = serde_json::json!(environment);
     let payload = serde_json::json!({ "telemetry": telemetry });
     format!("window.__SIGNALDB_RUNTIME_CONFIG__ = {payload};\n")
+}
+
+/// Render `index.html` with the current server span's trace context injected
+/// as a `<meta name="traceparent">` tag. No-op (raw template) when
+/// self-monitoring is disabled or the span was sampled out, matching
+/// [`common::flight::trace_context::current_trace_context_fields`]'s
+/// documented degrade-to-`None` behavior.
+fn serve_index_html(template: &str) -> impl IntoResponse + use<> {
+    let html = match common::flight::trace_context::current_trace_context_fields() {
+        Some((traceparent, _tracestate)) => inject_traceparent_meta(template, &traceparent),
+        None => template.to_string(),
+    };
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html)
+}
+
+/// Insert `<meta name="traceparent" content="<traceparent>">` immediately
+/// before `</head>`. `traceparent` always comes from `format_traceparent`
+/// (hex digits and hyphens only), so no HTML escaping is required. Returns
+/// `html` unchanged if it has no `</head>` to anchor on.
+fn inject_traceparent_meta(html: &str, traceparent: &str) -> String {
+    let Some(pos) = html.find("</head>") else {
+        return html.to_string();
+    };
+    let mut out = String::with_capacity(html.len() + traceparent.len() + 48);
+    out.push_str(&html[..pos]);
+    out.push_str("<meta name=\"traceparent\" content=\"");
+    out.push_str(traceparent);
+    out.push_str("\">\n");
+    out.push_str(&html[pos..]);
+    out
 }
 
 async fn placeholder() -> impl IntoResponse {
@@ -165,11 +243,13 @@ mod tests {
         FrontendMonitoringConfig::default()
     }
 
+    const ENV: &str = "test";
+
     #[tokio::test]
     async fn serves_index_and_assets_from_dir() {
         let dir = ui_fixture();
         let router =
-            service_with_dir(Some(dir.path().to_path_buf()), &disabled()).expect("valid dir");
+            service_with_dir(Some(dir.path().to_path_buf()), &disabled(), ENV).expect("valid dir");
 
         let res = get(router.clone(), "/").await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -181,10 +261,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn index_has_no_traceparent_meta_when_self_monitoring_disabled() {
+        // No global OTel layer is installed in this test process, so
+        // current_trace_context_fields() returns None regardless of the
+        // FrontendMonitoringConfig passed in — mirrors
+        // common::flight::trace_context's
+        // current_trace_context_fields_is_none_without_otel_layer test.
+        let dir = ui_fixture();
+        let router =
+            service_with_dir(Some(dir.path().to_path_buf()), &disabled(), ENV).expect("valid dir");
+        let res = get(router, "/").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        let body = body_string(res).await;
+        assert_eq!(body, "<html>ui-index</html>", "template served unchanged");
+        assert!(!body.contains("traceparent"));
+    }
+
+    #[test]
+    fn inject_traceparent_meta_inserts_before_head_close() {
+        let html = "<html><head><title>t</title></head><body></body></html>";
+        let out = inject_traceparent_meta(
+            html,
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        );
+        assert_eq!(
+            out,
+            "<html><head><title>t</title>\
+             <meta name=\"traceparent\" content=\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\">\n\
+             </head><body></body></html>"
+        );
+    }
+
+    #[test]
+    fn inject_traceparent_meta_leaves_html_unchanged_without_head_close() {
+        let html = "<html><body>no head tag</body></html>";
+        assert_eq!(
+            inject_traceparent_meta(
+                html,
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+            ),
+            html
+        );
+    }
+
+    #[tokio::test]
     async fn falls_back_to_index_for_unknown_paths() {
         let dir = ui_fixture();
         let router =
-            service_with_dir(Some(dir.path().to_path_buf()), &disabled()).expect("valid dir");
+            service_with_dir(Some(dir.path().to_path_buf()), &disabled(), ENV).expect("valid dir");
         let res = get(router, "/some/deep/link").await;
         assert_eq!(res.status(), StatusCode::OK);
         assert!(body_string(res).await.contains("ui-index"));
@@ -192,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn placeholder_without_assets() {
-        let router = service_with_dir(None, &disabled()).expect("no dir is valid");
+        let router = service_with_dir(None, &disabled(), ENV).expect("no dir is valid");
         let res = get(router, "/").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         assert!(body_string(res).await.contains("UI not bundled"));
@@ -201,7 +329,7 @@ mod tests {
     #[test]
     fn configured_dir_without_index_is_an_error() {
         let empty = tempfile::tempdir().expect("tempdir");
-        let err = service_with_dir(Some(empty.path().to_path_buf()), &disabled())
+        let err = service_with_dir(Some(empty.path().to_path_buf()), &disabled(), ENV)
             .expect_err("missing index.html must fail");
         assert!(err.to_string().contains("index.html"));
     }
@@ -210,7 +338,7 @@ mod tests {
     async fn runtime_config_disabled_by_default_and_omits_key() {
         let dir = ui_fixture();
         let router =
-            service_with_dir(Some(dir.path().to_path_buf()), &disabled()).expect("valid dir");
+            service_with_dir(Some(dir.path().to_path_buf()), &disabled(), ENV).expect("valid dir");
         let res = get(router, "/runtime-config.js").await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
@@ -233,13 +361,16 @@ mod tests {
         };
         // Enabled even with no UI bundle (None): dev proxies this route to a
         // live router while serving assets itself.
-        let router = service_with_dir(None, &frontend).expect("no dir is valid");
+        let router = service_with_dir(None, &frontend, "staging").expect("no dir is valid");
         let body = body_string(get(router, "/runtime-config.js").await).await;
         assert!(body.contains("\"enabled\":true"));
         assert!(body.contains("http://signaldb.example:4318"));
         assert!(body.contains("sk-ingest"));
         assert!(body.contains("\"tenantId\":\"_system\""));
         assert!(body.contains("\"serviceName\":\"signaldb-ui\""));
+        assert!(body.contains("\"namespace\":\"signaldb\""));
+        assert!(body.contains(&format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"))));
+        assert!(body.contains("\"deploymentEnvironment\":\"staging\""));
     }
 
     #[test]
@@ -250,9 +381,14 @@ mod tests {
             api_key: Some("sk-ingest".to_string()),
             ..FrontendMonitoringConfig::default()
         };
-        let js = runtime_config_js(&frontend);
+        let js = runtime_config_js(&frontend, ENV);
         assert!(js.contains("\"enabled\":false"));
         assert!(!js.contains("sk-ingest"), "no key leaked: {js}");
+        // Deployment-identity fields are not export credentials — still
+        // present even while telemetry export is disabled.
+        assert!(js.contains("\"namespace\":\"signaldb\""));
+        assert!(js.contains(&format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"))));
+        assert!(js.contains("\"deploymentEnvironment\":\"test\""));
     }
 
     #[test]

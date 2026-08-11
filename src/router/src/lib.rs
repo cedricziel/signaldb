@@ -305,6 +305,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         // `/oauth/consent`) boot the app. Served from SIGNALDB_UI_DIR.
         .fallback_service(ui::service_from_env(
             &state.config().self_monitoring.frontend,
+            &state.config().self_monitoring.environment,
         ))
         // OTel HTTP server metrics for all routes (no-op unless
         // self-monitoring is enabled)

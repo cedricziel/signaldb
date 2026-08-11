@@ -107,6 +107,15 @@ export default defineConfig(({ mode }) => {
           // from test code (see src/telemetry/index.ts), so it can't be
           // exercised here — same rationale as excluding main.tsx.
           "src/telemetry/index.ts",
+          // Same category as index.ts: thin LoggerProvider/instrumentation
+          // wiring glue, not logic — the logic it calls into
+          // (sessionLogRecordProcessor.ts, sanitizeNavigationUrl.ts,
+          // resource.ts, runtimeConfig.ts) is unit-tested directly instead.
+          // Unlike index.ts this one doesn't import zone.js and *could* be
+          // imported from a test, but there is nothing worth asserting on
+          // beyond "it calls registerInstrumentations with the right args",
+          // which a type error already catches.
+          "src/telemetry/logs.ts",
         ],
         thresholds: {
           lines: 80,
