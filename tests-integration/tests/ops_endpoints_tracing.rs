@@ -195,8 +195,24 @@ async fn ops_compact_status_client_span_carries_server_address_and_joins_compact
         "expected the real compactor to answer"
     );
 
-    provider.force_flush().unwrap();
-    let spans = exporter.get_finished_spans().unwrap();
+    // The compactor's SERVER span ends on the tonic server task, which can
+    // still be mid-export when the router's HTTP response arrives here —
+    // poll instead of assuming one flush already caught both spans.
+    let mut spans = Vec::new();
+    for _ in 0..50 {
+        provider.force_flush().unwrap();
+        spans = exporter.get_finished_spans().unwrap();
+        let has_client = spans
+            .iter()
+            .any(|s| s.span_kind == opentelemetry::trace::SpanKind::Client);
+        let has_server = spans
+            .iter()
+            .any(|s| s.span_kind == opentelemetry::trace::SpanKind::Server);
+        if has_client && has_server {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 
     // Client and server spans share the same name (`{method} {detail}`), so
     // disambiguate by kind rather than relying on find() picking the right one.
