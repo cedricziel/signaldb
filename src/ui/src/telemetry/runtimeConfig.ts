@@ -20,6 +20,18 @@ export interface RuntimeConfig {
     tenantId?: string;
     datasetId?: string;
     serviceName?: string;
+    /** `service.namespace` — always `"signaldb"` server-side today, but
+     * sourced from config rather than hardcoded in case that ever changes. */
+    namespace?: string;
+    /** The *backend's* build version (`CARGO_PKG_VERSION`) — distinct from
+     * the UI bundle's own `service.version` (see `resource.ts`). Read by
+     * `resolveServerVersion` onto the custom `signaldb.server.version`
+     * attribute, so a frontend session can be correlated with the backend
+     * build that served it. */
+    version?: string;
+    /** `deployment.environment.name` — the same value the backend's own
+     * telemetry uses (`[self_monitoring].environment`). */
+    deploymentEnvironment?: string;
   };
 }
 
@@ -65,4 +77,28 @@ export function resolveServiceName(
   buildTimeName: string,
 ): string {
   return runtime?.telemetry?.serviceName || buildTimeName;
+}
+
+/** `service.namespace`, when the router injected one. No build-time
+ * fallback: unlike `service.name`, there is nothing meaningful to guess at
+ * (e.g. bare `vite dev` with no router in front). */
+export function resolveServiceNamespace(
+  runtime: RuntimeConfig | undefined,
+): string | undefined {
+  return runtime?.telemetry?.namespace;
+}
+
+/** The backend's own build version, when the router injected one. Distinct
+ * from the UI bundle's `service.version` — see `RuntimeConfig.version`. */
+export function resolveServerVersion(
+  runtime: RuntimeConfig | undefined,
+): string | undefined {
+  return runtime?.telemetry?.version;
+}
+
+/** `deployment.environment.name`, when the router injected one. */
+export function resolveDeploymentEnvironment(
+  runtime: RuntimeConfig | undefined,
+): string | undefined {
+  return runtime?.telemetry?.deploymentEnvironment;
 }
