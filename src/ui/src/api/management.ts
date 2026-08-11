@@ -11,6 +11,7 @@ import {
   manageCreateDataset,
   manageCreateTenant,
   manageDeleteDataset,
+  manageGetSchema,
   manageListApiKeys,
   manageListMemberships,
   manageRemoveMembership,
@@ -20,6 +21,7 @@ import {
   type ManageCreatedApiKey,
   type ManageCreatedTenant,
   type ManageDatasetResponse,
+  type ManageSchemaResponse,
   type MembershipResponse,
 } from "./gen";
 import { ApiError } from "./http";
@@ -35,6 +37,9 @@ export type ManagedApiKey = ManageApiKeyResponse;
 
 /** Tenant membership as returned by the management API. */
 export type ManagedMembership = MembershipResponse;
+
+/** Logical + physical schema, as returned by the management API. */
+export type ManagedSchema = ManageSchemaResponse;
 
 /** Result envelope produced by the generated SDK (`RequestResult` with the
  * default `fields` response style). */
@@ -118,6 +123,9 @@ export const upsertMembership = async (
   unwrap(
     await manageUpsertMembership({ path: { tenant_id: tenant }, body: input }),
   );
+
+export const getSchema = async (): Promise<ManagedSchema> =>
+  unwrap(await manageGetSchema());
 
 export const removeMembership = async (
   tenant: string,

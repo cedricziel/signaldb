@@ -4,6 +4,7 @@ import {
   createDataset,
   createTenant,
   deleteDataset,
+  getSchema,
   listApiKeys,
   listMemberships,
   removeMembership,
@@ -206,6 +207,42 @@ describe("management API", () => {
       email: "alice@example.com",
       role: "member",
     });
+  });
+
+  it("fetches the logical and physical schema", async () => {
+    const body = {
+      logical_schema_version: "otel-2026-08",
+      logical: [
+        {
+          source: "traces",
+          level: null,
+          name: "span.name",
+          value_type: "string",
+          filterability: "filterable",
+          kind: "record_metadata",
+          non_native: false,
+        },
+      ],
+      physical: [
+        {
+          source: "traces",
+          version: "physical-v2",
+          is_current: true,
+          description: "d",
+          partition_by: ["timestamp"],
+          fields: [],
+        },
+      ],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getSchema();
+
+    expect(result).toEqual(body);
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(req.url).toContain("/api/v1/manage/schema");
+    expect(req.method).toBe("GET");
   });
 
   it("removes a membership by user id", async () => {
