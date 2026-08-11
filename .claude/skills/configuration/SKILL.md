@@ -320,7 +320,7 @@ it uses jemalloc (no SIGPROF) so it runs alongside CPU profiling or
 `[profiling]`. Both share `profile_interval`. Unsupported on Windows, and
 unsupported on the default musl container images — those are built without
 `jemalloc-profiling` because jemalloc's unwinder crashes there; use
-`ghcr.io/cedricziel/signaldb:main-glibc-profiling` (see
+`ghcr.io/cedricziel/signaldb:main-glibc-profiling` instead (amd64 only; see
 `docs/operations/binaries.md`).
 
 ### Profiling (Continuous Profiling)

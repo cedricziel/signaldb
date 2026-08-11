@@ -478,7 +478,8 @@ jobs:
           export RUSTC_WRAPPER=sccache
           cargo build --release --target x86_64-unknown-linux-gnu \
             --features signaldb-bin/jemalloc,signaldb-bin/jemalloc-profiling \
-            --bin signaldb
+            --bin signaldb \
+            --bin signaldb-cli
 
       # Guards the whole point of this job: a binary that crashes under
       # MALLOC_CONF=prof:true is exactly the bug this variant exists to avoid.
@@ -487,10 +488,11 @@ jobs:
           MALLOC_CONF=prof:true \
             ./target/x86_64-unknown-linux-gnu/release/signaldb --help > /dev/null
 
-      - name: Stage binary
+      - name: Stage binaries
         run: |
           mkdir -p dist-glibc
           cp target/x86_64-unknown-linux-gnu/release/signaldb dist-glibc/
+          cp target/x86_64-unknown-linux-gnu/release/signaldb-cli dist-glibc/
 
       - name: Upload glibc profiling binary
         uses: actions/upload-artifact@v7

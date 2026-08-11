@@ -43,7 +43,7 @@ dokku git:from-image signaldb ghcr.io/cedricziel/signaldb:<version>
 
 ## From source (git push)
 
-Dokku will build using the production `Dockerfile` with the `monolithic` target. The Dockerfile's default `BUILDER=source` and `UI_BUILDER=source` paths compile the services and the Explore UI inside the container (the `prebuilt` variants of both are only used by CI, which supplies pre-compiled musl binaries and a pre-built UI dist), so no extra build arguments are needed. Stick to the `monolithic` target: the `monolithic-glibc-profiling` stage has no build-from-source path — it only assembles a binary CI stages in `dist-glibc/` — so a git-push build of it will fail. If you need heap profiles, consume that variant as an image (`ghcr.io/cedricziel/signaldb:main-glibc-profiling`) instead; see [Binary runtime characteristics](binaries.md#heap-profiling-and-the-glibc-image).
+Dokku will build using the production `Dockerfile` with the `monolithic` target. The Dockerfile's default `BUILDER=source` and `UI_BUILDER=source` paths compile the services and the Explore UI inside the container (the `prebuilt` variants of both are only used by CI, which supplies pre-compiled musl binaries and a pre-built UI dist), so no extra build arguments are needed. Stick to the `monolithic` target: the `monolithic-glibc-profiling` stage has no build-from-source path — it only assembles a binary that CI stages in `dist-glibc/` — so a git-push build of it will fail. If you need heap profiles, consume that variant as an image instead (`ghcr.io/cedricziel/signaldb:main-glibc-profiling`, **amd64 only**); see [Binary runtime characteristics](binaries.md#heap-profiling-and-the-glibc-image).
 
 ```bash
 dokku apps:create signaldb

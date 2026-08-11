@@ -274,9 +274,10 @@ ENTRYPOINT ["/usr/local/bin/signaldb-mcp"]
 # SIGSEGVs - hence the musl images above carry no jemalloc-profiling.
 #
 # This variant exists to give operators heap profiles anyway: signaldb-bin
-# alone, compiled for x86_64-unknown-linux-gnu by a native glibc toolchain
-# (no cross wrapper, no ABI mismatch), running on a Debian runtime whose
-# glibc matches the builder's. It is a drop-in swap for the monolithic image.
+# and signaldb-cli, compiled for x86_64-unknown-linux-gnu by a native glibc
+# toolchain (no cross wrapper, no ABI mismatch), running on a Debian runtime
+# whose glibc matches the builder's. It is a drop-in swap for the monolithic
+# image.
 #
 # Prebuilt-only: CI compiles the binary on a plain runner and stages it in
 # dist-glibc/. BuildKit skips this stage entirely unless it is the build
@@ -303,6 +304,7 @@ WORKDIR /data
 FROM runtime-base-glibc AS monolithic-glibc-profiling
 
 COPY --from=builder-prebuilt-glibc /build/target/release/signaldb /usr/local/bin/signaldb
+COPY --from=builder-prebuilt-glibc /build/target/release/signaldb-cli /usr/local/bin/signaldb-cli
 COPY --from=ui-builder /build/src/ui/dist /usr/share/signaldb/ui
 ENV SIGNALDB_UI_DIR=/usr/share/signaldb/ui
 

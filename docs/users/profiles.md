@@ -102,12 +102,13 @@ runtime and crashes the process the moment profiling is switched on. The
 default images do CPU profiling only. Use the dedicated glibc image
 instead:
 
-```
+```text
 ghcr.io/cedricziel/signaldb:main-glibc-profiling
 ```
 
 It ships the monolithic `signaldb` binary on a Debian runtime and is a
-drop-in swap for the monolithic image (amd64 only). See
+drop-in swap for the monolithic image (**amd64 only**, branch/PR tags only —
+see the linked doc for the tagging caveat). See
 [Binary runtime characteristics](../operations/binaries.md#heap-profiling-and-the-glibc-image)
 for why the split exists.
 

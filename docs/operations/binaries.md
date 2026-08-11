@@ -75,16 +75,18 @@ The `jemalloc-profiling` cargo feature is therefore off for every musl build.
 
 Heap profiling lives in a separate image instead:
 
-```
+```text
 ghcr.io/cedricziel/signaldb:main-glibc-profiling
 ```
 
 This is the monolithic `signaldb` binary built for
 `x86_64-unknown-linux-gnu` by a native glibc toolchain — no cross wrapper, no
 ABI mismatch — on a `debian:trixie-slim` runtime whose glibc matches the
-builder's. It is otherwise a drop-in swap for the monolithic image: same
-entrypoint, ports, and bundled Explore UI. amd64 only; there is no arm64 or
-per-microservice variant.
+builder's. It bundles the same entrypoint, ports, and Explore UI as the
+monolithic image, plus `signaldb-cli` for parity. **amd64 only** — no arm64
+build, no per-microservice variant, and only branch/PR tags (`main-`,
+`pr-<n>-`) are published; tagged releases do not yet produce a version-pinned
+profiling image, so pin the image by commit SHA if you need reproducibility.
 
 Enable profiling on that image with both jemalloc's sampler and the
 `[self_monitoring].heap_profiles_enabled` setting. `MALLOC_CONF` takes one

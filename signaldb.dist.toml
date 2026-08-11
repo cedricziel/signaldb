@@ -485,9 +485,9 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # jemalloc-profiling build feature and jemalloc profiling active at runtime
 # (MALLOC_CONF=prof:true). The default musl images are NOT built with that
 # feature — use ghcr.io/cedricziel/signaldb:main-glibc-profiling instead
-# (see docs/operations/binaries.md). Independent of CPU profiling — jemalloc
-# does not use SIGPROF — so it can run alongside profiles_enabled or
-# [profiling].
+# (amd64 only; see docs/operations/binaries.md). Independent of CPU
+# profiling — jemalloc does not use SIGPROF — so it can run alongside
+# profiles_enabled or [profiling].
 # heap_profiles_enabled = true
 
 # Browser (Explore UI) telemetry export. The UI is always instrumented so
