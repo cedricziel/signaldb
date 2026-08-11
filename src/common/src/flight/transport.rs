@@ -489,6 +489,58 @@ impl InMemoryFlightTransport {
     /// discovery for this capability and retries once against a fresh
     /// catalog lookup before failing, so a stale address cannot wedge
     /// clients until the TTL expires.
+    /// Get a Flight client and server address for routing to services with
+    /// specific capability. Returns `(client, "host:port")` for RPC semconv
+    /// `server.address`/`server.port` attributes.
+    #[tracing::instrument(level = "debug", skip_all, fields(capability = ?capability))]
+    pub async fn get_client_and_address_for_capability(
+        &self,
+        capability: ServiceCapability,
+    ) -> Result<(FlightServiceClient<Channel>, String), Box<dyn std::error::Error + Send + Sync>>
+    {
+        let services = self
+            .discover_services_by_capability_checked(capability.clone())
+            .await?;
+
+        if services.is_empty() {
+            return Err("No services found with required capability".into());
+        }
+
+        let service = self.select_round_robin(services);
+        let address = format!("{}:{}", service.address, service.port);
+
+        let first_err = match self.get_flight_client_for(&service).await {
+            Ok(client) => return Ok((client, address)),
+            Err(e) => e,
+        };
+
+        // The address may have come from a stale cache entry: drop it,
+        // re-discover once, and retry before giving up.
+        tracing::warn!(
+            "Failed to connect to {} for capability {capability:?}, re-discovering: {first_err}",
+            service.endpoint
+        );
+        self.invalidate_discovery_cache(&capability).await;
+
+        let services = self
+            .discover_services_by_capability(capability.clone())
+            .await;
+        if services.is_empty() {
+            return Err(first_err);
+        }
+
+        let service = self.select_round_robin(services);
+        let address = format!("{}:{}", service.address, service.port);
+        match self.get_flight_client_for(&service).await {
+            Ok(client) => Ok((client, address)),
+            Err(e) => {
+                // Do not keep a discovery result we could not connect to.
+                self.invalidate_discovery_cache(&capability).await;
+                Err(e)
+            }
+        }
+    }
+
     #[tracing::instrument(level = "debug", skip_all, fields(capability = ?capability))]
     pub async fn get_client_for_capability(
         &self,

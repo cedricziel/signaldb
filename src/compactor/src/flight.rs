@@ -176,6 +176,7 @@ impl FlightService for CompactorFlightService {
         use tracing::Instrument;
 
         let metadata = request.metadata().clone();
+        let remote_addr = request.remote_addr();
         let action = request.into_inner();
 
         // RPC SERVER boundary span, named by the fully-qualified Flight
@@ -186,6 +187,7 @@ impl FlightService for CompactorFlightService {
             Some(action.r#type.as_str()),
         );
         common::flight::trace_context::set_parent_from_metadata(&span, &metadata);
+        common::self_monitoring::spans::record_network_peer_from_addr(&span, remote_addr);
 
         let record_span = span.clone();
         let result = async move {

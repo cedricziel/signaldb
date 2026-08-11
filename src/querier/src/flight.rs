@@ -1394,6 +1394,7 @@ impl FlightService for QuerierFlightService {
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let metadata = request.metadata().clone();
+        let remote_addr = request.remote_addr();
         // Tenant-scoped caller identity, inserted by the Flight auth
         // interceptor. None for internal-service callers and for
         // deployments without Flight auth configured.
@@ -1445,6 +1446,7 @@ impl FlightService for QuerierFlightService {
             make_span()
         };
         common::flight::trace_context::set_parent_from_metadata(&span, &metadata);
+        common::self_monitoring::spans::record_network_peer_from_addr(&span, remote_addr);
         // Boxed: the state machine is large, and nesting it by value inside
         // the suppression wrapper overflows rustc's layout-query depth.
         common::self_monitoring::maybe_suppress_self_telemetry(

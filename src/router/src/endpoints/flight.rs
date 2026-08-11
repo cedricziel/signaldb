@@ -164,10 +164,10 @@ impl<S: RouterState> SignalDBFlightService<S> {
         query: &str,
         incoming_metadata: &tonic::metadata::MetadataMap,
     ) -> Result<Response<BoxStream<'static, Result<FlightData, Status>>>, Status> {
-        let mut client = self
+        let (mut client, server_address) = self
             .state
             .service_registry()
-            .get_flight_client_for_capability(ServiceCapability::QueryExecution)
+            .get_flight_client_and_address_for_capability(ServiceCapability::QueryExecution)
             .await
             .map_err(|e| {
                 tracing::error!("No querier service available: {e}");
@@ -190,7 +190,11 @@ impl<S: RouterState> SignalDBFlightService<S> {
             }
         }
 
-        let rpc_span = common::flight::trace_context::do_get_client_span(None, &mut request);
+        let rpc_span = common::flight::trace_context::do_get_client_span(
+            None,
+            &mut request,
+            Some(&server_address),
+        );
 
         let response = client
             .do_get(request)

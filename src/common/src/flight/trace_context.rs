@@ -66,17 +66,19 @@ impl Extractor for MetadataMapExtractor<'_> {
 /// Open a semconv Flight `DoGet` CLIENT span and inject *its* context into
 /// the request's gRPC metadata, so the receiving Flight server span becomes
 /// this span's child (not a sibling under the ambient span). `detail` is
-/// the low-cardinality ticket verb. Callers instrument the call future
-/// with the returned span and record its outcome via
+/// the low-cardinality ticket verb; `server_address` is `host:port` of the
+/// target Flight service (from discovery metadata). Callers instrument the
+/// call future with the returned span and record its outcome via
 /// [`crate::self_monitoring::spans::record_rpc_result`].
 pub fn do_get_client_span<T>(
     detail: Option<&str>,
     request: &mut tonic::Request<T>,
+    server_address: Option<&str>,
 ) -> tracing::Span {
     let span = crate::self_monitoring::spans::rpc_client_span(
         crate::self_monitoring::spans::FLIGHT_DO_GET,
         detail,
-        None,
+        server_address,
     );
     span.in_scope(|| inject_context_into_request(request));
     span

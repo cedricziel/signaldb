@@ -189,9 +189,9 @@ async fn execute_ticket<S: RouterState>(
     state: &S,
     ticket_content: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
-    let mut client = state
+    let (mut client, server_address) = state
         .service_registry()
-        .get_flight_client_for_capability(ServiceCapability::QueryExecution)
+        .get_flight_client_and_address_for_capability(ServiceCapability::QueryExecution)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to get Flight client for profile query");
@@ -204,8 +204,11 @@ async fn execute_ticket<S: RouterState>(
     let verb = common::self_monitoring::spans::ticket_verb(&ticket_content).map(str::to_owned);
     let ticket = Ticket::new(ticket_content);
     let mut flight_request = tonic::Request::new(ticket);
-    let rpc_span =
-        common::flight::trace_context::do_get_client_span(verb.as_deref(), &mut flight_request);
+    let rpc_span = common::flight::trace_context::do_get_client_span(
+        verb.as_deref(),
+        &mut flight_request,
+        Some(&server_address),
+    );
     if let Some(key) = &state.config().auth.internal_service_key {
         common::flight::auth::attach_internal_auth(&mut flight_request, key);
     }

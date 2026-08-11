@@ -386,7 +386,7 @@ async fn do_get_client_span_parents_the_server_span() {
 
         let mut request = tonic::Request::new(());
         let client_span =
-            common::flight::trace_context::do_get_client_span(Some("query_ir"), &mut request);
+            common::flight::trace_context::do_get_client_span(Some("query_ir"), &mut request, None);
         // Simulate the client call failing with a non-OK status.
         {
             let _in_call = client_span.enter();

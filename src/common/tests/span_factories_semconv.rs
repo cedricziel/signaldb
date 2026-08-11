@@ -8,8 +8,8 @@
 //! factory tests can share this binary.
 
 use common::self_monitoring::spans::{
-    self, FLIGHT_DO_GET, FLIGHT_DO_PUT, RpcBoundary, db_client_span, job_span, rpc_client_span,
-    rpc_server_span,
+    self, FLIGHT_DO_GET, FLIGHT_DO_PUT, RpcBoundary, db_client_span, job_span,
+    record_network_peer_from_addr, rpc_client_span, rpc_server_span,
 };
 use opentelemetry::trace::{SpanKind, Status, TracerProvider as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
@@ -94,6 +94,35 @@ fn rpc_server_span_server_fault_is_an_error() {
     );
     assert!(matches!(span.status, Status::Error { .. }));
     assert_eq!(attr(span, "error.type").as_deref(), Some("INTERNAL"));
+}
+
+#[test]
+fn rpc_server_span_records_network_peer_from_socket_addr() {
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+    let spans = capture_spans(|| {
+        let span = rpc_server_span(FLIGHT_DO_GET, None);
+        let _guard = span.enter();
+        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 54321));
+        record_network_peer_from_addr(&span, Some(addr));
+    });
+    let span = &spans[0];
+    assert_eq!(
+        attr(span, "network.peer.address").as_deref(),
+        Some("10.0.0.1")
+    );
+    assert_eq!(attr(span, "network.peer.port").as_deref(), Some("54321"));
+}
+
+#[test]
+fn rpc_server_span_network_peer_is_noop_when_addr_is_none() {
+    let spans = capture_spans(|| {
+        let span = rpc_server_span(FLIGHT_DO_GET, None);
+        let _guard = span.enter();
+        record_network_peer_from_addr(&span, None);
+    });
+    let span = &spans[0];
+    assert_eq!(attr(span, "network.peer.address"), None);
+    assert_eq!(attr(span, "network.peer.port"), None);
 }
 
 #[test]

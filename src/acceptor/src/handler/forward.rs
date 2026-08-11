@@ -90,13 +90,20 @@ pub async fn forward_batch_to_writer(
     record_batch: RecordBatch,
     metadata_json: Option<&str>,
 ) -> anyhow::Result<()> {
+    // Resolve writer address up-front so the CLIENT span carries
+    // server.address per gRPC semconv (required on client call sites).
+    let server_address = flight_transport
+        .get_client_and_address_for_capability(ServiceCapability::Storage)
+        .await
+        .ok()
+        .map(|(_, addr)| addr);
     // The whole logical DoPut is a semconv RPC CLIENT span; the writer's
     // server span becomes its child via the trace context stamped into the
     // app_metadata below.
     let rpc_span = common::self_monitoring::spans::rpc_client_span(
         common::self_monitoring::spans::FLIGHT_DO_PUT,
         None,
-        None,
+        server_address.as_deref(),
     );
     let record_span = rpc_span.clone();
     let result = forward_batch_to_writer_inner(flight_transport, record_batch, metadata_json)
