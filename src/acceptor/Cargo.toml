@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 jemalloc = ["dep:tikv-jemallocator"]
-jemalloc-profiling = ["jemalloc", "common/jemalloc-profiling"]
+jemalloc-profiling = ["jemalloc", "tikv-jemallocator/profiling", "common/jemalloc-profiling"]
 testing = []
 
 [dependencies]
