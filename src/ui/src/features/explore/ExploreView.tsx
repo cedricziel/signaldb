@@ -36,6 +36,13 @@ export function ExploreView({ state, update }: Props) {
               role="tab"
               className="sigtab"
               aria-selected={state.signal === tab.id}
+              // The active tab's target drops the current signal-specific
+              // state (crossSignalSearch is meant for *switching* signals) —
+              // re-clicking it would otherwise silently reset filters/search
+              // for the tab you're already on.
+              onClick={(e) => {
+                if (state.signal === tab.id) e.preventDefault();
+              }}
               to={`/${tab.id}${crossSignalSearch(state)}`}
             >
               {tab.label}

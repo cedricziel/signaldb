@@ -119,21 +119,37 @@ describe("App", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/logs"));
   });
 
-  it("drops signal-specific state when switching tabs, keeping range/tenant/live", async () => {
+  it("drops signal-specific state when switching tabs, keeping range/tenant/dataset/live", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyMatrix },
       { match: "/labels?", body: emptyLabels },
       { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
     ]);
-    renderApp("/logs?q=boom&tenant=acme&live=1");
+    renderApp("/logs?q=boom&range=6h&tenant=acme&dataset=prod&live=1");
     const user = (await import("@testing-library/user-event")).default;
 
     await user.click(screen.getByRole("tab", { name: "Traces" }));
     await screen.findByLabelText("Trace ID");
 
     expect(window.location.search).not.toContain("q=boom");
+    expect(window.location.search).toContain("range=6h");
     expect(window.location.search).toContain("tenant=acme");
+    expect(window.location.search).toContain("dataset=prod");
     expect(window.location.search).toContain("live=1");
+  });
+
+  it("re-clicking the active tab doesn't reset its state or navigate", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+    ]);
+    renderApp("/logs?q=boom");
+    const user = (await import("@testing-library/user-event")).default;
+
+    await user.click(screen.getByRole("tab", { name: "Logs" }));
+
+    expect(window.location.pathname).toBe("/logs");
+    expect(window.location.search).toContain("q=boom");
   });
 
   it("navigates to /manage and back via the Manage link", async () => {
