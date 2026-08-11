@@ -255,9 +255,10 @@ describe("TracesView group list", () => {
     await userEvent.click(
       await screen.findByRole("button", { name: "POST /api/checkout" }),
     );
-    expect(update).toHaveBeenCalledWith({
-      group: "POST /api/checkoutgateway",
-    });
+    expect(update).toHaveBeenCalledWith(
+      { group: "POST /api/checkoutgateway" },
+      { push: true },
+    );
   });
 
   it("maps a null dimension value to the not-set sentinel in the drill-in key", async () => {
@@ -269,7 +270,7 @@ describe("TracesView group list", () => {
     await userEvent.click(
       await screen.findByRole("button", { name: "(not set)" }),
     );
-    expect(update).toHaveBeenCalledWith({ group: "(not set)" });
+    expect(update).toHaveBeenCalledWith({ group: "(not set)" }, { push: true });
   });
 
   it("issues a new query with a different sort on header click, rather than re-sorting the page", async () => {
@@ -443,7 +444,7 @@ describe("TracesView group list", () => {
     const update = renderView();
     await userEvent.type(screen.getByLabelText("Trace ID"), "  deadbeef  ");
     await userEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(update).toHaveBeenCalledWith({ trace: "deadbeef" });
+    expect(update).toHaveBeenCalledWith({ trace: "deadbeef" }, { push: true });
   });
 });
 
@@ -551,7 +552,7 @@ describe("TracesView group detail", () => {
     ]);
     const update = renderView({ group: "POST /api/checkout" });
     await userEvent.click(await screen.findByText("t1cafe"));
-    expect(update).toHaveBeenCalledWith({ trace: "t1cafe" });
+    expect(update).toHaveBeenCalledWith({ trace: "t1cafe" }, { push: true });
   });
 
   it("navigates back to the group list", async () => {
@@ -890,16 +891,35 @@ describe("TracesView detail", () => {
     expect(update).toHaveBeenCalledWith({ trace: "" });
   });
 
-  it("surfaces trace lookup failures", async () => {
+  it("shows a dedicated not-found page for a 404, with a way back to search", async () => {
     stubFetchRoutes([
       {
         match: "/tempo/api/traces/missing",
-        body: { error: "not found" },
+        body: { error: "Trace not found", errorType: "not_found" },
         status: 404,
       },
     ]);
-    renderView({ trace: "missing" });
-    expect(await screen.findByRole("alert")).toHaveTextContent(/404/);
+    const update = renderView({ trace: "missing" });
+    expect(
+      await screen.findByRole("heading", { name: "Trace not found" }),
+    ).toBeInTheDocument();
+    // The raw API error body isn't dumped onto the page.
+    expect(screen.queryByText(/errorType/)).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "← traces" }));
+    expect(update).toHaveBeenCalledWith({ trace: "" });
+  });
+
+  it("surfaces non-404 trace lookup failures verbatim", async () => {
+    stubFetchRoutes([
+      {
+        match: "/tempo/api/traces/broken",
+        body: { error: "Flight backend unavailable" },
+        status: 503,
+      },
+    ]);
+    renderView({ trace: "broken" });
+    expect(await screen.findByRole("alert")).toHaveTextContent(/503/);
   });
 
   it("renders a skeleton while the trace is loading", async () => {

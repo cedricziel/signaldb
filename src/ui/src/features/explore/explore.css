@@ -422,6 +422,26 @@
   padding: 12px 16px;
 }
 
+.trace-not-found {
+  padding: 16px;
+}
+
+.trace-not-found h3 {
+  margin: 14px 0 6px;
+  font-size: 14px;
+}
+
+.trace-not-found p {
+  color: var(--dim);
+  font-size: 12.5px;
+  max-width: 480px;
+}
+
+.trace-not-found code {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
 .logrow {
   display: flex;
   align-items: baseline;

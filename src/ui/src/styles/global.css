@@ -158,16 +158,22 @@ select:focus-visible {
 }
 
 .copy-value {
-  display: inline-flex;
-  align-items: baseline;
+  display: flex;
+  /* The button is taller than the text's line-height, so centering it
+     against the row would center the text too, sinking it below the
+     label's top-aligned text next to it. Top-aligning keeps both flush. */
+  align-items: flex-start;
   gap: 5px;
   min-width: 0;
   max-width: 100%;
 }
 
 .copy-value-text {
+  flex: 1 1 auto;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .attribute-value {
@@ -182,11 +188,6 @@ select:focus-visible {
 
 .attribute-value[data-expanded] {
   display: block;
-}
-
-.attribute-value[data-expanded] .copy-value {
-  display: flex;
-  align-items: flex-start;
 }
 
 .attribute-value-preview {
