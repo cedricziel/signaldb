@@ -93,9 +93,26 @@ is skipped with a warning.
 Set `heap_profiles_enabled = true` to also export a jemalloc live-heap
 profile (`inuse_space` / `bytes`) each window. This uses jemalloc rather
 than the SIGPROF sampler, so it runs alongside CPU self-profiling or the
-external `[profiling]` agent. It requires the binary to be **built with
-the `jemalloc-profiling` feature** and started with jemalloc's sampling
-profiler enabled — `MALLOC_CONF=prof:true` on Linux, or the prefixed
+external `[profiling]` agent.
+
+Heap profiling needs a binary **built with the `jemalloc-profiling`
+feature**, and that rules out the default container images: they are
+musl-based, where jemalloc's stack unwinder is ABI-mismatched with the
+runtime and crashes the process the moment profiling is switched on. The
+default images do CPU profiling only. Use the dedicated glibc image
+instead:
+
+```
+ghcr.io/cedricziel/signaldb:main-glibc-profiling
+```
+
+It ships the monolithic `signaldb` binary on a Debian runtime and is a
+drop-in swap for the monolithic image (amd64 only). See
+[Binary runtime characteristics](../operations/binaries.md#heap-profiling-and-the-glibc-image)
+for why the split exists.
+
+The process must also be started with jemalloc's sampling profiler
+enabled — `MALLOC_CONF=prof:true` on Linux, or the prefixed
 `_RJEM_MALLOC_CONF=prof:true` on platforms where jemalloc keeps its symbol
 prefix (e.g. macOS). Without both the feature and the env var, the setting
 logs a warning and does nothing. Query it by profile type:

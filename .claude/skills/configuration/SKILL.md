@@ -317,7 +317,11 @@ both drive the one SIGPROF sampler, so if both are set the external
 `[profiling]` agent wins. `heap_profiles_enabled` requires the
 `jemalloc-profiling` build feature + `MALLOC_CONF=prof:true` at runtime;
 it uses jemalloc (no SIGPROF) so it runs alongside CPU profiling or
-`[profiling]`. Both share `profile_interval`. Unsupported on Windows.
+`[profiling]`. Both share `profile_interval`. Unsupported on Windows, and
+unsupported on the default musl container images — those are built without
+`jemalloc-profiling` because jemalloc's unwinder crashes there; use
+`ghcr.io/cedricziel/signaldb:main-glibc-profiling` (see
+`docs/operations/binaries.md`).
 
 ### Profiling (Continuous Profiling)
 
