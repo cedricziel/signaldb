@@ -152,7 +152,15 @@ opentelemetry-appender-tracing = "0.32"
 # Continuous profiling: Pyroscope agent (pprof-rs CPU backend built in;
 # jemalloc heap backend behind the opt-in `jemalloc-profiling` feature)
 pyroscope = { version = "2.1", features = ["backend-pprof-rs"] }
-tikv-jemallocator = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
+# NOTE: "profiling" is deliberately absent here. It builds jemalloc with
+# --enable-prof, which makes MALLOC_CONF=prof:true a *usable* option — and on
+# musl that option segfaults the process, because the unwinder jemalloc picks
+# up from our cross toolchain does not match the musl runtime it is linked
+# into. Enabling it workspace-wide would arm that crash in every jemalloc
+# binary, including ones built without our own `jemalloc-profiling` feature.
+# Each crate's `jemalloc-profiling` feature turns it on instead, so it reaches
+# only the builds that are supposed to have it (see docs/operations/binaries.md).
+tikv-jemallocator = { version = "0.7", features = ["unprefixed_malloc_on_supported_platforms"] }
 
 anyhow = "1.0.102"
 

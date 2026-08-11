@@ -9,6 +9,10 @@
 # The Explore UI has the same two paths, selected independently via
 # --build-arg UI_BUILDER=<source|prebuilt> (prebuilt copies a dist built by
 # CI and staged in ui-dist/, so one UI build serves every image).
+#
+# One stage stands outside this scheme: monolithic-glibc-profiling, a
+# Debian-based heap-profiling variant of the monolithic image built from a
+# glibc binary CI stages in dist-glibc/. See the bottom of this file.
 ARG BUILDER=source
 ARG UI_BUILDER=source
 
@@ -103,13 +107,16 @@ RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs 
 
 # Service binaries run with jemalloc: musl's allocator degrades badly under
 # multithreaded Arrow allocation churn (signaldb-cli stays on the default).
-# jemalloc-profiling (heap self-profiling, see docs/users/profiles.md) rides
-# along on every binary that supports it - compactor and mcp-server don't
-# define the feature. It's a no-op unless MALLOC_CONF=prof:true is also set
-# at runtime; the base jemalloc allocator is already built with --enable-prof
-# via tikv-jemallocator's "profiling" Cargo feature, so this adds no new
-# compiled-in allocator cost, only the Rust-side profiling glue.
-ARG CARGO_FEATURES="acceptor/jemalloc,acceptor/jemalloc-profiling,router/jemalloc,router/jemalloc-profiling,writer/jemalloc,writer/jemalloc-profiling,querier/jemalloc,querier/jemalloc-profiling,compactor/jemalloc,signaldb-bin/jemalloc,signaldb-bin/jemalloc-profiling,mcp-server/jemalloc"
+#
+# jemalloc-profiling (heap self-profiling) is deliberately NOT enabled here.
+# The feature builds jemalloc with --enable-prof, which auto-selects
+# _Unwind_Backtrace for stack walking; on musl targets that unwinder comes
+# from the glibc-flavoured cross toolchain and is ABI-mismatched with the
+# musl runtime it gets linked into, so the process SIGSEGVs the moment
+# MALLOC_CONF=prof:true makes jemalloc walk a stack. Heap profiling lives in
+# the separate glibc image instead (see the monolithic-glibc-profiling stage
+# below and docs/users/profiles.md); these musl images do CPU profiling only.
+ARG CARGO_FEATURES="acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc"
 
 # Build dependencies only (this layer will be cached)
 RUN cargo build --release --features "${CARGO_FEATURES}" \
@@ -255,3 +262,52 @@ COPY --from=builder /build/target/release/signaldb-mcp /usr/local/bin/signaldb-m
 USER signaldb
 EXPOSE 8228
 ENTRYPOINT ["/usr/local/bin/signaldb-mcp"]
+
+# ============================================================================
+# glibc heap-profiling variant (monolithic only)
+# ============================================================================
+#
+# jemalloc's heap profiler walks stacks with _Unwind_Backtrace, which is only
+# safe when the unwinder and the libc it is linked against come from the same
+# toolchain. Our musl binaries are cross-compiled with a glibc-flavoured
+# wrapper toolchain, so that pairing is broken and MALLOC_CONF=prof:true
+# SIGSEGVs - hence the musl images above carry no jemalloc-profiling.
+#
+# This variant exists to give operators heap profiles anyway: signaldb-bin
+# and signaldb-cli, compiled for x86_64-unknown-linux-gnu by a native glibc
+# toolchain (no cross wrapper, no ABI mismatch), running on a Debian runtime
+# whose glibc matches the builder's. It is a drop-in swap for the monolithic
+# image.
+#
+# Prebuilt-only: CI compiles the binary on a plain runner and stages it in
+# dist-glibc/. BuildKit skips this stage entirely unless it is the build
+# target, so the missing directory does not affect other image builds.
+FROM debian:trixie-slim AS builder-prebuilt-glibc
+
+WORKDIR /build
+COPY --chmod=755 dist-glibc/ target/release/
+
+FROM debian:trixie-slim AS runtime-base-glibc
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 signaldb \
+    && useradd -u 1000 -g signaldb -M -s /usr/sbin/nologin signaldb \
+    && mkdir -p /data \
+    && chown signaldb:signaldb /data
+
+WORKDIR /data
+
+# Monolithic service, heap-profiling capable. Enable at runtime with
+# MALLOC_CONF=prof:true (see docs/users/profiles.md).
+FROM runtime-base-glibc AS monolithic-glibc-profiling
+
+COPY --from=builder-prebuilt-glibc /build/target/release/signaldb /usr/local/bin/signaldb
+COPY --from=builder-prebuilt-glibc /build/target/release/signaldb-cli /usr/local/bin/signaldb-cli
+COPY --from=ui-builder /build/src/ui/dist /usr/share/signaldb/ui
+ENV SIGNALDB_UI_DIR=/usr/share/signaldb/ui
+
+USER signaldb
+EXPOSE 4317 4318 50051 50053 3000
+ENTRYPOINT ["/usr/local/bin/signaldb"]

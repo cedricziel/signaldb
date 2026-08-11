@@ -58,20 +58,47 @@ background purging thread:
 MALLOC_CONF=background_thread:true
 ```
 
-Heap self-profiling (the `jemalloc-profiling` cargo feature) builds on the
-same allocator and ships by default in the container images and CI-built musl
-binaries for acceptor, router, writer, querier, and the monolithic
-`signaldb` binary (`compactor` and `mcp-server` don't define the feature).
-Compiling it in adds no allocator overhead — the `jemalloc` feature already
-builds jemalloc with `--enable-prof` — it just wires up the Rust-side
-Pyroscope/jemalloc_pprof glue, which stays inert until `prof:true` and
-`[self_monitoring].heap_profiles_enabled` are both set at runtime.
-`MALLOC_CONF` takes one combined value, so if background purging is also
-enabled, append rather than replace it:
+## Heap profiling and the glibc image
+
+The default container images and the musl release binaries do **not** support
+heap profiling. They are CPU-profiling only.
+
+jemalloc's heap profiler walks the stack with `_Unwind_Backtrace`, which is
+only safe when the unwinder and the libc it is linked against come from the
+same toolchain. The musl targets are cross-compiled with a toolchain that is a
+spec wrapper around the glibc gcc (see the aarch64 note above for the other
+symptom of the same wrapper), so the unwinder that gets linked in is
+ABI-mismatched with the musl runtime around it. Asking a musl binary for heap
+profiles crashes the process — historically an immediate `SIGSEGV` on the
+first sampled allocation, before the binary reached its own `--help` output.
+The `jemalloc-profiling` cargo feature is therefore off for every musl build.
+
+Heap profiling lives in a separate image instead:
+
+```text
+ghcr.io/cedricziel/signaldb:main-glibc-profiling
+```
+
+This is the monolithic `signaldb` binary built for
+`x86_64-unknown-linux-gnu` by a native glibc toolchain — no cross wrapper, no
+ABI mismatch — on a `debian:trixie-slim` runtime whose glibc matches the
+builder's. It bundles the same entrypoint, ports, and Explore UI as the
+monolithic image, plus `signaldb-cli` for parity. **amd64 only** — no arm64
+build, no per-microservice variant, and only branch/PR tags (`main-`,
+`pr-<n>-`) are published; tagged releases do not yet produce a version-pinned
+profiling image, so pin the image by commit SHA if you need reproducibility.
+
+Enable profiling on that image with both jemalloc's sampler and the
+`[self_monitoring].heap_profiles_enabled` setting. `MALLOC_CONF` takes one
+combined value, so if background purging is also enabled, append rather than
+replace it:
 
 ```bash
 MALLOC_CONF=background_thread:true,prof:true
 ```
+
+Setting `MALLOC_CONF=prof:true` on a default (musl) image is not merely
+useless — treat it as unsupported.
 
 See the profiling configuration in `signaldb.dist.toml` and
 [Profiles](../users/profiles.md#heap-profiles).

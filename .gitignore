@@ -58,6 +58,7 @@ node_modules/
 
 # Staged binaries for prebuilt Docker images (CI)
 /dist/
+/dist-glibc/
 
 # SignalDB UI
 src/ui/dist/

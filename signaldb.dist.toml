@@ -483,8 +483,11 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # profile_interval = "60s"
 # Also export a heap (inuse_space/bytes) profile each window. Requires the
 # jemalloc-profiling build feature and jemalloc profiling active at runtime
-# (MALLOC_CONF=prof:true). Independent of CPU profiling — jemalloc does not
-# use SIGPROF — so it can run alongside profiles_enabled or [profiling].
+# (MALLOC_CONF=prof:true). The default musl images are NOT built with that
+# feature — use ghcr.io/cedricziel/signaldb:main-glibc-profiling instead
+# (amd64 only; see docs/operations/binaries.md). Independent of CPU
+# profiling — jemalloc does not use SIGPROF — so it can run alongside
+# profiles_enabled or [profiling].
 # heap_profiles_enabled = true
 
 # Browser (Explore UI) telemetry export. The UI is always instrumented so
@@ -525,7 +528,8 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # CPU sampling rate in Hz (default: 100)
 # cpu_sample_rate = 100
 # Heap profiling via jemalloc; requires binaries built with
-# `--features jemalloc-profiling` and MALLOC_CONF=prof:true,prof_active:true
+# `--features jemalloc-profiling` and MALLOC_CONF=prof:true,prof_active:true.
+# Not available on the default musl images — see docs/operations/binaries.md.
 # memory_profiling = false
 
 [tenants]
