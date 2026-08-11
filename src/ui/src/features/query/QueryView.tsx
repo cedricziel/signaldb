@@ -47,12 +47,10 @@ function toIrFilters(filters: LabelFilter[]): IrFilter[] {
 }
 
 /** The aggregate implied by a declared envelope, so the emitted terminal
- * relation matches (`series` needs a step aggregate; `table` a grouped one). */
-function aggregateFor(
-  result: IrResult,
-  source: IrSource,
-): IrAggregate | undefined {
-  const groupField = source === "logs" ? "service_name" : "service.name";
+ * relation matches (`series` needs a step aggregate; `table` a grouped one).
+ * Both sources share the `service.name` logical field. */
+function aggregateFor(result: IrResult): IrAggregate | undefined {
+  const groupField = "service.name";
   if (result === "series") {
     return { by: [groupField], aggs: [{ fn: "count", as: "n" }], step: "1m" };
   }
@@ -86,7 +84,7 @@ export function QueryView({ range }: { range?: TimeRange } = {}) {
         result,
         range: irRange(range),
         filters: toIrFilters(filters),
-        aggregate: aggregateFor(result, source),
+        aggregate: aggregateFor(result),
       }),
     [source, result, filters, range],
   );
