@@ -60,6 +60,10 @@ flowchart LR
   `opentelemetry.proto.collector.trace.v1.TraceService/Export`), carrying
   `rpc.system.name=grpc`, `rpc.method`, string `rpc.response.status_code`.
   Server spans fail only on server-fault codes; client spans on any non-OK.
+  CLIENT spans also carry `server.address`/`server.port` (the resolved
+  target, from service discovery); SERVER spans carry
+  `network.peer.address`/`network.peer.port` (the connecting socket, from
+  `tonic::Request::remote_addr()`) when available.
 - **SQL catalog**: CLIENT spans `{verb} signaldb-catalog` with
   `db.system.name` / `db.operation.name` / `db.namespace`.
 - **Query stages**: `signaldb.query.plan` / `signaldb.query.execute`

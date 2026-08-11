@@ -255,6 +255,7 @@ impl FlightService for IcebergWriterFlightService {
         &self,
         request: Request<tonic::Streaming<FlightData>>,
     ) -> Result<Response<Self::DoPutStream>, Status> {
+        let remote_addr = request.remote_addr();
         let mut inbound = request.into_inner();
         let mut data_vec = Vec::new();
         let mut flight_metadata: Option<FlightMetadata> = None;
@@ -325,6 +326,7 @@ impl FlightService for IcebergWriterFlightService {
                 metadata.tracestate.as_deref(),
             );
         }
+        common::self_monitoring::spans::record_network_peer_from_addr(&span, remote_addr);
         // Boxed: the state machine is large, and nesting it by value inside
         // the suppression wrapper overflows rustc's layout-query depth.
         let record_span = span.clone();

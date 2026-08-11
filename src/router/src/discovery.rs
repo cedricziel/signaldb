@@ -155,6 +155,23 @@ impl ServiceRegistry {
         }
     }
 
+    /// Get a Flight client and server address for routing to services with
+    /// specific capability. Returns `(client, "host:port")` for RPC semconv
+    /// `server.address`/`server.port` attributes.
+    pub async fn get_flight_client_and_address_for_capability(
+        &self,
+        capability: ServiceCapability,
+    ) -> Result<(FlightServiceClient<Channel>, String), Box<dyn std::error::Error + Send + Sync>>
+    {
+        if let Some(transport) = &self.flight_transport {
+            transport
+                .get_client_and_address_for_capability(capability)
+                .await
+        } else {
+            Err("Flight transport not configured".into())
+        }
+    }
+
     /// Perform Flight-specific health check on services
     pub async fn flight_health_check(
         &self,

@@ -12,6 +12,8 @@
 //! opened through these factories; free-form `#[instrument(skip_all, ...)]`
 //! spans remain fine for in-process (INTERNAL) work.
 
+use std::net::SocketAddr;
+
 use tracing::Span;
 use tracing::field::Empty;
 
@@ -59,6 +61,10 @@ pub fn rpc_server_span(rpc_method: &str, detail: Option<&str>) -> Span {
         rpc.method = %rpc_method,
         rpc.response.status_code = Empty,
         error.r#type = Empty,
+        server.address = Empty,
+        server.port = Empty,
+        network.peer.address = Empty,
+        network.peer.port = Empty,
         signaldb.flight.ticket_verb = Empty,
     );
     match detail {
@@ -122,6 +128,19 @@ pub fn rpc_client_span(
         }
     }
     span
+}
+
+/// Record the `network.peer.address` and `network.peer.port` attributes on a
+/// span from a `SocketAddr`. Typically called with the result of
+/// `tonic::Request::remote_addr()`. No-op when `addr` is `None`.
+///
+/// Per the RPC semconv, this identifies the *immediate* TCP peer — which for
+/// gRPC is the same host as `client.address` on server spans, but may differ
+/// when a proxy terminates the connection.
+pub fn record_network_peer_from_addr(span: &Span, addr: Option<SocketAddr>) {
+    let Some(addr) = addr else { return };
+    span.record("network.peer.address", addr.ip().to_string().as_str());
+    span.record("network.peer.port", addr.port() as i64);
 }
 
 /// Record an RPC outcome on a factory span: the string gRPC status code
