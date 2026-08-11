@@ -233,7 +233,7 @@ pub async fn query_ir<S: RouterState>(
 /// Require the read scope associated with a registered Query IR source.
 fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
     let signal = match source {
-        "logs" | "traces" | "profiles" => source,
+        "logs" | "traces" | "profiles" | "metrics" => source,
         _ => {
             return Err(ApiError::bad_request(format!(
                 "unknown query source '{source}'"
@@ -877,6 +877,22 @@ mod tests {
         assert!(source_read_scope(&profiles, "profiles").is_ok());
         assert!(source_read_scope(&profiles, "logs").is_err());
         assert!(source_read_scope(&profiles, "traces").is_err());
+    }
+
+    // The `metrics` Query IR source (PR #1138) 400'd end-to-end through the
+    // router even with a valid metrics:read scope, because this gate never
+    // matched "metrics" — the querier's planner tests never caught it since
+    // they call the planner directly, bypassing this scope check entirely.
+    #[test]
+    fn metrics_read_scope_grants_the_metrics_ir_source() {
+        let metrics = scoped_context(vec!["metrics:read"]);
+        assert!(source_read_scope(&metrics, "metrics").is_ok());
+        assert!(source_read_scope(&metrics, "logs").is_err());
+        assert!(source_read_scope(&metrics, "traces").is_err());
+        assert!(source_read_scope(&metrics, "profiles").is_err());
+
+        let profiles = scoped_context(vec!["profiles:read"]);
+        assert!(source_read_scope(&profiles, "metrics").is_err());
     }
 
     // Task 6.1 — unauthenticated requests are rejected.
