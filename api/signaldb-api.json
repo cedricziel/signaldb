@@ -2762,9 +2762,13 @@
         "type": "object",
         "required": [
           "id",
-          "revoked"
+          "revoked",
+          "created_at"
         ],
         "properties": {
+          "created_at": {
+            "type": "string"
+          },
           "dataset_id": {
             "type": [
               "string",

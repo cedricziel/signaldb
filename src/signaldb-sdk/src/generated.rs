@@ -928,10 +928,14 @@ pub mod types {
     ///{
     ///  "type": "object",
     ///  "required": [
+    ///    "created_at",
     ///    "id",
     ///    "revoked"
     ///  ],
     ///  "properties": {
+    ///    "created_at": {
+    ///      "type": "string"
+    ///    },
     ///    "dataset_id": {
     ///      "type": [
     ///        "string",
@@ -965,6 +969,7 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageApiKeyResponse {
+        pub created_at: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_id: ::std::option::Option<::std::string::String>,
         pub id: ::std::string::String,
@@ -3798,6 +3803,7 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageApiKeyResponse {
+            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
             dataset_id: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
@@ -3816,6 +3822,7 @@ pub mod types {
         impl ::std::default::Default for ManageApiKeyResponse {
             fn default() -> Self {
                 Self {
+                    created_at: Err("no value supplied for created_at".to_string()),
                     dataset_id: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     name: Ok(Default::default()),
@@ -3825,6 +3832,16 @@ pub mod types {
             }
         }
         impl ManageApiKeyResponse {
+            pub fn created_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.created_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
             pub fn dataset_id<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
@@ -3884,6 +3901,7 @@ pub mod types {
                 value: ManageApiKeyResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    created_at: value.created_at?,
                     dataset_id: value.dataset_id?,
                     id: value.id?,
                     name: value.name?,
@@ -3895,6 +3913,7 @@ pub mod types {
         impl ::std::convert::From<super::ManageApiKeyResponse> for ManageApiKeyResponse {
             fn from(value: super::ManageApiKeyResponse) -> Self {
                 Self {
+                    created_at: Ok(value.created_at),
                     dataset_id: Ok(value.dataset_id),
                     id: Ok(value.id),
                     name: Ok(value.name),

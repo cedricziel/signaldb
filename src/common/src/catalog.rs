@@ -2369,7 +2369,7 @@ impl Catalog {
         match self {
             Catalog::Sqlite(pool) => {
                 let rows = query(
-                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = ?",
+                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC",
                 )
                 .bind(tenant_id)
                 .fetch_all(pool)
@@ -2393,7 +2393,7 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 let rows = query(
-                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = $1",
+                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC",
                 )
                 .bind(tenant_id)
                 .fetch_all(pool)
@@ -4033,6 +4033,35 @@ mod multi_tenancy_tests {
 
         let key_b = catalog.validate_api_key(&hash_b).await.unwrap().unwrap();
         assert_eq!(key_b.tenant_id, "tenant-b");
+    }
+
+    #[tokio::test]
+    async fn list_api_keys_orders_by_created_at_descending() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+
+        // Rows are inserted in an order that would come back unchanged if the
+        // query had no ORDER BY (ascending insertion order), so the
+        // assertion below only passes if the query actually sorts.
+        let oldest = catalog
+            .upsert_api_key("acme", &hash_api_key("sk_oldest"), Some("oldest"))
+            .await
+            .unwrap();
+        let middle = catalog
+            .upsert_api_key("acme", &hash_api_key("sk_middle"), Some("middle"))
+            .await
+            .unwrap();
+        let newest = catalog
+            .upsert_api_key("acme", &hash_api_key("sk_newest"), Some("newest"))
+            .await
+            .unwrap();
+
+        let keys = catalog.list_api_keys("acme").await.unwrap();
+        let ids: Vec<&str> = keys.iter().map(|k| k.id.as_str()).collect();
+        assert_eq!(ids, vec![newest, middle, oldest]);
     }
 
     #[tokio::test]
