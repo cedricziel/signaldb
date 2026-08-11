@@ -26,6 +26,9 @@ describe("compileTraceQL", () => {
     expect(compileTraceQL([{ field: "status", value: "error" }])).toBe(
       "{ status = error }",
     );
+    expect(compileTraceQL([{ field: "kind", value: "server" }])).toBe(
+      "{ kind = server }",
+    );
   });
 
   it("combines several filters with &&", () => {
@@ -60,6 +63,7 @@ describe("FACET_FIELDS", () => {
       "service.name",
       "name",
       "status",
+      "kind",
     ]);
   });
 
@@ -68,6 +72,7 @@ describe("FACET_FIELDS", () => {
       "service.name",
       "span.name",
       "status.code",
+      "span_kind",
     ]);
   });
 });

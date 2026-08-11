@@ -48,6 +48,13 @@ export const FACET_FIELDS: FacetField[] = [
     selector: "status",
     quoted: false,
   },
+  {
+    field: "kind",
+    label: "span.kind",
+    irField: "span_kind",
+    selector: "kind",
+    quoted: false,
+  },
 ];
 
 export function facetField(field: string): FacetField | undefined {
