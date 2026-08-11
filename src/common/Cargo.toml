@@ -126,6 +126,7 @@ required-features = ["testing"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+tokio-stream = { workspace = true, features = ["net"] }
 testcontainers-modules.workspace = true
 testcontainers.workspace = true
 # Also a dev-dependency: `testing` compiles under plain `cfg(test)` too,
