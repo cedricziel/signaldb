@@ -183,10 +183,36 @@ struct SearchLogsParams {
 #[schemars(crate = "rmcp::schemars")]
 struct QueryIrParams {
     /// The native Query IR document (the structured, versioned query surface).
+    #[schemars(schema_with = "query_ir_document_schema")]
+    #[serde(deserialize_with = "deserialize_query_ir_document")]
     query: serde_json::Value,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
+}
+
+/// Advertises `query` as a JSON object in the tool's schema. A bare
+/// `serde_json::Value` renders with no `"type"` at all, and at least one MCP
+/// client relies on the declared type to decide how to serialize a nested
+/// argument — without it, it stringifies the document instead of sending it
+/// as a nested object (issue #1113).
+fn query_ir_document_schema(
+    _generator: &mut rmcp::schemars::SchemaGenerator,
+) -> rmcp::schemars::Schema {
+    rmcp::schemars::json_schema!({ "type": "object" })
+}
+
+/// Accepts `query` as a native JSON object, and — as a fallback for clients
+/// that stringify it despite the advertised object schema (issue #1113) — a
+/// JSON-encoded string.
+fn deserialize_query_ir_document<'de, D>(deserializer: D) -> Result<serde_json::Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::String(s) => serde_json::from_str(&s).map_err(serde::de::Error::custom),
+        other => Ok(other),
+    }
 }
 
 #[tool_router]
@@ -856,5 +882,34 @@ mod tests {
         let request: signaldb_sdk::types::QueryIrRequest =
             serde_json::from_value(params.query).unwrap();
         assert_eq!(request.from, "profiles");
+    }
+
+    #[test]
+    fn query_ir_tool_parameters_accept_a_json_encoded_string_query() {
+        // Some MCP clients stringify nested-object arguments when the
+        // advertised schema doesn't declare an explicit type (issue #1113).
+        // The tool must still accept the document in that shape.
+        let ir_document = serde_json::json!({
+            "irVersion": 1, "from": "traces",
+            "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": []
+        });
+        let params: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": ir_document.to_string()
+        }))
+        .unwrap();
+        assert_eq!(params.query, ir_document);
+    }
+
+    #[test]
+    fn query_ir_tool_schema_declares_query_as_an_object() {
+        // A bare `serde_json::Value` field renders with no "type" at all,
+        // which is what let a strict MCP client stringify the argument in
+        // the first place (issue #1113).
+        let schema = rmcp::schemars::schema_for!(QueryIrParams);
+        let query_type = schema
+            .pointer("/properties/query/type")
+            .and_then(|t| t.as_str());
+        assert_eq!(query_type, Some("object"));
     }
 }
