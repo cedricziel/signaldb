@@ -158,9 +158,11 @@ select:focus-visible {
 }
 
 .copy-value {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
+  /* Plain inline flow, not flex: a flex row pins the button to a fixed
+     baseline column next to the *first* line of a wrapped value, so on a
+     multi-line value it reads as floating mid-text instead of following the
+     value. Inline flow makes the button the next inline box after the
+     (possibly wrapped) text, wherever that ends. */
   min-width: 0;
   max-width: 100%;
 }
@@ -267,6 +269,14 @@ select:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 3px;
+  /* Replaces .copy-value's old flex `gap` now that it's plain inline flow. */
+  margin-left: 5px;
+  /* The button's box is taller than the text line-height, so as an inline
+     sibling of the value text its default baseline alignment adds leading
+     above the text, pushing it a few px below the label. Centering the
+     button on the text's midline keeps its icon+label centered on the value
+     text instead of pinning the button's box edge to it. */
+  vertical-align: middle;
   font-size: 10px;
   color: var(--faint);
   border: 1px solid var(--border);
