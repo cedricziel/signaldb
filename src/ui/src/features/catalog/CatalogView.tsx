@@ -1,5 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { fetchCatalogEntities } from "../../api/catalog";
+import { fetchCatalogEntities, type EntityPin } from "../../api/catalog";
 import { GROUP_BUDGET, type GroupSort } from "../../api/traceGroups";
 import { SkeletonRows } from "../explore/Skeleton";
 import { SortTh, useSort } from "../../lib/sortTable";
@@ -8,7 +8,7 @@ import {
   upsertTraceFilter,
   type TraceFilter,
 } from "../../lib/traceFilters";
-import { NOT_SET, formatRate } from "../../lib/traceGroups";
+import { NOT_SET, compositeKey, formatRate } from "../../lib/traceGroups";
 import {
   formatTimestamp,
   nanosToMs,
@@ -18,6 +18,7 @@ import {
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { formatDurationMs } from "../../lib/waterfall";
+import { EntityDetail } from "./EntityDetail";
 import {
   DEFAULT_ENTITY_TYPE,
   ENTITY_TYPES,
@@ -31,12 +32,18 @@ interface Props {
   update: UpdateFn;
 }
 
-function catalogRangeSeconds(state: ExploreState): number {
+/** Shared by the list and detail views — the window's length in seconds,
+ * for turning a raw count into a rate. */
+export function catalogRangeSeconds(state: ExploreState): number {
   const r = resolveRange(state.range, Date.now());
   return Math.max(1, (r.toMs - r.fromMs) / 1000);
 }
 
 export function CatalogView({ state, update }: Props) {
+  if (state.catalogPrimary !== "") {
+    return <EntityDetail state={state} update={update} />;
+  }
+
   const range = resolveRange(state.range, Date.now());
   const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
   const selected =
@@ -56,7 +63,9 @@ export function CatalogView({ state, update }: Props) {
         range={range}
         rangeKey={rangeKey}
         rangeSeconds={catalogRangeSeconds(state)}
-        update={update}
+        onRowClick={(values) =>
+          update({ catalogPrimary: compositeKey(values) }, { push: true })
+        }
       />
     </div>
   );
@@ -139,38 +148,47 @@ export function isDrillable(entity: EntityTypeDef): boolean {
   return entity.identity.some((field) => facetField(field) !== undefined);
 }
 
-function EntityTable({
+/**
+ * The RED table shared by the entity-type list view and (for a
+ * `breakdown` dimension, pinned to the parent entity) the detail page —
+ * same columns, same sort/loading/empty handling either way. `pinned`
+ * narrows the aggregate to one entity's identity values (see
+ * `EntityPin` in `api/catalog.ts`); omit it for the top-level list.
+ */
+export function EntityTable({
   entity,
   range,
   rangeKey,
   rangeSeconds,
-  update,
+  pinned,
+  onRowClick,
 }: {
   entity: EntityTypeDef;
   range: ResolvedRange;
   rangeKey: string;
   rangeSeconds: number;
-  update: UpdateFn;
+  pinned?: EntityPin[];
+  onRowClick: (values: (string | null)[]) => void;
 }) {
   const [sort, toggle] = useSort("n", "desc");
+  const pinKey = (pinned ?? []).map((p) => `${p.field}=${p.value}`).join(",");
   const result = useQuery({
-    queryKey: ["catalog-entities", entity.id, rangeKey, sort.key, sort.dir],
-    queryFn: () => fetchCatalogEntities(entity, range, sort as GroupSort),
+    queryKey: [
+      "catalog-entities",
+      entity.id,
+      rangeKey,
+      sort.key,
+      sort.dir,
+      pinKey,
+    ],
+    queryFn: () =>
+      fetchCatalogEntities(entity, range, sort as GroupSort, pinned),
   });
 
-  const drillable = isDrillable(entity);
   const pending = result.isPending;
   const rows = result.data?.groups ?? [];
   const columns = entity.identity.length + 6;
   const done = !pending && result.data !== undefined;
-
-  const openEntity = (values: (string | null)[]) => {
-    if (!drillable) return;
-    update(
-      { signal: "traces", traceFilters: drillFilters(entity, values) },
-      { push: true },
-    );
-  };
 
   return (
     <div className="catalog-main">
@@ -246,8 +264,8 @@ function EntityTable({
             rows.map((g) => (
               <tr
                 key={g.values.join("")}
-                className={drillable ? "catalog-row-drillable" : undefined}
-                onClick={() => openEntity(g.values)}
+                className="catalog-row-drillable"
+                onClick={() => onRowClick(g.values)}
               >
                 {g.values.map((v, i) => (
                   <td key={entity.identity[i]}>{v ?? NOT_SET}</td>
@@ -269,8 +287,8 @@ function EntityTable({
       </table>
       {done && rows.length === 0 && (
         <div className="traces-note">
-          No {entity.label.toLowerCase()} observed in this window — no{" "}
-          <code>{entity.identity[0]}</code> resource attribute seen on any span.
+          No {entity.label.toLowerCase()} observed in this window — no matching{" "}
+          <code>{entity.identity[0]}</code> value seen on any span.
         </div>
       )}
       {result.data?.truncated && (

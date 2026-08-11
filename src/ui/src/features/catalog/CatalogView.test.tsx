@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { renderWithClient } from "../../test/render";
 import { CatalogView, drillFilters, isDrillable } from "./CatalogView";
+import { compositeKey } from "../../lib/traceGroups";
 import type { EntityTypeDef } from "./entityTypes";
 import * as catalogApi from "../../api/catalog";
 import type { TraceGroup } from "../../api/traceGroups";
@@ -82,13 +83,23 @@ describe("CatalogView", () => {
     expect(screen.getByText("1240")).toBeInTheDocument();
   });
 
+  it("dispatches to the entity detail page once catalogPrimary is set", async () => {
+    renderView({ catalogPrimary: compositeKey(["gateway", "edge"]) });
+    expect(
+      await screen.findByRole("navigation", { name: "Breadcrumb" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("complementary", { name: "Entity types" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows an honest empty state naming the missing identity attribute", async () => {
     renderView({ catalogEntity: "host" });
     const note = await screen.findByText(/No hosts observed in this window/);
     expect(within(note).getByText("host.name")).toBeInTheDocument();
   });
 
-  it("drills a service row into Traces filtered by service.name", async () => {
+  it("opens a service row's own detail page rather than jumping to Traces", async () => {
     fetchCatalogEntities.mockResolvedValue({
       groups: [
         group(["gateway", "edge"], 1240, 5, 12, 48, "1700000000000000000"),
@@ -99,10 +110,7 @@ describe("CatalogView", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByText("gateway"));
     expect(update).toHaveBeenCalledWith(
-      {
-        signal: "traces",
-        traceFilters: [{ field: "service.name", value: "gateway" }],
-      },
+      { catalogPrimary: compositeKey(["gateway", "edge"]) },
       { push: true },
     );
   });

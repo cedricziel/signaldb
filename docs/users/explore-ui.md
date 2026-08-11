@@ -69,24 +69,32 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
 The catalog answers "what's actually sending telemetry" by discovery, not
 configuration: it groups the traces in the selected window by the OTel
-resource attributes that identify a **service**, **database**,
+attributes that identify a **service**, **database**,
 **message destination**, **host**, **Kubernetes pod/node**, **container**,
 or **process** — the same RED-metrics aggregate (count, error rate, p50/p95,
 last-seen) the traces group table computes — and lists whatever it finds
 under each entity type in the left nav. There is no hardcoded or sample
-data: an entity type with no matching resource attribute in the window
-renders an explicit empty state naming the attribute it's looking for (e.g.
-"No hosts observed in this window — no `host.name` resource attribute seen
-on any span") rather than a placeholder row. A tenant whose telemetry starts
-carrying that attribute — an SDK resource detector, an OTel Collector with
+data: an entity type with nothing matching in the window renders an
+explicit empty state naming the attribute it's looking for (e.g. "No hosts
+observed in this window — no matching `host.name` value seen on any span")
+rather than a placeholder row. A tenant whose telemetry starts carrying
+that attribute — an SDK resource detector, an OTel Collector with
 `resourcedetection`, Kubernetes downward-API injection — gets that entity
 type populated with no further configuration.
 
-Selecting a row drills into the Traces tab filtered to that entity. "Services"
-is scoped to server-kind spans specifically: a service's own resource
-attributes appear on every span it emits, including calls it makes to its
-dependencies, so without that scope its request rate/latency would mix
-inbound and outbound traffic.
+Selecting a row opens that entity's own page: a breadcrumb, its RED numbers
+pinned to exactly that entity, a breakdown table for entity types that have
+one (services by operation, databases by `db.operation.name`, infrastructure
+entity types by which services were observed alongside them), and a list of
+real recent matching spans linking straight into their trace waterfalls. A
+breakdown row drills one level deeper the same way. "View matching traces →"
+on the entity page hands off to the Traces tab, pre-filtered — the general
+escape hatch when the catalog's own view isn't enough.
+
+"Services" is scoped to server-kind spans specifically: a service's own
+resource attributes appear on every span it emits, including calls it makes
+to its dependencies, so without that scope its request rate/latency would
+mix inbound and outbound traffic.
 
 ### Reading a log line
 
