@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { whoami, deleteSession } from "../../api/session";
 import type { ExploreState } from "../../lib/urlState";
+import { toggleTheme } from "../../lib/theme";
 import "./UserMenu.css";
 
 interface Props {
@@ -99,17 +100,7 @@ function UserMenuPopover({
   };
 
   const handleThemeToggle = () => {
-    const root = document.documentElement;
-    const current = root.getAttribute("data-theme");
-    const isDark =
-      current === "dark" ||
-      (!current && window.matchMedia("(prefers-color-scheme: dark)").matches);
-    root.setAttribute("data-theme", isDark ? "light" : "dark");
-    try {
-      localStorage.setItem("signaldb-theme", isDark ? "light" : "dark");
-    } catch {
-      // localStorage unavailable
-    }
+    toggleTheme();
   };
 
   const isDark =
