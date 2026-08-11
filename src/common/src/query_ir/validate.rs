@@ -24,25 +24,6 @@ use super::stage::{
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 
-/// Physical/storage column names and prefixes that the logical namespace guard
-/// rejects — the attribute blobs, map containers, and internal columns a client
-/// must never address directly.
-const STORAGE_DENYLIST: &[&str] = &[
-    "attributes_json",
-    "resource_json",
-    "scope_json",
-    "data_json",
-    "samples_json",
-    "stacktraces_json",
-    "span_attributes",
-    "resource_attributes",
-    "log_attributes",
-    "scope_attributes",
-    "attributes",
-    "events",
-    "attr_tokens",
-];
-
 /// Errors raised while validating an IR document.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IrError {
@@ -85,6 +66,9 @@ pub enum IrError {
 
     #[error("field '{field}' has no canonical type in the registry")]
     UnknownFieldType { field: String },
+
+    #[error("field '{field}' is retrievable but cannot be used in a predicate")]
+    UnfilterableField { field: String },
 
     #[error("topk/bottomk `n` must be an integer > 0, got {n}")]
     InvalidRankSize { n: i64 },
@@ -216,7 +200,7 @@ impl InferCtx<'_> {
                 operand: name.to_string(),
             });
         }
-        guard_logical_name(name)?;
+        self.guard_logical_name(name)?;
         match &self.relation {
             RelationType::Series(_) | RelationType::Heatmap(_) => Err(IrError::UnknownReference {
                 name: name.to_string(),
@@ -255,6 +239,7 @@ impl InferCtx<'_> {
     }
 
     fn check_leaf(&self, leaf: &Leaf) -> Result<(), IrError> {
+        self.require_filterable(&leaf.field)?;
         let ty = self.ref_type(&leaf.field)?;
         match (leaf.op.takes_value(), &leaf.value) {
             (true, None) => {
@@ -310,6 +295,17 @@ impl InferCtx<'_> {
         Ok(())
     }
 
+    fn require_filterable(&self, field: &str) -> Result<(), IrError> {
+        if self.resolver.filterability(self.source, field)
+            == crate::schema::logical::Filterability::RetrievalOnly
+        {
+            return Err(IrError::UnfilterableField {
+                field: field.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     fn apply_extract(&mut self, extract: &Extract) -> Result<(), IrError> {
         if !self.source_def.allows_extract {
             return Err(IrError::IllegalStage {
@@ -329,7 +325,7 @@ impl InferCtx<'_> {
         }
         let mut new_cols = Vec::new();
         for f in &extract.as_fields {
-            guard_logical_name(&f.name)?;
+            self.guard_logical_name(&f.name)?;
             // No silent shadowing: collide with a registry field, an earlier
             // derived/agg name, or an existing column → rejected.
             let collides = self.names.iter().any(|n| n == &f.name)
@@ -366,6 +362,7 @@ impl InferCtx<'_> {
         // Group columns keep their canonical types.
         let mut group_cols = Vec::new();
         for by in &agg.by {
+            self.require_filterable(by)?;
             let ty = self.ref_type(by)?;
             group_cols.push(Column::new(by.clone(), ty));
         }
@@ -491,7 +488,7 @@ impl InferCtx<'_> {
     }
 
     fn check_agg(&self, a: &Agg, group_cols: &[Column]) -> Result<Column, IrError> {
-        guard_logical_name(&a.as_name)?;
+        self.guard_logical_name(&a.as_name)?;
         // Uniqueness: against earlier introduced names, group fields, and any
         // source column.
         let collides = self.names.iter().any(|n| n == &a.as_name)
@@ -520,7 +517,10 @@ impl InferCtx<'_> {
 
         // Field operand requirements.
         let of_type = match (&a.of, a.func.needs_field()) {
-            (Some(of), _) => Some(self.ref_type(of)?),
+            (Some(of), _) => {
+                self.require_filterable(of)?;
+                Some(self.ref_type(of)?)
+            }
             (None, true) => {
                 return Err(IrError::Invalid(format!(
                     "aggregate '{}' requires an `of` field",
@@ -573,6 +573,7 @@ impl InferCtx<'_> {
         if rank.n <= 0 {
             return Err(IrError::InvalidRankSize { n: rank.n });
         }
+        self.require_filterable(&rank.of)?;
         let ty = self.ref_type(&rank.of)?;
         if !is_numeric(&ty) {
             return Err(IrError::Invalid(format!(
@@ -587,7 +588,19 @@ impl InferCtx<'_> {
     fn apply_order(&mut self, keys: &[Order]) -> Result<(), IrError> {
         self.require_rowset("order")?;
         for key in keys {
+            self.require_filterable(&key.of)?;
             let _ = self.ref_type(&key.of)?;
+        }
+        Ok(())
+    }
+
+    fn guard_logical_name(&self, name: &str) -> Result<(), IrError> {
+        if self.resolver.is_physical_name(self.source, name)
+            && !self.resolver.is_known(self.source, name)
+        {
+            return Err(IrError::PhysicalAddressing {
+                field: name.to_string(),
+            });
         }
         Ok(())
     }
@@ -614,20 +627,6 @@ fn is_numeric(t: &ValueType) -> bool {
         t,
         ValueType::Int64 | ValueType::Float64 | ValueType::DurationNs | ValueType::TimestampNs
     )
-}
-
-/// The logical-namespace guard: reject a name that addresses a physical/storage
-/// column directly.
-fn guard_logical_name(name: &str) -> Result<(), IrError> {
-    let reject =
-        STORAGE_DENYLIST.contains(&name) || name.starts_with("label_") || name.ends_with("_json");
-    if reject {
-        Err(IrError::PhysicalAddressing {
-            field: name.to_string(),
-        })
-    } else {
-        Ok(())
-    }
 }
 
 fn validate_envelope(declared: ResultEnvelope, terminal: &RelationType) -> Result<(), IrError> {
@@ -658,7 +657,7 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
     for field in fields {
         // A field is valid iff it is present in the terminal relation — a
         // closed column when aggregated, or a resolvable logical field when not.
-        guard_logical_name(field)?;
+        ctx.guard_logical_name(field)?;
         if ctx.ref_type(field).is_err() {
             return Err(IrError::FieldNotInTerminal {
                 field: field.clone(),
@@ -683,7 +682,17 @@ mod tests {
                 ValueType::Int64,
             )
             .with_column("logs", "service.name", "service_name", ValueType::String)
+            .with_physical_name("logs", "attributes_json")
+            .with_physical_name("logs", "attr_tokens")
             .with_column("logs", "body", "body", ValueType::String)
+            .with_attribute(
+                "logs",
+                "structured.payload",
+                "log_attributes",
+                ValueType::String,
+                false,
+            )
+            .with_retrieval_only("logs", "structured.payload")
             .with_attribute(
                 "logs",
                 "deployment.environment",
@@ -718,6 +727,7 @@ mod tests {
                 "service_name",
                 ValueType::String,
             )
+            .with_physical_name("profiles", "samples_json")
             .with_attribute(
                 "profiles",
                 "resource.deployment.environment",
@@ -1001,6 +1011,53 @@ mod tests {
             matches!(err, IrError::PhysicalAddressing { .. }),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn physical_alias_is_rejected_but_its_logical_field_is_allowed() {
+        let physical = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [ { "where": { "field": "service_name", "op": "eq", "value": "api" } } ]
+        }))
+        .unwrap_err();
+        assert!(matches!(physical, IrError::PhysicalAddressing { .. }));
+
+        validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [ { "where": { "field": "service.name", "op": "eq", "value": "api" } } ]
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn retrieval_only_field_is_rejected_in_a_predicate() {
+        let err = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [ { "where": { "field": "structured.payload", "op": "exists" } } ]
+        }))
+        .unwrap_err();
+        assert!(matches!(err, IrError::UnfilterableField { .. }));
+    }
+
+    #[test]
+    fn retrieval_only_field_is_rejected_in_grouping_and_ordering() {
+        for pipeline in [
+            json!([{ "aggregate": { "by": ["structured.payload"], "aggs": [{ "fn": "count", "as": "n" }] } }]),
+            json!([{ "order": [{ "of": "structured.payload", "dir": "asc" }] }]),
+        ] {
+            let err = validate_json(json!({
+                "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+                "result": "rows", "pipeline": pipeline
+            }))
+            .unwrap_err();
+            assert!(
+                matches!(err, IrError::UnfilterableField { .. }),
+                "got {err:?}"
+            );
+        }
     }
 
     // Task 2.2 — structured operands.

@@ -34,6 +34,7 @@ use common::query_ir::{
     Predicate, Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType,
     coerce, validate,
 };
+use common::schema::logical::{Filterability, LogicalSchema, LogicalType};
 use datafusion::arrow::array::{
     Array, LargeStringArray, StringArray, StringBuilder, StringViewArray,
 };
@@ -119,7 +120,13 @@ impl SourcePlan {
                     "scope_attributes",
                     "resource_attributes",
                 ],
-                aliases: &[("service.name", "service_name")],
+                aliases: &[
+                    ("service.name", "service_name"),
+                    ("resource.schema_url", "resource_schema_url"),
+                    ("scope.name", "scope_name"),
+                    ("scope.version", "scope_version"),
+                    ("scope.schema_url", "scope_schema_url"),
+                ],
             }),
             "traces" => Some(SourcePlan {
                 table: "traces",
@@ -148,6 +155,10 @@ impl SourcePlan {
                     ("duration", "duration_nanos"),
                     ("duration_nano", "duration_nanos"),
                     ("status.code", "status_code"),
+                    ("resource.schema_url", "resource_schema_url"),
+                    ("scope.name", "scope_name"),
+                    ("scope.version", "scope_version"),
+                    ("scope.schema_url", "scope_schema_url"),
                 ],
             }),
             "profiles" => Some(SourcePlan {
@@ -221,73 +232,73 @@ fn arrow_to_value_type(dt: &DataType) -> Option<ValueType> {
     })
 }
 
-/// A [`FieldResolver`] that types physical columns from the scanned table's
-/// Arrow schema and treats every other logical name as an unpromoted attribute
-/// (a `String` extraction from the signal's attribute container). This is the
-/// promotion-invariant production view — a consumer of the attribute registry
-/// (#811); until #811 supplies canonical attribute types, unpromoted attributes
-/// are `String`.
+/// A [`FieldResolver`] whose client-visible built-ins come from the canonical
+/// logical schema. The scanned Arrow schema only verifies a logical field's
+/// current physical realization and discovers promoted attributes.
 struct SchemaResolver {
     columns: HashMap<String, ValueType>,
+    physical_names: std::collections::HashSet<String>,
     container: String,
     aliases: &'static [(&'static str, &'static str)],
+    source: String,
+    logical_schema: LogicalSchema,
 }
 
 impl SchemaResolver {
     fn new(schema: &datafusion::common::DFSchema, source: &SourcePlan) -> Self {
         let mut columns = HashMap::new();
+        let mut physical_names = std::collections::HashSet::new();
         for field in schema.fields() {
+            physical_names.insert(field.name().to_string());
             if let Some(vt) = arrow_to_value_type(field.data_type()) {
                 columns.insert(field.name().to_string(), vt);
             }
         }
         SchemaResolver {
             columns,
+            physical_names,
             container: source.containers[0].to_string(),
             aliases: source.aliases,
+            source: source.table.to_string(),
+            logical_schema: LogicalSchema::core(),
         }
     }
 
-    /// Resolve a logical field to a physical column + type, if one exists.
-    /// Tries, in order: an exact column name, a declared alias, the
-    /// dot→underscore form of the name, and the promoted `label_<sanitized>`
-    /// materialization. `None` means the field is an unpromoted attribute.
-    fn column_for(&self, field: &str) -> Option<(String, ValueType)> {
-        if let Some(vt) = self.columns.get(field) {
-            return Some((field.to_string(), vt.clone()));
-        }
+    /// Resolve a declared logical field to its current physical realization.
+    fn column_for(&self, field: &str, value_type: ValueType) -> Option<(String, ValueType)> {
         if let Some((_, physical)) = self.aliases.iter().find(|(logical, _)| *logical == field)
-            && let Some(vt) = self.columns.get(*physical)
+            && self.columns.contains_key(*physical)
         {
-            return Some((physical.to_string(), vt.clone()));
-        }
-        let underscored = safe_ident(field);
-        if underscored != field
-            && let Some(vt) = self.columns.get(&underscored)
-        {
-            return Some((underscored, vt.clone()));
+            return Some((physical.to_string(), value_type));
         }
         let materialized = common::schema::materialized_column_name(field);
         if let Some(vt) = self.columns.get(&materialized) {
             return Some((materialized, vt.clone()));
         }
-        None
+        self.columns
+            .contains_key(field)
+            .then(|| (field.to_string(), value_type))
     }
 }
 
 impl FieldResolver for SchemaResolver {
     fn resolve(&self, _source: &str, field: &str) -> Option<Resolved> {
-        match self.column_for(field) {
-            Some((name, value_type)) => Some(Resolved::Column {
-                name,
-                // Persisted trace durations are Int64 nanoseconds, but their
-                // logical IR name carries duration literal coercion semantics.
-                value_type: if matches!(field, "duration" | "duration_nano") {
-                    ValueType::DurationNs
-                } else {
-                    value_type
-                },
-            }),
+        if let Some(logical) = self.logical_schema.resolve(&self.source, field) {
+            let value_type = logical_to_value_type(logical.value_type);
+            return match self.column_for(field, value_type.clone()) {
+                Some((name, value_type)) => Some(Resolved::Column { name, value_type }),
+                None => Some(Resolved::JsonPath {
+                    container: self.container.clone(),
+                    key: field.to_string(),
+                    value_type,
+                }),
+            };
+        }
+        if self.physical_names.contains(field) {
+            return None;
+        }
+        match self.column_for(field, ValueType::String) {
+            Some((name, value_type)) => Some(Resolved::Column { name, value_type }),
             // An unpromoted attribute: a String extraction from the container.
             None => Some(Resolved::JsonPath {
                 container: self.container.clone(),
@@ -301,7 +312,33 @@ impl FieldResolver for SchemaResolver {
         // Only physical / promoted columns are "known" — the permissive String
         // attribute fallback must not spuriously collide with derived/output
         // names. (Without #811 the resolver cannot enumerate real attributes.)
-        self.column_for(field).is_some()
+        self.logical_schema.resolve(&self.source, field).is_some()
+            || self
+                .columns
+                .contains_key(&common::schema::materialized_column_name(field))
+    }
+
+    fn is_physical_name(&self, _source: &str, field: &str) -> bool {
+        self.physical_names.contains(field)
+            && self.logical_schema.resolve(&self.source, field).is_none()
+    }
+
+    fn filterability(&self, _source: &str, field: &str) -> Filterability {
+        self.logical_schema
+            .resolve(&self.source, field)
+            .map_or(Filterability::Filterable, |logical| logical.filterability)
+    }
+}
+
+fn logical_to_value_type(value_type: LogicalType) -> ValueType {
+    match value_type {
+        LogicalType::String | LogicalType::AnyValue => ValueType::String,
+        LogicalType::Bool => ValueType::Bool,
+        LogicalType::Int64 => ValueType::Int64,
+        LogicalType::Float64 => ValueType::Float64,
+        LogicalType::TimestampNs => ValueType::TimestampNs,
+        LogicalType::DurationNs => ValueType::DurationNs,
+        LogicalType::Bytes => ValueType::Bytes,
     }
 }
 
@@ -1566,7 +1603,7 @@ mod tests {
                     { "field": "severity_number", "op": "gte", "value": 17 },
                     { "field": "deployment.environment", "op": "eq", "value": "prod" }
                 ]}},
-                { "aggregate": { "by": ["service_name"], "aggs": [{ "fn": "count", "as": "n" }], "step": "1ms" } }
+                { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }], "step": "1ms" } }
             ]
         }));
         let (df, window) = svc
@@ -1815,6 +1852,42 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_client_cannot_address_a_builtin_physical_alias() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["service_name"],
+            "pipeline": []
+        }));
+
+        let err = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .expect_err("physical aliases must stay private");
+        assert!(
+            format!("{err}").contains("service_name"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retrieval_only_metadata_cannot_be_used_in_predicates() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "pipeline": [{ "where": { "field": "body", "op": "eq", "value": "a" } }]
+        }));
+
+        let err = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .expect_err("retrieval-only metadata must not be filterable");
+        assert!(format!("{err}").contains("body"), "unexpected error: {err}");
+    }
+
     /// Collect the LogicalPlan node types, root-first, following each node's
     /// input(s). Used to assert plan *shape* (not a brittle golden string).
     fn plan_node_types(plan: &datafusion::logical_expr::LogicalPlan, out: &mut Vec<&'static str>) {
@@ -1852,7 +1925,7 @@ mod tests {
                     { "field": "severity_number", "op": "gte", "value": 17 },
                     { "field": "deployment.environment", "op": "eq", "value": "prod" }
                 ]}},
-                { "aggregate": { "by": ["service_name"], "aggs": [{ "fn": "count", "as": "n" }], "step": "1ms" } }
+                { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }], "step": "1ms" } }
             ]
         }));
         let (df, _) = svc
@@ -2084,10 +2157,10 @@ mod tests {
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
             "result": "rows",
-            "fields": ["span_name", "duration_nanos"],
+            "fields": ["span.name", "duration"],
             "pipeline": [
                 { "where": { "field": "service.name", "op": "eq", "value": "api" } },
-                { "topk": { "n": 1, "of": "duration_nanos" } }
+                { "topk": { "n": 1, "of": "duration" } }
             ]
         }));
         let (df, _) = svc
@@ -2259,7 +2332,7 @@ mod tests {
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "rows",
-            "fields": ["service_name"],
+            "fields": ["service.name"],
             "pipeline": [
                 { "where": { "field": "deployment.environment", "op": "gte", "value": "prod" } }
             ]
@@ -2434,7 +2507,7 @@ mod tests {
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "rows",
-            "fields": ["service_name"],
+            "fields": ["service.name"],
             "pipeline": [
                 { "where": { "not": { "field": "env", "op": "eq", "value": "prod" } } }
             ]
@@ -2457,7 +2530,7 @@ mod tests {
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "rows",
-            "fields": ["service_name", "severity_number"],
+            "fields": ["service.name", "severity_number"],
             "pipeline": []
         }));
         let (df, _) = svc
@@ -2753,7 +2826,7 @@ mod tests {
         let batches = collect_doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
-            "pipeline": [ { "aggregate": { "by": ["service_name"], "aggs": [
+            "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
                 { "fn": "count", "as": "n" },
                 { "fn": "count", "as": "errors",
                   "where": { "field": "severity_number", "op": "gte", "value": 17 } }
@@ -2777,7 +2850,7 @@ mod tests {
         let batches = collect_doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
-            "pipeline": [ { "aggregate": { "by": ["service_name"], "aggs": [
+            "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
                 { "fn": "count", "as": "n" },
                 // No `api` row reaches 21; `web` has exactly one.
                 { "fn": "count", "as": "worst",
@@ -2797,14 +2870,14 @@ mod tests {
         let unscoped = collect_doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
-            "pipeline": [ { "aggregate": { "by": ["service_name"],
+            "pipeline": [ { "aggregate": { "by": ["service.name"],
                 "aggs": [ { "fn": "count", "as": "n" } ] } } ]
         }))
         .await;
         let scoped = collect_doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
-            "pipeline": [ { "aggregate": { "by": ["service_name"], "aggs": [
+            "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
                 { "fn": "count", "as": "n" },
                 { "fn": "count", "as": "errors",
                   "where": { "field": "severity_number", "op": "gte", "value": 17 } }
@@ -2824,14 +2897,14 @@ mod tests {
         let (df, _) = svc
             .plan(
                 &doc(serde_json::json!({
-                    "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
-                    "result": "table",
-                    "pipeline": [ { "aggregate": { "by": ["service_name"], "aggs": [
-                        { "fn": "count", "as": "n" },
-                        { "fn": "count", "as": "errors",
-                          "where": { "field": "severity_number", "op": "gte", "value": 17 } }
-                    ] } } ]
-                })),
+                        "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                        "result": "table",
+                "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+                            { "fn": "count", "as": "n" },
+                            { "fn": "count", "as": "errors",
+                              "where": { "field": "severity_number", "op": "gte", "value": 17 } }
+                        ] } } ]
+                    })),
                 "t",
                 "d",
                 0,
@@ -2853,7 +2926,7 @@ mod tests {
         let batches = collect_doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
-            "pipeline": [ { "aggregate": { "by": ["service_name"], "aggs": [
+                    "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
                 // `web` holds severities 17 and 21; scoped to >= 21 the median
                 // must be 21, not 19.
                 { "fn": "quantile", "of": "severity_number", "arg": 0.5, "as": "p50",

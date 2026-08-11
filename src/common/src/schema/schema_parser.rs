@@ -24,6 +24,12 @@ pub struct SchemaMetadata {
     pub current_trace_version: String,
     pub current_log_version: String,
     pub current_metric_version: String,
+    #[serde(default = "default_logical_schema_version")]
+    pub logical_schema_version: String,
+}
+
+fn default_logical_schema_version() -> String {
+    "otel-2026-08".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +55,8 @@ pub struct FieldDefinition {
     pub required: bool,
     #[serde(default)]
     pub computed: Option<String>,
+    #[serde(default)]
+    pub physical_only: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +80,7 @@ pub struct ResolvedField {
     pub field_type: String,
     pub required: bool,
     pub computed: Option<String>,
+    pub physical_only: bool,
     pub field_id: usize,
 }
 
@@ -84,6 +93,12 @@ impl SchemaDefinitions {
     /// Get current trace schema version
     pub fn current_trace_version(&self) -> &str {
         &self.metadata.current_trace_version
+    }
+
+    /// Version of the client-visible OTel logical schema, independent from
+    /// the physical Iceberg table realization selected above.
+    pub fn logical_schema_version(&self) -> &str {
+        &self.metadata.logical_schema_version
     }
 
     /// Resolve a trace schema by version
@@ -126,6 +141,7 @@ impl SchemaDefinitions {
                     field_type: field.field_type.clone(),
                     required: field.required,
                     computed: field.computed.clone(),
+                    physical_only: field.physical_only || field.computed.is_some(),
                     field_id,
                 };
                 field_names.insert(field.name.clone(), resolved_fields.len());
@@ -150,10 +166,20 @@ impl SchemaDefinitions {
                 field_type: addition.field_type.clone(),
                 required: addition.required,
                 computed: addition.computed.clone(),
+                physical_only: addition.physical_only || addition.computed.is_some(),
                 field_id: resolved_fields.len() + 1,
             };
             field_names.insert(addition.name.clone(), resolved_fields.len());
             resolved_fields.push(resolved);
+        }
+
+        for partition in &schema_def.partition_by {
+            if let Some(field) = resolved_fields
+                .iter_mut()
+                .find(|field| field.name == *partition)
+            {
+                field.physical_only = true;
+            }
         }
 
         Ok(ResolvedSchema {
@@ -324,6 +350,7 @@ mod tests {
                     field_type: "timestamp_ns".to_string(),
                     required: true,
                     computed: None,
+                    physical_only: false,
                     field_id: 1,
                 },
                 ResolvedField {
@@ -331,6 +358,7 @@ mod tests {
                     field_type: "string".to_string(),
                     required: false,
                     computed: None,
+                    physical_only: false,
                     field_id: 2,
                 },
             ],
@@ -375,6 +403,7 @@ mod tests {
                     field_type: "timestamp_ns".to_string(),
                     required: true,
                     computed: None,
+                    physical_only: false,
                     field_id: 1,
                 },
                 ResolvedField {
@@ -382,6 +411,7 @@ mod tests {
                     field_type: "map<string,string>".to_string(),
                     required: false,
                     computed: None,
+                    physical_only: false,
                     field_id: 2,
                 },
             ],
@@ -436,20 +466,20 @@ mod tests {
         let toml = r#"
 [metadata]
 description = "Test schemas"
-current_trace_version = "v2"
-current_log_version = "v1"
-current_metric_version = "v1"
+current_trace_version = "physical-v2"
+current_log_version = "physical-v1"
+current_metric_version = "physical-v1"
 
-[traces.v1]
+[traces.physical-v1]
 description = "Base schema"
 fields = [
     { name = "trace_id", type = "string", required = true },
     { name = "name", type = "string", required = true },
 ]
 
-[traces.v2]
+[traces.physical-v2]
 description = "Extended schema"
-inherits = "v1"
+inherits = "physical-v1"
 field_renames = [
     { from = "name", to = "span_name" },
 ]
@@ -458,7 +488,7 @@ field_additions = [
 ]
 partition_by = ["timestamp"]
 
-[logs.v1]
+[logs.physical-v1]
 description = "Log schema"
 fields = [
     { name = "timestamp", type = "timestamp_ns", required = true },
@@ -466,20 +496,28 @@ fields = [
 "#;
 
         let schemas = SchemaDefinitions::from_toml(toml).unwrap();
-        assert_eq!(schemas.current_trace_version(), "v2");
+        assert_eq!(schemas.current_trace_version(), "physical-v2");
 
         // Test v1 resolution
-        let v1 = schemas.resolve_trace_schema("v1").unwrap();
+        let v1 = schemas.resolve_trace_schema("physical-v1").unwrap();
         assert_eq!(v1.fields.len(), 2);
         assert_eq!(v1.fields[0].name, "trace_id");
         assert_eq!(v1.fields[1].name, "name");
 
         // Test v2 resolution with inheritance and rename
-        let v2 = schemas.resolve_trace_schema("v2").unwrap();
+        let v2 = schemas.resolve_trace_schema("physical-v2").unwrap();
         assert_eq!(v2.fields.len(), 3);
         assert_eq!(v2.fields[0].name, "trace_id");
         assert_eq!(v2.fields[1].name, "span_name"); // Renamed from "name"
         assert_eq!(v2.fields[2].name, "timestamp");
         assert_eq!(v2.fields[2].computed, Some("start_time".to_string()));
+        assert!(v2.fields[2].physical_only);
+        assert!(
+            v2.fields
+                .iter()
+                .find(|field| field.name == "timestamp")
+                .unwrap()
+                .physical_only
+        );
     }
 }
