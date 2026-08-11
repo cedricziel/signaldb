@@ -114,6 +114,19 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
 
 ## Known gaps
 
+- **A nullable `$ref` enum breaks the Rust SDK generator.** `Option<SomeEnum>`
+  where `SomeEnum` derives `ToSchema` makes utoipa emit
+  `"oneOf": [{"type": "null"}, {"$ref": "..."}]` — progenitor's schema-to-Rust
+  generator panics on it (`not yet implemented: invalid type: null`, in
+  `to_schema.rs`), even though `cargo xtask check`'s spec-golden-test analog
+  would pass (the panic is in client generation, not spec validation).
+  `Option<String>` doesn't hit this: utoipa represents it as `"type":
+["string", "null"]`, which progenitor handles fine. Until progenitor
+  supports the `oneOf` form, give an optional enum field a plain `Option<String>`
+  wire type instead and convert at the handler boundary (see
+  `ManageLogicalField::level` in `endpoints/management.rs`, converted from
+  `common::schema::logical::AttributeLevel` via a small match) rather than
+  exposing the enum type directly.
 - The Tempo (trace), Loki (LogQL), and Prometheus (PromQL) instant/range query
   endpoints are all annotated. Tempo responses are **typed** (`SearchResult`,
   `Trace`, …). The PromQL and LogQL responses, however, are declared with a
