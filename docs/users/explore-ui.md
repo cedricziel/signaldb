@@ -82,10 +82,8 @@ carrying that attribute — an SDK resource detector, an OTel Collector with
 `resourcedetection`, Kubernetes downward-API injection — gets that entity
 type populated with no further configuration.
 
-Selecting a row drills into the Traces tab filtered to that entity (where
-the identifying attribute has a facet mapping — service and database are
-wired today; more follow as their facet mappings are added). "Services" is
-scoped to server-kind spans specifically: a service's own resource
+Selecting a row drills into the Traces tab filtered to that entity. "Services"
+is scoped to server-kind spans specifically: a service's own resource
 attributes appear on every span it emits, including calls it makes to its
 dependencies, so without that scope its request rate/latency would mix
 inbound and outbound traffic.

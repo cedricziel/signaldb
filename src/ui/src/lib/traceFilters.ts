@@ -66,6 +66,61 @@ export const FACET_FIELDS: FacetField[] = [
     selector: "span.db.namespace",
     quoted: true,
   },
+  {
+    // Same reasoning as db.namespace: messaging client instrumentation sets
+    // this on the producer/consumer span, not the resource.
+    field: "messaging.destination.name",
+    label: "messaging.destination.name",
+    irField: "messaging.destination.name",
+    selector: "span.messaging.destination.name",
+    quoted: true,
+  },
+  {
+    // Unlike db.namespace/messaging.*, these describe the process emitting
+    // telemetry rather than an individual operation — OTel resource
+    // detectors (or a collector's resourcedetection processor) set them on
+    // the resource, mirroring service.name above.
+    field: "host.name",
+    label: "host.name",
+    irField: "host.name",
+    selector: "resource.host.name",
+    quoted: true,
+  },
+  {
+    field: "k8s.pod.name",
+    label: "k8s.pod.name",
+    irField: "k8s.pod.name",
+    selector: "resource.k8s.pod.name",
+    quoted: true,
+  },
+  {
+    field: "k8s.namespace.name",
+    label: "k8s.namespace.name",
+    irField: "k8s.namespace.name",
+    selector: "resource.k8s.namespace.name",
+    quoted: true,
+  },
+  {
+    field: "k8s.node.name",
+    label: "k8s.node.name",
+    irField: "k8s.node.name",
+    selector: "resource.k8s.node.name",
+    quoted: true,
+  },
+  {
+    field: "container.name",
+    label: "container.name",
+    irField: "container.name",
+    selector: "resource.container.name",
+    quoted: true,
+  },
+  {
+    field: "process.pid",
+    label: "process.pid",
+    irField: "process.pid",
+    selector: "resource.process.pid",
+    quoted: true,
+  },
 ];
 
 export function facetField(field: string): FacetField | undefined {

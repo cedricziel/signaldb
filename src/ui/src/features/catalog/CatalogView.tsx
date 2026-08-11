@@ -115,11 +115,13 @@ function CatalogNav({
  * of them. "service", for instance, groups by both `service.name` and
  * `service.namespace`, but only the former is a mapped facet; filtering
  * Traces on just the name is still meaningful, so the row stays clickable
- * rather than requiring every dimension to be mapped. Entity types with
- * *no* mapped dimension yet (see the catalog plan's layered rollout) render
- * inert rows instead of silently navigating to an unfiltered trace list.
+ * rather than requiring every dimension to be mapped. Every entity type
+ * currently registered has at least one mapped dimension, but a future one
+ * added ahead of its FACET_FIELDS entry would fall through to
+ * {@link isDrillable} and render inert rows instead of silently navigating
+ * to an unfiltered trace list.
  */
-function drillFilters(
+export function drillFilters(
   entity: EntityTypeDef,
   values: (string | null)[],
 ): TraceFilter[] {
@@ -133,7 +135,7 @@ function drillFilters(
   return filters;
 }
 
-function isDrillable(entity: EntityTypeDef): boolean {
+export function isDrillable(entity: EntityTypeDef): boolean {
   return entity.identity.some((field) => facetField(field) !== undefined);
 }
 

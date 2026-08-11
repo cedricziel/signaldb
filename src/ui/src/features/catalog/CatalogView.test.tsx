@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { renderWithClient } from "../../test/render";
-import { CatalogView } from "./CatalogView";
+import { CatalogView, drillFilters, isDrillable } from "./CatalogView";
+import type { EntityTypeDef } from "./entityTypes";
 import * as catalogApi from "../../api/catalog";
 import type { TraceGroup } from "../../api/traceGroups";
 
@@ -105,15 +106,34 @@ describe("CatalogView", () => {
       { push: true },
     );
   });
+});
 
-  it("does not wire a click handler for an entity type with no drill-down mapping yet", async () => {
-    fetchCatalogEntities.mockResolvedValue({
-      groups: [group(["ip-10-0-1-08"], 42, 0, 3, 9, "1700000000000000000")],
-      truncated: false,
-    });
-    const update = renderView({ catalogEntity: "host" });
-    const user = userEvent.setup();
-    await user.click(await screen.findByText("ip-10-0-1-08"));
-    expect(update).not.toHaveBeenCalled();
+describe("isDrillable / drillFilters", () => {
+  const unmapped: EntityTypeDef = {
+    id: "queue_depth",
+    label: "Queue depths",
+    singular: "queue",
+    // Neither dimension has a FACET_FIELDS entry, unlike every currently
+    // registered entity type.
+    identity: ["queue.name", "queue.region"],
+  };
+
+  it("is not drillable when no identity dimension has a facet mapping", () => {
+    expect(isDrillable(unmapped)).toBe(false);
+    expect(drillFilters(unmapped, ["orders", "eu"])).toEqual([]);
+  });
+
+  it("is drillable using only the identity dimensions that have a mapping", () => {
+    const service: EntityTypeDef = {
+      id: "service",
+      label: "Services",
+      singular: "service",
+      identity: ["service.name", "service.namespace"],
+      spanKindScope: "Server",
+    };
+    expect(isDrillable(service)).toBe(true);
+    expect(drillFilters(service, ["gateway", "edge"])).toEqual([
+      { field: "service.name", value: "gateway" },
+    ]);
   });
 });
