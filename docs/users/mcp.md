@@ -42,6 +42,30 @@ access (the router validates access and rejects the rest). Large results are
 capped and returned with a `truncated: true` flag telling the agent to narrow
 the query.
 
+## Prompts
+
+`prompts/list` offers ready-made investigation templates a client can surface
+directly (e.g. as a slash command), separate from the tools above:
+
+| Prompt               | Arguments                                              | Purpose                                                                |
+| -------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `investigate_trace`  | `trace_id` (required)                                  | Seeds a `get_trace` call and a critical-path/error/self-time analysis. |
+| `find_recent_errors` | `service` (required), `minutes` (optional, default 15) | Seeds a `search_traces`/`search_logs` sweep for a service's errors.    |
+| `build_promql_query` | `metric` (required), `intent` (optional)               | Seeds `discover_metrics` → `query_metrics` for a metric.               |
+
+Each prompt renders into a single text message — pure argument substitution,
+no router call, so prompts work even before your credential has been
+validated for the session.
+
+Two arguments offer live autocompletion via `completion/complete`, for
+clients that ask for suggestions as you type: `find_recent_errors`'s
+`service` (backed by Tempo `service.name` tag-value discovery) and
+`build_promql_query`'s `metric` (backed by Prometheus `__name__` label
+discovery), both scoped to your tenant and filtered by the prefix you've
+typed so far. Every other reference/argument returns no suggestions rather
+than an error — completions are advisory, so a lookup failure never breaks
+the request you're filling in.
+
 ## Interactive trace view (MCP Apps)
 
 Clients that support the [MCP Apps extension][mcp-apps] render `get_trace`
