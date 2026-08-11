@@ -169,17 +169,44 @@ describe("SelectTenant", () => {
   });
 
   it("clicking a collapsed tenant fetches its datasets", async () => {
-    // The X-Tenant-ID is sent as a header, not a query param. stubFetchRoutes
-    // only matches on URL, so both whoami calls hit the same mock. Use a regex
-    // to match the scoped call and return the correct tenant data.
-    stubFetchRoutes([{ match: /\/api\/v1\/whoami$/, body: mockWhoami() }]);
+    // whoami sends the scoping tenant as an X-Tenant-ID header, not a query
+    // param, so a URL-only stub can't distinguish the two calls. Branch on
+    // the header directly and assert both the request and the render.
+    const fetchMock = vi.fn().mockImplementation((_url, init?: RequestInit) => {
+      const tenantId = (init?.headers as Record<string, string> | undefined)?.[
+        "X-Tenant-ID"
+      ];
+      const body = mockWhoami(tenantId);
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
     renderWithClient(<SelectTenant />);
     const tenantRow = await screen.findByText(tenantNameMatcher("acme-eu"));
     await userEvent.click(tenantRow);
-    // The tenant row should now be expanded (aria-expanded=true)
+
+    // The tenant row should now be expanded (aria-expanded=true) and its
+    // datasets should render, proving the scoped response was used.
     expect(tenantRow.closest("button")).toHaveAttribute(
       "aria-expanded",
       "true",
     );
+    expect(await screen.findByText(/europe/)).toBeInTheDocument();
+    expect(screen.getByText(/testing/)).toBeInTheDocument();
+
+    const scopedCall = fetchMock.mock.calls.find((call) => {
+      const init = call[1] as RequestInit | undefined;
+      return (
+        (init?.headers as Record<string, string> | undefined)?.[
+          "X-Tenant-ID"
+        ] === "acme-eu"
+      );
+    });
+    expect(scopedCall).toBeDefined();
   });
 });
