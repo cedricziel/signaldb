@@ -716,6 +716,68 @@ describe("TracesView detail", () => {
     expect(writeText).toHaveBeenNthCalledWith(4, "Error: card declined");
   });
 
+  it("groups span attributes separately from resource attributes, sorted within each", async () => {
+    stubFetchRoutes([
+      {
+        match: "/tempo/api/traces/tgrouped",
+        body: {
+          ...TRACE_BODY,
+          traceID: "tgrouped",
+          spanSets: [
+            {
+              matched: 1,
+              spans: [
+                {
+                  spanID: "root",
+                  startTimeUnixNano: "1000000000",
+                  durationNanos: "412000000",
+                  name: "POST /api/checkout",
+                  serviceName: "gateway",
+                  status: "ok",
+                  attributes: {
+                    "url.full": {
+                      key: "url.full",
+                      value: { stringValue: "https://x" },
+                    },
+                    "session.id": {
+                      key: "session.id",
+                      value: { stringValue: "abc" },
+                    },
+                    "resource.telemetry.sdk.version": {
+                      key: "resource.telemetry.sdk.version",
+                      value: { stringValue: "2.1.0" },
+                    },
+                    "resource.service.name": {
+                      key: "resource.service.name",
+                      value: { stringValue: "signaldb-ui" },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    renderView({ trace: "tgrouped" });
+
+    const spanSection = await screen.findByText("Span");
+    const resourceSection = await screen.findByText("Resource");
+    // Span section (with keys as sent, unprefixed) precedes Resource.
+    expect(
+      spanSection.compareDocumentPosition(resourceSection) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const dtOrder = screen.getAllByRole("term").map((el) => el.textContent);
+    expect(dtOrder).toEqual([
+      "session.id",
+      "url.full",
+      "service.name",
+      "telemetry.sdk.version",
+    ]);
+  });
+
   it("pivots to logs filtered by trace_id", async () => {
     stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
     const update = renderView({ trace: "t1cafe" });
@@ -899,11 +961,18 @@ describe("TracesView span-volume chart", () => {
   });
 
   it("renders the heatmap when the independent volume query fails", async () => {
-    vi.spyOn(traceVolumeApi, "fetchTraceVolume").mockRejectedValue(new Error("volume failed"));
+    vi.spyOn(traceVolumeApi, "fetchTraceVolume").mockRejectedValue(
+      new Error("volume failed"),
+    );
     vi.spyOn(traceVolumeApi, "fetchTraceLatencyHeatmap").mockResolvedValue({
       window: { start_ns: 0, end_ns: 60_000_000_000 },
       x: { step_ns: 60_000_000_000, align: "epoch" },
-      y: { of: "duration", type: "duration_ns", bounds: [10_000_000], overflow: true },
+      y: {
+        of: "duration",
+        type: "duration_ns",
+        bounds: [10_000_000],
+        overflow: true,
+      },
       value: "count",
       cells: [{ time_bucket_ns: 0, duration_bucket: 0, count: 2 }],
     });
@@ -911,7 +980,9 @@ describe("TracesView span-volume chart", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Heatmap" }));
 
-    expect(await screen.findByTestId("trace-volume-heatmap")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("trace-volume-heatmap"),
+    ).toBeInTheDocument();
   });
 
   it("asks for the volume aggregate without a row limit", async () => {
