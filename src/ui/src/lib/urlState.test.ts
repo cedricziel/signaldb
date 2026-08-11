@@ -130,6 +130,21 @@ describe("buildSearch", () => {
     expect(parseExploreState(search)).toEqual({ ...state, signal: "logs" });
   });
 
+  it("round-trips the catalog signal's selected entity type", () => {
+    const state = {
+      ...DEFAULT_STATE,
+      signal: "catalog" as const,
+      catalogEntity: "database",
+    };
+    const search = buildSearch(state);
+    expect(search).toContain("entity=database");
+    expect(parseExploreState(search)).toEqual({ ...state, signal: "logs" });
+  });
+
+  it("omits the entity param for the default entity type", () => {
+    expect(buildSearch(DEFAULT_STATE)).not.toContain("entity=");
+  });
+
   it("omits tenant params for the ambient default context", () => {
     expect(buildSearch(DEFAULT_STATE)).not.toContain("tenant");
     const state = parseExploreState("?tenant=acme&dataset=prod");

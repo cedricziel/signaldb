@@ -1,5 +1,6 @@
 import { Link } from "react-router";
 import { TimeRangePicker } from "../shell/TimeRangePicker";
+import { CatalogView } from "../catalog/CatalogView";
 import { LogsView } from "../logs/LogsView";
 import { MetricsView } from "../metrics/MetricsView";
 import { ProfilesView } from "../profiles/ProfilesView";
@@ -13,6 +14,7 @@ import {
 import "./explore.css";
 
 const SIGNAL_TABS: { id: Signal; label: string }[] = [
+  { id: "catalog", label: "Catalog" },
   { id: "logs", label: "Logs" },
   { id: "traces", label: "Traces" },
   { id: "metrics", label: "Metrics" },
@@ -64,6 +66,9 @@ export function ExploreView({ state, update }: Props) {
         </div>
       </div>
 
+      {state.signal === "catalog" && (
+        <CatalogView state={state} update={update} />
+      )}
       {state.signal === "logs" && <LogsView state={state} update={update} />}
       {state.signal === "traces" && (
         <TracesView state={state} update={update} />

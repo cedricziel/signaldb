@@ -5,6 +5,7 @@
 import { useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { DEFAULT_SCALE, isScale, type Scale } from "../features/explore/scale";
+import { DEFAULT_ENTITY_TYPE } from "../features/catalog/entityTypes";
 import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
 import {
   traceFilterFromParam,
@@ -24,7 +25,8 @@ import {
   type TimeRange,
 } from "./time";
 
-export type Signal = "logs" | "traces" | "metrics" | "profiles" | "query";
+export type Signal =
+  "logs" | "traces" | "metrics" | "profiles" | "query" | "catalog";
 
 export interface ExploreState {
   signal: Signal;
@@ -64,6 +66,8 @@ export interface ExploreState {
    */
   tenant: string;
   dataset: string;
+  /** Selected entity type on the catalog tab (an `EntityTypeDef.id`). */
+  catalogEntity: string;
 }
 
 export const DEFAULT_STATE: ExploreState = {
@@ -86,6 +90,7 @@ export const DEFAULT_STATE: ExploreState = {
   profileService: "",
   tenant: "",
   dataset: "",
+  catalogEntity: DEFAULT_ENTITY_TYPE,
 };
 
 export const SIGNALS: Signal[] = [
@@ -94,6 +99,7 @@ export const SIGNALS: Signal[] = [
   "metrics",
   "profiles",
   "query",
+  "catalog",
 ];
 
 /** Maps a `:signal` route param to a known signal, defaulting invalid/missing values to "logs". */
@@ -136,6 +142,7 @@ export function parseExploreState(search: string): ExploreState {
     profileService: p.get("psvc") ?? "",
     tenant: p.get("tenant") ?? "",
     dataset: p.get("dataset") ?? "",
+    catalogEntity: p.get("entity") || DEFAULT_ENTITY_TYPE,
   };
 }
 
@@ -176,6 +183,8 @@ export function buildSearch(state: ExploreState): string {
   if (state.profileService) p.set("psvc", state.profileService);
   if (state.tenant) p.set("tenant", state.tenant);
   if (state.dataset) p.set("dataset", state.dataset);
+  if (state.catalogEntity !== DEFAULT_ENTITY_TYPE)
+    p.set("entity", state.catalogEntity);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }

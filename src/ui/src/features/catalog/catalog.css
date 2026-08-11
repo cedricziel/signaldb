@@ -1,0 +1,39 @@
+.catalog {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.catalog-main {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 16px 20px;
+}
+
+.catalog-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.catalog-title {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.catalog-sub {
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.catalog-row-drillable {
+  cursor: pointer;
+}
+
+.catalog-row-drillable:hover {
+  background: var(--surface2);
+}
