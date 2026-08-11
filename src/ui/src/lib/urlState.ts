@@ -199,18 +199,31 @@ export function crossSignalSearch(state: ExploreState): string {
 }
 
 /**
+ * `update()`'s options. `push: true` marks a patch as entering a
+ * conceptually different view (opening a trace, drilling into a group) —
+ * a real navigation a user expects Back to step out of, one level at a
+ * time — rather than refining state within the current view.
+ */
+export interface UpdateOptions {
+  push?: boolean;
+}
+
+export type UpdateFn = (
+  patch: Partial<ExploreState>,
+  opts?: UpdateOptions,
+) => void;
+
+/**
  * URL-backed state: the signal comes from the route's `:signal` path segment
  * (must be rendered under a matching route — see `routes.tsx`), everything
- * else from search params. `update()` replaces the current history entry —
- * refining filters/range/etc. within a signal is one entry, not one per
- * keystroke. Switching signals is a different kind of navigation (a real
- * route change a user expects Back to undo) and goes through `<Link>`
- * instead — see the signal tabs in `ExploreView` and `crossSignalSearch`.
+ * else from search params. `update()` replaces the current history entry by
+ * default — refining filters/range/etc. within a view is one entry, not one
+ * per keystroke. Pass `{ push: true }` for a patch that enters a genuinely
+ * different view (see `UpdateOptions`). Switching signals is the same kind
+ * of navigation but goes through `<Link>` instead — see the signal tabs in
+ * `ExploreView` and `crossSignalSearch`.
  */
-export function useExploreState(): [
-  ExploreState,
-  (patch: Partial<ExploreState>) => void,
-] {
+export function useExploreState(): [ExploreState, UpdateFn] {
   const location = useLocation();
   const navigate = useNavigate();
   const { signal: signalParam } = useParams<{ signal?: string }>();
@@ -219,10 +232,12 @@ export function useExploreState(): [
     signal: signalFromParam(signalParam),
   };
 
-  const update = useCallback(
-    (patch: Partial<ExploreState>) => {
+  const update = useCallback<UpdateFn>(
+    (patch, opts) => {
       const next = { ...state, ...patch };
-      navigate(`/${next.signal}${buildSearch(next)}`, { replace: true });
+      navigate(`/${next.signal}${buildSearch(next)}`, {
+        replace: !opts?.push,
+      });
     },
     // `state` is recomputed each render from location.search/signalParam, so
     // depending on those (not `state` itself) still recreates `update`

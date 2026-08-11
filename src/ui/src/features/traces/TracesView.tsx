@@ -11,6 +11,7 @@ import {
   type SpanEventView,
   type TempoSpan,
 } from "../../api/tempo";
+import { ApiError } from "../../api/http";
 import {
   STATUS_COLORS,
   STATUS_ORDER,
@@ -58,7 +59,7 @@ import {
   type TraceGroupMember,
 } from "../../api/traceGroupMembers";
 import { SkeletonLines, SkeletonRows } from "../explore/Skeleton";
-import type { ExploreState } from "../../lib/urlState";
+import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
 import { fetchWindowTotal, looksUnresolved } from "./unresolvedGroup";
 import { describeService, groupSpanAttributes } from "./spanAttributes";
@@ -66,7 +67,7 @@ import "./traces.css";
 
 interface Props {
   state: ExploreState;
-  update: (patch: Partial<ExploreState>) => void;
+  update: UpdateFn;
 }
 
 function plural(n: number, noun: string): string {
@@ -302,7 +303,7 @@ function TraceSearch({ state, update }: Props) {
                 e.preventDefault();
                 const id = new FormData(e.currentTarget).get("traceId");
                 if (typeof id === "string" && id.trim() !== "") {
-                  update({ trace: id.trim() });
+                  update({ trace: id.trim() }, { push: true });
                 }
               }}
             >
@@ -351,7 +352,7 @@ function DimensionPickers({
   update,
 }: {
   groupBy: string;
-  update: (patch: Partial<ExploreState>) => void;
+  update: UpdateFn;
 }) {
   const dims = parseGroupBy(groupBy);
   const primary = dims[0] ?? "";
@@ -434,7 +435,7 @@ function GrainToggle({
   update,
 }: {
   grain: GroupGrain;
-  update: (patch: Partial<ExploreState>) => void;
+  update: UpdateFn;
 }) {
   return (
     <label className="group-by">
@@ -480,7 +481,7 @@ function GroupList({
   rangeKey: string;
   grain: GroupGrain;
   rangeSeconds: number;
-  update: (patch: Partial<ExploreState>) => void;
+  update: UpdateFn;
 }) {
   // Sorting is a server-side `order` stage (see api/traceGroups), so a new
   // sort must refetch rather than re-rank the fetched page.
@@ -604,7 +605,10 @@ function GroupList({
             groups.map((g) => {
               const key = groupRowKey(g.values);
               return (
-                <tr key={key} onClick={() => update({ group: key })}>
+                <tr
+                  key={key}
+                  onClick={() => update({ group: key }, { push: true })}
+                >
                   <td>
                     <button className="trace-open">
                       {g.values[0] ?? NOT_SET}
@@ -690,7 +694,7 @@ function GroupDetail({
   update,
 }: {
   state: ExploreState;
-  update: (patch: Partial<ExploreState>) => void;
+  update: UpdateFn;
 }) {
   const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
   const range = resolveRange(state.range, Date.now());
@@ -795,7 +799,7 @@ function GroupDetail({
               {rows.map((m) => (
                 <tr
                   key={`${m.traceId}-${m.spanId}`}
-                  onClick={() => update({ trace: m.traceId })}
+                  onClick={() => update({ trace: m.traceId }, { push: true })}
                 >
                   <td>
                     <button className="trace-open">{m.spanName}</button>
@@ -877,6 +881,21 @@ function TraceDetail({ state, update }: Props) {
   });
 
   if (trace.isError) {
+    if (trace.error instanceof ApiError && trace.error.status === 404) {
+      return (
+        <div className="trace-not-found" role="alert">
+          <button className="backbtn" onClick={() => update({ trace: "" })}>
+            ← traces
+          </button>
+          <h3>Trace not found</h3>
+          <p>
+            <code>{state.trace}</code> isn&rsquo;t in the selected time window.
+            Trace storage is scoped by time — if you know roughly when it
+            happened, widen the range and try again.
+          </p>
+        </div>
+      );
+    }
     return (
       <div className="query-error" role="alert">
         Trace lookup failed: {(trace.error as Error).message}
@@ -995,7 +1014,7 @@ function SpanDetail({
 }: {
   span: TempoSpan;
   traceId: string;
-  update: (patch: Partial<ExploreState>) => void;
+  update: UpdateFn;
 }) {
   const groups = groupSpanAttributes(span.attributes);
   return (
