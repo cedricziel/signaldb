@@ -181,12 +181,31 @@ export function buildSearch(state: ExploreState): string {
 }
 
 /**
+ * Search params to carry into a *different* signal's URL: the window and
+ * tenant context, which stay meaningful across tabs. Everything else
+ * (filters, search text, trace/group selection, PromQL, ...) is specific to
+ * the signal you're leaving and would either be dead weight or, worse,
+ * silently misapplied if a param name ever collided — so it's dropped. Used
+ * to build the signal tabs' `<Link>` targets in `ExploreView`.
+ */
+export function crossSignalSearch(state: ExploreState): string {
+  return buildSearch({
+    ...DEFAULT_STATE,
+    range: state.range,
+    live: state.live,
+    tenant: state.tenant,
+    dataset: state.dataset,
+  });
+}
+
+/**
  * URL-backed state: the signal comes from the route's `:signal` path segment
  * (must be rendered under a matching route — see `routes.tsx`), everything
- * else from search params. Updates replace the current history entry
- * (queries as you refine are one entry) and switch path when the signal
- * changes; browser back/forward still works across externally navigated
- * URLs since it all flows through the router.
+ * else from search params. `update()` replaces the current history entry —
+ * refining filters/range/etc. within a signal is one entry, not one per
+ * keystroke. Switching signals is a different kind of navigation (a real
+ * route change a user expects Back to undo) and goes through `<Link>`
+ * instead — see the signal tabs in `ExploreView` and `crossSignalSearch`.
  */
 export function useExploreState(): [
   ExploreState,

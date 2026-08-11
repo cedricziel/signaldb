@@ -549,6 +549,14 @@
   color: var(--dim);
 }
 
+.span-event-time {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .span-event-msg {
   margin-top: 3px;
   overflow-wrap: anywhere;

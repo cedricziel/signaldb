@@ -126,6 +126,7 @@ const TRACE_BODY = {
           events: [
             {
               name: "exception",
+              timeUnixNano: "1055000000",
               attributes: {
                 "exception.type": {
                   key: "exception.type",
@@ -672,6 +673,15 @@ describe("TracesView detail", () => {
     expect(screen.getByText("payment.provider")).toBeInTheDocument();
     expect(screen.getByText("stripe")).toBeInTheDocument();
     expect(screen.getByText(/1 error/)).toBeInTheDocument();
+  });
+
+  it("shows each event's time offset from the span start", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    renderView({ trace: "t1cafe" });
+
+    // charge span starts at 1_040_000_000ns; the exception event fires at
+    // 1_055_000_000ns — 15ms later.
+    expect(await screen.findByText("+15 ms")).toBeInTheDocument();
   });
 
   it("prefers preselecting an error span that recorded an exception over one that didn't", async () => {
