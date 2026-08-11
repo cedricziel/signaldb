@@ -16,6 +16,8 @@ use opentelemetry_proto::tonic::collector::{
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use tonic::codec::CompressionEncoding;
+use tonic::service::interceptor::InterceptedService;
 // Service bootstrap and configuration
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
@@ -207,36 +209,48 @@ pub async fn serve_otlp_grpc(
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
     let auth_for_logs = authenticator.clone();
-    let log_server = LogsServiceServer::with_interceptor(log_service, move |req| {
-        grpc_auth_interceptor(auth_for_logs.clone(), req)
-    });
+    let log_server = InterceptedService::new(
+        LogsServiceServer::new(log_service)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Zstd),
+        move |req| grpc_auth_interceptor(auth_for_logs.clone(), req),
+    );
 
     let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
     let trace_service = TraceAcceptorService::new(trace_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
     let auth_for_traces = authenticator.clone();
-    let trace_server = TraceServiceServer::with_interceptor(trace_service, move |req| {
-        grpc_auth_interceptor(auth_for_traces.clone(), req)
-    });
+    let trace_server = InterceptedService::new(
+        TraceServiceServer::new(trace_service)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Zstd),
+        move |req| grpc_auth_interceptor(auth_for_traces.clone(), req),
+    );
 
     let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager.clone());
     let metrics_service = MetricsAcceptorService::new(metrics_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
     let auth_for_metrics = authenticator.clone();
-    let metric_server = MetricsServiceServer::with_interceptor(metrics_service, move |req| {
-        grpc_auth_interceptor(auth_for_metrics.clone(), req)
-    });
+    let metric_server = InterceptedService::new(
+        MetricsServiceServer::new(metrics_service)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Zstd),
+        move |req| grpc_auth_interceptor(auth_for_metrics.clone(), req),
+    );
 
     let profile_handler = ProfileHandler::new(flight_transport.clone(), wal_manager.clone());
     let profile_service = ProfileAcceptorService::new(profile_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
     let auth_for_profiles = authenticator.clone();
-    let profile_server = ProfilesServiceServer::with_interceptor(profile_service, move |req| {
-        grpc_auth_interceptor(auth_for_profiles.clone(), req)
-    });
+    let profile_server = InterceptedService::new(
+        ProfilesServiceServer::new(profile_service)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Zstd),
+        move |req| grpc_auth_interceptor(auth_for_profiles.clone(), req),
+    );
 
     init_tx
         .send(())
