@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { lokiLabelValues } from "../../api/loki";
+import { SidebarResizer } from "../../components/SidebarResizer";
 import type { LabelFilter } from "../../lib/filters";
 import type { ResolvedRange } from "../../lib/time";
 
@@ -25,6 +26,7 @@ export function FieldSidebar({ labels, range, rangeKey, onAddFilter }: Props) {
 
   return (
     <aside className="sidebar" aria-label="Fields">
+      <SidebarResizer />
       <div className="sidebar-head">Fields</div>
       <input
         type="search"

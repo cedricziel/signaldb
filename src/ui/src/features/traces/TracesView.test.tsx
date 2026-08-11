@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -44,6 +44,7 @@ const fetchWindowTotal = vi.mocked(unresolvedGroupApi.fetchWindowTotal);
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  localStorage.clear();
 });
 
 beforeEach(() => {
@@ -776,6 +777,30 @@ describe("TracesView detail", () => {
       "service.name",
       "telemetry.sdk.version",
     ]);
+  });
+
+  it("resizes the span-detail sidebar by dragging the resizer, clamped and persisted", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    renderView({ trace: "t1cafe" });
+
+    const resizer = await screen.findByRole("separator", {
+      name: "Resize span details",
+    });
+    const body = resizer.parentElement as HTMLElement;
+    expect(body.style.getPropertyValue("--span-detail-w")).toBe("320px");
+
+    // Dragging left (negative dx) widens the sidebar, which sits to its right.
+    fireEvent.mouseDown(resizer, { clientX: 500 });
+    fireEvent.mouseMove(window, { clientX: 400 });
+    fireEvent.mouseUp(window);
+    expect(body.style.getPropertyValue("--span-detail-w")).toBe("420px");
+    expect(localStorage.getItem("signaldb.trace.sidebarWidth")).toBe("420");
+
+    // Clamped to the configured max (320 + 1000 would be 1320, way over 640).
+    fireEvent.mouseDown(resizer, { clientX: 500 });
+    fireEvent.mouseMove(window, { clientX: -500 });
+    fireEvent.mouseUp(window);
+    expect(body.style.getPropertyValue("--span-detail-w")).toBe("640px");
   });
 
   it("pivots to logs filtered by trace_id", async () => {
