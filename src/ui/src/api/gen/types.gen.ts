@@ -239,6 +239,11 @@ export type DatasetResponse = {
 };
 
 /**
+ * Whether predicates may address a field.
+ */
+export type Filterability = 'filterable' | 'retrieval_only';
+
+/**
  * Epoch-aligned time axis with a fixed nanosecond step.
  */
 export type HeatmapAxisX = {
@@ -300,6 +305,16 @@ export type ListTenantsResponse = {
     tenants: Array<TenantResponse>;
 };
 
+/**
+ * The semantic role of a logical field.
+ */
+export type LogicalFieldKind = 'attribute' | 'record_metadata' | 'join_key' | 'signal_db_defined';
+
+/**
+ * The client-visible type of a logical field.
+ */
+export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_ns' | 'duration_ns' | 'bytes' | 'any_value';
+
 export type ManageApiKeyResponse = {
     created_at: string;
     dataset_id?: string | null;
@@ -356,6 +371,55 @@ export type ManageDatasetResponse = {
  */
 export type ManageError = {
     error: string;
+};
+
+/**
+ * One logical (client-visible, OTel-native) field, as registered in
+ * [`common::schema::logical::LogicalSchema`].
+ */
+export type ManageLogicalField = {
+    filterability: Filterability;
+    kind: LogicalFieldKind;
+    /**
+     * `resource` | `scope` | `record`, absent when the field isn't
+     * attribute-scoped (a plain `String` here, not `Option<AttributeLevel>`
+     * — utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,
+     * which the progenitor-generated Rust SDK client can't parse).
+     */
+    level?: string | null;
+    name: string;
+    non_native: boolean;
+    source: string;
+    value_type: LogicalType;
+};
+
+/**
+ * One physical (storage) column, as resolved from `schemas.toml`.
+ */
+export type ManagePhysicalField = {
+    computed?: string | null;
+    field_type: string;
+    name: string;
+    physical_only: boolean;
+    required: boolean;
+};
+
+/**
+ * One resolved table-schema version for one signal source.
+ */
+export type ManagePhysicalSchema = {
+    description: string;
+    fields: Array<ManagePhysicalField>;
+    is_current: boolean;
+    partition_by: Array<string>;
+    source: string;
+    version: string;
+};
+
+export type ManageSchemaResponse = {
+    logical: Array<ManageLogicalField>;
+    logical_schema_version: string;
+    physical: Array<ManagePhysicalSchema>;
 };
 
 export type MembershipResponse = {
@@ -1060,6 +1124,31 @@ export type CreateUserResponses = {
 };
 
 export type CreateUserResponse = CreateUserResponses[keyof CreateUserResponses];
+
+export type ManageGetSchemaData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/manage/schema';
+};
+
+export type ManageGetSchemaErrors = {
+    /**
+     * Instance administrator required
+     */
+    403: ManageError;
+};
+
+export type ManageGetSchemaError = ManageGetSchemaErrors[keyof ManageGetSchemaErrors];
+
+export type ManageGetSchemaResponses = {
+    /**
+     * Logical and physical schema
+     */
+    200: ManageSchemaResponse;
+};
+
+export type ManageGetSchemaResponse = ManageGetSchemaResponses[keyof ManageGetSchemaResponses];
 
 export type ManageCreateTenantData = {
     body: ManageCreateTenantRequest;

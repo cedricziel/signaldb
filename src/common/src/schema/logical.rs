@@ -3,7 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 /// The level at which an attribute is attached to an OTel record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum AttributeLevel {
     Resource,
     Scope,
@@ -11,7 +12,8 @@ pub enum AttributeLevel {
 }
 
 /// The client-visible type of a logical field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum LogicalType {
     String,
     Bool,
@@ -24,14 +26,16 @@ pub enum LogicalType {
 }
 
 /// Whether predicates may address a field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Filterability {
     Filterable,
     RetrievalOnly,
 }
 
 /// The semantic role of a logical field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum LogicalFieldKind {
     Attribute,
     RecordMetadata,
@@ -142,6 +146,13 @@ impl LogicalSchema {
     ) -> Self {
         self.physical_names = names.into_iter().map(Into::into).collect();
         self
+    }
+
+    /// Every registered logical field, in no particular order. Admin
+    /// tooling iterates this to render the schema; query resolution goes
+    /// through [`Self::resolve`] instead.
+    pub fn fields(&self) -> impl Iterator<Item = &LogicalField> + '_ {
+        self.fields.values()
     }
 
     pub fn is_physical_name(&self, name: &str) -> bool {
@@ -354,6 +365,42 @@ mod tests {
             schema.resolve("logs", "service.name").unwrap().value_type,
             LogicalType::String
         );
+    }
+
+    #[test]
+    fn fields_iterates_every_registered_field_and_agrees_with_resolve() {
+        let schema = LogicalSchema::core();
+        let all: Vec<_> = schema.fields().collect();
+
+        assert!(
+            all.len() > 10,
+            "expected many registered fields, got {}",
+            all.len()
+        );
+        // A level-prefixed field must resolve back to itself via its own
+        // qualified name — the iterator and the resolver read the same map,
+        // and a prefix pins the lookup unambiguously.
+        //
+        // An unprefixed (`level: None`) field has no such guarantee: bare
+        // lookup falls back through Record/Scope/Resource attributes first
+        // (see `resolve`), so a same-named attribute at one of those levels
+        // shadows it. That's a real ambiguity in the registered schema, not
+        // a bug in `fields()` or `resolve()` — e.g. traces registers both a
+        // `RecordMetadata` "name" (the span's own name) and a `Scope`-level
+        // "name" attribute (the instrumentation scope's name); bare `name`
+        // resolves to the latter.
+        for field in all {
+            let Some(level) = field.id.level else {
+                continue;
+            };
+            let prefix = match level {
+                AttributeLevel::Resource => "resource",
+                AttributeLevel::Scope => "scope",
+                AttributeLevel::Record => "record",
+            };
+            let name = format!("{prefix}.{}", field.id.name);
+            assert_eq!(schema.resolve(&field.id.source, &name), Some(field));
+        }
     }
 
     #[test]

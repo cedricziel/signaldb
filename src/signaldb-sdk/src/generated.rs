@@ -653,6 +653,79 @@ pub mod types {
             Default::default()
         }
     }
+    ///Whether predicates may address a field.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Whether predicates may address a field.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "filterable",
+    ///    "retrieval_only"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum Filterability {
+        #[serde(rename = "filterable")]
+        Filterable,
+        #[serde(rename = "retrieval_only")]
+        RetrievalOnly,
+    }
+    impl ::std::fmt::Display for Filterability {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Filterable => f.write_str("filterable"),
+                Self::RetrievalOnly => f.write_str("retrieval_only"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for Filterability {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "filterable" => Ok(Self::Filterable),
+                "retrieval_only" => Ok(Self::RetrievalOnly),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for Filterability {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for Filterability {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for Filterability {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
     ///Epoch-aligned time axis with a fixed nanosecond step.
     ///
     /// <details><summary>JSON schema</summary>
@@ -918,6 +991,192 @@ pub mod types {
     impl ListTenantsResponse {
         pub fn builder() -> builder::ListTenantsResponse {
             Default::default()
+        }
+    }
+    ///The semantic role of a logical field.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The semantic role of a logical field.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "attribute",
+    ///    "record_metadata",
+    ///    "join_key",
+    ///    "signal_db_defined"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum LogicalFieldKind {
+        #[serde(rename = "attribute")]
+        Attribute,
+        #[serde(rename = "record_metadata")]
+        RecordMetadata,
+        #[serde(rename = "join_key")]
+        JoinKey,
+        #[serde(rename = "signal_db_defined")]
+        SignalDbDefined,
+    }
+    impl ::std::fmt::Display for LogicalFieldKind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Attribute => f.write_str("attribute"),
+                Self::RecordMetadata => f.write_str("record_metadata"),
+                Self::JoinKey => f.write_str("join_key"),
+                Self::SignalDbDefined => f.write_str("signal_db_defined"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for LogicalFieldKind {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "attribute" => Ok(Self::Attribute),
+                "record_metadata" => Ok(Self::RecordMetadata),
+                "join_key" => Ok(Self::JoinKey),
+                "signal_db_defined" => Ok(Self::SignalDbDefined),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for LogicalFieldKind {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for LogicalFieldKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for LogicalFieldKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///The client-visible type of a logical field.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The client-visible type of a logical field.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "string",
+    ///    "bool",
+    ///    "int64",
+    ///    "float64",
+    ///    "timestamp_ns",
+    ///    "duration_ns",
+    ///    "bytes",
+    ///    "any_value"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum LogicalType {
+        #[serde(rename = "string")]
+        String,
+        #[serde(rename = "bool")]
+        Bool,
+        #[serde(rename = "int64")]
+        Int64,
+        #[serde(rename = "float64")]
+        Float64,
+        #[serde(rename = "timestamp_ns")]
+        TimestampNs,
+        #[serde(rename = "duration_ns")]
+        DurationNs,
+        #[serde(rename = "bytes")]
+        Bytes,
+        #[serde(rename = "any_value")]
+        AnyValue,
+    }
+    impl ::std::fmt::Display for LogicalType {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::String => f.write_str("string"),
+                Self::Bool => f.write_str("bool"),
+                Self::Int64 => f.write_str("int64"),
+                Self::Float64 => f.write_str("float64"),
+                Self::TimestampNs => f.write_str("timestamp_ns"),
+                Self::DurationNs => f.write_str("duration_ns"),
+                Self::Bytes => f.write_str("bytes"),
+                Self::AnyValue => f.write_str("any_value"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for LogicalType {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "string" => Ok(Self::String),
+                "bool" => Ok(Self::Bool),
+                "int64" => Ok(Self::Int64),
+                "float64" => Ok(Self::Float64),
+                "timestamp_ns" => Ok(Self::TimestampNs),
+                "duration_ns" => Ok(Self::DurationNs),
+                "bytes" => Ok(Self::Bytes),
+                "any_value" => Ok(Self::AnyValue),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for LogicalType {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for LogicalType {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for LogicalType {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
         }
     }
     ///`ManageApiKeyResponse`
@@ -1242,6 +1501,226 @@ pub mod types {
     }
     impl ManageError {
         pub fn builder() -> builder::ManageError {
+            Default::default()
+        }
+    }
+    /**One logical (client-visible, OTel-native) field, as registered in
+    [`common::schema::logical::LogicalSchema`].*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One logical (client-visible, OTel-native) field, as registered in\n[`common::schema::logical::LogicalSchema`].",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "filterability",
+    ///    "kind",
+    ///    "name",
+    ///    "non_native",
+    ///    "source",
+    ///    "value_type"
+    ///  ],
+    ///  "properties": {
+    ///    "filterability": {
+    ///      "$ref": "#/components/schemas/Filterability"
+    ///    },
+    ///    "kind": {
+    ///      "$ref": "#/components/schemas/LogicalFieldKind"
+    ///    },
+    ///    "level": {
+    ///      "description": "`resource` | `scope` | `record`, absent when the field isn't\nattribute-scoped (a plain `String` here, not `Option<AttributeLevel>`\n— utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,\nwhich the progenitor-generated Rust SDK client can't parse).",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "name": {
+    ///      "type": "string"
+    ///    },
+    ///    "non_native": {
+    ///      "type": "boolean"
+    ///    },
+    ///    "source": {
+    ///      "type": "string"
+    ///    },
+    ///    "value_type": {
+    ///      "$ref": "#/components/schemas/LogicalType"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ManageLogicalField {
+        pub filterability: Filterability,
+        pub kind: LogicalFieldKind,
+        /**`resource` | `scope` | `record`, absent when the field isn't
+        attribute-scoped (a plain `String` here, not `Option<AttributeLevel>`
+        — utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,
+        which the progenitor-generated Rust SDK client can't parse).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub level: ::std::option::Option<::std::string::String>,
+        pub name: ::std::string::String,
+        pub non_native: bool,
+        pub source: ::std::string::String,
+        pub value_type: LogicalType,
+    }
+    impl ManageLogicalField {
+        pub fn builder() -> builder::ManageLogicalField {
+            Default::default()
+        }
+    }
+    ///One physical (storage) column, as resolved from `schemas.toml`.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One physical (storage) column, as resolved from `schemas.toml`.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "field_type",
+    ///    "name",
+    ///    "physical_only",
+    ///    "required"
+    ///  ],
+    ///  "properties": {
+    ///    "computed": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "field_type": {
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "type": "string"
+    ///    },
+    ///    "physical_only": {
+    ///      "type": "boolean"
+    ///    },
+    ///    "required": {
+    ///      "type": "boolean"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ManagePhysicalField {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub computed: ::std::option::Option<::std::string::String>,
+        pub field_type: ::std::string::String,
+        pub name: ::std::string::String,
+        pub physical_only: bool,
+        pub required: bool,
+    }
+    impl ManagePhysicalField {
+        pub fn builder() -> builder::ManagePhysicalField {
+            Default::default()
+        }
+    }
+    ///One resolved table-schema version for one signal source.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One resolved table-schema version for one signal source.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "description",
+    ///    "fields",
+    ///    "is_current",
+    ///    "partition_by",
+    ///    "source",
+    ///    "version"
+    ///  ],
+    ///  "properties": {
+    ///    "description": {
+    ///      "type": "string"
+    ///    },
+    ///    "fields": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ManagePhysicalField"
+    ///      }
+    ///    },
+    ///    "is_current": {
+    ///      "type": "boolean"
+    ///    },
+    ///    "partition_by": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "source": {
+    ///      "type": "string"
+    ///    },
+    ///    "version": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ManagePhysicalSchema {
+        pub description: ::std::string::String,
+        pub fields: ::std::vec::Vec<ManagePhysicalField>,
+        pub is_current: bool,
+        pub partition_by: ::std::vec::Vec<::std::string::String>,
+        pub source: ::std::string::String,
+        pub version: ::std::string::String,
+    }
+    impl ManagePhysicalSchema {
+        pub fn builder() -> builder::ManagePhysicalSchema {
+            Default::default()
+        }
+    }
+    ///`ManageSchemaResponse`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "logical",
+    ///    "logical_schema_version",
+    ///    "physical"
+    ///  ],
+    ///  "properties": {
+    ///    "logical": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ManageLogicalField"
+    ///      }
+    ///    },
+    ///    "logical_schema_version": {
+    ///      "type": "string"
+    ///    },
+    ///    "physical": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ManagePhysicalSchema"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ManageSchemaResponse {
+        pub logical: ::std::vec::Vec<ManageLogicalField>,
+        pub logical_schema_version: ::std::string::String,
+        pub physical: ::std::vec::Vec<ManagePhysicalSchema>,
+    }
+    impl ManageSchemaResponse {
+        pub fn builder() -> builder::ManageSchemaResponse {
             Default::default()
         }
     }
@@ -4344,6 +4823,425 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct ManageLogicalField {
+            filterability: ::std::result::Result<super::Filterability, ::std::string::String>,
+            kind: ::std::result::Result<super::LogicalFieldKind, ::std::string::String>,
+            level: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            non_native: ::std::result::Result<bool, ::std::string::String>,
+            source: ::std::result::Result<::std::string::String, ::std::string::String>,
+            value_type: ::std::result::Result<super::LogicalType, ::std::string::String>,
+        }
+        impl ::std::default::Default for ManageLogicalField {
+            fn default() -> Self {
+                Self {
+                    filterability: Err("no value supplied for filterability".to_string()),
+                    kind: Err("no value supplied for kind".to_string()),
+                    level: Ok(Default::default()),
+                    name: Err("no value supplied for name".to_string()),
+                    non_native: Err("no value supplied for non_native".to_string()),
+                    source: Err("no value supplied for source".to_string()),
+                    value_type: Err("no value supplied for value_type".to_string()),
+                }
+            }
+        }
+        impl ManageLogicalField {
+            pub fn filterability<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::Filterability>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.filterability = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for filterability: {e}"));
+                self
+            }
+            pub fn kind<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::LogicalFieldKind>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.kind = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for kind: {e}"));
+                self
+            }
+            pub fn level<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.level = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for level: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn non_native<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.non_native = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for non_native: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn value_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::LogicalType>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.value_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for value_type: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ManageLogicalField> for super::ManageLogicalField {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManageLogicalField,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    filterability: value.filterability?,
+                    kind: value.kind?,
+                    level: value.level?,
+                    name: value.name?,
+                    non_native: value.non_native?,
+                    source: value.source?,
+                    value_type: value.value_type?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ManageLogicalField> for ManageLogicalField {
+            fn from(value: super::ManageLogicalField) -> Self {
+                Self {
+                    filterability: Ok(value.filterability),
+                    kind: Ok(value.kind),
+                    level: Ok(value.level),
+                    name: Ok(value.name),
+                    non_native: Ok(value.non_native),
+                    source: Ok(value.source),
+                    value_type: Ok(value.value_type),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ManagePhysicalField {
+            computed: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            field_type: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            physical_only: ::std::result::Result<bool, ::std::string::String>,
+            required: ::std::result::Result<bool, ::std::string::String>,
+        }
+        impl ::std::default::Default for ManagePhysicalField {
+            fn default() -> Self {
+                Self {
+                    computed: Ok(Default::default()),
+                    field_type: Err("no value supplied for field_type".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    physical_only: Err("no value supplied for physical_only".to_string()),
+                    required: Err("no value supplied for required".to_string()),
+                }
+            }
+        }
+        impl ManagePhysicalField {
+            pub fn computed<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.computed = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for computed: {e}"));
+                self
+            }
+            pub fn field_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.field_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for field_type: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn physical_only<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.physical_only = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for physical_only: {e}"));
+                self
+            }
+            pub fn required<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.required = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for required: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ManagePhysicalField> for super::ManagePhysicalField {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManagePhysicalField,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    computed: value.computed?,
+                    field_type: value.field_type?,
+                    name: value.name?,
+                    physical_only: value.physical_only?,
+                    required: value.required?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ManagePhysicalField> for ManagePhysicalField {
+            fn from(value: super::ManagePhysicalField) -> Self {
+                Self {
+                    computed: Ok(value.computed),
+                    field_type: Ok(value.field_type),
+                    name: Ok(value.name),
+                    physical_only: Ok(value.physical_only),
+                    required: Ok(value.required),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ManagePhysicalSchema {
+            description: ::std::result::Result<::std::string::String, ::std::string::String>,
+            fields: ::std::result::Result<
+                ::std::vec::Vec<super::ManagePhysicalField>,
+                ::std::string::String,
+            >,
+            is_current: ::std::result::Result<bool, ::std::string::String>,
+            partition_by: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            source: ::std::result::Result<::std::string::String, ::std::string::String>,
+            version: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ManagePhysicalSchema {
+            fn default() -> Self {
+                Self {
+                    description: Err("no value supplied for description".to_string()),
+                    fields: Err("no value supplied for fields".to_string()),
+                    is_current: Err("no value supplied for is_current".to_string()),
+                    partition_by: Err("no value supplied for partition_by".to_string()),
+                    source: Err("no value supplied for source".to_string()),
+                    version: Err("no value supplied for version".to_string()),
+                }
+            }
+        }
+        impl ManagePhysicalSchema {
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn fields<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ManagePhysicalField>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fields = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fields: {e}"));
+                self
+            }
+            pub fn is_current<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.is_current = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for is_current: {e}"));
+                self
+            }
+            pub fn partition_by<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.partition_by = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for partition_by: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.version = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for version: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ManagePhysicalSchema> for super::ManagePhysicalSchema {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManagePhysicalSchema,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    description: value.description?,
+                    fields: value.fields?,
+                    is_current: value.is_current?,
+                    partition_by: value.partition_by?,
+                    source: value.source?,
+                    version: value.version?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ManagePhysicalSchema> for ManagePhysicalSchema {
+            fn from(value: super::ManagePhysicalSchema) -> Self {
+                Self {
+                    description: Ok(value.description),
+                    fields: Ok(value.fields),
+                    is_current: Ok(value.is_current),
+                    partition_by: Ok(value.partition_by),
+                    source: Ok(value.source),
+                    version: Ok(value.version),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ManageSchemaResponse {
+            logical: ::std::result::Result<
+                ::std::vec::Vec<super::ManageLogicalField>,
+                ::std::string::String,
+            >,
+            logical_schema_version:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+            physical: ::std::result::Result<
+                ::std::vec::Vec<super::ManagePhysicalSchema>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ManageSchemaResponse {
+            fn default() -> Self {
+                Self {
+                    logical: Err("no value supplied for logical".to_string()),
+                    logical_schema_version: Err(
+                        "no value supplied for logical_schema_version".to_string()
+                    ),
+                    physical: Err("no value supplied for physical".to_string()),
+                }
+            }
+        }
+        impl ManageSchemaResponse {
+            pub fn logical<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ManageLogicalField>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.logical = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for logical: {e}"));
+                self
+            }
+            pub fn logical_schema_version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.logical_schema_version = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for logical_schema_version: {e}")
+                });
+                self
+            }
+            pub fn physical<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ManagePhysicalSchema>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.physical = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for physical: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ManageSchemaResponse> for super::ManageSchemaResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManageSchemaResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    logical: value.logical?,
+                    logical_schema_version: value.logical_schema_version?,
+                    physical: value.physical?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ManageSchemaResponse> for ManageSchemaResponse {
+            fn from(value: super::ManageSchemaResponse) -> Self {
+                Self {
+                    logical: Ok(value.logical),
+                    logical_schema_version: Ok(value.logical_schema_version),
+                    physical: Ok(value.physical),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct MembershipResponse {
             email: ::std::result::Result<::std::string::String, ::std::string::String>,
             role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
@@ -6295,6 +7193,23 @@ impl Client {
     pub fn create_user(&self) -> builder::CreateUser<'_> {
         builder::CreateUser::new(self)
     }
+    /**GET /api/v1/manage/schema
+
+    The registered logical (OTel-native, client-visible) schema and the
+    resolved physical (storage) schema for every version of every signal
+    source — read-only, instance-admin-gated, and not tenant-scoped (the
+    schema is global, not per-tenant).
+
+    Sends a `GET` request to `/api/v1/manage/schema`
+
+    ```ignore
+    let response = client.manage_get_schema()
+        .send()
+        .await;
+    ```*/
+    pub fn manage_get_schema(&self) -> builder::ManageGetSchema<'_> {
+        builder::ManageGetSchema::new(self)
+    }
     /**Sends a `POST` request to `/api/v1/manage/tenants`
 
     ```ignore
@@ -7718,6 +8633,54 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_get_schema`]
+
+    [`Client::manage_get_schema`]: super::Client::manage_get_schema*/
+    #[derive(Debug, Clone)]
+    pub struct ManageGetSchema<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> ManageGetSchema<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/manage/schema`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ManageSchemaResponse>, Error<types::ManageError>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/manage/schema", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_get_schema",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
