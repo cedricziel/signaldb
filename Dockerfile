@@ -9,6 +9,10 @@
 # The Explore UI has the same two paths, selected independently via
 # --build-arg UI_BUILDER=<source|prebuilt> (prebuilt copies a dist built by
 # CI and staged in ui-dist/, so one UI build serves every image).
+#
+# One stage stands outside this scheme: monolithic-glibc-profiling, a
+# Debian-based heap-profiling variant of the monolithic image built from a
+# glibc binary CI stages in dist-glibc/. See the bottom of this file.
 ARG BUILDER=source
 ARG UI_BUILDER=source
 
@@ -258,3 +262,50 @@ COPY --from=builder /build/target/release/signaldb-mcp /usr/local/bin/signaldb-m
 USER signaldb
 EXPOSE 8228
 ENTRYPOINT ["/usr/local/bin/signaldb-mcp"]
+
+# ============================================================================
+# glibc heap-profiling variant (monolithic only)
+# ============================================================================
+#
+# jemalloc's heap profiler walks stacks with _Unwind_Backtrace, which is only
+# safe when the unwinder and the libc it is linked against come from the same
+# toolchain. Our musl binaries are cross-compiled with a glibc-flavoured
+# wrapper toolchain, so that pairing is broken and MALLOC_CONF=prof:true
+# SIGSEGVs - hence the musl images above carry no jemalloc-profiling.
+#
+# This variant exists to give operators heap profiles anyway: signaldb-bin
+# alone, compiled for x86_64-unknown-linux-gnu by a native glibc toolchain
+# (no cross wrapper, no ABI mismatch), running on a Debian runtime whose
+# glibc matches the builder's. It is a drop-in swap for the monolithic image.
+#
+# Prebuilt-only: CI compiles the binary on a plain runner and stages it in
+# dist-glibc/. BuildKit skips this stage entirely unless it is the build
+# target, so the missing directory does not affect other image builds.
+FROM debian:trixie-slim AS builder-prebuilt-glibc
+
+WORKDIR /build
+COPY --chmod=755 dist-glibc/ target/release/
+
+FROM debian:trixie-slim AS runtime-base-glibc
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 signaldb \
+    && useradd -u 1000 -g signaldb -M -s /usr/sbin/nologin signaldb \
+    && mkdir -p /data \
+    && chown signaldb:signaldb /data
+
+WORKDIR /data
+
+# Monolithic service, heap-profiling capable. Enable at runtime with
+# MALLOC_CONF=prof:true (see docs/users/profiles.md).
+FROM runtime-base-glibc AS monolithic-glibc-profiling
+
+COPY --from=builder-prebuilt-glibc /build/target/release/signaldb /usr/local/bin/signaldb
+COPY --from=ui-builder /build/src/ui/dist /usr/share/signaldb/ui
+ENV SIGNALDB_UI_DIR=/usr/share/signaldb/ui
+
+USER signaldb
+EXPOSE 4317 4318 50051 50053 3000
+ENTRYPOINT ["/usr/local/bin/signaldb"]
