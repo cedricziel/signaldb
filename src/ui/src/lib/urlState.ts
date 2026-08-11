@@ -68,6 +68,18 @@ export interface ExploreState {
   dataset: string;
   /** Selected entity type on the catalog tab (an `EntityTypeDef.id`). */
   catalogEntity: string;
+  /**
+   * Composite key (see `lib/traceGroups.ts`'s `compositeKey`) of the
+   * catalog entity drilled into — "" means the list view. Encodes the
+   * entity type's `identity` values.
+   */
+  catalogPrimary: string;
+  /**
+   * Composite key of the breakdown row drilled into, within `catalogPrimary`
+   * — "" means no further drill. Only meaningful when the selected entity
+   * type has a `breakdown`; encodes that single dimension's value.
+   */
+  catalogSecondary: string;
 }
 
 export const DEFAULT_STATE: ExploreState = {
@@ -91,6 +103,8 @@ export const DEFAULT_STATE: ExploreState = {
   tenant: "",
   dataset: "",
   catalogEntity: DEFAULT_ENTITY_TYPE,
+  catalogPrimary: "",
+  catalogSecondary: "",
 };
 
 export const SIGNALS: Signal[] = [
@@ -143,6 +157,8 @@ export function parseExploreState(search: string): ExploreState {
     tenant: p.get("tenant") ?? "",
     dataset: p.get("dataset") ?? "",
     catalogEntity: p.get("entity") || DEFAULT_ENTITY_TYPE,
+    catalogPrimary: p.get("primary") ?? "",
+    catalogSecondary: p.get("secondary") ?? "",
   };
 }
 
@@ -185,6 +201,8 @@ export function buildSearch(state: ExploreState): string {
   if (state.dataset) p.set("dataset", state.dataset);
   if (state.catalogEntity !== DEFAULT_ENTITY_TYPE)
     p.set("entity", state.catalogEntity);
+  if (state.catalogPrimary) p.set("primary", state.catalogPrimary);
+  if (state.catalogSecondary) p.set("secondary", state.catalogSecondary);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }

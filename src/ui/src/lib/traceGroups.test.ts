@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { TraceSummary } from "../api/tempo";
 import {
+  compositeKey,
   DEFAULT_GROUP_BY,
   formatRate,
   groupKey,
   groupValue,
   NOT_SET,
+  parseCompositeKey,
   parseGroupBy,
 } from "./traceGroups";
 
@@ -81,6 +83,26 @@ describe("groupKey", () => {
     expect(groupKey(a, ["span.name", "service.name"])).not.toBe(
       groupKey(b, ["span.name", "service.name"]),
     );
+  });
+});
+
+describe("compositeKey / parseCompositeKey", () => {
+  it("joins values with the unit separator, substituting the not-set marker for null", () => {
+    expect(compositeKey(["gateway", "edge"])).toBe("gatewayedge");
+    expect(compositeKey(["gateway", null])).toBe(`gateway${NOT_SET}`);
+  });
+
+  it("reverses compositeKey, mapping the not-set marker back to null", () => {
+    const key = compositeKey(["gateway", null]);
+    expect(
+      parseCompositeKey(key, ["service.name", "service.namespace"]),
+    ).toEqual(["gateway", null]);
+  });
+
+  it("treats a missing trailing segment as null too", () => {
+    expect(
+      parseCompositeKey("gateway", ["service.name", "service.namespace"]),
+    ).toEqual(["gateway", null]);
   });
 });
 

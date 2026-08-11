@@ -40,10 +40,12 @@ import {
 } from "../../lib/time";
 import {
   BUILTIN_DIMENSIONS,
+  compositeKey,
   formatRate,
   groupLabel,
   KEY_SEP,
   NOT_SET,
+  parseCompositeKey,
   parseGroupBy,
 } from "../../lib/traceGroups";
 import {
@@ -52,7 +54,6 @@ import {
   fetchTraceGroups,
   type GroupGrain,
   type GroupSort,
-  type TraceGroup,
 } from "../../api/traceGroups";
 import {
   fetchTraceGroupMembers,
@@ -378,16 +379,6 @@ function GrainToggle({
   );
 }
 
-/**
- * Builds the same key `groupKey()` would build for a `TraceSummary`, from a
- * server-computed group's `values` instead — so a row click drills in exactly
- * as it did when grouping was client-side, and `GroupDetail`'s
- * `groupKey(t, dims) === state.group` match keeps working unmodified.
- */
-function groupRowKey(values: TraceGroup["values"]): string {
-  return values.map((v) => v ?? NOT_SET).join(KEY_SEP);
-}
-
 function GroupList({
   dims,
   filters,
@@ -527,7 +518,7 @@ function GroupList({
             />
           ) : (
             groups.map((g) => {
-              const key = groupRowKey(g.values);
+              const key = compositeKey(g.values);
               return (
                 <tr
                   key={key}
@@ -598,21 +589,6 @@ function memberSortValue(m: TraceGroupMember, key: string): SortValue {
   }
 }
 
-/**
- * Reverses `groupRowKey`: splits the URL-stored composite key back into one
- * value per dimension. The URL already collapsed "no value for this
- * dimension" to the NOT_SET sentinel, so a value equal to it is treated as
- * null here too — the displayed "(not set)" row means the field is absent,
- * so drilling into it must query "not exists", not `eq "(not set)"`.
- */
-function parseGroupValues(key: string, dims: string[]): (string | null)[] {
-  const parts = key.split(KEY_SEP);
-  return dims.map((_, i) => {
-    const v = parts[i];
-    return v === undefined || v === NOT_SET ? null : v;
-  });
-}
-
 function GroupDetail({
   state,
   update,
@@ -624,7 +600,7 @@ function GroupDetail({
   const range = resolveRange(state.range, Date.now());
   const traceql = compileTraceQL(state.traceFilters);
   const dims = parseGroupBy(state.groupBy);
-  const values = parseGroupValues(state.group, dims);
+  const values = parseCompositeKey(state.group, dims);
 
   // The dimension pins are server-side now (see api/traceGroupMembers) — this
   // returns exactly the group's members, newest first, bounded by the same

@@ -82,6 +82,27 @@ describe("buildEntityDoc", () => {
     );
     expect(orderStage?.order).toEqual([{ of: "n", dir: "desc" }]);
   });
+
+  it("adds a raw equality clause per pinned field, after the span-kind scope", () => {
+    const doc = buildEntityDoc(service, range, { key: "n", dir: "desc" }, [
+      { field: "service.name", value: "gateway" },
+      { field: "service.namespace", value: "edge" },
+    ]);
+    expect(doc.pipeline?.slice(0, 3)).toEqual([
+      { where: { field: "span_kind", op: "eq", value: "Server" } },
+      { where: { field: "service.name", op: "eq", value: "gateway" } },
+      { where: { field: "service.namespace", op: "eq", value: "edge" } },
+    ]);
+  });
+
+  it("pins without a span-kind scope for an entity type that has none", () => {
+    const doc = buildEntityDoc(database, range, undefined, [
+      { field: "db.namespace", value: "orders" },
+    ]);
+    expect(doc.pipeline?.[0]).toEqual({
+      where: { field: "db.namespace", op: "eq", value: "orders" },
+    });
+  });
 });
 
 describe("fetchCatalogEntities", () => {

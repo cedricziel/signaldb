@@ -32,6 +32,17 @@ export interface EntityTypeDef {
    * filter is needed there.
    */
   spanKindScope?: "Server";
+  /**
+   * A second real dimension, grouped within this entity, shown as a
+   * breakdown table on its detail page — e.g. a service's inbound
+   * operations, or which services were observed alongside a host. The
+   * breakdown query inherits this entity type's own `spanKindScope`: an
+   * operation's numbers should describe inbound requests to that endpoint,
+   * same reasoning as the service level itself. Omitted where no second
+   * real dimension is wired yet (nothing here is invented to fill the gap —
+   * see the module doc).
+   */
+  breakdown?: { field: string; label: string };
 }
 
 export const ENTITY_TYPES: EntityTypeDef[] = [
@@ -41,12 +52,14 @@ export const ENTITY_TYPES: EntityTypeDef[] = [
     singular: "service",
     identity: ["service.name", "service.namespace"],
     spanKindScope: "Server",
+    breakdown: { field: "span.name", label: "Operations" },
   },
   {
     id: "database",
     label: "Databases",
     singular: "database",
     identity: ["db.namespace", "db.system.name"],
+    breakdown: { field: "db.operation.name", label: "Operations" },
   },
   {
     id: "messaging_destination",
@@ -59,30 +72,35 @@ export const ENTITY_TYPES: EntityTypeDef[] = [
     label: "Hosts",
     singular: "host",
     identity: ["host.name"],
+    breakdown: { field: "service.name", label: "Services" },
   },
   {
     id: "k8s_pod",
     label: "Kubernetes pods",
     singular: "pod",
     identity: ["k8s.pod.name", "k8s.namespace.name"],
+    breakdown: { field: "service.name", label: "Services" },
   },
   {
     id: "k8s_node",
     label: "Kubernetes nodes",
     singular: "node",
     identity: ["k8s.node.name"],
+    breakdown: { field: "service.name", label: "Services" },
   },
   {
     id: "container",
     label: "Containers",
     singular: "container",
     identity: ["container.name"],
+    breakdown: { field: "service.name", label: "Services" },
   },
   {
     id: "process",
     label: "Processes",
     singular: "process",
     identity: ["process.pid", "host.name"],
+    breakdown: { field: "service.name", label: "Services" },
   },
 ];
 

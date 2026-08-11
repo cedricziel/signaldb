@@ -20,22 +20,38 @@ import {
 } from "./traceGroups";
 import type { EntityTypeDef } from "../features/catalog/entityTypes";
 
+/** A raw field/value equality pin — an already-known identity value (from a
+ * previously-fetched row), not user-typed input, so it bypasses
+ * `FACET_FIELDS`/`TraceFilter` entirely; that mechanism exists for
+ * compiling user-facing filters (TraceQL search, URL round-tripping), a
+ * different concern from pinning a query to one specific entity. */
+export interface EntityPin {
+  field: string;
+  value: string;
+}
+
 export function buildEntityDoc(
   entityType: EntityTypeDef,
   range: ResolvedRange,
   sort: GroupSort = { key: "n", dir: "desc" },
+  pinned: EntityPin[] = [],
 ): QueryIrRequest {
-  const scope: Record<string, unknown>[] = entityType.spanKindScope
-    ? [
-        {
-          where: {
-            field: "span_kind",
-            op: "eq",
-            value: entityType.spanKindScope,
+  const scope: Record<string, unknown>[] = [
+    ...(entityType.spanKindScope
+      ? [
+          {
+            where: {
+              field: "span_kind",
+              op: "eq",
+              value: entityType.spanKindScope,
+            },
           },
-        },
-      ]
-    : [];
+        ]
+      : []),
+    ...pinned.map((p) => ({
+      where: { field: p.field, op: "eq", value: p.value },
+    })),
+  ];
 
   return {
     irVersion: 1,
@@ -77,9 +93,10 @@ export async function fetchCatalogEntities(
   entityType: EntityTypeDef,
   range: ResolvedRange,
   sort?: GroupSort,
+  pinned?: EntityPin[],
 ): Promise<TraceGroupResult> {
   const result = groupsFromIrResponse(
-    await runIrQuery(buildEntityDoc(entityType, range, sort)),
+    await runIrQuery(buildEntityDoc(entityType, range, sort, pinned)),
     entityType.identity.length,
   );
   // A span with no value for the primary identity attribute still groups
