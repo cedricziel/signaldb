@@ -404,7 +404,7 @@ jobs:
         run: |
           export RUSTC_WRAPPER=sccache
           cargo build --release --target x86_64-unknown-linux-musl \
-            --features acceptor/jemalloc,acceptor/jemalloc-profiling,router/jemalloc,router/jemalloc-profiling,writer/jemalloc,writer/jemalloc-profiling,querier/jemalloc,querier/jemalloc-profiling,compactor/jemalloc,signaldb-bin/jemalloc,signaldb-bin/jemalloc-profiling,mcp-server/jemalloc \
+            --features acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc \
             --bin signaldb-acceptor \
             --bin signaldb-router \
             --bin signaldb-writer \
@@ -470,7 +470,7 @@ jobs:
         run: |
           export RUSTC_WRAPPER=sccache
           cargo build --release --target aarch64-unknown-linux-musl \
-            --features acceptor/jemalloc,acceptor/jemalloc-profiling,router/jemalloc,router/jemalloc-profiling,writer/jemalloc,writer/jemalloc-profiling,querier/jemalloc,querier/jemalloc-profiling,compactor/jemalloc,signaldb-bin/jemalloc,signaldb-bin/jemalloc-profiling,mcp-server/jemalloc \
+            --features acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc \
             --bin signaldb-acceptor \
             --bin signaldb-router \
             --bin signaldb-writer \

@@ -103,13 +103,16 @@ RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs 
 
 # Service binaries run with jemalloc: musl's allocator degrades badly under
 # multithreaded Arrow allocation churn (signaldb-cli stays on the default).
-# jemalloc-profiling (heap self-profiling, see docs/users/profiles.md) rides
-# along on every binary that supports it - compactor and mcp-server don't
-# define the feature. It's a no-op unless MALLOC_CONF=prof:true is also set
-# at runtime; the base jemalloc allocator is already built with --enable-prof
-# via tikv-jemallocator's "profiling" Cargo feature, so this adds no new
-# compiled-in allocator cost, only the Rust-side profiling glue.
-ARG CARGO_FEATURES="acceptor/jemalloc,acceptor/jemalloc-profiling,router/jemalloc,router/jemalloc-profiling,writer/jemalloc,writer/jemalloc-profiling,querier/jemalloc,querier/jemalloc-profiling,compactor/jemalloc,signaldb-bin/jemalloc,signaldb-bin/jemalloc-profiling,mcp-server/jemalloc"
+#
+# jemalloc-profiling (heap self-profiling) is deliberately NOT enabled here.
+# The feature builds jemalloc with --enable-prof, which auto-selects
+# _Unwind_Backtrace for stack walking; on musl targets that unwinder comes
+# from the glibc-flavoured cross toolchain and is ABI-mismatched with the
+# musl runtime it gets linked into, so the process SIGSEGVs the moment
+# MALLOC_CONF=prof:true makes jemalloc walk a stack. Heap profiling lives in
+# the separate glibc image instead (see the monolithic-glibc-profiling stage
+# below and docs/users/profiles.md); these musl images do CPU profiling only.
+ARG CARGO_FEATURES="acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc"
 
 # Build dependencies only (this layer will be cached)
 RUN cargo build --release --features "${CARGO_FEATURES}" \
