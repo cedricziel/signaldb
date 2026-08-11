@@ -55,16 +55,14 @@ import {
   type GroupGrain,
   type GroupSort,
 } from "../../api/traceGroups";
-import {
-  fetchTraceGroupMembers,
-  type TraceGroupMember,
-} from "../../api/traceGroupMembers";
+import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
 import { SkeletonLines, SkeletonRows } from "../explore/Skeleton";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
 import { fetchWindowTotal, looksUnresolved } from "./unresolvedGroup";
 import { describeService, groupSpanAttributes } from "./spanAttributes";
-import { SortTh, sortRows, useSort, type SortValue } from "../../lib/sortTable";
+import { SortTh, useSort } from "../../lib/sortTable";
+import { MemberTable } from "./MemberTable";
 import "./traces.css";
 
 interface Props {
@@ -574,21 +572,6 @@ function GroupList({
   );
 }
 
-function memberSortValue(m: TraceGroupMember, key: string): SortValue {
-  switch (key) {
-    case "root":
-      return m.spanName;
-    case "service":
-      return m.serviceName;
-    case "duration":
-      return BigInt(m.durationNanos);
-    case "id":
-      return m.traceId;
-    default:
-      return BigInt(m.startNs);
-  }
-}
-
 function GroupDetail({
   state,
   update,
@@ -626,46 +609,13 @@ function GroupDetail({
       ),
   });
 
-  const [sort, toggle] = useSort("time", "desc");
-  const rows = membersQuery.data
-    ? sortRows(membersQuery.data, sort, memberSortValue)
-    : [];
-
   // At trace grain the root-span predicate makes every row a whole trace,
   // shown by its root span. At span grain a row is whatever span matched —
   // not necessarily the root — so labeling it "Root" would assert something
   // the data doesn't guarantee (exactly the misleading-label class #1070
   // exists to avoid).
   const isSpanGrain = state.grain === "spans";
-  const identityLabel = isSpanGrain ? "Span" : "Root";
   const memberNoun = isSpanGrain ? "span" : "trace";
-
-  const header = (
-    <tr>
-      <SortTh
-        label={identityLabel}
-        sortKey="root"
-        sort={sort}
-        toggle={toggle}
-      />
-      <SortTh label="Service" sortKey="service" sort={sort} toggle={toggle} />
-      <SortTh
-        label="Time"
-        sortKey="time"
-        sort={sort}
-        toggle={toggle}
-        firstDir="desc"
-      />
-      <SortTh
-        label="Duration"
-        sortKey="duration"
-        sort={sort}
-        toggle={toggle}
-        numeric
-      />
-      <SortTh label="Trace ID" sortKey="id" sort={sort} toggle={toggle} />
-    </tr>
-  );
 
   return (
     <>
@@ -676,51 +626,21 @@ function GroupDetail({
         <h3>{groupLabel(state.group)}</h3>
         <span className="tmeta">{dims.join(", ")}</span>
       </div>
-      {membersQuery.isError ? (
-        <div className="query-error" role="alert">
-          Search failed: {(membersQuery.error as Error).message}
-        </div>
-      ) : membersQuery.isPending ? (
-        <table className="trace-table" aria-busy="true">
-          <thead>{header}</thead>
-          <tbody>
-            <SkeletonRows rows={8} columns={5} numericFrom={3} />
-          </tbody>
-        </table>
-      ) : rows.length === 0 ? (
-        <div className="traces-note">
-          No {memberNoun}s for this group in this time range.
-        </div>
-      ) : (
-        <>
-          <table className="trace-table">
-            <thead>{header}</thead>
-            <tbody>
-              {rows.map((m) => (
-                <tr
-                  key={`${m.traceId}-${m.spanId}`}
-                  onClick={() => update({ trace: m.traceId }, { push: true })}
-                >
-                  <td>
-                    <button className="trace-open">{m.spanName}</button>
-                  </td>
-                  <td>{m.serviceName}</td>
-                  <td>{formatTimestamp(nanosToMs(m.startNs))}</td>
-                  <td className="num">
-                    {formatDurationMs(nanosToMs(m.durationNanos))}
-                  </td>
-                  <td className="trace-id">{m.traceId}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {/* Always true (the query always applies a limit) — states the
-              bound rather than claiming truncation we can't detect here. */}
-          <div className="traces-note">
-            Showing up to {plural(state.limit, memberNoun)}, newest first.
-          </div>
-        </>
-      )}
+      <MemberTable
+        members={membersQuery.data}
+        isError={membersQuery.isError}
+        errorMessage={
+          membersQuery.isError
+            ? `Search failed: ${(membersQuery.error as Error).message}`
+            : undefined
+        }
+        identityLabel={isSpanGrain ? "Span" : "Root"}
+        emptyMessage={`No ${memberNoun}s for this group in this time range.`}
+        // Always true (the query always applies a limit) — states the bound
+        // rather than claiming truncation we can't detect here.
+        footnote={`Showing up to ${plural(state.limit, memberNoun)}, newest first.`}
+        onOpenTrace={(traceId) => update({ trace: traceId }, { push: true })}
+      />
     </>
   );
 }
