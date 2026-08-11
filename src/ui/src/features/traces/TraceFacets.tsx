@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { fetchFacet, type FacetValue } from "../../api/traceFacets";
+import { SidebarResizer } from "../../components/SidebarResizer";
 import type { ResolvedRange } from "../../lib/time";
 import {
   FACET_FIELDS,
@@ -37,6 +38,7 @@ export function TraceFacets({
 
   return (
     <aside className="sidebar" aria-label="Facets">
+      <SidebarResizer />
       <div className="sidebar-head">Facets</div>
       <div className="fieldlist">
         {FACET_FIELDS.map((facet) => {

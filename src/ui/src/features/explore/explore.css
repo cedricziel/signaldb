@@ -256,15 +256,15 @@
 /* ---------- layout ---------- */
 
 /* One sidebar width for every signal: logs' fields panel and traces' facets
-   are the same furniture and must not drift apart. */
-.explore {
-  --sidebar-w: 248px;
-}
-
+   are the same furniture and must not drift apart. The value itself is a
+   user preference — see lib/sidebarWidth.ts, which applies it to <html>
+   before first paint and on drag, same as lib/theme.ts does for --theme. The
+   248px fallback here only covers the sliver of time (or test render) before
+   that runs. */
 .logs-body,
 .traces-body {
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-columns: var(--sidebar-w, 248px) 1fr;
   flex: 1;
   min-height: 0;
 }
@@ -293,12 +293,28 @@
 .sidebar {
   /* Also fixed here, so a sidebar dropped into a flex container matches the
      grid-based ones rather than shrinking to its content. */
-  width: var(--sidebar-w);
+  width: var(--sidebar-w, 248px);
   flex: none;
+  position: relative;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 1;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:active {
+  background: var(--info-bar);
 }
 
 .sidebar-head {

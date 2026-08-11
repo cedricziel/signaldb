@@ -342,22 +342,45 @@
 }
 
 .trace-body {
-  display: grid;
-  grid-template-columns: 1fr 300px;
+  display: flex;
   flex: 1;
   min-height: 0;
 }
 
 @media (max-width: 900px) {
   .trace-body {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .trace-resizer {
+    display: none;
+  }
+
+  .span-detail {
+    flex: 1 1 auto;
+    width: auto;
   }
 }
 
 .waterfall {
+  flex: 1 1 auto;
+  min-width: 0;
   border-right: 1px solid var(--border);
   overflow: auto;
   padding: 6px 0 10px;
+}
+
+.trace-resizer {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--border);
+  margin-left: -1px;
+}
+
+.trace-resizer:hover,
+.trace-resizer:active {
+  background: var(--info-bar);
 }
 
 .span-row {
@@ -432,6 +455,8 @@
 /* ---------- span detail ---------- */
 
 .span-detail {
+  flex: 0 0 var(--span-detail-w, 300px);
+  width: var(--span-detail-w, 300px);
   padding: 12px 14px;
   overflow-y: auto;
   font-size: 12px;
