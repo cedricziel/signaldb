@@ -833,10 +833,14 @@ mod tests {
     }
 
     fn ir_body() -> Body {
+        ir_body_for("logs")
+    }
+
+    fn ir_body_for(source: &str) -> Body {
         Body::from(
             serde_json::to_vec(&serde_json::json!({
                 "irVersion": 1,
-                "from": "logs",
+                "from": source,
                 "range": { "from": "now-1h", "to": "now" },
                 "result": "rows",
                 "pipeline": []
@@ -947,6 +951,24 @@ mod tests {
         let resp = app
             .clone()
             .oneshot(post("/api/v1/query", true, ir_body()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // Regression for the `metrics_read_scope_grants_the_metrics_ir_source`
+    // gap: that test calls `source_read_scope` directly, so it couldn't have
+    // caught the router previously 400ing "unknown query source 'metrics'"
+    // before reaching this fixture at all. This drives a real request
+    // through the full `/api/v1/query` handler, so a regression here fails
+    // as 400 (unknown source), not 503 (no querier — the boundary this test
+    // expects to reach).
+    #[tokio::test]
+    async fn metrics_source_reaches_the_query_boundary() {
+        let app = test_app().await;
+        let resp = app
+            .clone()
+            .oneshot(post("/api/v1/query", true, ir_body_for("metrics")))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);

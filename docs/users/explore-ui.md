@@ -234,11 +234,12 @@ high-cardinality label — one that would explode into thousands of series, like
 a pod or trace id — shows a `⚠` warning before you run it.
 
 A live preview shows the compiled PromQL beneath the row; **Run** charts it.
-With no range function and no formula, Run queries the [Query IR](querying-ir.md)
-`metrics` source instead of PromQL — same builder, same preview, no visible
-difference, except a dotted OTel-native metric name (e.g.
-`signaldb.wal.entries_processed`) now works, where PromQL's grammar can't
-lex it. Adding a range function or a formula falls back to PromQL, unchanged.
+For a single query row with no range function and no formula, Run queries the
+[Query IR](querying-ir.md) `metrics` source instead of PromQL — same builder,
+same preview, no visible difference, except a dotted OTel-native metric name
+(e.g. `signaldb.wal.entries_processed`) now works, where PromQL's grammar
+can't lex it. Adding a second query row (even without a formula), a range
+function, or a formula all fall back to PromQL, unchanged.
 
 ### Formulas across multiple queries
 

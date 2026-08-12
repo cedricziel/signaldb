@@ -14,19 +14,32 @@ import type { LabelFilter } from "../lib/filters";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import type { MetricQuery } from "../features/metrics/buildPromQL";
 
+/** Builder labels come from `promLabelNames`/`promLabelValues` — Prometheus'
+ * physical, underscored label spelling. The IR's `metrics` source registers
+ * `service.name` as the logical alias for the physical `service_name`
+ * column, and rejects the physical spelling directly (a document must name
+ * a logical field, never storage — see ir_planner.rs's `SourcePlan.aliases`
+ * and the resolver's physical-addressing guard). Every other label a user
+ * might pick (e.g. `region`) isn't a registered physical column name, so it
+ * resolves fine as a bare attribute reference without this mapping. */
+function irFieldForLabel(label: string): string {
+  return label === "service_name" ? "service.name" : label;
+}
+
 /** One `LabelFilter` as an IR `where` clause, or `null` for an op the IR
  * predicate grammar can't express directly (none today — kept total rather
  * than partial so a future `FilterOp` addition fails loudly here). */
 function filterWhere(f: LabelFilter): Record<string, unknown> {
+  const field = irFieldForLabel(f.label);
   switch (f.op) {
     case "=":
-      return { field: f.label, op: "eq", value: f.value };
+      return { field, op: "eq", value: f.value };
     case "!=":
-      return { field: f.label, op: "ne", value: f.value };
+      return { field, op: "ne", value: f.value };
     case "=~":
-      return { field: f.label, op: "regex", value: f.value };
+      return { field, op: "regex", value: f.value };
     case "!~":
-      return { not: { field: f.label, op: "regex", value: f.value } };
+      return { not: { field, op: "regex", value: f.value } };
   }
 }
 
@@ -59,7 +72,7 @@ export function buildMetricIrDoc(
       ...query.filters.map((f) => ({ where: filterWhere(f) })),
       {
         aggregate: {
-          by: query.agg?.by ?? [],
+          by: (query.agg?.by ?? []).map(irFieldForLabel),
           aggs: [agg],
           step: `${stepSeconds}s`,
         },

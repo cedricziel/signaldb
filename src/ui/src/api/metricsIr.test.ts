@@ -60,8 +60,12 @@ describe("buildMetricIrDoc", () => {
       ],
     };
     const doc = buildMetricIrDoc(q, range, 60);
+    // Prometheus' physical service_name label is canonicalized to the IR's
+    // logical service.name — the planner rejects the bare physical column
+    // name (see ir_planner.rs). Every other label isn't a registered
+    // physical column, so it passes through unchanged.
     expect(doc?.pipeline?.slice(1, 5)).toEqual([
-      { where: { field: "service_name", op: "eq", value: "signaldb-writer" } },
+      { where: { field: "service.name", op: "eq", value: "signaldb-writer" } },
       { where: { field: "region", op: "ne", value: "eu" } },
       { where: { field: "host", op: "regex", value: "worker-.*" } },
       {
@@ -90,6 +94,19 @@ describe("buildMetricIrDoc", () => {
       ...emptyQuery("a"),
       metric: "signaldb.wal.entries_processed",
       agg: { op: "avg", by: ["service.name", "host.name"] },
+    };
+    const doc = buildMetricIrDoc(q, range, 60);
+    const aggStage = doc?.pipeline?.find(
+      (s): s is { aggregate: { by: unknown } } => "aggregate" in s,
+    );
+    expect(aggStage?.aggregate.by).toEqual(["service.name", "host.name"]);
+  });
+
+  it("canonicalizes a service_name group-by to the logical service.name", () => {
+    const q: MetricQuery = {
+      ...emptyQuery("a"),
+      metric: "signaldb.wal.entries_processed",
+      agg: { op: "avg", by: ["service_name", "host.name"] },
     };
     const doc = buildMetricIrDoc(q, range, 60);
     const aggStage = doc?.pipeline?.find(
