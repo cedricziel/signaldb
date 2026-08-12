@@ -541,6 +541,27 @@ impl InferCtx<'_> {
             self.require_filterable(by)?;
             let _ = self.ref_type(by)?;
         }
+        // The lowerer aliases each `by` field via a non-alnum→'_' identifier
+        // normalization (`safe_ident`, ir_planner.rs) to build the reinjected
+        // DataFrame's schema, and always emits a `bucket` time column — so
+        // two `by` fields that normalize to the same identifier (including
+        // literal duplicates) or an `as` colliding with "bucket" or a `by`
+        // alias would produce an ambiguous or duplicate output column.
+        let mut output_idents: std::collections::HashSet<String> =
+            std::collections::HashSet::from(["bucket".to_string()]);
+        for by in &hq.by {
+            let alias = histogram_by_ident(by);
+            if !output_idents.insert(alias.clone()) {
+                return Err(IrError::Invalid(format!(
+                    "histogram_quantile by fields collide after normalization: '{alias}'"
+                )));
+            }
+        }
+        if output_idents.contains(&hq.as_name) {
+            return Err(IrError::DuplicateName {
+                name: hq.as_name.clone(),
+            });
+        }
         self.guard_logical_name(&hq.as_name)?;
         let collides = self.names.iter().any(|n| n == &hq.as_name)
             || hq.by.iter().any(|b| b == &hq.as_name)
@@ -694,6 +715,22 @@ fn check_range(range: &Range) -> Result<(), IrError> {
     coerce_for("range.from", &range.from, &ValueType::TimestampNs)?;
     coerce_for("range.to", &range.to, &ValueType::TimestampNs)?;
     Ok(())
+}
+
+/// Mirrors `ir_planner.rs`'s `safe_ident`: the identifier a `histogram_quantile`
+/// `by` field is aliased to in the lowerer's reinjected output schema (no
+/// dots, which DataFusion would read as a table qualifier). Duplicated here
+/// rather than shared because `common` doesn't depend on `querier`.
+fn histogram_by_ident(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn is_numeric(t: &ValueType) -> bool {
@@ -1017,6 +1054,57 @@ mod tests {
             ]
         });
         document["result"] = json!("series");
+        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::DuplicateName { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn histogram_quantile_rejects_duplicate_by_field() {
+        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        document["pipeline"][0]["histogram_quantile"]["by"] =
+            json!(["service.name", "service.name"]);
+        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn histogram_quantile_rejects_by_fields_colliding_after_normalization() {
+        // Two independently-resolvable logical fields that normalize
+        // (dots→underscores) to the same output identifier: the lowerer
+        // would alias both `by` fields to the same output column.
+        let resolver = metrics_histogram_resolver()
+            .with_column(
+                "metrics_histogram",
+                "host.name",
+                "host_name_a",
+                ValueType::String,
+            )
+            .with_column(
+                "metrics_histogram",
+                "host_name",
+                "host_name_b",
+                ValueType::String,
+            );
+        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        document["pipeline"][0]["histogram_quantile"]["by"] = json!(["host.name", "host_name"]);
+        let err = validate_json_with(document, &resolver).unwrap_err();
+        assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn histogram_quantile_rejects_as_reserved_bucket_name() {
+        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        document["pipeline"][0]["histogram_quantile"]["as"] = json!("bucket");
+        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::DuplicateName { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn histogram_quantile_rejects_as_colliding_with_a_by_alias() {
+        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        // `by: ["service.name"]` aliases to "service_name"; `as` colliding
+        // with that alias (not the logical name) is still ambiguous output.
+        document["pipeline"][0]["histogram_quantile"]["as"] = json!("service_name");
         let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::DuplicateName { .. }), "got {err:?}");
     }
