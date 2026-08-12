@@ -175,16 +175,10 @@ pub struct FlamegraphResult {
     pub total: i64,
     /// Largest self value of any block, used for color scaling.
     pub max_self: i64,
-    /// `true` when the matched profile rows exceeded the server's payload
-    /// cap and the flamegraph was aggregated over only the first
-    /// `max_search_limit` of them.
+    /// `true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows
+    /// matched — a row-count cap, not a byte-size one — and the flamegraph
+    /// was aggregated over only the first 1,000 of them.
     pub truncated: bool,
-}
-
-impl FlamegraphResult {
-    fn is_empty(&self) -> bool {
-        self.names.is_empty() && self.levels.is_empty()
-    }
 }
 
 /// The single canonical response contract. `result` discriminates which fields
@@ -208,8 +202,11 @@ pub struct QueryIrResponse {
     pub step_ns: Option<i64>,
     #[serde(default, skip_serializing_if = "HeatmapResult::is_empty")]
     pub heatmap: HeatmapResult,
-    #[serde(default, skip_serializing_if = "FlamegraphResult::is_empty")]
-    pub flamegraph: FlamegraphResult,
+    /// Present iff `result == "flamegraph"` — `Some` even when zero profiles
+    /// matched, so an empty match set stays distinguishable from "this
+    /// response has no flamegraph at all" (i.e. a different envelope).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flamegraph: Option<FlamegraphResult>,
 }
 
 /// Submit a native Query IR document.
@@ -402,7 +399,7 @@ fn build_envelope(
                 series,
                 step_ns,
                 heatmap: HeatmapResult::default(),
-                flamegraph: FlamegraphResult::default(),
+                flamegraph: None,
             })
         }
         "rows" | "table" => {
@@ -415,7 +412,7 @@ fn build_envelope(
                 series: Vec::new(),
                 step_ns: None,
                 heatmap: HeatmapResult::default(),
-                flamegraph: FlamegraphResult::default(),
+                flamegraph: None,
             })
         }
         "heatmap" => {
@@ -463,7 +460,7 @@ fn build_envelope(
                     value: stage.value.as_name.clone(),
                     cells: to_heatmap_cells(batches)?,
                 },
-                flamegraph: FlamegraphResult::default(),
+                flamegraph: None,
             })
         }
         "flamegraph" => Ok(QueryIrResponse {
@@ -474,7 +471,7 @@ fn build_envelope(
             series: Vec::new(),
             step_ns: None,
             heatmap: HeatmapResult::default(),
-            flamegraph: to_flamegraph_result(batches)?,
+            flamegraph: Some(to_flamegraph_result(batches)?),
         }),
         other => Err(ApiError::bad_request(format!(
             "unsupported result envelope '{other}'"
@@ -1198,14 +1195,21 @@ mod tests {
             &document,
         )
         .unwrap();
-        assert_eq!(response.flamegraph.names, vec!["total", "main", "foo"]);
-        assert_eq!(response.flamegraph.total, 100);
-        assert_eq!(response.flamegraph.max_self, 70);
-        assert!(response.flamegraph.truncated);
+        let flamegraph = response.flamegraph.expect("flamegraph envelope is present");
+        assert_eq!(flamegraph.names, vec!["total", "main", "foo"]);
+        assert_eq!(flamegraph.total, 100);
+        assert_eq!(flamegraph.max_self, 70);
+        assert!(flamegraph.truncated);
     }
 
+    /// A flamegraph query that matches zero profile rows still carries
+    /// `Some(FlamegraphResult)` — never `None`. `None` on this field means
+    /// "not a flamegraph response", not "zero matches"; conflating the two
+    /// would make an empty match set indistinguishable from a wrong envelope
+    /// to any consumer that branches on presence (e.g. the MCP `get_profile`
+    /// tool's not-found check).
     #[test]
-    fn flamegraph_envelope_defaults_when_no_rows_matched() {
+    fn flamegraph_envelope_is_some_even_when_no_rows_matched() {
         let document = serde_json::json!({
             "irVersion": 1, "from": "profiles", "range": { "from": "0", "to": "60" },
             "result": "flamegraph", "pipeline": []
@@ -1220,8 +1224,32 @@ mod tests {
             &document,
         )
         .unwrap();
-        assert!(response.flamegraph.names.is_empty());
-        assert_eq!(response.flamegraph.total, 0);
-        assert!(!response.flamegraph.truncated);
+        let flamegraph = response
+            .flamegraph
+            .expect("flamegraph envelope is present even with zero matches");
+        assert!(flamegraph.names.is_empty());
+        assert_eq!(flamegraph.total, 0);
+        assert!(!flamegraph.truncated);
+    }
+
+    /// Every non-flamegraph envelope carries `flamegraph: None` — the field
+    /// only ever appears for `result == "flamegraph"`.
+    #[test]
+    fn non_flamegraph_envelopes_carry_no_flamegraph_field() {
+        let document = serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "0", "to": "60" },
+            "result": "rows", "pipeline": []
+        });
+        let response = build_envelope(
+            "rows",
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 60,
+            },
+            &[],
+            &document,
+        )
+        .unwrap();
+        assert!(response.flamegraph.is_none());
     }
 }

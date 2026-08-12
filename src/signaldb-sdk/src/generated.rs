@@ -775,7 +775,7 @@ pub mod types {
     ///      "format": "int64"
     ///    },
     ///    "truncated": {
-    ///      "description": "`true` when the matched profile rows exceeded the server's payload\ncap and the flamegraph was aggregated over only the first\n`max_search_limit` of them.",
+    ///      "description": "`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows\nmatched — a row-count cap, not a byte-size one — and the flamegraph\nwas aggregated over only the first 1,000 of them.",
     ///      "type": "boolean"
     ///    }
     ///  }
@@ -793,9 +793,9 @@ pub mod types {
         pub names: ::std::vec::Vec<::std::string::String>,
         ///Total value of the root (sum of all samples).
         pub total: i64,
-        /**`true` when the matched profile rows exceeded the server's payload
-        cap and the flamegraph was aggregated over only the first
-        `max_search_limit` of them.*/
+        /**`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows
+        matched — a row-count cap, not a byte-size one — and the flamegraph
+        was aggregated over only the first 1,000 of them.*/
         pub truncated: bool,
     }
     impl FlamegraphResult {

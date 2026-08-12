@@ -69,11 +69,13 @@ no new client-generation surface beyond one more enum variant.
 
 Unlike `rows`/`table`/`series`, a `flamegraph`-terminated pipeline does not
 lower into a DataFusion projection over the profiles table's summary
-columns. The planner instead recognizes the envelope, resolves the matching
-profile rows through the existing `ProfileService::fetch_models` (still
-tenant/dataset-scoped, still honoring any `where` predicates translated to
-its existing selector/range parameters), and calls
-`aggregate_profiles_to_flamegraph` directly. This means `aggregate`/`topk`/
+columns. The planner instead recognizes the envelope, retains the
+pipeline's own already scanned, time-windowed, `where`-filtered
+`DataFrame` — the same one every other envelope lowers from, so
+tenant/dataset scoping and predicate handling stay identical — collects
+and decodes its full rows (including `samples_json`/`stacktraces_json`,
+server-side only) once capped, and calls
+`aggregate_profiles_to_flamegraph` directly on the result. This means `aggregate`/`topk`/
 `order`/`limit` stages are **not legal** before a `flamegraph` envelope —
 only `from`/`where` are — because the aggregation itself _is_ the terminal
 stage, not a DataFusion-lowered one. This mirrors how `extract` is only

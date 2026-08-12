@@ -2698,7 +2698,7 @@
           },
           "truncated": {
             "type": "boolean",
-            "description": "`true` when the matched profile rows exceeded the server's payload\ncap and the flamegraph was aggregated over only the first\n`max_search_limit` of them."
+            "description": "`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows\nmatched — a row-count cap, not a byte-size one — and the flamegraph\nwas aggregated over only the first 1,000 of them."
           }
         }
       },
@@ -3299,7 +3299,15 @@
             }
           },
           "flamegraph": {
-            "$ref": "#/components/schemas/FlamegraphResult"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FlamegraphResult",
+                "description": "Present iff `result == \"flamegraph\"` — `Some` even when zero profiles\nmatched, so an empty match set stays distinguishable from \"this\nresponse has no flamegraph at all\" (i.e. a different envelope)."
+              }
+            ]
           },
           "heatmap": {
             "$ref": "#/components/schemas/HeatmapResult"
