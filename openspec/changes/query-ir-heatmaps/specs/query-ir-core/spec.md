@@ -108,6 +108,13 @@ A `fields` entry absent from the terminal relation, or a `fields` list on a
   carry, or a `series` or `heatmap` query declares `fields`
 - **THEN** the query is rejected at validation time
 
+#### Scenario: Flamegraph envelope requires the profiles source
+
+- **WHEN** a query declares the `flamegraph` envelope with `from: "logs"` or
+  `from: "traces"`
+- **THEN** the query is rejected at validation as an envelope/source
+  mismatch, naming the source
+
 ## ADDED Requirements
 
 ### Requirement: Bounded two-dimensional heatmap aggregate
