@@ -912,17 +912,24 @@ fn profile_flamegraph_document(
 }
 
 /// Extract the flamegraph from a `get_profile` query response, or a clean
-/// "not found" error when no profile matched. The `flamegraph` field is
-/// omitted from the response entirely when nothing matched (see
-/// `FlamegraphResult::is_empty` on the router side) — that omission is this
-/// tool's not-found signal, since the generic `flamegraph` envelope has no
-/// dedicated 404 of its own.
+/// "not found" error when no profile matched. `flamegraph` is `Some` for
+/// every `result: "flamegraph"` response, including a zero-match one (see
+/// the router's `QueryIrResponse.flamegraph` doc comment) — `get_profile`
+/// filters on exactly one `profile.id`, so an empty flamegraph (`names`
+/// carries nothing) means that id matched nothing, not that the field was
+/// omitted. The generic `flamegraph` envelope has no dedicated 404 of its
+/// own; this tool's not-found signal is its own interpretation of "empty",
+/// specific to a single-ID lookup.
 fn flamegraph_or_not_found(
     response: signaldb_sdk::types::QueryIrResponse,
 ) -> Result<signaldb_sdk::types::FlamegraphResult, ErrorData> {
-    response
-        .flamegraph
-        .ok_or_else(|| ErrorData::resource_not_found("get_profile: not found".to_string(), None))
+    match response.flamegraph {
+        Some(flamegraph) if !flamegraph.names.is_empty() => Ok(flamegraph),
+        _ => Err(ErrorData::resource_not_found(
+            "get_profile: not found".to_string(),
+            None,
+        )),
+    }
 }
 
 /// Map a downstream router/SDK error onto an actionable MCP tool error, so
@@ -1009,8 +1016,27 @@ mod tests {
         assert_eq!(flamegraph.names, vec!["main".to_string()]);
     }
 
+    /// The realistic not-found case: the router always sets `flamegraph:
+    /// Some(..)` for a `result: "flamegraph"` response, even when the
+    /// filtered `profile.id` matched nothing — so `Some` with empty `names`
+    /// is what `get_profile` actually sees for a missing profile, not `None`.
     #[test]
-    fn flamegraph_or_not_found_errors_when_no_profile_matched() {
+    fn flamegraph_or_not_found_errors_when_the_flamegraph_is_empty() {
+        let response = query_ir_response(serde_json::json!({
+            "result": "flamegraph",
+            "window": { "start_ns": 0, "end_ns": 1 },
+            "flamegraph": {
+                "names": [], "levels": [], "total": 0, "max_self": 0, "truncated": false
+            }
+        }));
+        let err = flamegraph_or_not_found(response).expect_err("empty flamegraph means not found");
+        assert!(err.message.contains("not found"), "got {}", err.message);
+    }
+
+    /// Defensive case: the field is absent entirely (e.g. an older or
+    /// malformed response). Still treated as not-found rather than a panic.
+    #[test]
+    fn flamegraph_or_not_found_errors_when_the_field_is_absent() {
         let response = query_ir_response(serde_json::json!({
             "result": "flamegraph",
             "window": { "start_ns": 0, "end_ns": 1 }
