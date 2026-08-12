@@ -171,6 +171,44 @@ pub struct Heatmap {
     pub value: HeatmapValue,
 }
 
+/// How data points sharing a `histogram_quantile` step bucket combine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HistogramMode {
+    /// Per-series (last − first) bucket-count delta, clamped ≥ 0 — the
+    /// `histogram_quantile(q, rate(x[step]))` shape for cumulative
+    /// temporality.
+    #[default]
+    Rate,
+    /// Element-wise sum of bucket counts — correct for delta temporality
+    /// or when a series has at most one point per step bucket.
+    Instant,
+}
+
+/// A terminal quantile-over-buckets stage, available in IR v3. Only legal on
+/// the `metrics_histogram` source: interpolates a percentile from OTLP
+/// classic-histogram bucket data, distinct from the `aggregate` stage's
+/// `fn: "quantile"` (`approx_percentile_cont` over independent scalar
+/// values — a different algorithm entirely, over a different source shape).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistogramQuantile {
+    /// The quantile, in `[0, 1]`.
+    pub q: f64,
+    /// Extra grouping labels (logical names). `metric.name` is implicit —
+    /// merging bucket data across different metrics is meaningless, since
+    /// different metrics carry different bucket bounds.
+    #[serde(default)]
+    pub by: Vec<String>,
+    /// Time-bucket width. The result is always a `series`.
+    pub step: String,
+    #[serde(default)]
+    pub mode: HistogramMode,
+    /// The output value column name.
+    #[serde(rename = "as")]
+    pub as_name: String,
+}
+
 /// A transform stage in the pipeline. Externally tagged: a single-key object
 /// whose key names the stage. An unknown key is an unsupported stage and is
 /// rejected by name.
@@ -185,6 +223,7 @@ pub enum Stage {
     Order(Vec<Order>),
     Limit(u64),
     Heatmap(Heatmap),
+    HistogramQuantile(HistogramQuantile),
 }
 
 impl Stage {
@@ -199,6 +238,7 @@ impl Stage {
             Stage::Order(_) => "order",
             Stage::Limit(_) => "limit",
             Stage::Heatmap(_) => "heatmap",
+            Stage::HistogramQuantile(_) => "histogram_quantile",
         }
     }
 }
@@ -320,6 +360,65 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(agg.scope, Some(Predicate::And(ref v)) if v.len() == 2));
+    }
+
+    #[test]
+    fn histogram_quantile_parses_with_default_mode_and_empty_by() {
+        let s: Stage = serde_json::from_value(json!({
+            "histogram_quantile": { "q": 0.95, "step": "1m", "as": "p95" }
+        }))
+        .unwrap();
+        let Stage::HistogramQuantile(hq) = s else {
+            panic!("expected a histogram_quantile stage");
+        };
+        assert_eq!(hq.q, 0.95);
+        assert_eq!(hq.by, Vec::<String>::new());
+        assert_eq!(hq.step, "1m");
+        assert_eq!(hq.mode, HistogramMode::Rate);
+        assert_eq!(hq.as_name, "p95");
+        assert_eq!(Stage::HistogramQuantile(hq).name(), "histogram_quantile");
+    }
+
+    #[test]
+    fn histogram_quantile_parses_explicit_by_and_instant_mode() {
+        let s: Stage = serde_json::from_value(json!({
+            "histogram_quantile": {
+                "q": 0.5, "by": ["service.name"], "step": "30s",
+                "mode": "instant", "as": "p50"
+            }
+        }))
+        .unwrap();
+        let Stage::HistogramQuantile(hq) = s else {
+            panic!("expected a histogram_quantile stage");
+        };
+        assert_eq!(hq.by, vec!["service.name".to_string()]);
+        assert_eq!(hq.mode, HistogramMode::Instant);
+    }
+
+    #[test]
+    fn histogram_quantile_rejects_unknown_inner_key() {
+        assert!(
+            serde_json::from_value::<Stage>(json!({
+                "histogram_quantile": { "q": 0.95, "step": "1m", "as": "p95", "bogus": 1 }
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn histogram_quantile_round_trips() {
+        let hq = HistogramQuantile {
+            q: 0.99,
+            by: vec!["service.name".to_string()],
+            step: "5m".to_string(),
+            mode: HistogramMode::Instant,
+            as_name: "p99".to_string(),
+        };
+        let encoded = serde_json::to_value(Stage::HistogramQuantile(hq.clone())).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Stage>(encoded).unwrap(),
+            Stage::HistogramQuantile(hq)
+        );
     }
 
     #[test]

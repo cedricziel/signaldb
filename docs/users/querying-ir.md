@@ -20,11 +20,11 @@ directly, without formulating a dialect string.
 This page is the reference for the IR at its foundational scope: **single-signal
 queries over `logs`, `traces`, profile summaries, and metrics**. The `metrics`
 source covers the scalar-value case — group/filter a metric by name and
-attributes, aggregate, bucket by `step` — the same as every other source;
-it does not yet cover `rate`/`irate`/`increase`, `histogram_quantile`, or
-cross-series arithmetic, which stay PromQL-only for now. Cross-signal
-correlation and structural trace matching are separate, later capabilities
-(see [Roadmap](#roadmap)).
+attributes, aggregate, bucket by `step` — the same as every other source. The
+`metrics_histogram` source plus the `histogram_quantile` stage cover
+percentile-over-buckets. `rate`/`irate`/`increase` and cross-series arithmetic
+stay PromQL-only for now. Cross-signal correlation and structural trace
+matching are separate, later capabilities (see [Roadmap](#roadmap)).
 
 ## The endpoint
 
@@ -278,8 +278,9 @@ operations remain specialized APIs rather than generic Query IR fields.
 
 `metrics` scans `metrics_gauge` and `metrics_sum` (unioned) — a scalar
 `value` per point, filtered/grouped/aggregated the same way as any other
-source. `metrics_histogram` is not included: its bucketed row shape has no
-IR aggregate equivalent yet (see [Roadmap](#roadmap)).
+source. `metrics_histogram` is a separate source (see [Histograms](#histograms))
+since its row shape — a whole bucketed histogram per point, not a scalar
+value — has no equivalent in the generic `where`/`aggregate` pipeline.
 
 The registered scalar fields are `metric.name`, `metric.value`, and
 `service.name`, plus resource attributes (`resource.*`). `metric.value` has
@@ -317,10 +318,78 @@ This is what makes an OTel-native dotted metric name — like
 queryable at all: PromQL's grammar can't lex a dot in a bare metric-name
 identifier, so the same query over `/prometheus/api/v1/query_range` 400s
 before it reaches the querier. The IR's field resolution has no such
-restriction. `rate`/`irate`/`increase`/`histogram_quantile`/cross-series
-arithmetic stay PromQL-only until they have an IR pipeline-stage
-equivalent — the explore UI's Metrics tab keeps its PromQL escape hatch for
-those.
+restriction. `rate`/`irate`/`increase` and cross-series arithmetic stay
+PromQL-only until they have an IR pipeline-stage equivalent — the explore
+UI's Metrics tab keeps its PromQL escape hatch for those.
+
+## Histograms
+
+The `metrics_histogram` source scans one row per OTLP histogram data point —
+`count`, `sum`, `min`, `max`, and the classic-histogram `bucket_counts`/
+`explicit_bounds` arrays — not a scalar value, so it's a separate source from
+`metrics`. It exposes `metric.name` and `service.name` (plus resource
+attributes) for filtering and grouping; the bucket columns themselves are not
+addressable in a `where` or `by` — they only feed the `histogram_quantile`
+stage below.
+
+A `histogram_quantile` stage (IR v3+) interpolates a percentile from those
+buckets, following the same linear-interpolation-within-bucket algorithm as
+Prometheus's `histogram_quantile()` — and, since it shares its implementation
+with SignalDB's PromQL `histogram_quantile()`, the two return identical
+values for the same query. It always produces a `series` result, grouped by
+`metric.name` plus any extra `by` labels, bucketed by `step`:
+
+```json
+{
+  "irVersion": 3,
+  "from": "metrics_histogram",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "series",
+  "pipeline": [
+    {
+      "where": {
+        "field": "metric.name",
+        "op": "eq",
+        "value": "http.server.duration"
+      }
+    },
+    {
+      "histogram_quantile": {
+        "q": 0.95,
+        "by": ["service.name"],
+        "step": "1m",
+        "as": "p95"
+      }
+    }
+  ]
+}
+```
+
+- **`q`** — the quantile, in `[0, 1]`.
+- **`by`** — extra grouping labels beyond the implicit `metric.name` (merging
+  bucket data across different metrics is meaningless, since each metric
+  carries its own bucket bounds — so `metric.name` can't be added explicitly
+  to `by`, it's already there).
+- **`step`** — the time-bucket width.
+- **`mode`** — `"rate"` (default) or `"instant"`. `rate` takes each series'
+  last-minus-first bucket-count delta within a step bucket, clamped to ≥ 0 (a
+  decrease means a counter reset) — the right mode for OTel's cumulative
+  temporality, which is what most histogram instrumentation emits. `instant`
+  sums bucket counts across points sharing a step bucket instead — the right
+  mode for delta temporality, or a series with at most one point per bucket.
+- **`as`** — the output value column name.
+
+This is deliberately a distinct stage from the `aggregate` stage's
+`fn: "quantile"` (`{"fn": "quantile", "of": "some.numeric.field", "arg": 0.95,
+"as": "p95"}`), which estimates a percentile over independent scalar values
+via `approx_percentile_cont` — a completely different algorithm, for a
+completely different source shape. Neither is a substitute for the other:
+`histogram_quantile` needs pre-bucketed histogram data; `aggregate`'s
+`quantile` needs raw numeric samples.
+
+`histogram_fraction()` (the CDF-inverse of `histogram_quantile()`) and
+`rate`/`irate`/`increase` over `metrics_histogram` have no IR stage yet — stay
+on PromQL for those (see [Roadmap](#roadmap)).
 
 ### Heatmap envelope (IR v2)
 
@@ -425,11 +494,10 @@ so it is designed and reviewed on its own risk profile:
   plus live tail + pagination for results.
 - **cross-signal correlate** — a `correlate` join stage (the IR becomes a DAG).
 - **structural traces** — a `match` stage + a `trace` result envelope.
-- **metrics: counters and histograms** — a `rate`/`irate`/`increase` stage
-  equivalent (counter delta over a window), `histogram_quantile` over
-  `metrics_histogram`'s bucketed row shape, and cross-series arithmetic
-  (formulas). The scalar-value case (gauge/sum, plain aggregation) already
-  works today — see above.
+- **metrics: counters and rates** — a `rate`/`irate`/`increase` stage
+  equivalent (counter delta over a window) and cross-series arithmetic
+  (formulas). The scalar-value case (gauge/sum, plain aggregation) and
+  histogram quantiles already work today — see above.
 
 Also deferred: the compatibility dialects lowering _into_ the IR (one engine),
 and full attribute promotion. None of these change the document shape defined

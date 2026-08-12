@@ -1,4 +1,5 @@
 pub mod error;
+pub mod histogram;
 pub mod ir_planner;
 pub mod logql;
 pub mod logql_metric;
