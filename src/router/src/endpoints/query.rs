@@ -4,7 +4,8 @@
 //! posts a versioned IR document (see the `query-ir-core` capability); the
 //! router stamps the server clock, forwards it to a querier as a
 //! `query_ir:{tenant}:{dataset}:{json}` Flight ticket, and shapes the returned
-//! RecordBatches into the declared result envelope (`rows` | `series` | `table` | `heatmap`).
+//! RecordBatches into the declared result envelope
+//! (`rows` | `series` | `table` | `heatmap` | `flamegraph`).
 //!
 //! Auth and tenant scoping are identical to the Tempo/LogQL/Prometheus
 //! surfaces: the endpoint sits behind the auth middleware and derives the
@@ -64,7 +65,8 @@ pub struct QueryIrRequest {
     #[schema(example = "logs")]
     pub from: String,
     pub range: QueryRange,
-    /// Declared result envelope: `rows`, `series`, or `table`.
+    /// Declared result envelope: `rows`, `series`, `table`, `heatmap`, or
+    /// (for the `profiles` source only) `flamegraph`.
     #[schema(example = "rows")]
     pub result: String,
     /// Curated projection (logical field names) for `rows`/`table`.
@@ -156,12 +158,42 @@ impl HeatmapResult {
     }
 }
 
+/// A flamegraph in Pyroscope flamebearer encoding — the same shape and
+/// aggregation `/pyroscope/render` returns, reused here so the native Query
+/// IR surface can retrieve an actual profile payload (bounded, aggregated)
+/// rather than raw `samples_json`/`stacktraces_json`. See `query-ir-core`'s
+/// "Profile flamegraph retrieval" requirement.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+pub struct FlamegraphResult {
+    /// Function name table referenced by the blocks' name indices.
+    pub names: Vec<String>,
+    /// One entry per depth level; each level is a flat sequence of
+    /// `[offset_delta, total, self, name_index]` quadruples.
+    #[schema(value_type = Vec<Vec<i64>>)]
+    pub levels: Vec<Vec<i64>>,
+    /// Total value of the root (sum of all samples).
+    pub total: i64,
+    /// Largest self value of any block, used for color scaling.
+    pub max_self: i64,
+    /// `true` when the matched profile rows exceeded the server's payload
+    /// cap and the flamegraph was aggregated over only the first
+    /// `max_search_limit` of them.
+    pub truncated: bool,
+}
+
+impl FlamegraphResult {
+    fn is_empty(&self) -> bool {
+        self.names.is_empty() && self.levels.is_empty()
+    }
+}
+
 /// The single canonical response contract. `result` discriminates which fields
 /// are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
-/// `series` + `step_ns`; `heatmap` fills `heatmap`.
+/// `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
+/// `flamegraph`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct QueryIrResponse {
-    /// The result envelope: `rows`, `series`, `table`, or `heatmap`.
+    /// The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
     pub result: String,
     /// The resolved absolute window the query ran over.
     pub window: ResolvedWindow,
@@ -176,6 +208,8 @@ pub struct QueryIrResponse {
     pub step_ns: Option<i64>,
     #[serde(default, skip_serializing_if = "HeatmapResult::is_empty")]
     pub heatmap: HeatmapResult,
+    #[serde(default, skip_serializing_if = "FlamegraphResult::is_empty")]
+    pub flamegraph: FlamegraphResult,
 }
 
 /// Submit a native Query IR document.
@@ -368,6 +402,7 @@ fn build_envelope(
                 series,
                 step_ns,
                 heatmap: HeatmapResult::default(),
+                flamegraph: FlamegraphResult::default(),
             })
         }
         "rows" | "table" => {
@@ -380,6 +415,7 @@ fn build_envelope(
                 series: Vec::new(),
                 step_ns: None,
                 heatmap: HeatmapResult::default(),
+                flamegraph: FlamegraphResult::default(),
             })
         }
         "heatmap" => {
@@ -427,12 +463,70 @@ fn build_envelope(
                     value: stage.value.as_name.clone(),
                     cells: to_heatmap_cells(batches)?,
                 },
+                flamegraph: FlamegraphResult::default(),
             })
         }
+        "flamegraph" => Ok(QueryIrResponse {
+            result: result.to_string(),
+            window,
+            columns: Vec::new(),
+            rows: Vec::new(),
+            series: Vec::new(),
+            step_ns: None,
+            heatmap: HeatmapResult::default(),
+            flamegraph: to_flamegraph_result(batches)?,
+        }),
         other => Err(ApiError::bad_request(format!(
             "unsupported result envelope '{other}'"
         ))),
     }
+}
+
+/// Decode the querier's single-row flamegraph batch
+/// (`flamegraph_json: Utf8`, `truncated: Boolean` — see
+/// `ir_planner::encode_flamegraph_batch`) into the HTTP response shape.
+fn to_flamegraph_result(batches: &[RecordBatch]) -> Result<FlamegraphResult, ApiError> {
+    let Some(batch) = batches.iter().find(|b| b.num_rows() > 0) else {
+        return Ok(FlamegraphResult::default());
+    };
+    let json = batch
+        .column_by_name("flamegraph_json")
+        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "flamegraph result is missing flamegraph_json",
+            )
+        })?;
+    let truncated = batch
+        .column_by_name("truncated")
+        .and_then(|array| array.as_any().downcast_ref::<BooleanArray>())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "flamegraph result is missing truncated",
+            )
+        })?;
+    #[derive(Deserialize)]
+    struct Decoded {
+        names: Vec<String>,
+        levels: Vec<Vec<i64>>,
+        total: i64,
+        max_self: i64,
+    }
+    let decoded: Decoded = serde_json::from_str(json.value(0)).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("invalid flamegraph_json: {e}"),
+        )
+    })?;
+    Ok(FlamegraphResult {
+        names: decoded.names,
+        levels: decoded.levels,
+        total: decoded.total,
+        max_self: decoded.max_self,
+        truncated: truncated.value(0),
+    })
 }
 
 fn to_heatmap_cells(batches: &[RecordBatch]) -> Result<Vec<HeatmapCell>, ApiError> {
@@ -1033,5 +1127,101 @@ mod tests {
         .unwrap();
         assert_eq!(response.heatmap.cells[0].count, 2);
         assert_eq!(response.heatmap.y.bounds, vec![1_000_000]);
+    }
+
+    // profile-payload-access task 3.1 — flamegraph envelope.
+
+    /// Mirrors `metrics_source_reaches_the_query_boundary`: a real request
+    /// through the full `/api/v1/query` handler with `profiles:read` fails
+    /// as 503 (no querier in this fixture — the boundary this test expects
+    /// to reach), not 400/403, proving the flamegraph envelope is accepted
+    /// and dispatched for the `profiles` source like any other envelope.
+    #[tokio::test]
+    async fn flamegraph_on_profiles_reaches_the_query_boundary() {
+        let app = test_app().await;
+        let body = Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+                "result": "flamegraph",
+                "pipeline": [{ "where": { "field": "profile.id", "op": "eq", "value": "abc" } }]
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .clone()
+            .oneshot(post("/api/v1/query", true, body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn flamegraph_without_profiles_scope_is_rejected_before_dispatch() {
+        let no_scope = scoped_context(vec!["logs:read"]);
+        assert!(source_read_scope(&no_scope, "profiles").is_err());
+    }
+
+    #[test]
+    fn flamegraph_envelope_decodes_the_querier_batch() {
+        use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let flamegraph_json = serde_json::json!({
+            "names": ["total", "main", "foo"],
+            "levels": [[0, 100, 0, 0], [0, 100, 30, 1, 0, 70, 70, 2]],
+            "total": 100,
+            "max_self": 70
+        })
+        .to_string();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("flamegraph_json", DataType::Utf8, false),
+                Field::new("truncated", DataType::Boolean, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec![flamegraph_json])),
+                Arc::new(BooleanArray::from(vec![true])),
+            ],
+        )
+        .unwrap();
+        let document = serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "0", "to": "60" },
+            "result": "flamegraph", "pipeline": []
+        });
+        let response = build_envelope(
+            "flamegraph",
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 60,
+            },
+            &[batch],
+            &document,
+        )
+        .unwrap();
+        assert_eq!(response.flamegraph.names, vec!["total", "main", "foo"]);
+        assert_eq!(response.flamegraph.total, 100);
+        assert_eq!(response.flamegraph.max_self, 70);
+        assert!(response.flamegraph.truncated);
+    }
+
+    #[test]
+    fn flamegraph_envelope_defaults_when_no_rows_matched() {
+        let document = serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "0", "to": "60" },
+            "result": "flamegraph", "pipeline": []
+        });
+        let response = build_envelope(
+            "flamegraph",
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 60,
+            },
+            &[],
+            &document,
+        )
+        .unwrap();
+        assert!(response.flamegraph.names.is_empty());
+        assert_eq!(response.flamegraph.total, 0);
+        assert!(!response.flamegraph.truncated);
     }
 }

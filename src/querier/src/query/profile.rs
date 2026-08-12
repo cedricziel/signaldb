@@ -527,7 +527,10 @@ impl ProfileService {
 /// Decode storage-format profile rows into model profiles. Rows with
 /// unparseable payload columns are skipped with a warning rather than
 /// failing the whole aggregation.
-fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
+///
+/// `pub(crate)`: also used by the Query IR planner's `flamegraph` envelope
+/// (`ir_planner.rs`), which reuses this decoder instead of duplicating it.
+pub(crate) fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
     use datafusion::arrow::array::{Int64Array, TimestampNanosecondArray};
 
     let Some(profile_ids) = batch

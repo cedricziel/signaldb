@@ -385,6 +385,39 @@ mod tests {
         assert_eq!(response.heatmap.expect("heatmap envelope").value, "count");
     }
 
+    /// profile-payload-access task 5.2 — the generic `query-ir` command
+    /// forwards a `flamegraph` envelope document unchanged; no dedicated CLI
+    /// flag or subcommand is needed since it already forwards an arbitrary
+    /// IR document (mirroring the heatmap and profiles precedents above).
+    #[tokio::test]
+    async fn ir_query_accepts_the_flamegraph_envelope_without_a_dedicated_command() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/query")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "from": "profiles", "result": "flamegraph"
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":"flamegraph","window":{"start_ns":0,"end_ns":60},"flamegraph":{"names":["main"],"levels":[[0,10,10,0]],"total":10,"max_self":10,"truncated":false}}"#,
+            )
+            .create_async()
+            .await;
+        let request: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "0", "to": "60" },
+            "result": "flamegraph",
+            "pipeline": [{ "where": { "field": "profile.id", "op": "eq", "value": "abc" } }]
+        }))
+        .unwrap();
+        let response = submit_ir(&server.url(), None, None, None, request)
+            .await
+            .unwrap();
+        mock.assert_async().await;
+        assert_eq!(response.result, "flamegraph");
+        assert_eq!(response.flamegraph.expect("flamegraph envelope").total, 10);
+    }
+
     #[tokio::test]
     async fn ir_query_forwards_profiles_without_a_dedicated_transport() {
         let mut server = mockito::Server::new_async().await;

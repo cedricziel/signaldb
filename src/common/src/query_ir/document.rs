@@ -23,6 +23,9 @@ pub enum ResultEnvelope {
     Series,
     Table,
     Heatmap,
+    /// A bounded, aggregated flamegraph over matched `profiles` rows. Legal
+    /// only for the `profiles` source; see `query_ir::validate`.
+    Flamegraph,
 }
 
 impl ResultEnvelope {
@@ -32,6 +35,7 @@ impl ResultEnvelope {
             ResultEnvelope::Series => "series",
             ResultEnvelope::Table => "table",
             ResultEnvelope::Heatmap => "heatmap",
+            ResultEnvelope::Flamegraph => "flamegraph",
         }
     }
 }

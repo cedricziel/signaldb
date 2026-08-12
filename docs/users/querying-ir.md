@@ -48,7 +48,7 @@ body. The response is the declared result envelope (see
   "irVersion": 1, // versioned; use 2 for heatmap
   "from": "logs", // a registered source: "logs", "traces", "profiles", or "metrics"
   "range": { "from": "now-1h", "to": "now" },
-  "result": "series", // v1: rows | series | table; v2 adds heatmap
+  "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
   "fields": ["service.name"], // optional curated projection (rows/table)
   "pipeline": [/* ordered transform stages */],
 }
@@ -248,6 +248,10 @@ The declared `result` selects one canonical response shape:
   "series": [ { "labels": {...}, "points": [[t_ns, value], ...] } ] }
 ```
 
+Two more envelopes are source-scoped rather than available everywhere:
+`heatmap` (traces only, see [below](#heatmap-envelope-ir-v2)) and
+`flamegraph` (profiles only, see [below](#flamegraph-envelope-profiles-only)).
+
 Values follow the value type: timestamps/durations are integer nanoseconds,
 bytes are base64, everything else its JSON-native form.
 
@@ -270,9 +274,69 @@ resource attributes. The default rows projection contains only those scalar
 metadata values.
 
 Profile IR deliberately does not expose `samples_json`, `stacktraces_json`, or
-attribute payload columns. Use the Pyroscope-compatible APIs for flamegraphs,
-diffs, label discovery, profile extraction, and heatmaps; those payload-oriented
-operations remain specialized APIs rather than generic Query IR fields.
+attribute payload columns as selectable/filterable fields — no query can
+address the raw payload directly, on any envelope. Retrieving the actual
+profile payload goes through the `flamegraph` envelope below instead, which
+returns it aggregated and bounded rather than as raw storage JSON. Use the
+Pyroscope-compatible APIs for diffs, label discovery, profile extraction, and
+heatmaps — those remain specialized APIs.
+
+The `samples_json`/`stacktraces_json` columns are, however, ordinary columns
+in the underlying Iceberg table: raw SQL against `profiles` (see
+[querying with SQL](querying-sql.md)) can select them directly. That's a
+different surface with different guarantees — no curated projection, no
+bounded default — not a gap in the IR.
+
+### Flamegraph envelope (profiles only)
+
+Declare `"result": "flamegraph"` on a `profiles` query to retrieve an actual
+profile payload — the same aggregation `/pyroscope/render` produces, bounded
+and structured rather than raw `samples_json`/`stacktraces_json`. A pipeline
+before it may contain only `from`/`where`; every other stage (`aggregate`,
+`topk`/`bottomk`, `order`, `extract`) is rejected, because the flamegraph
+aggregation is itself the terminal computation, not one this envelope
+composes with. Filtering to one `profile.id` returns that profile's own
+flamegraph; a broader filter (service, sample type, time range) aggregates
+across every matching profile, same as an equivalent Pyroscope selector/range
+would.
+
+```json
+{
+  "irVersion": 1,
+  "from": "profiles",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "flamegraph",
+  "pipeline": [
+    { "where": { "field": "service.name", "op": "eq", "value": "checkout" } }
+  ]
+}
+```
+
+The response carries the Pyroscope flamebearer shape plus a truncation flag:
+
+```jsonc
+{
+  "result": "flamegraph",
+  "window": { "start_ns": 0, "end_ns": 0 },
+  "flamegraph": {
+    "names": ["total", "main", "handle_request"],
+    "levels": [
+      [0, 100, 0, 0],
+      [0, 100, 30, 1, 0, 70, 70, 2],
+    ],
+    "total": 100,
+    "max_self": 70,
+    "truncated": false,
+  },
+}
+```
+
+`levels` is one entry per call-stack depth; each level is a flat sequence of
+`[offset_delta, total, self, name_index]` quadruples, `offset_delta` measured
+from the end of the previous block on the same level. `truncated: true` means
+the matched profile rows exceeded the server's cap and the flamegraph was
+aggregated over only the first batch — narrow the query to see the rest.
+`fields` is not valid on a `flamegraph` result, same as `series`.
 
 ## Metrics
 

@@ -191,7 +191,25 @@ FROM profiles GROUP BY 1 ORDER BY 3 DESC;
 SELECT DISTINCT sample_type, sample_unit FROM profiles;
 ```
 
+Note that `samples_json` and `stacktraces_json` — the raw stack-sample
+payload — are ordinary columns here: nothing restricts selecting them via
+SQL. Contrast the native Query IR below, which deliberately keeps them
+unaddressable as fields and instead offers a bounded, aggregated retrieval
+path.
+
 See [querying with SQL](querying-sql.md) for the general SQL surface.
+
+### Native Query IR
+
+The [native Query IR](querying-ir.md) reads `profiles` as one summary row per
+stored profile (`profile.id`, `timestamp`, `duration`, `sample.type`,
+`service.name`, and more) for `rows`/`table`/`series` results, and — via the
+`flamegraph` result envelope — retrieves an actual profile payload: the same
+bounded, aggregated flamegraph `/pyroscope/render` returns, not raw
+`samples_json`/`stacktraces_json`. See
+[Profile summaries](querying-ir.md#profile-summaries) and the
+[flamegraph envelope](querying-ir.md#flamegraph-envelope-profiles-only) for
+the full field/envelope reference.
 
 ### Trace correlation
 

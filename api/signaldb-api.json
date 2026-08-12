@@ -2657,6 +2657,51 @@
           "retrieval_only"
         ]
       },
+      "FlamegraphResult": {
+        "type": "object",
+        "description": "A flamegraph in Pyroscope flamebearer encoding — the same shape and\naggregation `/pyroscope/render` returns, reused here so the native Query\nIR surface can retrieve an actual profile payload (bounded, aggregated)\nrather than raw `samples_json`/`stacktraces_json`. See `query-ir-core`'s\n\"Profile flamegraph retrieval\" requirement.",
+        "required": [
+          "names",
+          "levels",
+          "total",
+          "max_self",
+          "truncated"
+        ],
+        "properties": {
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int64"
+              }
+            },
+            "description": "One entry per depth level; each level is a flat sequence of\n`[offset_delta, total, self, name_index]` quadruples."
+          },
+          "max_self": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Largest self value of any block, used for color scaling."
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Function name table referenced by the blocks' name indices."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total value of the root (sum of all samples)."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "`true` when the matched profile rows exceeded the server's payload\ncap and the flamegraph was aggregated over only the first\n`max_search_limit` of them."
+          }
+        }
+      },
       "HeatmapAxisX": {
         "type": "object",
         "description": "Epoch-aligned time axis with a fixed nanosecond step.",
@@ -3234,14 +3279,14 @@
           },
           "result": {
             "type": "string",
-            "description": "Declared result envelope: `rows`, `series`, or `table`.",
+            "description": "Declared result envelope: `rows`, `series`, `table`, `heatmap`, or\n(for the `profiles` source only) `flamegraph`.",
             "example": "rows"
           }
         }
       },
       "QueryIrResponse": {
         "type": "object",
-        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`.",
+        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`.",
         "required": [
           "result",
           "window"
@@ -3253,12 +3298,15 @@
               "$ref": "#/components/schemas/ResultColumn"
             }
           },
+          "flamegraph": {
+            "$ref": "#/components/schemas/FlamegraphResult"
+          },
           "heatmap": {
             "$ref": "#/components/schemas/HeatmapResult"
           },
           "result": {
             "type": "string",
-            "description": "The result envelope: `rows`, `series`, `table`, or `heatmap`."
+            "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`."
           },
           "rows": {
             "type": "array",
