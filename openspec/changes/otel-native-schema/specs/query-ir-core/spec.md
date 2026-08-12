@@ -19,6 +19,13 @@ or a promoted column; and (b) **pruning/pushdown** — available only from a pro
 column (row-group stats + bloom) or the derived typed containment index, never from
 the typed map itself, since Parquet keeps no per-key statistics inside a map.
 
+#### Scenario: Same result before and after promotion
+
+- **WHEN** the same IR query is executed against a field served as an
+  attribute-JSON extraction, and later against the same field after it has
+  been promoted to a physical column
+- **THEN** both executions return the same result set
+
 #### Scenario: Same result and type before and after promotion
 
 - **WHEN** the same IR query is executed against a field served from the cold typed

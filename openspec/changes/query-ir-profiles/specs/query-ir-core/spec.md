@@ -10,9 +10,14 @@ SHALL operate on profile-summary rows and SHALL expose only registered scalar
 profile metadata and registered resource or scope attributes; it SHALL NOT
 expose sample, stacktrace, or attribute JSON payloads as logical fields.
 
-#### Scenario: Logs, traces, and profiles are queryable sources
+#### Scenario: Logs and traces are queryable sources
 
-- **WHEN** a client selects `logs`, `traces`, or `profiles` as the query source
+- **WHEN** a client selects `logs` or `traces` as the query source
+- **THEN** the query executes against that signal
+
+#### Scenario: Profiles is a queryable source
+
+- **WHEN** a client selects `profiles` as the query source
 - **THEN** the query executes against that signal
 
 #### Scenario: Profile summary query returns registered metadata
@@ -32,6 +37,8 @@ expose sample, stacktrace, or attribute JSON payloads as logical fields.
 
 - **WHEN** a later change registers an additional signal source
 - **THEN** existing IR documents remain valid and the document shape is unchanged
+
+## ADDED Requirements
 
 ### Requirement: Source-specific read authorization
 
