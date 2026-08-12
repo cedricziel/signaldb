@@ -29,6 +29,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
     Aggregate, ComparisonOp, Document, Extract, FieldResolver, Heatmap, HistogramMode,
     HistogramQuantile, Leaf, Literal, Parser, Predicate, Resolved, ResultEnvelope, SourceRegistry,
@@ -36,8 +37,8 @@ use common::query_ir::{
 };
 use common::schema::logical::{Filterability, LogicalSchema, LogicalType};
 use datafusion::arrow::array::{
-    Array, Float64Array, LargeStringArray, StringArray, StringBuilder, StringViewArray,
-    TimestampNanosecondArray,
+    Array, BooleanArray, Float64Array, LargeStringArray, StringArray, StringBuilder,
+    StringViewArray, TimestampNanosecondArray,
 };
 use datafusion::arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, TimeUnit};
 use datafusion::functions::core::expr_fn::{coalesce, get_field};
@@ -57,7 +58,13 @@ use super::error::QuerierError;
 use super::histogram::{
     HistogramAcc, RateHistAcc, histogram_quantile, parse_bounds_cached, parse_f64_array,
 };
+use super::profile::batch_to_models;
 use super::table_lookup::optional_table;
+
+/// Upper bound on profile rows aggregated into one `flamegraph` result.
+/// Matches `QuerierConfig::max_search_limit`'s default — the same cap the
+/// Pyroscope render path applies via `ProfileService::fetch_models`.
+const FLAMEGRAPH_PROFILE_CAP: usize = 1_000;
 
 /// Per-source planning facts: the physical table, its time column, and the
 /// attribute-map containers a `get_field` extraction targets.
@@ -504,7 +511,7 @@ impl IrService {
             .map_err(|e| QuerierError::InvalidInput(format!("invalid IR document: {e}")))?;
         // Stage spans (INTERNAL) under the Flight SERVER span, so a slow
         // query is attributable to planning vs execution.
-        let Some((df, window)) = self
+        let Some((mut df, window)) = self
             .plan(&doc, tenant_slug, dataset_slug, params.now_ns)
             .instrument(tracing::info_span!("signaldb.query.plan"))
             .await?
@@ -513,6 +520,14 @@ impl IrService {
             // window is still resolved so the caller can echo it back.
             return Ok((Vec::new(), resolve_window(&doc, params.now_ns)?));
         };
+        // The flamegraph aggregation happens in Rust, not DataFusion (see
+        // `plan`'s doc comment on `apply_projection`'s flamegraph carve-out);
+        // request one row past the cap so truncation is exact, not a guess.
+        if doc.result == ResultEnvelope::Flamegraph {
+            df = df
+                .limit(0, Some(FLAMEGRAPH_PROFILE_CAP + 1))
+                .map_err(QuerierError::QueryFailed)?;
+        }
         let exec_span = tracing::info_span!(
             "signaldb.query.execute",
             signaldb.query.rows = tracing::field::Empty,
@@ -526,6 +541,12 @@ impl IrService {
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         exec_span.record("signaldb.query.rows", rows as i64);
         exec_span.record("signaldb.query.batches", batches.len() as i64);
+        if doc.result == ResultEnvelope::Flamegraph {
+            return Ok((
+                vec![encode_flamegraph_batch(&batches, FLAMEGRAPH_PROFILE_CAP)?],
+                window,
+            ));
+        }
         Ok((batches, window))
     }
 
@@ -592,6 +613,50 @@ impl IrService {
         df = lowering.apply_projection(df, doc)?;
         Ok(Some((df, window)))
     }
+}
+
+/// Decode full-payload profile rows, aggregate them into one flamegraph, and
+/// encode the result as a single-row RecordBatch (`flamegraph_json: Utf8`,
+/// `truncated: Boolean`) so it can cross the Flight wire like every other
+/// envelope — the router decodes it back into the HTTP response shape.
+///
+/// Aggregation itself runs in Rust (`aggregate_profiles_to_flamegraph`), not
+/// DataFusion — see `apply_projection`'s flamegraph carve-out — so this is
+/// the terminal step for a `flamegraph`-enveloped pipeline, mirroring how
+/// `ProfileService::flamegraph_with_tenant` serves the Pyroscope render path
+/// over the same profile rows.
+fn encode_flamegraph_batch(
+    batches: &[RecordBatch],
+    cap: usize,
+) -> Result<RecordBatch, QuerierError> {
+    let mut profiles: Vec<_> = batches.iter().flat_map(batch_to_models).collect();
+    let truncated = profiles.len() > cap;
+    profiles.truncate(cap);
+
+    let flamegraph = aggregate_profiles_to_flamegraph(&profiles);
+    let flamegraph_json = serde_json::to_string(&flamegraph).map_err(|e| {
+        QuerierError::QueryFailed(datafusion::error::DataFusionError::Execution(format!(
+            "failed to encode flamegraph: {e}"
+        )))
+    })?;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("flamegraph_json", DataType::Utf8, false),
+        Field::new("truncated", DataType::Boolean, false),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(vec![flamegraph_json])),
+            Arc::new(BooleanArray::from(vec![truncated])),
+        ],
+    )
+    .map_err(|e| {
+        QuerierError::QueryFailed(datafusion::error::DataFusionError::ArrowError(
+            Box::new(e),
+            None,
+        ))
+    })
 }
 
 fn validate_heatmap_window(doc: &Document, window: &ResolvedWindow) -> Result<(), QuerierError> {
@@ -1427,9 +1492,13 @@ impl Lowering<'_> {
     }
 
     fn apply_projection(&self, df: DataFrame, doc: &Document) -> Result<DataFrame, QuerierError> {
-        // Series results are already shaped by the step aggregate.
-        if matches!(doc.result, ResultEnvelope::Series | ResultEnvelope::Heatmap)
-            || self.series_shaped
+        // Series results are already shaped by the step aggregate. Flamegraph
+        // is decoded from the full unprojected row set (samples_json/
+        // stacktraces_json included) by the caller, not curated here.
+        if matches!(
+            doc.result,
+            ResultEnvelope::Series | ResultEnvelope::Heatmap | ResultEnvelope::Flamegraph
+        ) || self.series_shaped
         {
             return Ok(df);
         }
@@ -1918,6 +1987,8 @@ mod tests {
             Field::new("period_unit", DataType::Utf8, true),
             Field::new("period", DataType::Int64, true),
             Field::new("service_name", DataType::Utf8, false),
+            Field::new("stacktraces_json", DataType::Utf8, false),
+            Field::new("samples_json", DataType::Utf8, false),
             map_field_named("profile_attributes"),
             map_field_named("scope_attributes"),
             map_field_named("resource_attributes"),
@@ -1936,6 +2007,16 @@ mod tests {
                 Arc::new(StringArray::from(vec![Some("nanoseconds"); 3])),
                 Arc::new(Int64Array::from(vec![Some(10_i64); 3])),
                 Arc::new(StringArray::from(vec!["api", "api", "web"])),
+                Arc::new(StringArray::from(vec![
+                    r#"[{"frames":[{"function_name":"main"},{"function_name":"foo"}]}]"#,
+                    r#"[{"frames":[{"function_name":"main"},{"function_name":"bar"}]}]"#,
+                    r#"[{"frames":[{"function_name":"main"},{"function_name":"baz"}]}]"#,
+                ])),
+                Arc::new(StringArray::from(vec![
+                    r#"[{"stacktrace_index":0,"values":[100]}]"#,
+                    r#"[{"stacktrace_index":0,"values":[50]}]"#,
+                    r#"[{"stacktrace_index":0,"values":[30]}]"#,
+                ])),
                 build_map(&[
                     &[("profile.kind", "cpu")],
                     &[("profile.kind", "cpu")],
@@ -2570,6 +2651,98 @@ mod tests {
                 .sum::<usize>(),
             2
         );
+    }
+
+    /// profile-payload-access task 2.1 — flamegraph envelope end-to-end.
+    #[tokio::test]
+    async fn flamegraph_over_single_profile_id_returns_its_own_flamegraph() {
+        let svc = IrService::new(profiles_ctx());
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
+                "result": "flamegraph",
+                "pipeline": [{ "where": { "field": "profile.id", "op": "eq", "value": "p1" } }]
+            }),
+            now_ns: 0,
+        };
+        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        assert_eq!(batches.len(), 1);
+        let flamegraph = flamegraph_from_batch(&batches[0]);
+        assert_eq!(flamegraph.total, 100);
+        assert!(flamegraph.names.contains(&"main".to_string()));
+        assert!(flamegraph.names.contains(&"foo".to_string()));
+        assert!(!flamegraph.names.contains(&"bar".to_string()));
+        assert!(!truncated_from_batch(&batches[0]));
+    }
+
+    #[tokio::test]
+    async fn flamegraph_over_service_filter_aggregates_matching_profiles() {
+        let svc = IrService::new(profiles_ctx());
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
+                "result": "flamegraph",
+                "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "api" } }]
+            }),
+            now_ns: 0,
+        };
+        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        let flamegraph = flamegraph_from_batch(&batches[0]);
+        // p1 (main/foo, 100) + p2 (main/bar, 50) match service=api; p3 (web) does not.
+        assert_eq!(flamegraph.total, 150);
+        assert!(flamegraph.names.contains(&"foo".to_string()));
+        assert!(flamegraph.names.contains(&"bar".to_string()));
+        assert!(!flamegraph.names.contains(&"baz".to_string()));
+    }
+
+    /// A cap-exceeding match set is aggregated up to the cap and flagged
+    /// `truncated: true`, not returned unbounded or failed.
+    #[test]
+    fn flamegraph_batch_is_capped_and_flagged_truncated() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("profile_id", DataType::Utf8, false),
+            Field::new("stacktraces_json", DataType::Utf8, false),
+            Field::new("samples_json", DataType::Utf8, false),
+        ]));
+        let n: usize = 5;
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(
+                    (0..n).map(|i| format!("p{i}")).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(vec![
+                    r#"[{"frames":[{"function_name":"main"}]}]"#;
+                    n
+                ])),
+                Arc::new(StringArray::from(vec![
+                    r#"[{"stacktrace_index":0,"values":[10]}]"#;
+                    n
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let capped = encode_flamegraph_batch(&[batch], 2).unwrap();
+        assert!(truncated_from_batch(&capped));
+        let flamegraph = flamegraph_from_batch(&capped);
+        assert_eq!(flamegraph.total, 20, "only the first 2 of 5 profiles kept");
+    }
+
+    fn flamegraph_from_batch(batch: &RecordBatch) -> common::profile::Flamegraph {
+        let json = batch
+            .column_by_name("flamegraph_json")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .unwrap();
+        serde_json::from_str(json.value(0)).unwrap()
+    }
+
+    fn truncated_from_batch(batch: &RecordBatch) -> bool {
+        batch
+            .column_by_name("truncated")
+            .and_then(|c| c.as_any().downcast_ref::<BooleanArray>())
+            .unwrap()
+            .value(0)
     }
 
     // ---- OTel-native attribute scopes ----

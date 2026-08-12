@@ -74,7 +74,9 @@ pub enum IrError {
     #[error("topk/bottomk `n` must be an integer > 0, got {n}")]
     InvalidRankSize { n: i64 },
 
-    #[error("`fields` projection is only valid for rows/table results, not series or heatmap")]
+    #[error(
+        "`fields` projection is only valid for rows/table results, not series, heatmap, or flamegraph"
+    )]
     FieldsOnSeries,
 
     #[error("`fields` entry '{field}' is not present in the terminal relation")]
@@ -156,13 +158,14 @@ pub fn validate(
             open: true,
         }),
         names: Vec::new(),
+        declared_result: doc.result,
     };
     for stage in &doc.pipeline {
         ctx.apply_stage(stage)?;
     }
 
     // 4. Envelope + fields validation against the terminal relation.
-    validate_envelope(doc.result, &ctx.relation)?;
+    validate_envelope(doc.result, &doc.from, &ctx.relation)?;
     validate_fields(doc, &ctx)?;
 
     Ok(Validated {
@@ -177,10 +180,21 @@ struct InferCtx<'a> {
     relation: RelationType,
     /// Names introduced by extract/aggregate — unique across the pipeline.
     names: Vec<String>,
+    /// The document's declared result envelope, needed by stages whose
+    /// legality depends on it (e.g. `flamegraph` only composes with `where`).
+    declared_result: ResultEnvelope,
 }
 
 impl InferCtx<'_> {
     fn apply_stage(&mut self, stage: &Stage) -> Result<(), IrError> {
+        if self.declared_result == ResultEnvelope::Flamegraph && !matches!(stage, Stage::Where(_)) {
+            return Err(IrError::IllegalStage {
+                stage: stage.name().to_string(),
+                reason: "the flamegraph envelope's aggregation is itself the terminal stage \
+                         and only composes with `from`/`where`"
+                    .to_string(),
+            });
+        }
         match stage {
             Stage::Where(pred) => self.apply_where(pred),
             Stage::Extract(extract) => self.apply_extract(extract),
@@ -740,20 +754,32 @@ fn is_numeric(t: &ValueType) -> bool {
     )
 }
 
-fn validate_envelope(declared: ResultEnvelope, terminal: &RelationType) -> Result<(), IrError> {
+fn validate_envelope(
+    declared: ResultEnvelope,
+    source: &str,
+    terminal: &RelationType,
+) -> Result<(), IrError> {
     let ok = match (declared, terminal) {
         (ResultEnvelope::Rows, RelationType::RowSet(rs)) => !rs.aggregated,
         (ResultEnvelope::Table, RelationType::RowSet(rs)) => rs.aggregated,
         (ResultEnvelope::Series, RelationType::Series(_)) => true,
         (ResultEnvelope::Heatmap, RelationType::Heatmap(_)) => true,
+        (ResultEnvelope::Flamegraph, RelationType::RowSet(rs)) => {
+            source == "profiles" && !rs.aggregated
+        }
         _ => false,
     };
     if ok {
         Ok(())
     } else {
+        let terminal = if declared == ResultEnvelope::Flamegraph && source != "profiles" {
+            format!("source '{source}' does not support the flamegraph envelope")
+        } else {
+            terminal.describe()
+        };
         Err(IrError::EnvelopeMismatch {
             declared: declared.as_str(),
-            terminal: terminal.describe(),
+            terminal,
         })
     }
 }
@@ -762,7 +788,10 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
     let Some(fields) = &doc.fields else {
         return Ok(());
     };
-    if matches!(doc.result, ResultEnvelope::Series | ResultEnvelope::Heatmap) {
+    if matches!(
+        doc.result,
+        ResultEnvelope::Series | ResultEnvelope::Heatmap | ResultEnvelope::Flamegraph
+    ) {
         return Err(IrError::FieldsOnSeries);
     }
     for field in fields {
@@ -1296,6 +1325,104 @@ mod tests {
             validate(&extract, &SourceRegistry::core(), &profiles_resolver()),
             Err(IrError::IllegalStage { stage, .. }) if stage == "extract"
         ));
+    }
+
+    // profile-payload-access task 1.1 — flamegraph envelope.
+    fn flamegraph_doc(pipeline: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+            "result": "flamegraph", "pipeline": pipeline
+        })
+    }
+
+    #[test]
+    fn flamegraph_over_profiles_with_only_where_validates() {
+        let document = doc(flamegraph_doc(json!([
+            { "where": { "field": "service.name", "op": "eq", "value": "checkout" } }
+        ])));
+        let validated = validate(&document, &SourceRegistry::core(), &profiles_resolver())
+            .expect("flamegraph over profiles with only a where stage validates");
+        match validated.terminal {
+            RelationType::RowSet(rs) => {
+                assert_eq!(rs.source, "profiles");
+                assert!(!rs.aggregated);
+            }
+            other => panic!("expected a row-set terminal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn flamegraph_rejected_for_non_profiles_source() {
+        let document = doc(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "flamegraph", "pipeline": []
+        }));
+        let err = validate(&document, &SourceRegistry::core(), &logs_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::EnvelopeMismatch { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn flamegraph_rejects_fields_projection() {
+        let mut document = flamegraph_doc(json!([]));
+        document["fields"] = json!(["profile.id"]);
+        let err = validate(
+            &doc(document),
+            &SourceRegistry::core(),
+            &profiles_resolver(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, IrError::FieldsOnSeries), "got {err:?}");
+    }
+
+    #[test]
+    fn flamegraph_rejects_aggregate_before_it_naming_the_stage() {
+        let document = doc(flamegraph_doc(json!([
+            { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } }
+        ])));
+        let err = validate(&document, &SourceRegistry::core(), &profiles_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "aggregate"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn flamegraph_rejects_topk_before_it_naming_the_stage() {
+        let document = doc(flamegraph_doc(json!([
+            { "topk": { "n": 5, "of": "duration" } }
+        ])));
+        let err = validate(&document, &SourceRegistry::core(), &profiles_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "topk"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn flamegraph_rejects_order_before_it_naming_the_stage() {
+        let document = doc(flamegraph_doc(json!([
+            { "order": [{ "of": "duration", "dir": "desc" }] }
+        ])));
+        let err = validate(&document, &SourceRegistry::core(), &profiles_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "order"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn flamegraph_rejects_extract_before_it_naming_the_stage() {
+        let document = doc(flamegraph_doc(json!([
+            { "extract": { "parser": "json", "as": [{ "name": "x", "type": "string" }] } }
+        ])));
+        let err = validate(&document, &SourceRegistry::core(), &profiles_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "extract"),
+            "got {err:?}"
+        );
     }
 
     // Task 2.1 — logical-namespace guard.
