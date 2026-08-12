@@ -101,11 +101,41 @@ fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
     ))
 }
 
-/// Recursively rewrite OpenAPI 3.1 nullable type arrays into the 3.0 form that
-/// the `openapiv3` crate (and thus progenitor) understands:
-/// `"type": ["string", "null"]` becomes `"type": "string", "nullable": true`,
-/// and a single-element `"type": ["string"]` is unwrapped to `"type": "string"`.
+/// Recursively rewrite OpenAPI 3.1 nullable encodings into the 3.0 form that
+/// the `openapiv3` crate (and thus progenitor) understands. Two shapes:
+///
+/// - `"type": ["string", "null"]` becomes `"type": "string", "nullable":
+///   true` (a single-element `"type": ["string"]` unwraps to `"type":
+///   "string"` with no `nullable`).
+/// - `"oneOf": [{"type": "null"}, {"$ref": "...", ...}]` (utoipa's encoding
+///   for `Option<SomeStruct>`, where the non-null branch is a `$ref` rather
+///   than an inline `type`) becomes the non-null branch's fields merged
+///   directly onto this object plus `"nullable": true`. Progenitor's schema
+///   converter has no 3.1 `oneOf`-with-null-branch handling and panics
+///   (`not yet implemented: invalid type: null`) on the raw form.
 fn downconvert_nullable_types(value: &mut serde_json::Value) {
+    if let serde_json::Value::Object(map) = value
+        && let Some(serde_json::Value::Array(variants)) = map.get("oneOf")
+        && variants.len() == 2
+    {
+        let null_index = variants.iter().position(|v| {
+            v.as_object()
+                .and_then(|o| o.get("type"))
+                .and_then(|t| t.as_str())
+                == Some("null")
+        });
+        if let Some(null_index) = null_index {
+            let other = variants[1 - null_index].clone();
+            if let Some(other_obj) = other.as_object() {
+                let other_obj = other_obj.clone();
+                map.remove("oneOf");
+                for (k, v) in other_obj {
+                    map.insert(k, v);
+                }
+                map.insert("nullable".to_string(), serde_json::Value::Bool(true));
+            }
+        }
+    }
     match value {
         serde_json::Value::Object(map) => {
             if let Some(serde_json::Value::Array(types)) = map.get("type") {

@@ -334,9 +334,10 @@ The response carries the Pyroscope flamebearer shape plus a truncation flag:
 `levels` is one entry per call-stack depth; each level is a flat sequence of
 `[offset_delta, total, self, name_index]` quadruples, `offset_delta` measured
 from the end of the previous block on the same level. `truncated: true` means
-the matched profile rows exceeded the server's cap and the flamegraph was
-aggregated over only the first batch — narrow the query to see the rest.
-`fields` is not valid on a `flamegraph` result, same as `series`.
+more than 1,000 profile rows matched — a row-count cap, not a response-size
+one — and the flamegraph was aggregated over only the first 1,000 of them;
+narrow the query to see the rest. `fields` is not valid on a `flamegraph`
+result, same as `series`.
 
 ## Metrics
 

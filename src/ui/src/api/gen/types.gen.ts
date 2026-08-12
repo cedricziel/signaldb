@@ -269,9 +269,9 @@ export type FlamegraphResult = {
      */
     total: number;
     /**
-     * `true` when the matched profile rows exceeded the server's payload
-     * cap and the flamegraph was aggregated over only the first
-     * `max_search_limit` of them.
+     * `true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows
+     * matched — a row-count cap, not a byte-size one — and the flamegraph
+     * was aggregated over only the first 1,000 of them.
      */
     truncated: boolean;
 };
@@ -525,7 +525,7 @@ export type QueryIrRequest = {
  */
 export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
-    flamegraph?: FlamegraphResult;
+    flamegraph?: null | FlamegraphResult;
     heatmap?: HeatmapResult;
     /**
      * The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.

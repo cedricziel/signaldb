@@ -86,9 +86,13 @@ clients; `cargo xtask check` verifies they are current (used in CI):
 
 - **Rust SDK** (`signaldb-sdk`, consumed by `signaldb-cli`) via progenitor.
   progenitor parses through the `openapiv3` crate, which only understands
-  OpenAPI 3.0, so xtask downconverts _its input only_: nullable `type` arrays
-  (`["string","null"]`) become `type` + `nullable: true`, and the version is
-  pinned to `3.0.3`. The served spec and `signaldb-api.json` stay 3.1.
+  OpenAPI 3.0, so xtask downconverts _its input only_ (`downconvert_nullable_types`
+  in `xtask/src/main.rs`), handling both 3.1 nullable encodings utoipa emits:
+  nullable `type` arrays (`["string","null"]`) become `type` + `nullable:
+true`; `"oneOf": [{"type": "null"}, X]` (emitted for `Option<T>` where `T`
+  is a `$ref` — a struct or enum DTO) has the null branch dropped and `X`'s
+  fields merged onto the parent object plus `nullable: true`. The IR version
+  is pinned to `3.0.3`. The served spec and `signaldb-api.json` stay 3.1.
 - **TypeScript client** (`src/ui/src/api/gen`, consumed by the web UI) via
   `@hey-api/openapi-ts` (config in `src/ui/openapi-ts.config.ts`), which
   consumes 3.1 directly. In `check` mode xtask regenerates into a temp directory
@@ -114,19 +118,19 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
 
 ## Known gaps
 
-- **A nullable `$ref` enum breaks the Rust SDK generator.** `Option<SomeEnum>`
-  where `SomeEnum` derives `ToSchema` makes utoipa emit
-  `"oneOf": [{"type": "null"}, {"$ref": "..."}]` — progenitor's schema-to-Rust
-  generator panics on it (`not yet implemented: invalid type: null`, in
-  `to_schema.rs`), even though `cargo xtask check`'s spec-golden-test analog
-  would pass (the panic is in client generation, not spec validation).
-  `Option<String>` doesn't hit this: utoipa represents it as `"type":
-["string", "null"]`, which progenitor handles fine. Until progenitor
-  supports the `oneOf` form, give an optional enum field a plain `Option<String>`
-  wire type instead and convert at the handler boundary (see
-  `ManageLogicalField::level` in `endpoints/management.rs`, converted from
-  `common::schema::logical::AttributeLevel` via a small match) rather than
-  exposing the enum type directly.
+- **A nullable `$ref` (struct or enum) used to break the Rust SDK
+  generator.** `Option<T>` where `T` derives `ToSchema` makes utoipa emit
+  `"oneOf": [{"type": "null"}, {"$ref": "..."}]`, which progenitor's
+  schema-to-Rust generator panicked on (`not yet implemented: invalid type:
+null`, in `to_schema.rs`) — the panic was in client generation, so
+  `cargo xtask check`'s spec-golden-test analog passed even though codegen
+  itself couldn't complete. `downconvert_nullable_types` in `xtask/src/main.rs`
+  now flattens this `oneOf` shape before handing the spec to progenitor (see
+  above), so `Option<T>` for a `$ref` DTO works like any other optional
+  field — no per-field workaround needed. `ManageLogicalField::level` in
+  `endpoints/management.rs` still converts `AttributeLevel` to a plain
+  `Option<String>` at the handler boundary, but that's no longer required to
+  avoid this panic; it predates the fix and can be revisited independently.
 - The Tempo (trace), Loki (LogQL), and Prometheus (PromQL) instant/range query
   endpoints are all annotated. Tempo responses are **typed** (`SearchResult`,
   `Trace`, …). The PromQL and LogQL responses, however, are declared with a
