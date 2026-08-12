@@ -233,7 +233,7 @@ pub async fn query_ir<S: RouterState>(
 /// Require the read scope associated with a registered Query IR source.
 fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
     let signal = match source {
-        "logs" | "traces" | "profiles" => source,
+        "logs" | "traces" | "profiles" | "metrics" => source,
         _ => {
             return Err(ApiError::bad_request(format!(
                 "unknown query source '{source}'"
@@ -833,10 +833,14 @@ mod tests {
     }
 
     fn ir_body() -> Body {
+        ir_body_for("logs")
+    }
+
+    fn ir_body_for(source: &str) -> Body {
         Body::from(
             serde_json::to_vec(&serde_json::json!({
                 "irVersion": 1,
-                "from": "logs",
+                "from": source,
                 "range": { "from": "now-1h", "to": "now" },
                 "result": "rows",
                 "pipeline": []
@@ -877,6 +881,22 @@ mod tests {
         assert!(source_read_scope(&profiles, "profiles").is_ok());
         assert!(source_read_scope(&profiles, "logs").is_err());
         assert!(source_read_scope(&profiles, "traces").is_err());
+    }
+
+    // The `metrics` Query IR source (PR #1138) 400'd end-to-end through the
+    // router even with a valid metrics:read scope, because this gate never
+    // matched "metrics" — the querier's planner tests never caught it since
+    // they call the planner directly, bypassing this scope check entirely.
+    #[test]
+    fn metrics_read_scope_grants_the_metrics_ir_source() {
+        let metrics = scoped_context(vec!["metrics:read"]);
+        assert!(source_read_scope(&metrics, "metrics").is_ok());
+        assert!(source_read_scope(&metrics, "logs").is_err());
+        assert!(source_read_scope(&metrics, "traces").is_err());
+        assert!(source_read_scope(&metrics, "profiles").is_err());
+
+        let profiles = scoped_context(vec!["profiles:read"]);
+        assert!(source_read_scope(&profiles, "metrics").is_err());
     }
 
     // Task 6.1 — unauthenticated requests are rejected.
@@ -931,6 +951,24 @@ mod tests {
         let resp = app
             .clone()
             .oneshot(post("/api/v1/query", true, ir_body()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // Regression for the `metrics_read_scope_grants_the_metrics_ir_source`
+    // gap: that test calls `source_read_scope` directly, so it couldn't have
+    // caught the router previously 400ing "unknown query source 'metrics'"
+    // before reaching this fixture at all. This drives a real request
+    // through the full `/api/v1/query` handler, so a regression here fails
+    // as 400 (unknown source), not 503 (no querier — the boundary this test
+    // expects to reach).
+    #[tokio::test]
+    async fn metrics_source_reaches_the_query_boundary() {
+        let app = test_app().await;
+        let resp = app
+            .clone()
+            .oneshot(post("/api/v1/query", true, ir_body_for("metrics")))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);

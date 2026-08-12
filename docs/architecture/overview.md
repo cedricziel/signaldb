@@ -264,7 +264,9 @@ the first-party structured query surface the UI and CLI build against. The
 router shapes the querier's Arrow batches into the declared envelope, encoding
 attribute containers (`Map<Utf8,Utf8>`) as JSON objects rather than flattening
 them to strings — the compatibility dialects lose the OTel resource/scope/record
-distinction, the IR preserves it. See
+distinction, the IR preserves it. `source_read_scope` gates a document's `from`
+against the caller's `{signal}:read` scopes (`logs`/`traces`/`profiles`/`metrics`)
+before the request ever reaches the querier. See
 [the Query IR reference](../users/querying-ir.md).
 
 **Admin API Endpoints** (requires `admin_api_key`):
