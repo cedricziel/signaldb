@@ -12,7 +12,7 @@ use rmcp::{
     service::RunningService,
 };
 
-use mcp_server::apps::{TRACE_APP_URI, UI_EXTENSION_ID, UI_MIME_TYPE};
+use mcp_server::apps::{PROFILE_APP_URI, TRACE_APP_URI, UI_EXTENSION_ID, UI_MIME_TYPE};
 use mcp_server::server::McpServer;
 
 /// A client that optionally declares the MCP Apps extension in `initialize`.
@@ -90,6 +90,25 @@ async fn ui_client_sees_the_trace_app_on_get_trace() {
 }
 
 #[tokio::test]
+async fn ui_client_sees_the_profile_app_on_get_profile() {
+    let client = connect(true).await;
+    let tools = client.list_all_tools().await.expect("tools are listed");
+
+    let get_profile = tools
+        .iter()
+        .find(|tool| tool.name == "get_profile")
+        .expect("`get_profile` is registered");
+    let meta = get_profile
+        .meta
+        .as_ref()
+        .expect("a UI client sees `_meta` on `get_profile`");
+    let meta = serde_json::to_value(meta).expect("meta serializes");
+    assert_eq!(meta["ui"]["resourceUri"], PROFILE_APP_URI);
+
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
 async fn client_without_the_extension_sees_a_plain_tool_surface() {
     let client = connect(false).await;
     let tools = client.list_all_tools().await.expect("tools are listed");
@@ -135,6 +154,46 @@ async fn trace_app_is_served_as_an_mcp_apps_document() {
         panic!("UI resources are served as text");
     };
     assert_eq!(uri, TRACE_APP_URI);
+    assert_eq!(mime_type.as_deref(), Some(UI_MIME_TYPE));
+    assert!(
+        text.starts_with("<!doctype html>"),
+        "the app must be an HTML5 document"
+    );
+
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
+async fn profile_app_is_served_as_an_mcp_apps_document() {
+    let client = connect(true).await;
+
+    let listed = client
+        .list_all_resources()
+        .await
+        .expect("resources are listed");
+    assert!(
+        listed
+            .iter()
+            .any(|resource| resource.uri == PROFILE_APP_URI),
+        "the profile app is advertised in resources/list"
+    );
+
+    let read = client
+        .read_resource(ReadResourceRequestParams::new(PROFILE_APP_URI))
+        .await
+        .expect("the profile app is readable");
+
+    let contents = read.contents.first().expect("one content item");
+    let ResourceContents::TextResourceContents {
+        uri,
+        mime_type,
+        text,
+        ..
+    } = contents
+    else {
+        panic!("UI resources are served as text");
+    };
+    assert_eq!(uri, PROFILE_APP_URI);
     assert_eq!(mime_type.as_deref(), Some(UI_MIME_TYPE));
     assert!(
         text.starts_with("<!doctype html>"),

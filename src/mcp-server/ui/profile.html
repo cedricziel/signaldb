@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Profile</title>
+    <style>
+      /*
+   * Tokens. Host-supplied `styles.variables` (MCP Apps theming) are applied to
+   * :root at runtime and win via the `var(--color-…, fallback)` chain below, so
+   * the app inherits the host's surface while keeping its own signal accent —
+   * the one hue the host palette has no equivalent for. Mirrors trace.html.
+   */
+      :root {
+        color-scheme: light dark;
+
+        --sig: #05707e;
+        --sig-2: #0fa2b4;
+
+        --ground: var(--color-background-primary, #ffffff);
+        --surface: var(--color-background-secondary, #f6fafa);
+        --line: var(--color-border-primary, #d2dee0);
+        --line-2: var(--color-border-secondary, #e3ebec);
+        --ink: var(--color-text-primary, #0d1b1f);
+        --ink-2: var(--color-text-secondary, #3f565c);
+        --muted: var(--color-text-tertiary, #6c8188);
+        --danger: var(--color-text-danger, #b93e37);
+
+        --mono: var(
+          --font-mono,
+          ui-monospace,
+          "SFMono-Regular",
+          "JetBrains Mono",
+          Menlo,
+          Consolas,
+          monospace
+        );
+        --sans: var(
+          --font-sans,
+          ui-sans-serif,
+          system-ui,
+          "Segoe UI",
+          "Helvetica Neue",
+          Arial,
+          sans-serif
+        );
+        --radius: var(--border-radius-sm, 3px);
+      }
+      :root[data-theme="dark"] {
+        --sig: #3ec4d6;
+        --sig-2: #7be0ec;
+
+        --ground: var(--color-background-primary, #101c20);
+        --surface: var(--color-background-secondary, #16252a);
+        --line: var(--color-border-primary, #26383e);
+        --line-2: var(--color-border-secondary, #1b2c31);
+        --ink: var(--color-text-primary, #e6f0f1);
+        --ink-2: var(--color-text-secondary, #afc3c7);
+        --muted: var(--color-text-tertiary, #7c949a);
+        --danger: var(--color-text-danger, #f0736a);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --sig: #3ec4d6;
+          --sig-2: #7be0ec;
+
+          --ground: var(--color-background-primary, #101c20);
+          --surface: var(--color-background-secondary, #16252a);
+          --line: var(--color-border-primary, #26383e);
+          --line-2: var(--color-border-secondary, #1b2c31);
+          --ink: var(--color-text-primary, #e6f0f1);
+          --ink-2: var(--color-text-secondary, #afc3c7);
+          --muted: var(--color-text-tertiary, #7c949a);
+          --danger: var(--color-text-danger, #f0736a);
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+      }
+      body {
+        background: var(--ground);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+      #root {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 14px;
+      }
+
+      .lbl {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 22px 16px;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      .status .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--sig);
+        flex: none;
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        .status .dot {
+          animation: pulse 1.4s ease-in-out infinite;
+        }
+        @keyframes pulse {
+          0%,
+          100% {
+            opacity: 0.25;
+          }
+          50% {
+            opacity: 1;
+          }
+        }
+      }
+      .status.error {
+        color: var(--danger);
+      }
+      .status.error .dot {
+        background: var(--danger);
+        animation: none;
+      }
+
+      .banner {
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--ink-2);
+        font-family: var(--mono);
+        font-size: 11.5px;
+      }
+
+      .summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 20px;
+        align-items: baseline;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .summary b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      .fg {
+        position: relative;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        overflow: hidden;
+      }
+      .fg-level {
+        position: relative;
+        height: 20px;
+        border-top: 1px solid var(--line-2);
+      }
+      .fg-level:first-child {
+        border-top: none;
+      }
+      .fg-block {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        line-height: 20px;
+        padding: 0 4px;
+        color: #fff;
+        border-right: 1px solid var(--ground);
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="status" id="status">
+        <span class="dot"></span
+        ><span id="status-text">Connecting to host&hellip;</span>
+      </div>
+    </div>
+
+    <script>
+      "use strict";
+      (function () {
+        /* ============================================================
+         * MCP Apps bridge — JSON-RPC 2.0 over postMessage to the host.
+         * The View is the client: it opens with `ui/initialize`, announces
+         * `ui/notifications/initialized`, then receives the tool input and
+         * the tool result as notifications. Identical to trace.html's bridge.
+         * ============================================================ */
+
+        var UI_PROTOCOL_VERSION = "2026-01-26";
+        var HOST = window.parent;
+        var pending = {};
+        var nextId = 1;
+        var hostContext = {};
+
+        function post(msg) {
+          if (HOST && HOST !== window) HOST.postMessage(msg, "*");
+        }
+        function request(method, params) {
+          var id = nextId++;
+          return new Promise(function (resolve, reject) {
+            pending[id] = { resolve: resolve, reject: reject };
+            post({
+              jsonrpc: "2.0",
+              id: id,
+              method: method,
+              params: params || {},
+            });
+          });
+        }
+        function notify(method, params) {
+          post({ jsonrpc: "2.0", method: method, params: params || {} });
+        }
+        function respond(id, result) {
+          post({ jsonrpc: "2.0", id: id, result: result });
+        }
+
+        window.addEventListener("message", function (event) {
+          var msg = event.data;
+          if (!msg || msg.jsonrpc !== "2.0") return;
+
+          if (msg.id !== undefined && msg.method === undefined) {
+            var waiter = pending[msg.id];
+            if (!waiter) return;
+            delete pending[msg.id];
+            if (msg.error) waiter.reject(msg.error);
+            else waiter.resolve(msg.result);
+            return;
+          }
+          if (typeof msg.method !== "string") return;
+
+          switch (msg.method) {
+            case "ui/notifications/tool-input":
+              onToolInput(msg.params || {});
+              break;
+            case "ui/notifications/tool-result":
+              onToolResult(msg.params || {});
+              break;
+            case "ui/notifications/tool-cancelled":
+              setStatus(
+                "Profile fetch cancelled" + reasonSuffix(msg.params),
+                true,
+              );
+              break;
+            case "ui/notifications/host-context-changed":
+              applyHostContext(msg.params || {});
+              break;
+            case "ui/resource-teardown":
+              if (msg.id !== undefined) respond(msg.id, {});
+              break;
+            case "ping":
+              if (msg.id !== undefined) respond(msg.id, {});
+              break;
+          }
+        });
+
+        function reasonSuffix(params) {
+          return params && params.reason ? ": " + params.reason : "";
+        }
+
+        function applyHostContext(patch) {
+          for (var key in patch) hostContext[key] = patch[key];
+          var root = document.documentElement;
+          if (hostContext.theme === "dark" || hostContext.theme === "light") {
+            root.setAttribute("data-theme", hostContext.theme);
+          }
+          var styles = hostContext.styles || {};
+          var vars = styles.variables || {};
+          for (var name in vars) {
+            if (typeof vars[name] === "string" && name.indexOf("--") === 0) {
+              root.style.setProperty(name, vars[name]);
+            }
+          }
+          if (styles.css && typeof styles.css.fonts === "string") {
+            var sheet =
+              document.getElementById("host-fonts") ||
+              document.createElement("style");
+            sheet.id = "host-fonts";
+            sheet.textContent = styles.css.fonts;
+            document.head.appendChild(sheet);
+          }
+        }
+
+        function reportSize() {
+          var el = document.getElementById("root");
+          if (!el) return;
+          notify("ui/notifications/size-changed", {
+            width: Math.ceil(el.scrollWidth),
+            height: Math.ceil(el.getBoundingClientRect().height),
+          });
+        }
+        var sizeTimer = null;
+        function scheduleSizeReport() {
+          if (sizeTimer) clearTimeout(sizeTimer);
+          sizeTimer = setTimeout(reportSize, 50);
+        }
+        if (typeof ResizeObserver === "function") {
+          new ResizeObserver(scheduleSizeReport).observe(
+            document.getElementById("root"),
+          );
+        }
+
+        request("ui/initialize", {
+          protocolVersion: UI_PROTOCOL_VERSION,
+          appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+          capabilities: {},
+          clientInfo: { name: "signaldb-profile-app", version: "1" },
+        })
+          .then(function (result) {
+            applyHostContext((result && result.hostContext) || {});
+            notify("ui/notifications/initialized", {});
+            setStatus("Waiting for the profile…");
+          })
+          .catch(function (err) {
+            setStatus(
+              "Host did not complete the UI handshake" +
+                (err && err.message ? ": " + err.message : ""),
+              true,
+            );
+          });
+
+        /* ============================================================
+         * Tool payloads
+         * ============================================================ */
+
+        function onToolInput(params) {
+          var args = params.arguments || {};
+          if (args.profile_id)
+            setStatus("Fetching profile " + args.profile_id + "…");
+        }
+
+        function onToolResult(result) {
+          var flamegraph = result.structuredContent;
+          if (!flamegraph) flamegraph = parseTextContent(result.content);
+          if (result.isError) {
+            setStatus(
+              textOf(result.content) || "The profile lookup failed",
+              true,
+            );
+            return;
+          }
+          if (!flamegraph || typeof flamegraph !== "object") {
+            setStatus("No flamegraph payload in the tool result", true);
+            return;
+          }
+          try {
+            render(flamegraph);
+          } catch (err) {
+            setStatus(
+              "Could not render this flamegraph: " +
+                (err && err.message ? err.message : String(err)),
+              true,
+            );
+          }
+          scheduleSizeReport();
+        }
+
+        function textOf(content) {
+          if (!Array.isArray(content)) return "";
+          for (var i = 0; i < content.length; i++) {
+            if (content[i] && content[i].type === "text")
+              return content[i].text || "";
+          }
+          return "";
+        }
+        function parseTextContent(content) {
+          var text = textOf(content);
+          if (!text) return null;
+          try {
+            return JSON.parse(text);
+          } catch (err) {
+            return null;
+          }
+        }
+
+        function setStatus(message, isError) {
+          var root = document.getElementById("root");
+          root.innerHTML =
+            '<div class="status' +
+            (isError ? " error" : "") +
+            '">' +
+            '<span class="dot"></span><span></span></div>';
+          root.querySelector(".status span:last-child").textContent = message;
+          scheduleSizeReport();
+        }
+
+        /* ============================================================
+         * Flamegraph rendering
+         *
+         * `levels` is the Pyroscope flamebearer encoding: one entry per depth
+         * level, each a flat sequence of `[offsetDelta, total, self, nameIndex]`
+         * quadruples. `offsetDelta` is relative to the end of the previous block
+         * on the same level, so each level is decoded by accumulating a running
+         * cursor across its quadruples (see common::profile::aggregation).
+         * ============================================================ */
+
+        function esc(value) {
+          return String(value).replace(/[&<>"']/g, function (c) {
+            return {
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            }[c];
+          });
+        }
+
+        // A small stable palette, indexed by a cheap hash of the function name so
+        // the same function gets the same color across renders.
+        var PALETTE = [
+          "#05707E",
+          "#0FA2B4",
+          "#2C7A57",
+          "#B9843E",
+          "#7A4FB9",
+          "#B93E37",
+          "#3E6EB9",
+          "#8E8E3E",
+          "#3E8E7A",
+          "#B93E8E",
+        ];
+        function colorFor(name) {
+          var h = 0;
+          for (var i = 0; i < name.length; i++)
+            h = (h * 31 + name.charCodeAt(i)) >>> 0;
+          return PALETTE[h % PALETTE.length];
+        }
+
+        function decodeLevels(flamegraph) {
+          var names = flamegraph.names || [];
+          var levels = flamegraph.levels || [];
+          var decoded = [];
+          for (var l = 0; l < levels.length; l++) {
+            var row = levels[l];
+            var blocks = [];
+            var cursor = 0;
+            for (var i = 0; i + 3 < row.length; i += 4) {
+              var offsetDelta = row[i];
+              var total = row[i + 1];
+              var self = row[i + 2];
+              var nameIndex = row[i + 3];
+              cursor += offsetDelta;
+              blocks.push({
+                start: cursor,
+                total: total,
+                self: self,
+                name: names[nameIndex] || "(unknown)",
+              });
+              cursor += total;
+            }
+            decoded.push(blocks);
+          }
+          return decoded;
+        }
+
+        function fmtValue(n) {
+          if (n >= 1e9) return (n / 1e9).toFixed(2) + "G";
+          if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+          if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
+          return String(n);
+        }
+
+        function render(flamegraph) {
+          var total = flamegraph.total || 0;
+          var levels = decodeLevels(flamegraph);
+          var root = document.getElementById("root");
+
+          var html =
+            '<div class="summary">' +
+            '<span><span class="lbl">Total</span> <b>' +
+            esc(fmtValue(total)) +
+            "</b></span>" +
+            '<span><span class="lbl">Max self</span> <b>' +
+            esc(fmtValue(flamegraph.max_self || 0)) +
+            "</b></span>" +
+            '<span><span class="lbl">Depth</span> <b>' +
+            esc(String(levels.length)) +
+            "</b></span>" +
+            "</div>";
+
+          if (flamegraph.truncated) {
+            html +=
+              '<div class="banner">Matched profiles exceeded the server’s cap — this flamegraph is aggregated over only the first batch, not every match. Narrow the query to see the rest.</div>';
+          }
+
+          if (total <= 0 || levels.length === 0) {
+            html += '<div class="banner">No samples in this flamegraph.</div>';
+            root.innerHTML = html;
+            return;
+          }
+
+          html += '<div class="fg" id="fg"></div>';
+          root.innerHTML = html;
+
+          var fg = document.getElementById("fg");
+          for (var l = 0; l < levels.length; l++) {
+            var levelEl = document.createElement("div");
+            levelEl.className = "fg-level";
+            var blocks = levels[l];
+            for (var i = 0; i < blocks.length; i++) {
+              var b = blocks[i];
+              if (b.total <= 0) continue;
+              var block = document.createElement("div");
+              block.className = "fg-block";
+              block.style.left = (b.start / total) * 100 + "%";
+              block.style.width = (b.total / total) * 100 + "%";
+              block.style.background = colorFor(b.name);
+              block.title =
+                b.name +
+                "\n" +
+                "self: " +
+                fmtValue(b.self) +
+                "\n" +
+                "total: " +
+                fmtValue(b.total) +
+                " (" +
+                ((b.total / total) * 100).toFixed(1) +
+                "%)";
+              block.textContent = b.name;
+              levelEl.appendChild(block);
+            }
+            fg.appendChild(levelEl);
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>

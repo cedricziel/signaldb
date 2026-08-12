@@ -27,6 +27,7 @@ gating in v1):
 | `server_info`         | Confirm connectivity and which tenant your credential resolves to.                                                                                              |
 | `search_traces`       | TraceQL search over your tenant's traces.                                                                                                                       |
 | `get_trace`           | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                |
+| `get_profile`         | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                   |
 | `discover_attributes` | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels). |
 | `discover_metrics`    | List the distinct metric names visible to your tenant.                                                                                                          |
 | `query_metrics`       | PromQL query over your tenant's metrics (native Prometheus result).                                                                                             |
@@ -66,35 +67,40 @@ typed so far. Every other reference/argument returns no suggestions rather
 than an error — completions are advisory, so a lookup failure never breaks
 the request you're filling in.
 
-## Interactive trace view (MCP Apps)
+## Interactive views (MCP Apps)
 
-Clients that support the [MCP Apps extension][mcp-apps] render `get_trace`
-results as an interactive waterfall instead of raw JSON: span timings, self time
-versus time spent in child spans, per-span attributes, and span events, with a
-ruler you can read span offsets against.
+Clients that support the [MCP Apps extension][mcp-apps] render two tools as
+interactive views instead of raw JSON:
 
-Nothing needs configuring. A client that negotiates the extension gets it; every
-other client keeps receiving the same JSON text result it always did.
+- `get_trace` as a waterfall: span timings, self time versus time spent in
+  child spans, per-span attributes, and span events, with a ruler you can
+  read span offsets against.
+- `get_profile` as a flamegraph: per-frame self/total sample values across
+  the call stack, colored by function name, with a tooltip on hover.
+
+Nothing needs configuring. A client that negotiates the extension gets both;
+every other client keeps receiving the same JSON text result it always did.
 
 How it works, if you are curious or writing a client:
 
 - The client declares `io.modelcontextprotocol/ui` in its `initialize`
   capabilities, naming `text/html;profile=mcp-app` in that capability's
   `mimeTypes`. A client that declares the extension without naming the type
-  cannot render the view, so it keeps the plain-text tool surface.
-- The server then marks `get_trace` with `_meta.ui.resourceUri` pointing at
-  `ui://signaldb/trace`, and attaches the trace to the result as
-  `structuredContent` alongside the usual text block.
-- The client fetches `ui://signaldb/trace` with `resources/read` — it is served
-  as `text/html;profile=mcp-app` — and renders it in a sandboxed iframe, handing
+  cannot render either view, so it keeps the plain-text tool surface.
+- The server then marks `get_trace`/`get_profile` with `_meta.ui.resourceUri`
+  pointing at `ui://signaldb/trace`/`ui://signaldb/profile` respectively, and
+  attaches the trace/flamegraph to the result as `structuredContent` alongside
+  the usual text block.
+- The client fetches the app's URI with `resources/read` — served as
+  `text/html;profile=mcp-app` — and renders it in a sandboxed iframe, handing
   it the tool result.
 
-The view is a single self-contained HTML document compiled into the binary. It
-makes no network requests of its own and cannot reach the router: its only data
-is the tool result the client hands it, which keeps it inside the strictest
-sandbox hosts apply (`default-src 'none'`). Because the app is served over
-`resources/read`, the server advertises the `resources` capability; it exposes
-no data resources, only these UI documents.
+Each view is a single self-contained HTML document compiled into the binary.
+It makes no network requests of its own and cannot reach the router: its only
+data is the tool result the client hands it, which keeps it inside the
+strictest sandbox hosts apply (`default-src 'none'`). Because the apps are
+served over `resources/read`, the server advertises the `resources`
+capability; it exposes no data resources, only these UI documents.
 
 [mcp-apps]: https://modelcontextprotocol.io/extensions/apps/overview
 
