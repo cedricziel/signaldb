@@ -8,6 +8,8 @@
 //! - `server_info` — connectivity + resolved tenant
 //! - `search_traces` — TraceQL search
 //! - `get_trace` — single trace by ID
+//! - `get_profile` — single profile's flamegraph by ID (wraps the native
+//!   Query IR `flamegraph` envelope)
 //! - `discover_attributes` — queryable attribute/label names or values,
 //!   signal-aware (`traces` via Tempo tags, `logs` via Loki labels,
 //!   `metrics` via Prometheus labels)
@@ -22,8 +24,9 @@
 //! this server is an HTTP forwarder and holds no Flight client, so SQL stays a
 //! CLI-only capability (see the `client-surface-parity` spec).
 //!
-//! `get_trace` additionally ships an interactive waterfall view via the MCP
-//! Apps extension; see [`crate::apps`].
+//! `get_trace` additionally ships an interactive waterfall view, and
+//! `get_profile` an interactive flamegraph view, via the MCP Apps extension;
+//! see [`crate::apps`].
 //!
 //! Prompts (`prompts/list` / `prompts/get`, see [`crate::prompts`]) are
 //! static, argument-only templates that seed an investigation using the
@@ -111,6 +114,25 @@ struct GetTraceParams {
     #[serde(default)]
     start: Option<i64>,
     /// Optional end-of-range hint, unix seconds, to prune the scan.
+    #[serde(default)]
+    end: Option<i64>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+/// Parameters for `get_profile`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct GetProfileParams {
+    /// Profile ID to fetch.
+    profile_id: String,
+    /// Optional start-of-range hint, unix seconds, to prune the scan.
+    /// Defaults to 30 days before now.
+    #[serde(default)]
+    start: Option<i64>,
+    /// Optional end-of-range hint, unix seconds, to prune the scan.
+    /// Defaults to now.
     #[serde(default)]
     end: Option<i64>,
     /// Dataset to query. Omit to use the session's default dataset.
@@ -341,6 +363,34 @@ impl McpServer {
         // is attached only for UI-capable clients so a plain client is not sent
         // the same trace twice.
         json_result_for_app(&resp.into_inner(), client_supports_ui(&context))
+    }
+
+    #[tool(
+        description = "Fetch a single profile's actual payload — its aggregated flamegraph (function names, per-level frame data, total/max-self sample values) — by `profile_id`, scoped to your tenant. Optional `start`/`end` (unix seconds) hints prune the scan; defaults to the last 30 days. Returns a not-found error when the profile does not exist."
+    )]
+    async fn get_profile(
+        &self,
+        Parameters(p): Parameters<GetProfileParams>,
+        Extension(parts): Extension<Parts>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        // The native Query IR's `flamegraph` envelope (profiles source only)
+        // does the actual retrieval — this tool is a thin, single-ID wrapper
+        // over the same `query_ir` path the generic tool exposes.
+        let document = profile_flamegraph_document(&p.profile_id, p.start, p.end);
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
+            .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
+        let resp = client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "get_profile"))?;
+        let flamegraph = flamegraph_or_not_found(resp.into_inner())?;
+        // The flamegraph app renders from `structuredContent`, mirroring
+        // `get_trace`'s waterfall.
+        json_result_for_app(&flamegraph, client_supports_ui(&context))
     }
 
     #[tool(
@@ -648,7 +698,10 @@ impl CompletionSource {
 }
 
 /// Tools that ship a UI app, paired with the resource that renders them.
-const UI_TOOLS: [(&str, &str); 1] = [("get_trace", apps::TRACE_APP_URI)];
+const UI_TOOLS: [(&str, &str); 2] = [
+    ("get_trace", apps::TRACE_APP_URI),
+    ("get_profile", apps::PROFILE_APP_URI),
+];
 
 /// SEP-2549 cache TTL for `tools/list`: short-lived because `_meta.ui` varies
 /// with the connecting client's negotiated capabilities.
@@ -686,7 +739,8 @@ impl ServerHandler for McpServer {
             "Query SignalDB traces, logs, and metrics for the authenticated tenant. \
              Call `server_info` first to confirm which tenant your credential resolves to. \
              Clients that negotiate the MCP Apps extension render `get_trace` results as an \
-             interactive waterfall. `prompts/list` offers ready-made investigation templates.",
+             interactive waterfall and `get_profile` results as an interactive flamegraph. \
+             `prompts/list` offers ready-made investigation templates.",
         )
     }
 
@@ -831,6 +885,46 @@ fn json_result_for_app<T: serde::Serialize>(
     Ok(result)
 }
 
+/// Build the Query IR document `get_profile` submits: a `flamegraph`-enveloped
+/// `profiles` query filtered to one `profile.id`, defaulting to the last 30
+/// days when no `start`/`end` hint is given. Pure and synchronous, so it's
+/// directly unit-testable without a router/session.
+fn profile_flamegraph_document(
+    profile_id: &str,
+    start: Option<i64>,
+    end: Option<i64>,
+) -> serde_json::Value {
+    let range_from = start
+        .map(|secs| secs.saturating_mul(1_000_000_000).to_string())
+        .unwrap_or_else(|| "now-30d".to_string());
+    let range_to = end
+        .map(|secs| secs.saturating_mul(1_000_000_000).to_string())
+        .unwrap_or_else(|| "now".to_string());
+    serde_json::json!({
+        "irVersion": 1,
+        "from": "profiles",
+        "range": { "from": range_from, "to": range_to },
+        "result": "flamegraph",
+        "pipeline": [
+            { "where": { "field": "profile.id", "op": "eq", "value": profile_id } }
+        ]
+    })
+}
+
+/// Extract the flamegraph from a `get_profile` query response, or a clean
+/// "not found" error when no profile matched. The `flamegraph` field is
+/// omitted from the response entirely when nothing matched (see
+/// `FlamegraphResult::is_empty` on the router side) — that omission is this
+/// tool's not-found signal, since the generic `flamegraph` envelope has no
+/// dedicated 404 of its own.
+fn flamegraph_or_not_found(
+    response: signaldb_sdk::types::QueryIrResponse,
+) -> Result<signaldb_sdk::types::FlamegraphResult, ErrorData> {
+    response
+        .flamegraph
+        .ok_or_else(|| ErrorData::resource_not_found("get_profile: not found".to_string(), None))
+}
+
 /// Map a downstream router/SDK error onto an actionable MCP tool error, so
 /// agents see "not found" / "invalid query" / "access denied" / "rate limited"
 /// rather than an opaque transport failure.
@@ -860,6 +954,70 @@ mod tests {
     use super::*;
     use axum::http::header::AUTHORIZATION;
     use axum::http::request::Builder as RequestBuilder;
+
+    // profile-payload-access task 4.1 — `get_profile`'s pure request/response
+    // logic, tested directly since it needs no router/session: the tool
+    // method itself (`Extension<Parts>` + `RequestContext`) can only be
+    // exercised through a real transport, which the in-memory duplex
+    // transport used elsewhere in this crate's tests does not populate with
+    // HTTP `Parts` — the same limitation `get_trace` has (it has no
+    // live-invocation test either). `profile_flamegraph_document` and
+    // `flamegraph_or_not_found` are extracted specifically so the request
+    // shape and the not-found branch are still directly verifiable.
+
+    #[test]
+    fn profile_flamegraph_document_defaults_to_the_last_30_days() {
+        let doc = profile_flamegraph_document("abc123", None, None);
+        assert_eq!(doc["range"]["from"], "now-30d");
+        assert_eq!(doc["range"]["to"], "now");
+        assert_eq!(doc["from"], "profiles");
+        assert_eq!(doc["result"], "flamegraph");
+    }
+
+    #[test]
+    fn profile_flamegraph_document_converts_start_end_hints_to_nanoseconds() {
+        let doc = profile_flamegraph_document("abc123", Some(10), Some(20));
+        assert_eq!(doc["range"]["from"], "10000000000");
+        assert_eq!(doc["range"]["to"], "20000000000");
+    }
+
+    #[test]
+    fn profile_flamegraph_document_filters_by_profile_id() {
+        let doc = profile_flamegraph_document("abc123", None, None);
+        let leaf = &doc["pipeline"][0]["where"];
+        assert_eq!(leaf["field"], "profile.id");
+        assert_eq!(leaf["op"], "eq");
+        assert_eq!(leaf["value"], "abc123");
+    }
+
+    fn query_ir_response(body: serde_json::Value) -> signaldb_sdk::types::QueryIrResponse {
+        serde_json::from_value(body).expect("response parses")
+    }
+
+    #[test]
+    fn flamegraph_or_not_found_returns_the_flamegraph_when_present() {
+        let response = query_ir_response(serde_json::json!({
+            "result": "flamegraph",
+            "window": { "start_ns": 0, "end_ns": 1 },
+            "flamegraph": {
+                "names": ["main"], "levels": [[0, 10, 10, 0]],
+                "total": 10, "max_self": 10, "truncated": false
+            }
+        }));
+        let flamegraph = flamegraph_or_not_found(response).expect("flamegraph is present");
+        assert_eq!(flamegraph.total, 10);
+        assert_eq!(flamegraph.names, vec!["main".to_string()]);
+    }
+
+    #[test]
+    fn flamegraph_or_not_found_errors_when_no_profile_matched() {
+        let response = query_ir_response(serde_json::json!({
+            "result": "flamegraph",
+            "window": { "start_ns": 0, "end_ns": 1 }
+        }));
+        let err = flamegraph_or_not_found(response).expect_err("no flamegraph means not found");
+        assert!(err.message.contains("not found"), "got {}", err.message);
+    }
 
     #[tokio::test]
     async fn server_info_rejects_a_credential_the_router_rejects() {
