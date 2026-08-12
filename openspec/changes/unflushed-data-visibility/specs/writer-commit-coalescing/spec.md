@@ -19,7 +19,7 @@ background commit.
 - **THEN** the writer returns success after the batch is durably flushed to the
   writer WAL, without waiting for an Iceberg snapshot to be committed
 
-#### Scenario: Acknowledged data is queryable before the commit
+#### Scenario: Data becomes queryable after asynchronous commit
 
 - **WHEN** a batch has been acknowledged but not yet committed
 - **THEN** the data is queryable through the unflushed-data path (see
