@@ -959,16 +959,25 @@ impl Lowering<'_> {
             col(self.source.time_col),
             DataType::Timestamp(TimeUnit::Nanosecond, None),
         );
+        // Every column the Rust-side row walk parses gets an explicit Utf8
+        // cast: a Parquet-backed scan under DataFusion 54 can yield `Utf8View`
+        // for string columns (a zero-copy optimization), which `downcast_string`
+        // below — deliberately narrow, see its doc comment — would otherwise
+        // reject. `by` aliases already go through `value_expr` + this same cast.
+        let utf8 = |e: Expr| cast(e, DataType::Utf8);
         let mut projection = vec![
             date_bin(stride, ts_ns, origin).alias("bucket"),
-            col("metric_name"),
+            utf8(col("metric_name")).alias("metric_name"),
+            // The raw-series discriminator for rate-mode delta tracking,
+            // independent of `by` — see the comment on `RawKey` below.
+            utf8(col("service_name")).alias("__raw_service"),
         ];
         let by_aliases: Vec<String> = hq.by.iter().map(|by| safe_ident(by)).collect();
         for (by, alias) in hq.by.iter().zip(&by_aliases) {
-            projection.push(cast(self.value_expr(by)?, DataType::Utf8).alias(alias.clone()));
+            projection.push(utf8(self.value_expr(by)?).alias(alias.clone()));
         }
-        projection.push(col("bucket_counts"));
-        projection.push(col("explicit_bounds"));
+        projection.push(utf8(col("bucket_counts")).alias("bucket_counts"));
+        projection.push(utf8(col("explicit_bounds")).alias("explicit_bounds"));
         projection.push(
             cast(
                 col(self.source.time_col),
@@ -984,14 +993,24 @@ impl Lowering<'_> {
             .await
             .map_err(QuerierError::QueryFailed)?;
 
-        // Per (bucket, metric, by-labels): merged counts (instant) or
-        // first/last counts (rate). BTreeMap keeps output deterministically
-        // sorted bucket-major, matching `lower_aggregate`'s explicit sort.
-        type GroupKey = (i64, String, Vec<String>);
+        // The final output grouping: bucket, metric, and the query's
+        // requested `by` labels. A `None` element is a genuinely absent
+        // label, kept distinct from an empty-string value.
+        type GroupKey = (i64, String, Vec<Option<String>>);
+        // The raw-series identity used ONLY for rate-mode delta tracking:
+        // (bucket, metric, service_name) — the same granularity the PromQL
+        // `histogram_quantile(phi, rate(metric[range]))` surface already uses
+        // (it has no way to group any finer). Computing each raw series'
+        // first/last-by-timestamp delta independently, THEN summing those
+        // deltas into the requested `by` groups, is what makes rate mode
+        // correct when `by` differs from `["service.name"]`: merging points
+        // from two different services into one first/last pair before
+        // computing a delta would pair up unrelated observations.
+        type RawKey = (i64, String, String);
         let rate_mode = matches!(hq.mode, HistogramMode::Rate);
         let mut merged: std::collections::BTreeMap<GroupKey, HistogramAcc> =
             std::collections::BTreeMap::new();
-        let mut rated: std::collections::BTreeMap<GroupKey, RateHistAcc> =
+        let mut rated: std::collections::BTreeMap<RawKey, (RateHistAcc, Vec<Option<String>>)> =
             std::collections::BTreeMap::new();
         // `explicit_bounds` is typically identical across every row of a
         // series — cache its parse (see histogram::parse_bounds_cached).
@@ -1005,6 +1024,7 @@ impl Lowering<'_> {
                     QuerierError::InvalidInput("bucket column is not a timestamp".to_string())
                 })?;
             let metric = downcast_string(batch, "metric_name")?;
+            let raw_service = downcast_string(batch, "__raw_service")?;
             let by_cols: Vec<&StringArray> = by_aliases
                 .iter()
                 .map(|alias| downcast_string(batch, alias))
@@ -1032,24 +1052,35 @@ impl Lowering<'_> {
                 if row_counts.len() != row_bounds.len() + 1 || row_bounds.is_empty() {
                     continue;
                 }
-                let by_values: Vec<String> = by_cols
+                let by_values: Vec<Option<String>> = by_cols
                     .iter()
-                    .map(|c| {
-                        if c.is_null(i) {
-                            String::new()
-                        } else {
-                            c.value(i).to_string()
-                        }
-                    })
+                    .map(|c| (!c.is_null(i)).then(|| c.value(i).to_string()))
                     .collect();
-                let key = (bucket.value(i), metric.value(i).to_string(), by_values);
+                let bucket_ns = bucket.value(i);
+                let metric_name = metric.value(i).to_string();
                 if rate_mode {
                     let t = if ts.is_null(i) { 0 } else { ts.value(i) };
+                    let raw_key = (
+                        bucket_ns,
+                        metric_name,
+                        if raw_service.is_null(i) {
+                            String::new()
+                        } else {
+                            raw_service.value(i).to_string()
+                        },
+                    );
                     rated
-                        .entry(key)
-                        .or_insert_with(|| RateHistAcc::new(row_bounds, t, row_counts.clone()))
+                        .entry(raw_key)
+                        .or_insert_with(|| {
+                            (
+                                RateHistAcc::new(row_bounds, t, row_counts.clone()),
+                                by_values,
+                            )
+                        })
+                        .0
                         .observe(t, &row_counts);
                 } else {
+                    let key = (bucket_ns, metric_name, by_values);
                     merged
                         .entry(key)
                         .or_insert_with(|| HistogramAcc::new(row_bounds, row_counts.len()))
@@ -1058,22 +1089,29 @@ impl Lowering<'_> {
             }
         }
 
-        type HistGroup = (GroupKey, Vec<f64>, Vec<f64>);
-        let groups: Vec<HistGroup> = if rate_mode {
-            rated
-                .into_iter()
-                .map(|(k, acc)| (k, acc.bounds.clone(), acc.delta()))
-                .collect()
-        } else {
-            merged
-                .into_iter()
-                .map(|(k, acc)| (k, acc.bounds, acc.counts))
-                .collect()
-        };
+        // Rate mode: sum each raw series' independently-computed delta into
+        // its requested `by` group — the second half of the two-pass
+        // approach described above.
+        if rate_mode {
+            for ((bucket_ns, metric, _raw_service), (acc, by_values)) in rated {
+                let delta = acc.delta();
+                let key = (bucket_ns, metric, by_values);
+                merged
+                    .entry(key)
+                    .or_insert_with(|| HistogramAcc::new(acc.bounds.clone(), delta.len()))
+                    .merge(&delta);
+            }
+        }
+
+        let groups: Vec<(GroupKey, Vec<f64>, Vec<f64>)> = merged
+            .into_iter()
+            .map(|(k, acc)| (k, acc.bounds, acc.counts))
+            .collect();
 
         let mut bucket_out = Vec::with_capacity(groups.len());
         let mut metric_out = Vec::with_capacity(groups.len());
-        let mut by_out: Vec<Vec<String>> = vec![Vec::with_capacity(groups.len()); hq.by.len()];
+        let mut by_out: Vec<Vec<Option<String>>> =
+            vec![Vec::with_capacity(groups.len()); hq.by.len()];
         let mut value_out = Vec::with_capacity(groups.len());
         for ((bucket_ns, metric, by_values), bounds, counts) in groups {
             let q = histogram_quantile(hq.q, &bounds, &counts);
@@ -1119,7 +1157,10 @@ impl Lowering<'_> {
         new_col_of.insert(hq.as_name.clone(), hq.as_name.clone());
         self.col_of = new_col_of;
 
-        let mut sort = vec![col("bucket").sort(true, false)];
+        let mut sort = vec![
+            col("bucket").sort(true, false),
+            col("metric_name").sort(true, false),
+        ];
         for alias in &by_aliases {
             sort.push(col(alias.clone()).sort(true, false));
         }
@@ -2031,6 +2072,17 @@ mod tests {
             (99, "svcD", "reset", "[3,2]", "[1.0]"),
             (0, "svcE", "malformed", "[1,1,1]", "[1.0]"),
             (0, "svcA", "zero", "[0,0,0,0]", "[0.1,0.5,1.0]"),
+            // Two raw series (svcX, svcY) interleaved in time, queried with
+            // no `by` grouping. Correct rate-mode delta is per-service
+            // ([2,0,0,0] and [0,2,0,0]) summed to [2,2,0,0] before
+            // interpolation. Picking one first/last pair across both
+            // services' points (the pre-fix bug) instead sees first=t0
+            // (svcX, [10,0,0,0]) and last=t99 (svcX, [12,0,0,0]), silently
+            // dropping svcY and producing a different, wrong value.
+            (0, "svcX", "multiservice", "[10,0,0,0]", "[0.1,0.5,1.0]"),
+            (10, "svcY", "multiservice", "[0,10,0,0]", "[0.1,0.5,1.0]"),
+            (90, "svcY", "multiservice", "[0,12,0,0]", "[0.1,0.5,1.0]"),
+            (99, "svcX", "multiservice", "[12,0,0,0]", "[0.1,0.5,1.0]"),
         ];
         let n = rows.len();
         let batch = RecordBatch::try_new(
@@ -2286,6 +2338,28 @@ mod tests {
         assert!((vs[0] - 1.0).abs() < 1e-9, "got {:?}", vs[0]);
     }
 
+    /// Regression: rate mode must compute each raw series' delta
+    /// independently before merging into the requested `by` group — two
+    /// interleaved services under an empty `by` must not have their points
+    /// paired into a single, meaningless first/last delta.
+    #[tokio::test]
+    async fn histogram_quantile_rate_mode_sums_per_series_deltas_across_an_empty_by_group() {
+        let svc = IrService::new(metrics_histogram_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "multiservice" } },
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "rate", "as": "p50" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let vs = histogram_value(&batches, "p50", None);
+        assert_eq!(vs.len(), 1);
+        assert!((vs[0] - 0.1).abs() < 1e-9, "got {:?}", vs[0]);
+    }
+
     #[tokio::test]
     async fn histogram_quantile_single_point_in_rate_mode_is_nan() {
         let svc = IrService::new(metrics_histogram_ctx());
@@ -2358,6 +2432,75 @@ mod tests {
         let batches = df.collect().await.unwrap();
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 1, "limit narrows the 2-service result to 1");
+    }
+
+    /// A Parquet-backed scan under DataFusion 54 can yield `Utf8View` for
+    /// string columns (a zero-copy optimization) rather than plain `Utf8`.
+    /// `downcast_string` only accepts `StringArray`, so `metric_name`/
+    /// `bucket_counts`/`explicit_bounds`/`service_name` must be cast to
+    /// `Utf8` in the projection before `.collect()` — this fixture proves
+    /// that cast makes the stage source-encoding-agnostic.
+    #[tokio::test]
+    async fn histogram_quantile_reads_utf8view_encoded_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8View, false),
+            Field::new("metric_name", DataType::Utf8View, false),
+            Field::new("count", DataType::Int64, true),
+            Field::new("sum", DataType::Float64, true),
+            Field::new("min", DataType::Float64, true),
+            Field::new("max", DataType::Float64, true),
+            Field::new("bucket_counts", DataType::Utf8View, true),
+            Field::new("explicit_bounds", DataType::Utf8View, true),
+            Field::new("aggregation_temporality", DataType::Int32, true),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![0_i64])),
+                Arc::new(StringViewArray::from(vec!["svcV"])),
+                Arc::new(StringViewArray::from(vec!["viewmetric"])),
+                Arc::new(datafusion::arrow::array::Int64Array::from(vec![1i64])),
+                Arc::new(Float64Array::from(vec![0.0f64])),
+                Arc::new(Float64Array::from(vec![0.0f64])),
+                Arc::new(Float64Array::from(vec![0.0f64])),
+                Arc::new(StringViewArray::from(vec!["[2,2,0,0]"])),
+                Arc::new(StringViewArray::from(vec!["[0.1,0.5,1.0]"])),
+                Arc::new(datafusion::arrow::array::Int32Array::from(vec![2i32])),
+                build_map(&[&[] as &[(&str, &str)]]),
+                build_map(&[&[] as &[(&str, &str)]]),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_histogram".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "viewmetric" } },
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "instant", "as": "p50" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let vs = histogram_value(&batches, "p50", None);
+        assert_eq!(vs.len(), 1);
+        assert!(vs[0].is_finite(), "got {:?}", vs[0]);
     }
 
     #[tokio::test]
