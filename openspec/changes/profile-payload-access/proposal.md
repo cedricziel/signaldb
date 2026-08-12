@@ -66,8 +66,10 @@ None.
   `common::profile::aggregation::aggregate_profiles_to_flamegraph` (no
   changes needed to that function — it's already transport-agnostic).
 - **querier**: `ir_planner`'s profiles `SourcePlan` gains flamegraph-terminal
-  handling that calls the existing `ProfileService` aggregation instead of
-  DataFusion row/table/series lowering for that envelope.
+  handling that decodes the pipeline's own scanned/windowed/filtered
+  DataFrame and calls the existing `aggregate_profiles_to_flamegraph`
+  directly, instead of DataFusion row/table/series lowering for that
+  envelope.
 - **router**: `query.rs` accepts and validates `result: "flamegraph"`,
   rejecting it for any source other than `profiles`.
 - **mcp-server**: new `get_profile` tool plus its MCP Apps UI resource

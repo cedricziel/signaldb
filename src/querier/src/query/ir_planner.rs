@@ -1839,6 +1839,19 @@ mod tests {
     use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
     use std::sync::Arc;
 
+    /// `FLAMEGRAPH_PROFILE_CAP`'s doc comment claims it matches
+    /// `QuerierConfig::max_search_limit`'s default — nothing else enforces
+    /// that, so a future change to either value would silently drift them
+    /// apart (the flamegraph cap would then disagree with the cap the
+    /// Pyroscope render path applies over the same profile data).
+    #[test]
+    fn flamegraph_profile_cap_matches_max_search_limit_default() {
+        assert_eq!(
+            FLAMEGRAPH_PROFILE_CAP,
+            common::config::QuerierConfig::default().max_search_limit
+        );
+    }
+
     fn map_field_named(name: &str) -> Field {
         let entries = Field::new(
             "entries",

@@ -68,11 +68,11 @@ SHALL apply identically to `flamegraph` queries as to `rows`/`table`/
 `series` queries on the same source; no new authorization scope is
 introduced.
 
-The aggregated flamegraph response SHALL be bounded: if the number of
-profile rows matched would produce a response exceeding the server's fixed
-payload cap, the response SHALL still aggregate up to that cap and SHALL
-carry a `truncated: true` flag rather than returning an unbounded payload
-or failing the request.
+The aggregated flamegraph response SHALL be bounded: if more than a fixed
+number of profile rows match (a row-count cap, not a response-byte-size
+cap), the response SHALL still aggregate the first of them up to that cap
+and SHALL carry a `truncated: true` flag rather than returning an unbounded
+payload or failing the request.
 
 #### Scenario: Single profile id yields its own flamegraph
 
@@ -114,7 +114,8 @@ or failing the request.
 
 #### Scenario: Oversized flamegraph is truncated with a flag
 
-- **WHEN** a `flamegraph` query's matched profile rows would produce a
-  response exceeding the server's payload cap
-- **THEN** the response is returned aggregated up to the cap and marked
-  `truncated: true`, not as an unbounded payload or a failed request
+- **WHEN** a `flamegraph` query matches more profile rows than the
+  server's fixed row-count cap
+- **THEN** the response is returned aggregated over the first rows up to
+  the cap and marked `truncated: true`, not as an unbounded payload or a
+  failed request
