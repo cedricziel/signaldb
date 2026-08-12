@@ -244,6 +244,39 @@ export type DatasetResponse = {
 export type Filterability = 'filterable' | 'retrieval_only';
 
 /**
+ * A flamegraph in Pyroscope flamebearer encoding — the same shape and
+ * aggregation `/pyroscope/render` returns, reused here so the native Query
+ * IR surface can retrieve an actual profile payload (bounded, aggregated)
+ * rather than raw `samples_json`/`stacktraces_json`. See `query-ir-core`'s
+ * "Profile flamegraph retrieval" requirement.
+ */
+export type FlamegraphResult = {
+    /**
+     * One entry per depth level; each level is a flat sequence of
+     * `[offset_delta, total, self, name_index]` quadruples.
+     */
+    levels: Array<Array<number>>;
+    /**
+     * Largest self value of any block, used for color scaling.
+     */
+    max_self: number;
+    /**
+     * Function name table referenced by the blocks' name indices.
+     */
+    names: Array<string>;
+    /**
+     * Total value of the root (sum of all samples).
+     */
+    total: number;
+    /**
+     * `true` when the matched profile rows exceeded the server's payload
+     * cap and the flamegraph was aggregated over only the first
+     * `max_search_limit` of them.
+     */
+    truncated: boolean;
+};
+
+/**
  * Epoch-aligned time axis with a fixed nanosecond step.
  */
 export type HeatmapAxisX = {
@@ -478,7 +511,8 @@ export type QueryIrRequest = {
     }>;
     range: QueryRange;
     /**
-     * Declared result envelope: `rows`, `series`, or `table`.
+     * Declared result envelope: `rows`, `series`, `table`, `heatmap`, or
+     * (for the `profiles` source only) `flamegraph`.
      */
     result: string;
 };
@@ -486,13 +520,15 @@ export type QueryIrRequest = {
 /**
  * The single canonical response contract. `result` discriminates which fields
  * are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
- * `series` + `step_ns`; `heatmap` fills `heatmap`.
+ * `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
+ * `flamegraph`.
  */
 export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
+    flamegraph?: FlamegraphResult;
     heatmap?: HeatmapResult;
     /**
-     * The result envelope: `rows`, `series`, `table`, or `heatmap`.
+     * The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
      */
     result: string;
     rows?: Array<Array<unknown>>;

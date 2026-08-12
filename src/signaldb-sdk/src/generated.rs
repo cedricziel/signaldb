@@ -726,6 +726,83 @@ pub mod types {
             value.parse()
         }
     }
+    /**A flamegraph in Pyroscope flamebearer encoding — the same shape and
+    aggregation `/pyroscope/render` returns, reused here so the native Query
+    IR surface can retrieve an actual profile payload (bounded, aggregated)
+    rather than raw `samples_json`/`stacktraces_json`. See `query-ir-core`'s
+    "Profile flamegraph retrieval" requirement.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A flamegraph in Pyroscope flamebearer encoding — the same shape and\naggregation `/pyroscope/render` returns, reused here so the native Query\nIR surface can retrieve an actual profile payload (bounded, aggregated)\nrather than raw `samples_json`/`stacktraces_json`. See `query-ir-core`'s\n\"Profile flamegraph retrieval\" requirement.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "levels",
+    ///    "max_self",
+    ///    "names",
+    ///    "total",
+    ///    "truncated"
+    ///  ],
+    ///  "properties": {
+    ///    "levels": {
+    ///      "description": "One entry per depth level; each level is a flat sequence of\n`[offset_delta, total, self, name_index]` quadruples.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "array",
+    ///        "items": {
+    ///          "type": "integer",
+    ///          "format": "int64"
+    ///        }
+    ///      }
+    ///    },
+    ///    "max_self": {
+    ///      "description": "Largest self value of any block, used for color scaling.",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "names": {
+    ///      "description": "Function name table referenced by the blocks' name indices.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "total": {
+    ///      "description": "Total value of the root (sum of all samples).",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    },
+    ///    "truncated": {
+    ///      "description": "`true` when the matched profile rows exceeded the server's payload\ncap and the flamegraph was aggregated over only the first\n`max_search_limit` of them.",
+    ///      "type": "boolean"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct FlamegraphResult {
+        /**One entry per depth level; each level is a flat sequence of
+        `[offset_delta, total, self, name_index]` quadruples.*/
+        pub levels: ::std::vec::Vec<::std::vec::Vec<i64>>,
+        ///Largest self value of any block, used for color scaling.
+        pub max_self: i64,
+        ///Function name table referenced by the blocks' name indices.
+        pub names: ::std::vec::Vec<::std::string::String>,
+        ///Total value of the root (sum of all samples).
+        pub total: i64,
+        /**`true` when the matched profile rows exceeded the server's payload
+        cap and the flamegraph was aggregated over only the first
+        `max_search_limit` of them.*/
+        pub truncated: bool,
+    }
+    impl FlamegraphResult {
+        pub fn builder() -> builder::FlamegraphResult {
+            Default::default()
+        }
+    }
     ///Epoch-aligned time axis with a fixed nanosecond step.
     ///
     /// <details><summary>JSON schema</summary>
@@ -1966,7 +2043,7 @@ pub mod types {
     ///      "$ref": "#/components/schemas/QueryRange"
     ///    },
     ///    "result": {
-    ///      "description": "Declared result envelope: `rows`, `series`, or `table`.",
+    ///      "description": "Declared result envelope: `rows`, `series`, `table`, `heatmap`, or\n(for the `profiles` source only) `flamegraph`.",
     ///      "examples": [
     ///        "rows"
     ///      ],
@@ -1991,7 +2068,8 @@ pub mod types {
         pub pipeline:
             ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
         pub range: QueryRange,
-        ///Declared result envelope: `rows`, `series`, or `table`.
+        /**Declared result envelope: `rows`, `series`, `table`, `heatmap`, or
+        (for the `profiles` source only) `flamegraph`.*/
         pub result: ::std::string::String,
     }
     impl QueryIrRequest {
@@ -2001,13 +2079,14 @@ pub mod types {
     }
     /**The single canonical response contract. `result` discriminates which fields
     are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
-    `series` + `step_ns`; `heatmap` fills `heatmap`.*/
+    `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
+    `flamegraph`.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`.",
+    ///  "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`.",
     ///  "type": "object",
     ///  "required": [
     ///    "result",
@@ -2020,11 +2099,14 @@ pub mod types {
     ///        "$ref": "#/components/schemas/ResultColumn"
     ///      }
     ///    },
+    ///    "flamegraph": {
+    ///      "$ref": "#/components/schemas/FlamegraphResult"
+    ///    },
     ///    "heatmap": {
     ///      "$ref": "#/components/schemas/HeatmapResult"
     ///    },
     ///    "result": {
-    ///      "description": "The result envelope: `rows`, `series`, `table`, or `heatmap`.",
+    ///      "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.",
     ///      "type": "string"
     ///    },
     ///    "rows": {
@@ -2059,8 +2141,10 @@ pub mod types {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub columns: ::std::vec::Vec<ResultColumn>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub flamegraph: ::std::option::Option<FlamegraphResult>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub heatmap: ::std::option::Option<HeatmapResult>,
-        ///The result envelope: `rows`, `series`, `table`, or `heatmap`.
+        ///The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
         pub result: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub rows: ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
@@ -3865,6 +3949,106 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct FlamegraphResult {
+            levels:
+                ::std::result::Result<::std::vec::Vec<::std::vec::Vec<i64>>, ::std::string::String>,
+            max_self: ::std::result::Result<i64, ::std::string::String>,
+            names: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            total: ::std::result::Result<i64, ::std::string::String>,
+            truncated: ::std::result::Result<bool, ::std::string::String>,
+        }
+        impl ::std::default::Default for FlamegraphResult {
+            fn default() -> Self {
+                Self {
+                    levels: Err("no value supplied for levels".to_string()),
+                    max_self: Err("no value supplied for max_self".to_string()),
+                    names: Err("no value supplied for names".to_string()),
+                    total: Err("no value supplied for total".to_string()),
+                    truncated: Err("no value supplied for truncated".to_string()),
+                }
+            }
+        }
+        impl FlamegraphResult {
+            pub fn levels<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::vec::Vec<i64>>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.levels = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for levels: {e}"));
+                self
+            }
+            pub fn max_self<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.max_self = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for max_self: {e}"));
+                self
+            }
+            pub fn names<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.names = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for names: {e}"));
+                self
+            }
+            pub fn total<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.total = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for total: {e}"));
+                self
+            }
+            pub fn truncated<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.truncated = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for truncated: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<FlamegraphResult> for super::FlamegraphResult {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: FlamegraphResult,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    levels: value.levels?,
+                    max_self: value.max_self?,
+                    names: value.names?,
+                    total: value.total?,
+                    truncated: value.truncated?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::FlamegraphResult> for FlamegraphResult {
+            fn from(value: super::FlamegraphResult) -> Self {
+                Self {
+                    levels: Ok(value.levels),
+                    max_self: Ok(value.max_self),
+                    names: Ok(value.names),
+                    total: Ok(value.total),
+                    truncated: Ok(value.truncated),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct HeatmapAxisX {
             align: ::std::result::Result<::std::string::String, ::std::string::String>,
             step_ns: ::std::result::Result<i64, ::std::string::String>,
@@ -5562,6 +5746,10 @@ pub mod types {
         pub struct QueryIrResponse {
             columns:
                 ::std::result::Result<::std::vec::Vec<super::ResultColumn>, ::std::string::String>,
+            flamegraph: ::std::result::Result<
+                ::std::option::Option<super::FlamegraphResult>,
+                ::std::string::String,
+            >,
             heatmap: ::std::result::Result<
                 ::std::option::Option<super::HeatmapResult>,
                 ::std::string::String,
@@ -5580,6 +5768,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     columns: Ok(Default::default()),
+                    flamegraph: Ok(Default::default()),
                     heatmap: Ok(Default::default()),
                     result: Err("no value supplied for result".to_string()),
                     rows: Ok(Default::default()),
@@ -5598,6 +5787,16 @@ pub mod types {
                 self.columns = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for columns: {e}"));
+                self
+            }
+            pub fn flamegraph<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::FlamegraphResult>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.flamegraph = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for flamegraph: {e}"));
                 self
             }
             pub fn heatmap<T>(mut self, value: T) -> Self
@@ -5668,6 +5867,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     columns: value.columns?,
+                    flamegraph: value.flamegraph?,
                     heatmap: value.heatmap?,
                     result: value.result?,
                     rows: value.rows?,
@@ -5681,6 +5881,7 @@ pub mod types {
             fn from(value: super::QueryIrResponse) -> Self {
                 Self {
                     columns: Ok(value.columns),
+                    flamegraph: Ok(value.flamegraph),
                     heatmap: Ok(value.heatmap),
                     result: Ok(value.result),
                     rows: Ok(value.rows),
