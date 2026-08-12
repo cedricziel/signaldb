@@ -657,6 +657,118 @@ async fn pyroscope_render_endpoint_returns_flamegraph_for_ingested_profile() {
     );
 }
 
+/// profile-payload-access task 6.1 — the native Query IR `flamegraph`
+/// envelope, filtered to the ingested profile's own `profile.id`, produces
+/// the same aggregation `/pyroscope/render` does over an equivalent
+/// selector/range against the same data: same total value, same leaf
+/// function name. Tenant/dataset isolation and `profiles:read` enforcement
+/// for this envelope are covered at the router unit level
+/// (`flamegraph_on_profiles_reaches_the_query_boundary`,
+/// `flamegraph_without_profiles_scope_is_rejected_before_dispatch` in
+/// `router::endpoints::query::tests`) rather than duplicated here — the same
+/// scope check every other Query IR source/envelope combination shares, not
+/// flamegraph-specific logic.
+#[tokio::test]
+async fn query_ir_flamegraph_matches_pyroscope_render_for_ingested_profile() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let services = setup_services().await;
+    let profile_id = send_test_profile(&services).await;
+    let profile_id_hex = hex::encode(profile_id);
+    wait_for_objects_persisted(&services.object_store, Duration::from_secs(15)).await;
+
+    let catalog_dsn = services.config.discovery.as_ref().unwrap().dsn.clone();
+    let catalog = Catalog::new(&catalog_dsn).await.unwrap();
+    let router_state = RouterAppState::new_with_flight_transport(
+        catalog,
+        services.config.clone(),
+        (*services.flight_transport).clone(),
+    );
+    let app = create_router(router_state);
+
+    let body = serde_json::json!({
+        "irVersion": 1,
+        "from": "profiles",
+        "range": { "from": "1699999999000000000", "to": "1700000030000000000" },
+        "result": "flamegraph",
+        "pipeline": [
+            { "where": { "field": "profile.id", "op": "eq", "value": profile_id_hex } }
+        ]
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let flamegraph: serde_json::Value = loop {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/query")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer test-key-123")
+            .header("x-tenant-id", TEST_TENANT)
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        if response.status() == StatusCode::OK {
+            let value: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            if value["flamegraph"]["total"].as_i64().unwrap_or(0) > 0 {
+                break value["flamegraph"].clone();
+            }
+        }
+        if Instant::now() >= deadline {
+            panic!("flamegraph query did not return a non-empty flamegraph before timeout");
+        }
+        sleep(Duration::from_millis(200)).await;
+    };
+
+    assert_eq!(
+        flamegraph["total"].as_i64().unwrap(),
+        SAMPLE_VALUE,
+        "flamegraph total did not match the ingested sample value"
+    );
+    assert!(
+        flamegraph["names"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n.as_str() == Some(LEAF_FUNCTION)),
+        "flamegraph name table did not contain the ingested leaf function '{LEAF_FUNCTION}'; got {:?}",
+        flamegraph["names"]
+    );
+    assert_eq!(
+        flamegraph["truncated"].as_bool(),
+        Some(false),
+        "a single ingested profile must not be reported truncated"
+    );
+
+    // Same fixture, queried through the Pyroscope-compatible endpoint: the
+    // native Query IR flamegraph must agree with it.
+    let render_request = Request::builder()
+        .uri("/pyroscope/render?query=cpu&from=1699999999&until=1700000030")
+        .header("authorization", "Bearer test-key-123")
+        .header("x-tenant-id", TEST_TENANT)
+        .body(Body::empty())
+        .unwrap();
+    let render_response = app.clone().oneshot(render_request).await.unwrap();
+    assert_eq!(render_response.status(), StatusCode::OK);
+    let render_body: pyroscope_api::RenderResponse = serde_json::from_slice(
+        &axum::body::to_bytes(render_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        flamegraph["total"].as_i64().unwrap(),
+        render_body.flamebearer.num_ticks,
+        "query_ir flamegraph total disagreed with /pyroscope/render for the same profile"
+    );
+}
+
 /// Native Query IR reads profile metadata through the router while keeping the
 /// storage payload columns out of the generic response.
 #[tokio::test]
