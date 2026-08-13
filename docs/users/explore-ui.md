@@ -65,9 +65,11 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   an exception — a span's `exception` event, and a log record's own
   `exception.type`/`.message` attributes (see [Exception
   attributes](querying-ir.md#exception-attributes)) — since neither source
-  alone is the whole picture. Selecting a group fetches one example
-  occurrence's stacktrace, plus a link into the trace waterfall when that
-  occurrence carries a trace id.
+  alone is the whole picture. A facet sidebar (type, service, source) narrows
+  the list. Selecting a group fetches one example occurrence's stacktrace —
+  rendered with the caller's own frames legible against dimmed dependency
+  noise — plus a link into the trace waterfall when that occurrence carries a
+  trace id.
 - **Query** — a native [Query IR](querying-ir.md) builder for `logs`, `traces`,
   and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
