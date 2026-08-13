@@ -120,15 +120,23 @@ fn datasets_of(tenant: &common::catalog_manager::ResolvedTenant) -> Vec<String> 
     tenant.datasets.iter().map(|d| d.id.clone()).collect()
 }
 
+/// Builds the tenant/dataset `KeyValue` pair for provisioning metrics, using
+/// the namespaced attribute names declared in the `registry.signaldb.tenancy`
+/// semconv group (`otel/registry/signaldb.yaml`) rather than bare `tenant`/
+/// `dataset` keys.
+fn provisioning_attrs(tenant_id: &str, dataset_id: &str) -> [KeyValue; 2] {
+    [
+        KeyValue::new("signaldb.tenant.id", tenant_id.to_string()),
+        KeyValue::new("signaldb.dataset.id", dataset_id.to_string()),
+    ]
+}
+
 fn record_provisioning_metrics(
     tenant_id: &str,
     dataset_id: &str,
     report: &common::catalog_manager::DatasetProvisioningReport,
 ) {
-    let attrs = [
-        KeyValue::new("tenant", tenant_id.to_string()),
-        KeyValue::new("dataset", dataset_id.to_string()),
-    ];
+    let attrs = provisioning_attrs(tenant_id, dataset_id);
     if !report.created.is_empty() {
         app_metrics()
             .writer_tables_provisioned
@@ -390,5 +398,19 @@ mod tests {
             },
             "a converged dataset must not be re-checked against the catalog"
         );
+    }
+
+    // Issue #1078 — provisioning counters must use the namespaced attribute
+    // names declared in the `registry.signaldb.tenancy` semconv group
+    // (`signaldb.tenant.id` / `signaldb.dataset.id`), not bare `tenant` /
+    // `dataset`, or `weaver registry live-check` flags them as unregistered.
+    #[test]
+    fn provisioning_attrs_uses_registry_attribute_names() {
+        let attrs = provisioning_attrs("acme", "production");
+
+        assert_eq!(attrs[0].key.as_str(), "signaldb.tenant.id");
+        assert_eq!(attrs[0].value.to_string(), "acme");
+        assert_eq!(attrs[1].key.as_str(), "signaldb.dataset.id");
+        assert_eq!(attrs[1].value.to_string(), "production");
     }
 }

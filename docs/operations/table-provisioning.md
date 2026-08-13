@@ -114,7 +114,7 @@ required.
 ## Verifying
 
 Metrics, exported over OTLP by [self-monitoring](self-monitoring-traces.md) and
-attributed by `tenant` and `dataset`:
+attributed by `signaldb.tenant.id` and `signaldb.dataset.id`:
 
 | Instrument                                    | Meaning                       |
 | --------------------------------------------- | ----------------------------- |
