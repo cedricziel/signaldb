@@ -256,7 +256,13 @@ pub enum Value {
 }
 
 /// GET /api/search/tags?scope=<resource|span|intrinsic>
+///
+/// `rename_all = "lowercase"` matters here: the Tempo API (and Grafana's
+/// Tempo datasource, which is what actually sends this) uses lowercase
+/// scope values. Without it, serde only accepts the Rust variant names
+/// (`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum TagScope {
     Resource,
     Span,
@@ -397,5 +403,31 @@ mod tests {
             serde_json::to_value(Value::DoubleValue(1.5)).unwrap(),
             json!({"doubleValue": 1.5})
         );
+    }
+
+    /// #1073 (part 3): Tempo's `/api/v2/search/tags?scope=…` — and Grafana's
+    /// Tempo datasource, which is what actually sends the request — use
+    /// lowercase scope values. `rename_all = "lowercase"` is what a
+    /// query-string deserializer (e.g. axum's `Query` extractor) consults
+    /// for enum variant matching, the same as `serde_json` here.
+    #[test]
+    fn tag_scope_deserializes_tempo_wire_lowercase_values() {
+        assert_eq!(
+            serde_json::from_value::<TagScope>(json!("resource")).unwrap(),
+            TagScope::Resource
+        );
+        assert_eq!(
+            serde_json::from_value::<TagScope>(json!("span")).unwrap(),
+            TagScope::Span
+        );
+        assert_eq!(
+            serde_json::from_value::<TagScope>(json!("intrinsic")).unwrap(),
+            TagScope::Intrinsic
+        );
+    }
+
+    #[test]
+    fn tag_scope_rejects_capitalized_rust_variant_names() {
+        assert!(serde_json::from_value::<TagScope>(json!("Span")).is_err());
     }
 }

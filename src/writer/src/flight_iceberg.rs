@@ -208,6 +208,20 @@ impl IcebergWriterFlightService {
     }
 }
 
+/// Logs the received-data event. `signal_type`/`target_table` are recorded
+/// via `as_deref()` (tracing's `Value` impl for `Option<T>` skips `None`
+/// fields entirely) rather than `?` Debug-formatting the `Option` itself —
+/// the latter previously leaked `Some("...")`/`None` into the log's
+/// attributes, and from there into query results grouped by those fields (#1072).
+fn log_received_data(metadata: &FlightMetadata) {
+    tracing::info!(
+        schema_version = %metadata.schema_version,
+        signal_type = metadata.signal_type.as_deref(),
+        target_table = metadata.target_table.as_deref(),
+        "Received data"
+    );
+}
+
 #[tonic::async_trait]
 impl FlightService for IcebergWriterFlightService {
     type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
@@ -332,12 +346,7 @@ impl FlightService for IcebergWriterFlightService {
         let record_span = span.clone();
         let result = common::self_monitoring::maybe_suppress_self_telemetry(suppress, Box::pin(async move {
         if let Some(ref metadata) = flight_metadata {
-            tracing::info!(
-                schema_version = %metadata.schema_version,
-                signal_type = ?metadata.signal_type,
-                target_table = ?metadata.target_table,
-                "Received data"
-            );
+            log_received_data(metadata);
         }
 
         // Convert FlightData stream into Arrow RecordBatches. Dictionary-aware
@@ -592,7 +601,84 @@ mod tests {
     use super::*;
     use common::wal::WalConfig;
     use object_store::memory::InMemory;
+    use std::collections::HashMap;
+    use std::sync::Mutex as StdMutex;
     use tempfile::tempdir;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// Captures event field values as they are actually recorded by
+    /// `tracing::Value`, so tests can tell a raw string field apart from one
+    /// that fell through to `Debug` formatting.
+    struct FieldCapture(Arc<StdMutex<HashMap<String, String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FieldCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = FieldVisitor(self.0.clone());
+            event.record(&mut visitor);
+        }
+    }
+
+    struct FieldVisitor(Arc<StdMutex<HashMap<String, String>>>);
+
+    impl tracing::field::Visit for FieldVisitor {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+    }
+
+    fn capture_log_received_data(metadata: &FlightMetadata) -> HashMap<String, String> {
+        let captured = Arc::new(StdMutex::new(HashMap::new()));
+        let subscriber = tracing_subscriber::registry().with(FieldCapture(captured.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            log_received_data(metadata);
+        });
+        Arc::try_unwrap(captured)
+            .unwrap_or_else(|_| panic!("subscriber must be dropped before this returns"))
+            .into_inner()
+            .unwrap()
+    }
+
+    /// Issue #1072: `target_table`/`signal_type` were logged with a `?`
+    /// (Debug) sigil, so `Some("metrics_histogram")` reached the log's
+    /// attributes verbatim instead of `metrics_histogram`, and a `None`
+    /// rendered as the literal string `"None"` instead of being omitted —
+    /// both leaking into query results grouped by these fields.
+    #[test]
+    fn log_received_data_records_raw_strings_and_omits_none() {
+        let fields = capture_log_received_data(&FlightMetadata {
+            schema_version: "v1".to_string(),
+            signal_type: Some("metrics".to_string()),
+            target_table: None,
+            tenant_id: None,
+            dataset_id: None,
+            traceparent: None,
+            tracestate: None,
+        });
+
+        assert_eq!(
+            fields.get("signal_type").map(String::as_str),
+            Some("metrics"),
+            "fields: {fields:?}"
+        );
+        assert!(
+            !fields.contains_key("target_table"),
+            "a None target_table must be omitted, not recorded as \"None\": {fields:?}"
+        );
+    }
 
     #[tokio::test]
     async fn test_iceberg_flight_service_creation() {
