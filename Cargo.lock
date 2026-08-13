@@ -1295,6 +1295,7 @@ dependencies = [
  "prost",
  "pyroscope",
  "rand 0.10.2",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha2 0.11.0",
