@@ -86,6 +86,15 @@ pub struct WalSegment {
     pub data_size: u64,
     /// Entries in this segment
     pub entries: Vec<WalEntry>,
+    /// `entry.id -> index into entries`, maintained alongside `entries`.
+    ///
+    /// Entry ids are already uniformly random (UUIDv4), so SipHash's
+    /// collision resistance buys nothing here — `FxHashMap` trades it for
+    /// speed. This index turns entry lookups (`mark_processed_many`,
+    /// `Wal::read_entry_data`) from an O(entries-in-segment) linear scan
+    /// into an O(1) lookup; without it those scans dominated CPU on hosts
+    /// with large, not-yet-compacted segments (issue #1112).
+    entry_index: rustc_hash::FxHashMap<Uuid, usize>,
 }
 
 impl WalSegment {
@@ -131,6 +140,7 @@ impl WalSegment {
             size: 0,
             data_size: 0,
             entries: Vec::new(),
+            entry_index: rustc_hash::FxHashMap::default(),
         })
     }
 
@@ -249,6 +259,12 @@ impl WalSegment {
             0
         };
 
+        let entry_index = entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| (entry.id, idx))
+            .collect();
+
         // Reopened for writing without O_APPEND, matching `new` — appends seek
         // to the tracked offset (issue #865). `data_size`/`size` are reseeded
         // from the on-disk lengths below, so writes resume at the true EOF.
@@ -280,6 +296,7 @@ impl WalSegment {
             size,
             data_size,
             entries,
+            entry_index,
         })
     }
 
@@ -392,6 +409,7 @@ impl WalSegment {
 
         self.size += 8 + entry_data.len() as u64;
         self.entries.push(entry);
+        self.entry_index.insert(entry_id, self.entries.len() - 1);
 
         Ok(entry_id)
     }
@@ -1242,7 +1260,7 @@ impl Wal {
         let segments = self.segments.lock().await;
         for segment_arc in segments.iter() {
             let segment = segment_arc.lock().await;
-            if segment.entries.iter().any(|e| e.id == entry.id) {
+            if segment.entry_index.contains_key(&entry.id) {
                 return segment.read_entry_data(entry).await;
             }
         }
@@ -1306,12 +1324,15 @@ impl Wal {
             return Ok(());
         }
 
-        let mut remaining: std::collections::HashSet<Uuid> = entry_ids.iter().copied().collect();
         // Count only unprocessed -> processed transitions so repeated calls
         // don't skew the metrics.
         let mut newly_processed: i64 = 0;
+        let mut remaining: rustc_hash::FxHashSet<Uuid> = entry_ids.iter().copied().collect();
 
-        // Search all segments, not just current
+        // Search all segments, not just current. Each id is looked up via
+        // `entry_index` (O(1)) instead of scanning every entry in the
+        // segment — with large, not-yet-compacted segments the scan used to
+        // dominate CPU (issue #1112).
         let segments = self.segments.lock().await;
         let segment_count = segments.len();
 
@@ -1323,16 +1344,20 @@ impl Wal {
             let mut segment = segment_arc.lock().await;
 
             let mut segment_dirty = false;
-            for entry in &mut segment.entries {
-                if remaining.remove(&entry.id) {
-                    if !entry.processed {
-                        entry.processed = true;
-                        newly_processed += 1;
-                        segment_dirty = true;
-                    }
-                    if remaining.is_empty() {
-                        break;
-                    }
+            let found_ids: Vec<Uuid> = remaining
+                .iter()
+                .copied()
+                .filter(|id| segment.entry_index.contains_key(id))
+                .collect();
+
+            for id in found_ids {
+                remaining.remove(&id);
+                let idx = segment.entry_index[&id];
+                let entry = &mut segment.entries[idx];
+                if !entry.processed {
+                    entry.processed = true;
+                    newly_processed += 1;
+                    segment_dirty = true;
                 }
             }
 
@@ -2426,6 +2451,65 @@ mod tests {
             reopened.get_unprocessed_entries().await.unwrap().is_empty(),
             "batch-marked processed state must survive a reload"
         );
+    }
+
+    #[tokio::test]
+    async fn mark_processed_many_and_read_entry_data_scale_with_batch_not_segment_size() {
+        // mark_processed_many and Wal::read_entry_data used to locate an
+        // entry by hashing/comparing against every entry in a segment
+        // (issue #1112). That made them O(entries-in-segment) instead of
+        // O(ids-looked-up), which dominated CPU once a segment held many
+        // already-processed entries. This pins the *correctness* of the
+        // O(1) `entry_index` lookup that replaced the scan: entries appended
+        // early and late in a large single segment must still be found,
+        // marked, and readable.
+        let temp_dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            // Large enough that all entries land in one segment.
+            max_segment_size: 10 * 1024 * 1024,
+            max_buffer_entries: 1,
+            flush_interval_secs: 3600,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Wal::new(config).await.unwrap();
+
+        let mut ids = Vec::new();
+        for i in 0..500 {
+            let id = wal
+                .append(
+                    WalOperation::WriteTraces,
+                    format!("payload-{i}").into_bytes(),
+                    None,
+                )
+                .await
+                .unwrap();
+            ids.push(id);
+        }
+        wal.flush().await.unwrap();
+
+        // Mark only the first and last entries processed; everything else
+        // (in between, all sharing the one segment) must stay untouched.
+        let first = ids[0];
+        let last = *ids.last().unwrap();
+        wal.mark_processed_many(&[first, last]).await.unwrap();
+
+        let unprocessed = wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(unprocessed.len(), 498);
+        assert!(unprocessed.iter().all(|e| e.id != first && e.id != last));
+
+        // An entry appended late into the segment must still be readable via
+        // the entry-id -> segment lookup.
+        let late_entry = unprocessed
+            .iter()
+            .find(|e| e.id == ids[499 - 2])
+            .expect("entry appended near the end of the segment must be present");
+        let data = wal.read_entry_data(late_entry).await.unwrap();
+        assert_eq!(data, format!("payload-{}", 499 - 2).into_bytes());
     }
 
     #[tokio::test]

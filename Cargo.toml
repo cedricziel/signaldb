@@ -214,6 +214,9 @@ base64 = "0.23"
 argon2 = { version = "0.5.3", features = ["std"] }
 tower = "0.5.2"
 dashmap = "6.2"
+# Fast, non-cryptographic hasher for internal hot maps keyed on already-random
+# data (e.g. Uuid) where SipHash's DoS resistance buys nothing (issue #1112).
+rustc-hash = "2.1"
 
 testcontainers = { version = "0.27.3", features = ["blocking"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "kafka", "minio"] }
