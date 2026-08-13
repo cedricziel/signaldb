@@ -75,6 +75,10 @@ retention pass, and other tables are unaffected. Across _separate_ compactor
 instances there is no such lock, so those commits can still race; that shows up
 as Iceberg commit conflicts which both paths retry
 (`compactor_conflicts_detected_total`, `compactor_retries_attempted_total`).
+Compaction spends that same retry budget on transient infrastructure failures —
+object store blips, network hiccups, catalog contention — so
+`compactor_retries_attempted_total` can advance without conflicts; deterministic
+failures (validation, schema) are not retried at all.
 Second, a cycle disabled with `enabled = false` gets no task at all rather than
 a task that wakes up and returns.
 

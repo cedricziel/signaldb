@@ -289,6 +289,27 @@ curl -s localhost:9091/metrics | grep -E "compactor_(orphan_candidates_identifie
 
 All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Counters are process-global — there are no per-tenant, per-dataset, or per-table labels. The labelled metrics are `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}` and the `cycle="compaction"|"lease_expiry"|"retention"|"orphan_cleanup"` label on `compactor_cycle_panics_total` / `compactor_cycle_down` (see [Lifecycle Task Recovery](#lifecycle-task-recovery) below).
 
+#### Compaction Retries
+
+A failed compaction attempt is classified as `conflict` (a lost
+optimistic-concurrency race), `transient` (object store blip, network hiccup,
+catalog contention), or `terminal` (validation, schema, malformed input).
+Conflicts and transient failures are retried with exponential backoff;
+terminal failures fail on the first attempt, because retrying repeats the whole
+rewrite to reach the same error.
+
+```promql
+# Retries cover both conflicts and transient infrastructure failures
+increase(compactor_retries_attempted_total[1h])
+
+# How much of that is contention specifically
+increase(compactor_conflicts_detected_total[1h])
+```
+
+Retries far in excess of conflicts mean infrastructure flakiness rather than
+contention. The `error_class` field on each job's failure log says which class
+a given failure was.
+
 #### Lease Recovery
 
 **Stale Leases Expired:**
