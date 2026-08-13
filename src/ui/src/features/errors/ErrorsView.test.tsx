@@ -94,6 +94,35 @@ describe("ErrorsView", () => {
     expect(fetchErrorExample).toHaveBeenCalledWith(group(), expect.anything());
   });
 
+  it("narrows the list via the facet sidebar", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [
+        group({ source: "traces", exceptionType: "std::io::Error" }),
+        group({
+          source: "logs",
+          exceptionType: "ValueError",
+          serviceName: "signaldb-ui",
+          count: 9,
+        }),
+      ],
+      truncated: false,
+    });
+    renderView();
+    const user = userEvent.setup();
+    await screen.findByText("std::io::Error");
+
+    // Expand the Source facet and select "logs" (the facet *value* button,
+    // not the table's own "logs" source badge for the ValueError row).
+    await user.click(screen.getByRole("button", { name: "Source" }));
+    await user.click(screen.getByRole("button", { name: /logs/ }));
+
+    expect(screen.queryByText("std::io::Error")).not.toBeInTheDocument();
+    expect(screen.getByText("ValueError")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Remove filter source = logs/ }),
+    ).toBeInTheDocument();
+  });
+
   it('offers a "View trace" link once the example resolves a trace id', async () => {
     fetchErrorGroups.mockResolvedValue({
       groups: [group()],

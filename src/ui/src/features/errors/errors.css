@@ -70,7 +70,33 @@
   border-radius: 6px;
   font-family: var(--mono);
   font-size: 12px;
+}
+
+.errors-stacktrace-line {
   white-space: pre-wrap;
   word-break: break-word;
-  overflow-x: auto;
+}
+
+/* A hanging indent on each frame's own box (not the whole <pre>) so a
+   wrapped continuation line stays aligned under the frame text instead of
+   resetting to the left edge. */
+.errors-stacktrace-frame,
+.errors-stacktrace-vendor {
+  padding-left: 2ch;
+}
+
+.errors-stacktrace-header {
+  color: var(--text);
+  font-weight: 650;
+  margin-bottom: 4px;
+}
+
+.errors-stacktrace-frame {
+  color: var(--dim);
+}
+
+/* Dependency/vendor frames (node_modules, .vite/deps, site-packages, ...)
+   de-emphasized so the caller's own code stands out. */
+.errors-stacktrace-vendor {
+  color: var(--faint);
 }

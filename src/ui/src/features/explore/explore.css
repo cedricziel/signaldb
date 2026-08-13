@@ -265,7 +265,8 @@
    248px fallback here only covers the sliver of time (or test render) before
    that runs. */
 .logs-body,
-.traces-body {
+.traces-body,
+.errors-body {
   display: grid;
   grid-template-columns: var(--sidebar-w, 248px) 1fr;
   flex: 1;
@@ -274,7 +275,8 @@
 
 @media (max-width: 900px) {
   .logs-body,
-  .traces-body {
+  .traces-body,
+  .errors-body {
     grid-template-columns: 1fr;
   }
 
@@ -284,7 +286,8 @@
 }
 
 .logs-main,
-.traces-main {
+.traces-main,
+.errors-main {
   display: flex;
   flex-direction: column;
   min-width: 0;
