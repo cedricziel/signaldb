@@ -130,6 +130,34 @@ describe("buildSearch", () => {
     expect(parseExploreState(search)).toEqual({ ...state, signal: "logs" });
   });
 
+  it("round-trips the profiles signal's compare/matcher/single-profile state", () => {
+    const state = {
+      ...DEFAULT_STATE,
+      signal: "profiles" as const,
+      profileMatcherLabel: "region",
+      profileMatcherValue: "eu",
+      profileCompare: true,
+      profileBaseline: { type: "relative" as const, seconds: 86400 },
+      profileId: "abc123",
+    };
+    const search = buildSearch(state);
+    expect(search).toContain("plabel=region");
+    expect(search).toContain("pvalue=eu");
+    expect(search).toContain("pcmp=1");
+    expect(search).toContain("pbase=1d");
+    expect(search).toContain("pid=abc123");
+    expect(parseExploreState(search)).toEqual({ ...state, signal: "logs" });
+  });
+
+  it("omits the compare/matcher/baseline params at their defaults", () => {
+    const search = buildSearch({ ...DEFAULT_STATE, signal: "profiles" });
+    expect(search).not.toContain("pcmp");
+    expect(search).not.toContain("pbase");
+    expect(search).not.toContain("plabel");
+    expect(search).not.toContain("pvalue");
+    expect(search).not.toContain("pid");
+  });
+
   it("round-trips the catalog signal's selected entity type", () => {
     const state = {
       ...DEFAULT_STATE,

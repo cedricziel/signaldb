@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -11,31 +11,50 @@ afterEach(() => {
 
 const TYPES = [
   {
-    ID: "cpu:nanoseconds",
+    ID: "cpu:cpu:nanoseconds",
     name: "cpu",
     sampleType: "cpu",
     sampleUnit: "nanoseconds",
   },
 ];
 const SERVICES = { names: ["signaldb-router", "signaldb-querier"] };
-const RENDER = {
-  flamebearer: {
-    names: ["total", "main", "work"],
-    levels: [
-      [0, 100, 0, 0],
-      [0, 100, 20, 1],
-      [0, 80, 80, 2],
-    ],
-    numTicks: 100,
-    maxSelf: 80,
+const LABEL_NAMES = { names: ["service_name", "region"] };
+const LABEL_VALUES = { names: ["eu", "us"] };
+
+function flamegraphBody(fg: {
+  names: string[];
+  levels: number[][];
+  total: number;
+  max_self: number;
+  truncated?: boolean;
+}) {
+  return {
+    result: "flamegraph",
+    window: { start_ns: 0, end_ns: 0 },
+    flamegraph: { truncated: false, ...fg },
+  };
+}
+
+const FLAMEGRAPH = flamegraphBody({
+  names: ["total", "main", "work"],
+  levels: [
+    [0, 100, 0, 0],
+    [0, 100, 20, 1],
+    [0, 80, 80, 2],
+  ],
+  total: 100,
+  max_self: 80,
+});
+
+const DISCOVERY_ROUTES = [
+  { match: "/pyroscope/profile-types", body: TYPES },
+  { match: "/pyroscope/label-names", body: LABEL_NAMES },
+  {
+    match: /\/pyroscope\/label-values\?.*label=service_name/,
+    body: SERVICES,
+    method: "GET" as const,
   },
-  metadata: {
-    format: "single",
-    sampleRate: 100,
-    units: "samples",
-    name: "cpu",
-  },
-};
+];
 
 function state(overrides: Partial<ExploreState> = {}): ExploreState {
   return { ...DEFAULT_STATE, signal: "profiles", ...overrides };
@@ -44,9 +63,8 @@ function state(overrides: Partial<ExploreState> = {}): ExploreState {
 describe("ProfilesView", () => {
   it("populates selectors and renders a flame graph", async () => {
     stubFetchRoutes([
-      { match: "/pyroscope/profile-types", body: TYPES },
-      { match: "/pyroscope/label-values", body: SERVICES },
-      { match: "/pyroscope/render", body: RENDER },
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
     ]);
 
     renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
@@ -64,11 +82,36 @@ describe("ProfilesView", () => {
     expect(screen.getByText("work")).toBeInTheDocument();
   });
 
-  it("zooms into a frame on click and back via reset", async () => {
+  it("submits a where-pipeline scoped to the selected service and sample type", async () => {
+    const fetchMock = stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+
+    renderWithClient(
+      <ProfilesView
+        state={state({ profileService: "signaldb-router" })}
+        update={vi.fn()}
+      />,
+    );
+    await screen.findByText("main");
+
+    const irCall = fetchMock.mock.calls.find((c) =>
+      String((c[0] as Request).url).includes("/api/v1/query"),
+    );
+    const body = await (irCall![0] as Request).clone().json();
+    expect(body.from).toBe("profiles");
+    expect(body.result).toBe("flamegraph");
+    expect(body.pipeline).toEqual([
+      { where: { field: "service.name", op: "eq", value: "signaldb-router" } },
+      { where: { field: "sample.type", op: "eq", value: "cpu" } },
+    ]);
+  });
+
+  it("zooms into a frame on click and steps back out via the breadcrumb", async () => {
     stubFetchRoutes([
-      { match: "/pyroscope/profile-types", body: TYPES },
-      { match: "/pyroscope/label-values", body: SERVICES },
-      { match: "/pyroscope/render", body: RENDER },
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
     ]);
 
     renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
@@ -76,18 +119,33 @@ describe("ProfilesView", () => {
     const work = await screen.findByRole("button", { name: /work/ });
     await userEvent.click(work);
 
-    // Breadcrumb now leads to the focused frame and offers a reset.
-    const crumbs = screen.getByText("reset zoom");
-    expect(crumbs).toBeInTheDocument();
-    await userEvent.click(crumbs);
-    expect(screen.queryByText("reset zoom")).not.toBeInTheDocument();
+    // Breadcrumb shows the full ancestor path down to the focused frame:
+    // "root" (reset) plus every zoomed-into frame's name — scope the
+    // lookup to the breadcrumb, since "main" also labels a flame bar.
+    const crumbs = () => within(screen.getByLabelText("Zoom path"));
+    expect(crumbs().getByRole("button", { name: "root" })).toBeInTheDocument();
+    expect(crumbs().getByRole("button", { name: "main" })).toBeInTheDocument();
+    expect(crumbs().getByRole("button", { name: "work" })).toBeInTheDocument();
+
+    // Stepping back one level (via the ancestor crumb) re-widens the view
+    // without dropping all the way to the root: "work" drops out, "main"
+    // remains as the new focus.
+    await userEvent.click(crumbs().getByRole("button", { name: "main" }));
+    expect(screen.queryByLabelText("Zoom path")).toBeInTheDocument();
+    expect(
+      crumbs().queryByRole("button", { name: "work" }),
+    ).not.toBeInTheDocument();
+    expect(crumbs().getByRole("button", { name: "main" })).toBeInTheDocument();
+
+    // "root" clears the zoom stack entirely — the breadcrumb disappears.
+    await userEvent.click(crumbs().getByRole("button", { name: "root" }));
+    expect(screen.queryByLabelText("Zoom path")).not.toBeInTheDocument();
   });
 
   it("updates URL state when a service is chosen", async () => {
     stubFetchRoutes([
-      { match: "/pyroscope/profile-types", body: TYPES },
-      { match: "/pyroscope/label-values", body: SERVICES },
-      { match: "/pyroscope/render", body: RENDER },
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
     ]);
     const update = vi.fn();
 
@@ -103,9 +161,8 @@ describe("ProfilesView", () => {
 
   it("highlights matching frames and reports the matched share", async () => {
     stubFetchRoutes([
-      { match: "/pyroscope/profile-types", body: TYPES },
-      { match: "/pyroscope/label-values", body: SERVICES },
-      { match: "/pyroscope/render", body: RENDER },
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
     ]);
 
     renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
@@ -122,24 +179,15 @@ describe("ProfilesView", () => {
 
   it("shows an empty state when the profile has no frames", async () => {
     stubFetchRoutes([
-      { match: "/pyroscope/profile-types", body: TYPES },
-      { match: "/pyroscope/label-values", body: SERVICES },
+      ...DISCOVERY_ROUTES,
       {
-        match: "/pyroscope/render",
-        body: {
-          flamebearer: {
-            names: ["total"],
-            levels: [[0, 0, 0, 0]],
-            numTicks: 0,
-            maxSelf: 0,
-          },
-          metadata: {
-            format: "single",
-            sampleRate: 100,
-            units: "samples",
-            name: "cpu",
-          },
-        },
+        match: "/api/v1/query",
+        body: flamegraphBody({
+          names: ["total"],
+          levels: [[0, 0, 0, 0]],
+          total: 0,
+          max_self: 0,
+        }),
       },
     ]);
 
@@ -149,13 +197,202 @@ describe("ProfilesView", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders a genuine single-frame profile instead of calling it empty", async () => {
+    // Regression: isEmpty used to key off levels.length <= 1, which
+    // misclassified a real root-only profile (nonzero self time, no
+    // children) as empty. numTicks is the correct signal.
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      {
+        match: "/api/v1/query",
+        body: flamegraphBody({
+          names: ["total"],
+          levels: [[0, 1, 1, 0]],
+          total: 1,
+          max_self: 1,
+        }),
+      },
+    ]);
+
+    renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
+
+    expect(
+      await screen.findByRole("button", { name: "total" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/No profiles in the selected range for this/),
+    ).not.toBeInTheDocument();
+  });
+
   it("prompts to enable self-profiling when no types exist", async () => {
     stubFetchRoutes([
       { match: "/pyroscope/profile-types", body: [] },
+      { match: "/pyroscope/label-names", body: { names: [] } },
       { match: "/pyroscope/label-values", body: { names: [] } },
     ]);
 
     renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
     expect(await screen.findByText(/profiles_enabled/)).toBeInTheDocument();
+  });
+
+  it("shows a truncation note when the flamegraph was capped", async () => {
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      {
+        match: "/api/v1/query",
+        body: flamegraphBody({
+          names: ["total"],
+          levels: [[0, 1, 1, 0]],
+          total: 1,
+          max_self: 1,
+          truncated: true,
+        }),
+      },
+    ]);
+
+    renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
+    expect(
+      await screen.findByText(/Too many matching profiles/),
+    ).toBeInTheDocument();
+  });
+
+  it("choosing an attribute label clears any prior value and notifies the URL state", async () => {
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+    const update = vi.fn();
+
+    renderWithClient(<ProfilesView state={state()} update={update} />);
+    await screen.findByRole("option", { name: "signaldb-router" });
+
+    await userEvent.selectOptions(
+      screen.getByLabelText("Attribute label"),
+      "region",
+    );
+    expect(update).toHaveBeenCalledWith({
+      profileMatcherLabel: "region",
+      profileMatcherValue: "",
+    });
+  });
+
+  it("choosing an attribute value notifies the URL state", async () => {
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      {
+        match: /\/pyroscope\/label-values\?.*label=region/,
+        body: LABEL_VALUES,
+        method: "GET",
+      },
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+    const update = vi.fn();
+
+    renderWithClient(
+      <ProfilesView
+        state={state({ profileMatcherLabel: "region" })}
+        update={update}
+      />,
+    );
+
+    await screen.findByRole("option", { name: "eu" });
+    await userEvent.selectOptions(
+      screen.getByLabelText("Attribute value"),
+      "eu",
+    );
+    expect(update).toHaveBeenCalledWith({ profileMatcherValue: "eu" });
+  });
+
+  it("adds an attribute where-stage to the flamegraph query once a matcher is set", async () => {
+    const fetchMock = stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+
+    renderWithClient(
+      <ProfilesView
+        state={state({
+          profileMatcherLabel: "region",
+          profileMatcherValue: "eu",
+        })}
+        update={vi.fn()}
+      />,
+    );
+    await screen.findByText("main");
+
+    const irCall = fetchMock.mock.calls.find((c) =>
+      String((c[0] as Request).url).includes("/api/v1/query"),
+    );
+    const body = await (irCall![0] as Request).clone().json();
+    expect(body.pipeline).toContainEqual({
+      where: { field: "region", op: "eq", value: "eu" },
+    });
+  });
+
+  it("renders baseline and comparison panes in compare mode", async () => {
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+
+    renderWithClient(
+      <ProfilesView state={state({ profileCompare: true })} update={vi.fn()} />,
+    );
+
+    // Both panes render the same stubbed flamegraph independently.
+    const panes = await screen.findAllByRole("button", { name: /work/ });
+    expect(panes).toHaveLength(2);
+    // "Baseline" also labels the range picker field, so scope to the two
+    // rendered flame panes.
+    const titles = document.querySelectorAll(
+      ".profiles-compare-pane .flame-title",
+    );
+    expect(Array.from(titles).map((t) => t.textContent)).toEqual([
+      "Baseline",
+      "Comparison",
+    ]);
+  });
+
+  it("toggling Compare flips profileCompare in URL state", async () => {
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+    const update = vi.fn();
+
+    renderWithClient(<ProfilesView state={state()} update={update} />);
+    await screen.findByText("main");
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Compare" }));
+    expect(update).toHaveBeenCalledWith({ profileCompare: true });
+  });
+
+  it("renders a single profile by id and offers a way back", async () => {
+    stubFetchRoutes([{ match: "/api/v1/query", body: FLAMEGRAPH }]);
+    const update = vi.fn();
+
+    renderWithClient(
+      <ProfilesView state={state({ profileId: "abc123" })} update={update} />,
+    );
+
+    expect(await screen.findByText("abc123")).toBeInTheDocument();
+    expect(await screen.findByText("work")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /profiles/ }));
+    expect(update).toHaveBeenCalledWith({ profileId: "" });
+  });
+
+  it("shows a not-found message for an unknown profile id", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/query",
+        body: flamegraphBody({ names: [], levels: [], total: 0, max_self: 0 }),
+      },
+    ]);
+
+    renderWithClient(
+      <ProfilesView state={state({ profileId: "missing" })} update={vi.fn()} />,
+    );
+    expect(await screen.findByText(/not found/)).toBeInTheDocument();
   });
 });

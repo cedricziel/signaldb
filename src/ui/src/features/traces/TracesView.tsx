@@ -8,6 +8,7 @@ import {
 } from "react";
 import {
   tempoGetTrace,
+  type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
 } from "../../api/tempo";
@@ -818,6 +819,7 @@ function TraceDetail({ state, update }: Props) {
             <SpanDetail
               span={selectedRow.span}
               traceId={trace.data.traceId}
+              profiles={trace.data.profiles}
               update={update}
             />
           </>
@@ -830,13 +832,16 @@ function TraceDetail({ state, update }: Props) {
 function SpanDetail({
   span,
   traceId,
+  profiles,
   update,
 }: {
   span: TempoSpan;
   traceId: string;
+  profiles: ProfileSummaryView[];
   update: UpdateFn;
 }) {
   const groups = groupSpanAttributes(span.attributes);
+  const spanProfiles = profiles.filter((p) => p.spanId === span.spanId);
   return (
     <aside className="span-detail" aria-label="Span details">
       <h4>{span.name}</h4>
@@ -857,6 +862,20 @@ function SpanDetail({
       >
         Logs for this trace →
       </button>
+      {spanProfiles.map((p) => (
+        <button
+          key={p.profileId}
+          className="act"
+          onClick={() =>
+            update(
+              { signal: "profiles", trace: "", profileId: p.profileId },
+              { push: true },
+            )
+          }
+        >
+          Profile: {p.sampleType} →
+        </button>
+      ))}
       {span.events.length > 0 && (
         <>
           <div className="span-detail-sec">Events</div>

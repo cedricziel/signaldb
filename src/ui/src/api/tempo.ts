@@ -41,8 +41,22 @@ export interface TraceSummary {
   rootError: boolean;
 }
 
+/** Summary of a profile linked to a trace (or one of its spans), without the
+ * bulky stack/sample payload — enough to offer a "view this profile" link. */
+export interface ProfileSummaryView {
+  profileId: string;
+  timeUnixNano: string;
+  durationNano: string;
+  sampleType: string;
+  sampleUnit: string;
+  serviceName: string;
+  spanId: string | null;
+}
+
 export interface TempoTrace extends TraceSummary {
   spans: TempoSpan[];
+  /** Profiles captured during this trace, requested via include_profiles. */
+  profiles: ProfileSummaryView[];
 }
 
 interface WireValue {
@@ -70,6 +84,16 @@ interface WireSpan {
   events?: WireSpanEvent[];
 }
 
+interface WireProfileSummary {
+  profileID: string;
+  timeUnixNano: string;
+  durationNano: string;
+  sampleType: string;
+  sampleUnit: string;
+  serviceName: string;
+  spanID?: string;
+}
+
 interface WireTrace {
   traceID: string;
   rootServiceName: string;
@@ -77,6 +101,19 @@ interface WireTrace {
   startTimeUnixNano: string;
   durationMs: number;
   spanSets?: { spans: WireSpan[]; matched: number }[];
+  profiles?: WireProfileSummary[];
+}
+
+function toProfileSummary(w: WireProfileSummary): ProfileSummaryView {
+  return {
+    profileId: w.profileID,
+    timeUnixNano: w.timeUnixNano,
+    durationNano: w.durationNano,
+    sampleType: w.sampleType,
+    sampleUnit: w.sampleUnit,
+    serviceName: w.serviceName,
+    spanId: w.spanID ?? null,
+  };
 }
 
 export function flattenAttrValue(v: WireValue): AttrValue {
@@ -149,7 +186,7 @@ export async function tempoGetTrace(
   traceId: string,
   range?: ResolvedRange,
 ): Promise<TempoTrace> {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({ include_profiles: "true" });
   if (range) {
     params.set("start", String(Math.floor(range.fromMs / 1000)));
     params.set("end", String(Math.ceil(range.toMs / 1000)));
@@ -165,6 +202,7 @@ export async function tempoGetTrace(
     rootServiceName: wire.rootServiceName,
     rootTraceName: wire.rootTraceName,
     startNs: wire.startTimeUnixNano,
+    profiles: (wire.profiles ?? []).map(toProfileSummary),
     durationMs: wire.durationMs,
     rootAttributes: root?.attributes ?? {},
     rootError: root?.status === "error",

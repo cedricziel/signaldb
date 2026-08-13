@@ -882,6 +882,47 @@ describe("TracesView detail", () => {
     });
   });
 
+  it("links to a profile captured during the selected span", async () => {
+    stubFetchRoutes([
+      {
+        match: "/tempo/api/traces/t1cafe",
+        body: {
+          ...TRACE_BODY,
+          profiles: [
+            {
+              profileID: "prof-1",
+              timeUnixNano: "1040000000",
+              durationNano: "258000000",
+              sampleType: "cpu",
+              sampleUnit: "nanoseconds",
+              serviceName: "payments",
+              spanID: "charge",
+            },
+          ],
+        },
+      },
+    ]);
+    // "charge" (the error span with a recorded exception) is preselected.
+    const update = renderView({ trace: "t1cafe" });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Profile: cpu →" }),
+    );
+    expect(update).toHaveBeenCalledWith(
+      { signal: "profiles", trace: "", profileId: "prof-1" },
+      { push: true },
+    );
+  });
+
+  it("shows no profile link when the selected span has none", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    renderView({ trace: "t1cafe" });
+    await screen.findByRole("button", { name: "Logs for this trace →" });
+    expect(
+      screen.queryByRole("button", { name: /^Profile:/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("navigates back to the search list", async () => {
     stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
     const update = renderView({ trace: "t1cafe" });

@@ -70,10 +70,13 @@ describe("tempoGetTrace", () => {
       ],
     });
     const trace = await tempoGetTrace("abc", RANGE);
-    expect(String(fn.mock.calls[0]?.[0])).toContain(
-      "/tempo/api/traces/abc?start=1000&end=2001",
-    );
+    const url = new URL(String(fn.mock.calls[0]?.[0]), "http://localhost");
+    expect(url.pathname).toBe("/tempo/api/traces/abc");
+    expect(url.searchParams.get("start")).toBe("1000");
+    expect(url.searchParams.get("end")).toBe("2001");
+    expect(url.searchParams.get("include_profiles")).toBe("true");
     expect(trace.traceId).toBe("abc");
+    expect(trace.profiles).toEqual([]);
     expect(trace.spans).toHaveLength(2);
     expect(trace.spans[0]).toMatchObject({
       spanId: "s1",
@@ -194,6 +197,57 @@ describe("tempoGetTrace", () => {
     const trace = await tempoGetTrace("abc");
     expect(trace.spans[0]?.parentSpanId).toBeNull();
     expect(trace.rootAttributes).toEqual({ "resource.env": "prod" });
+  });
+
+  it("maps linked profile summaries onto their spans", async () => {
+    mockFetchOnce({
+      traceID: "abc",
+      rootServiceName: "gateway",
+      rootTraceName: "root-op",
+      startTimeUnixNano: "1000",
+      durationMs: 1,
+      spanSets: [{ matched: 1, spans: [] }],
+      profiles: [
+        {
+          profileID: "p1",
+          timeUnixNano: "1000",
+          durationNano: "2000",
+          sampleType: "cpu",
+          sampleUnit: "nanoseconds",
+          serviceName: "gateway",
+          spanID: "s1",
+        },
+        {
+          profileID: "p2",
+          timeUnixNano: "1500",
+          durationNano: "500",
+          sampleType: "alloc_space",
+          sampleUnit: "bytes",
+          serviceName: "gateway",
+        },
+      ],
+    });
+    const trace = await tempoGetTrace("abc");
+    expect(trace.profiles).toEqual([
+      {
+        profileId: "p1",
+        timeUnixNano: "1000",
+        durationNano: "2000",
+        sampleType: "cpu",
+        sampleUnit: "nanoseconds",
+        serviceName: "gateway",
+        spanId: "s1",
+      },
+      {
+        profileId: "p2",
+        timeUnixNano: "1500",
+        durationNano: "500",
+        sampleType: "alloc_space",
+        sampleUnit: "bytes",
+        serviceName: "gateway",
+        spanId: null,
+      },
+    ]);
   });
 
   it("throws a readable error on failure", async () => {

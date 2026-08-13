@@ -1,4 +1,8 @@
-// Client for the router's Pyroscope-compatible profiles API (/pyroscope).
+// Client for the router's Pyroscope-compatible discovery endpoints
+// (/pyroscope/profile-types, /label-names, /label-values). Actual flamegraph
+// data is fetched through the native Query IR API (see api/profilesIr.ts) —
+// these compat endpoints stay only because there's no Query IR equivalent
+// for "what distinct values does this signal have" yet.
 
 import type { ResolvedRange } from "../lib/time";
 import { ApiError, tenantHeaders } from "./http";
@@ -74,24 +78,28 @@ export async function pyroscopeProfileTypes(
 export async function pyroscopeServices(
   range: ResolvedRange,
 ): Promise<string[]> {
-  const params = rangeParams(range);
-  params.set("label", "service_name");
-  const res = await pyroscopeFetch<{ names: string[] }>("label-values", params);
-  return res.names;
+  return pyroscopeLabelValues("service_name", range);
 }
 
-/**
- * Render a flamebearer for a profile type, optionally filtered to a single
- * service (the only matcher the router honors). `typeId` is a ProfileType
- * `ID` such as `cpu:nanoseconds`.
- */
-export async function pyroscopeRender(
-  typeId: string,
-  service: string,
+/** Label (attribute key) names in the range, excluding `service_name` —
+ * that's its own dedicated selector, not a matcher choice. */
+export async function pyroscopeLabelNames(
   range: ResolvedRange,
-): Promise<RenderResponse> {
-  const query = service ? `${typeId}{service_name="${service}"}` : typeId;
+): Promise<string[]> {
+  const res = await pyroscopeFetch<{ names: string[] }>(
+    "label-names",
+    rangeParams(range),
+  );
+  return res.names.filter((n) => n !== "service_name");
+}
+
+/** Distinct values of a label (attribute key) in the range. */
+export async function pyroscopeLabelValues(
+  label: string,
+  range: ResolvedRange,
+): Promise<string[]> {
   const params = rangeParams(range);
-  params.set("query", query);
-  return pyroscopeFetch<RenderResponse>("render", params);
+  params.set("label", label);
+  const res = await pyroscopeFetch<{ names: string[] }>("label-values", params);
+  return res.names;
 }
