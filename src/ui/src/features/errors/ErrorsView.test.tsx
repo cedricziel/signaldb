@@ -5,19 +5,19 @@ import { DEFAULT_STATE } from "../../lib/urlState";
 import { renderWithClient } from "../../test/render";
 import { ErrorsView } from "./ErrorsView";
 import * as errorsApi from "../../api/errors";
-import type { ErrorGroup } from "../../api/errors";
+import type { ErrorGroup, ErrorOccurrence } from "../../api/errors";
 
 vi.mock("../../api/errors", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/errors")>();
   return {
     ...actual,
     fetchErrorGroups: vi.fn(),
-    fetchErrorExample: vi.fn(),
+    fetchErrorOccurrences: vi.fn(),
   };
 });
 
 const fetchErrorGroups = vi.mocked(errorsApi.fetchErrorGroups);
-const fetchErrorExample = vi.mocked(errorsApi.fetchErrorExample);
+const fetchErrorOccurrences = vi.mocked(errorsApi.fetchErrorOccurrences);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -25,9 +25,9 @@ afterEach(() => {
 
 beforeEach(() => {
   fetchErrorGroups.mockReset();
-  fetchErrorExample.mockReset();
+  fetchErrorOccurrences.mockReset();
   fetchErrorGroups.mockResolvedValue({ groups: [], truncated: false });
-  fetchErrorExample.mockResolvedValue(null);
+  fetchErrorOccurrences.mockResolvedValue([]);
 });
 
 function group(overrides: Partial<ErrorGroup> = {}): ErrorGroup {
@@ -39,6 +39,15 @@ function group(overrides: Partial<ErrorGroup> = {}): ErrorGroup {
     count: 3,
     firstNs: "1700000000000000000",
     lastNs: "1700000100000000000",
+    ...overrides,
+  };
+}
+
+function occurrence(overrides: Partial<ErrorOccurrence> = {}): ErrorOccurrence {
+  return {
+    timestampNs: "1700000100000000000",
+    traceId: "abc123",
+    stacktrace: "at foo\n at bar",
     ...overrides,
   };
 }
@@ -78,20 +87,79 @@ describe("ErrorsView", () => {
     expect(screen.getByText("logs")).toBeInTheDocument();
   });
 
-  it("fetches and shows a stacktrace when a group is selected", async () => {
+  it("lists a group's individual occurrences when selected", async () => {
     fetchErrorGroups.mockResolvedValue({
       groups: [group()],
       truncated: false,
     });
-    fetchErrorExample.mockResolvedValue({
-      traceId: "abc123",
-      stacktrace: "at foo\n at bar",
-    });
+    fetchErrorOccurrences.mockResolvedValue([
+      occurrence({ timestampNs: "2000", traceId: "trace-a" }),
+      occurrence({ timestampNs: "1000", traceId: "trace-b" }),
+    ]);
     renderView();
     const user = userEvent.setup();
     await user.click(await screen.findByText("std::io::Error"));
+    expect(fetchErrorOccurrences).toHaveBeenCalledWith(
+      group(),
+      expect.anything(),
+    );
+    // Two distinct occurrences, each with its own trace link.
+    const links = await screen.findAllByRole("button", {
+      name: /View trace/,
+    });
+    expect(links).toHaveLength(2);
+  });
+
+  it("does not offer a trace link for an occurrence with no active trace", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group()],
+      truncated: false,
+    });
+    fetchErrorOccurrences.mockResolvedValue([occurrence({ traceId: null })]);
+    renderView();
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("std::io::Error"));
+    await screen.findByTestId("occurrence-row-0");
+    expect(
+      screen.queryByRole("button", { name: /View trace/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("expands an occurrence to show its own stacktrace", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group()],
+      truncated: false,
+    });
+    fetchErrorOccurrences.mockResolvedValue([
+      occurrence({ stacktrace: "at foo\n at bar" }),
+    ]);
+    renderView();
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("std::io::Error"));
+    expect(screen.queryByText(/at foo/)).not.toBeInTheDocument();
+    await user.click(await screen.findByTestId("occurrence-row-0"));
     expect(await screen.findByText(/at foo/)).toBeInTheDocument();
-    expect(fetchErrorExample).toHaveBeenCalledWith(group(), expect.anything());
+  });
+
+  it("clicking a trace link navigates without expanding the row", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group()],
+      truncated: false,
+    });
+    fetchErrorOccurrences.mockResolvedValue([
+      occurrence({ traceId: "abc123", stacktrace: "at foo" }),
+    ]);
+    const update = renderView();
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("std::io::Error"));
+    const link = await screen.findByRole("button", { name: /View trace/ });
+    await user.click(link);
+    expect(update).toHaveBeenCalledWith(
+      { signal: "traces", trace: "abc123" },
+      { push: true },
+    );
+    // The row itself did not also toggle open from the same click.
+    expect(screen.queryByText(/at foo/)).not.toBeInTheDocument();
   });
 
   it("narrows the list via the facet sidebar", async () => {
@@ -121,25 +189,5 @@ describe("ErrorsView", () => {
     expect(
       screen.getByRole("button", { name: /Remove filter source = logs/ }),
     ).toBeInTheDocument();
-  });
-
-  it('offers a "View trace" link once the example resolves a trace id', async () => {
-    fetchErrorGroups.mockResolvedValue({
-      groups: [group()],
-      truncated: false,
-    });
-    fetchErrorExample.mockResolvedValue({
-      traceId: "abc123",
-      stacktrace: "at foo",
-    });
-    const update = renderView();
-    const user = userEvent.setup();
-    await user.click(await screen.findByText("std::io::Error"));
-    const link = await screen.findByRole("button", { name: /View trace/ });
-    await user.click(link);
-    expect(update).toHaveBeenCalledWith(
-      { signal: "traces", trace: "abc123" },
-      { push: true },
-    );
   });
 });

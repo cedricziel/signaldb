@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildErrorGroupDoc,
-  buildErrorExampleDoc,
+  buildErrorOccurrencesDoc,
   fetchErrorGroups,
-  fetchErrorExample,
+  fetchErrorOccurrences,
   type ErrorGroup,
 } from "./errors";
 import { client } from "./gen/client.gen";
@@ -113,8 +113,8 @@ describe("fetchErrorGroups", () => {
   });
 });
 
-describe("buildErrorExampleDoc", () => {
-  it("pins the example lookup to the exact group's type/message/service", () => {
+describe("buildErrorOccurrencesDoc", () => {
+  it("pins the lookup to the exact group's type/message/service, newest first", () => {
     const group: ErrorGroup = {
       source: "traces",
       exceptionType: "std::io::Error",
@@ -124,8 +124,12 @@ describe("buildErrorExampleDoc", () => {
       firstNs: "1000",
       lastNs: "2000",
     };
-    const doc = buildErrorExampleDoc(group, range);
-    expect(doc.fields).toEqual(["trace_id", "exception.stacktrace"]);
+    const doc = buildErrorOccurrencesDoc(group, range);
+    expect(doc.fields).toEqual([
+      "start_time_unix_nano",
+      "trace_id",
+      "exception.stacktrace",
+    ]);
     expect(doc.pipeline).toContainEqual({
       where: { field: "exception.type", op: "eq", value: "std::io::Error" },
     });
@@ -135,19 +139,47 @@ describe("buildErrorExampleDoc", () => {
     expect(doc.pipeline).toContainEqual({
       where: { field: "service.name", op: "eq", value: "signaldb" },
     });
-    expect(doc.pipeline).toContainEqual({ limit: 1 });
+    expect(doc.pipeline).toContainEqual({
+      order: [{ of: "start_time_unix_nano", dir: "desc" }],
+    });
+    expect(doc.pipeline).toContainEqual({ limit: 25 });
+  });
+
+  it("uses the logs timestamp field for the logs source", () => {
+    const group: ErrorGroup = {
+      source: "logs",
+      exceptionType: "ValueError",
+      exceptionMessage: null,
+      serviceName: null,
+      count: 1,
+      firstNs: "1000",
+      lastNs: "1000",
+    };
+    const doc = buildErrorOccurrencesDoc(group, range);
+    expect(doc.fields).toEqual([
+      "timestamp",
+      "trace_id",
+      "exception.stacktrace",
+    ]);
+    expect(doc.pipeline).toContainEqual({
+      order: [{ of: "timestamp", dir: "desc" }],
+    });
   });
 });
 
-describe("fetchErrorExample", () => {
-  it("decodes the example row's trace id and stacktrace", async () => {
+describe("fetchErrorOccurrences", () => {
+  it("decodes each occurrence's timestamp, trace id, and stacktrace", async () => {
     const fetchMock = vi.fn().mockImplementation(() =>
       Promise.resolve(
         jsonResponse({
           result: "rows",
           window: { start_ns: 0, end_ns: 0 },
           columns: [],
-          rows: [["abc123", "at foo\n at bar"]],
+          rows: [
+            ["2000", "abc123", "at foo\n at bar"],
+            // A logs-sourced occurrence with no active trace.
+            ["1000", null, "at baz"],
+          ],
         }),
       ),
     );
@@ -162,14 +194,14 @@ describe("fetchErrorExample", () => {
       firstNs: "1000",
       lastNs: "2000",
     };
-    const example = await fetchErrorExample(group, range);
-    expect(example).toEqual({
-      traceId: "abc123",
-      stacktrace: "at foo\n at bar",
-    });
+    const occurrences = await fetchErrorOccurrences(group, range);
+    expect(occurrences).toEqual([
+      { timestampNs: "2000", traceId: "abc123", stacktrace: "at foo\n at bar" },
+      { timestampNs: "1000", traceId: null, stacktrace: "at baz" },
+    ]);
   });
 
-  it("returns null when no example row is found", async () => {
+  it("returns an empty list when no occurrences are found", async () => {
     const fetchMock = vi.fn().mockImplementation(() =>
       Promise.resolve(
         jsonResponse({
@@ -191,7 +223,7 @@ describe("fetchErrorExample", () => {
       firstNs: "1000",
       lastNs: "1000",
     };
-    const example = await fetchErrorExample(group, range);
-    expect(example).toBeNull();
+    const occurrences = await fetchErrorOccurrences(group, range);
+    expect(occurrences).toEqual([]);
   });
 });

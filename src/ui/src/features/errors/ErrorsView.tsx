@@ -2,10 +2,10 @@
 // both places SignalDB can find them (see api/errors.ts) — a Sentry-issue-list
 // style view built entirely on Query IR, no dedicated backend endpoint.
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import {
   fetchErrorGroups,
-  fetchErrorExample,
+  fetchErrorOccurrences,
   type ErrorGroup,
 } from "../../api/errors";
 import { ErrorFacets } from "./ErrorFacets";
@@ -33,6 +33,7 @@ export function ErrorsView({ state, update }: Props) {
   const range = resolveRange(state.range, Date.now());
   const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
   const [selected, setSelected] = useState<ErrorGroup | null>(null);
+  const [expanded, setExpanded] = useState<number | null>(null);
   const [filters, setFilters] = useState<ErrorFilter[]>([]);
 
   const groupsQuery = useQuery({
@@ -40,11 +41,20 @@ export function ErrorsView({ state, update }: Props) {
     queryFn: () => fetchErrorGroups(range),
   });
 
-  const exampleQuery = useQuery({
-    queryKey: ["error-example", rangeKey, selected ? groupKey(selected) : null],
-    queryFn: () => fetchErrorExample(selected!, range),
+  const occurrencesQuery = useQuery({
+    queryKey: [
+      "error-occurrences",
+      rangeKey,
+      selected ? groupKey(selected) : null,
+    ],
+    queryFn: () => fetchErrorOccurrences(selected!, range),
     enabled: selected !== null,
   });
+
+  const selectGroup = (g: ErrorGroup) => {
+    setSelected(g);
+    setExpanded(null);
+  };
 
   const allGroups = groupsQuery.data?.groups ?? [];
   const groups = applyErrorFilters(allGroups, filters);
@@ -132,7 +142,7 @@ export function ErrorsView({ state, update }: Props) {
                       aria-selected={
                         selected !== null && groupKey(selected) === key
                       }
-                      onClick={() => setSelected(g)}
+                      onClick={() => selectGroup(g)}
                     >
                       <td>{g.exceptionType ?? "—"}</td>
                       <td
@@ -171,40 +181,78 @@ export function ErrorsView({ state, update }: Props) {
                 <span className="catalog-title">
                   {selected.exceptionType ?? "Exception"}
                 </span>
-                {exampleQuery.data?.traceId && (
-                  <button
-                    className="act"
-                    onClick={() =>
-                      update(
-                        {
-                          signal: "traces",
-                          trace: exampleQuery.data!.traceId!,
-                        },
-                        { push: true },
-                      )
-                    }
-                  >
-                    View trace →
-                  </button>
-                )}
+                <span className="catalog-sub">
+                  individual occurrences — click one to view its stacktrace
+                </span>
               </div>
-              {exampleQuery.isPending && (
+              {occurrencesQuery.isPending && (
                 <div className="traces-note">Loading…</div>
               )}
-              {exampleQuery.isError && (
+              {occurrencesQuery.isError && (
                 <div className="query-error" role="alert">
-                  Failed to load example:{" "}
-                  {(exampleQuery.error as Error).message}
+                  Failed to load occurrences:{" "}
+                  {(occurrencesQuery.error as Error).message}
                 </div>
               )}
-              {exampleQuery.data?.stacktrace ? (
-                <Stacktrace text={exampleQuery.data.stacktrace} />
-              ) : (
-                exampleQuery.data && (
-                  <div className="traces-note">
-                    No stacktrace captured for this exception.
-                  </div>
-                )
+              {occurrencesQuery.data?.length === 0 && (
+                <div className="traces-note">
+                  No occurrences found in this window.
+                </div>
+              )}
+              {occurrencesQuery.data && occurrencesQuery.data.length > 0 && (
+                <table className="errors-occurrences">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Trace</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {occurrencesQuery.data.map((o, i) => (
+                      <Fragment key={i}>
+                        <tr
+                          className="errors-occurrence-row"
+                          data-testid={`occurrence-row-${i}`}
+                          aria-expanded={expanded === i}
+                          onClick={() => setExpanded(expanded === i ? null : i)}
+                        >
+                          <td>{formatTimestamp(nanosToMs(o.timestampNs))}</td>
+                          <td>
+                            {o.traceId ? (
+                              <button
+                                className="act"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  update(
+                                    { signal: "traces", trace: o.traceId! },
+                                    { push: true },
+                                  );
+                                }}
+                              >
+                                View trace →
+                              </button>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                        </tr>
+                        {expanded === i && (
+                          <tr className="errors-occurrence-detail">
+                            <td colSpan={2}>
+                              {o.stacktrace ? (
+                                <Stacktrace text={o.stacktrace} />
+                              ) : (
+                                <div className="traces-note">
+                                  No stacktrace captured for this occurrence.
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
               )}
             </div>
           )}

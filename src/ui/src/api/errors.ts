@@ -33,13 +33,19 @@ export interface ErrorGroupResult {
   truncated: boolean;
 }
 
-export interface ErrorExample {
+export interface ErrorOccurrence {
+  timestampNs: string;
+  /** Absent when the record carries no active trace (e.g. a log-only
+   * exception outside a traced request) — never assumed present. */
   traceId: string | null;
   stacktrace: string | null;
 }
 
 /** Groups shown per source before the list is disclosed as truncated. */
 const GROUP_BUDGET = 200;
+
+/** Occurrences listed per selected group, newest first. */
+const OCCURRENCE_LIMIT = 25;
 
 const GROUP_DIMENSIONS = [
   "exception.type",
@@ -130,10 +136,7 @@ export async function fetchErrorGroups(
   return { groups, truncated };
 }
 
-export function buildErrorExampleDoc(
-  group: ErrorGroup,
-  range: ResolvedRange,
-): QueryIrRequest {
+function pinnedWhere(group: ErrorGroup): Record<string, unknown>[] {
   const pins: Record<string, unknown>[] = [
     {
       where: {
@@ -157,28 +160,56 @@ export function buildErrorExampleDoc(
       where: { field: "service.name", op: "eq", value: group.serviceName },
     });
   }
+  return pins;
+}
+
+/**
+ * The IR document for a group's individual occurrences — the same
+ * group→instances drill-in already used for trace groups
+ * (`api/traceGroupMembers.ts`) and catalog entities, applied here: a group
+ * is an aggregate, and only its instances carry a stacktrace or a trace id
+ * to link to.
+ */
+export function buildErrorOccurrencesDoc(
+  group: ErrorGroup,
+  range: ResolvedRange,
+): QueryIrRequest {
+  const time = timeField(group.source);
   return {
     irVersion: 1,
     from: group.source,
     range: rangeDoc(range),
     result: "rows",
-    fields: ["trace_id", "exception.stacktrace"],
-    pipeline: [...pins, { limit: 1 }],
+    fields: [time, "trace_id", "exception.stacktrace"],
+    pipeline: [
+      ...pinnedWhere(group),
+      { order: [{ of: time, dir: "desc" }] },
+      { limit: OCCURRENCE_LIMIT },
+    ],
   };
 }
 
-/** One concrete occurrence of a group — its stacktrace and, when the record
- * carries one, a trace id to open in the waterfall. */
-export async function fetchErrorExample(
+function occurrencesFromResponse(res: QueryIrResponse): ErrorOccurrence[] {
+  const rows = res.rows ?? [];
+  return rows.map((row): ErrorOccurrence => {
+    const cells = row as unknown[];
+    const [timestamp, traceId, stacktrace] = cells;
+    return {
+      timestampNs: timestamp == null ? "0" : String(timestamp),
+      traceId: traceId == null ? null : String(traceId),
+      stacktrace: stacktrace == null ? null : String(stacktrace),
+    };
+  });
+}
+
+/** A group's individual occurrences, newest first — each one's own
+ * stacktrace and, where the record carries one, its own trace id to open in
+ * the waterfall. Not every occurrence of the same (type, message, service)
+ * shares a trace: only some may have occurred inside an active trace. */
+export async function fetchErrorOccurrences(
   group: ErrorGroup,
   range: ResolvedRange,
-): Promise<ErrorExample | null> {
-  const res = await runIrQuery(buildErrorExampleDoc(group, range));
-  const row = res.rows?.[0] as unknown[] | undefined;
-  if (!row) return null;
-  const [traceId, stacktrace] = row;
-  return {
-    traceId: traceId == null ? null : String(traceId),
-    stacktrace: stacktrace == null ? null : String(stacktrace),
-  };
+): Promise<ErrorOccurrence[]> {
+  const res = await runIrQuery(buildErrorOccurrencesDoc(group, range));
+  return occurrencesFromResponse(res);
 }
