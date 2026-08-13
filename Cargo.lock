@@ -8267,9 +8267,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tui-tree-widget"
-version = "0.24.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "deca119555009eee2e0cfb9c020f39f632444dc4579918d5fc009d51d75dff92"
+checksum = "246c1142baa1e7a42b94f0fb2b60d838fc884c16281e330bf8624da65ed8f89a"
 dependencies = [
  "ratatui-core",
  "ratatui-widgets",
