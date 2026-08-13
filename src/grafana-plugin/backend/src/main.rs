@@ -96,7 +96,6 @@ impl SignalDBDataSource {
     }
 
     /// Create a new instance with configuration from frontend settings.
-    #[allow(dead_code)]
     pub fn with_config(config: DataSourceConfig) -> Self {
         let router_url = config
             .router_url
@@ -121,6 +120,28 @@ impl SignalDBDataSource {
     async fn create_flight_client(&self) -> anyhow::Result<SignalDBFlightClient> {
         tracing::debug!("Creating Flight client connection to {}", self.router_url);
         Ok(SignalDBFlightClient::connect(&self.router_url, self.timeout_secs).await?)
+    }
+}
+
+/// Resolve which datasource instance should be used to serve a single
+/// `query_data` request.
+///
+/// Each Grafana datasource instance carries its own provisioned settings
+/// (`router_url`, `protocol`, `timeout`, tenant/dataset). Those settings must
+/// win over the process-global datasource built once at plugin startup from
+/// `SIGNALDB_ROUTER_URL`/`SIGNALDB_TIMEOUT_SECS` env vars — otherwise every
+/// request silently dials the env-configured (or default `localhost`) router
+/// regardless of what's provisioned in Grafana.
+///
+/// Falls back to `base` when no per-instance settings are available (e.g.
+/// some SDK test/health-check paths may not set `instance_settings`).
+fn datasource_for_request(
+    base: &SignalDBDataSource,
+    settings: Option<&DataSourceConfig>,
+) -> SignalDBDataSource {
+    match settings {
+        Some(config) => SignalDBDataSource::with_config(config.clone()),
+        None => base.clone(),
     }
 }
 
@@ -161,7 +182,14 @@ impl backend::DataService for SignalDBDataSource {
                 }
             });
 
-        let datasource = self.clone();
+        let datasource = datasource_for_request(
+            self,
+            request
+                .plugin_context
+                .instance_settings
+                .as_ref()
+                .map(|settings| &settings.json_data),
+        );
 
         Box::pin(
             request
@@ -462,4 +490,45 @@ fn create_empty_logs_frame() -> data::Frame {
 )]
 async fn plugin() -> SignalDBDataSource {
     SignalDBDataSource::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provisioned datasource instance's `routerUrl` must be the address
+    /// actually dialed for that request, not the process-global default.
+    #[test]
+    fn datasource_for_request_uses_provisioned_router_url() {
+        let base = SignalDBDataSource {
+            router_url: Arc::from(DEFAULT_FLIGHT_URL),
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
+        };
+        let settings = DataSourceConfig {
+            router_url: Some("http://custom-router:9999".to_string()),
+            timeout: Some(45),
+            ..Default::default()
+        };
+
+        let resolved = datasource_for_request(&base, Some(&settings));
+
+        assert_eq!(&*resolved.router_url, "http://custom-router:9999");
+        assert_eq!(resolved.timeout_secs, 45);
+    }
+
+    /// When a request has no per-instance settings (e.g. some SDK
+    /// test/health-check paths), fall back to the base datasource rather
+    /// than panicking.
+    #[test]
+    fn datasource_for_request_falls_back_to_base_without_settings() {
+        let base = SignalDBDataSource {
+            router_url: Arc::from("http://base-router:1234"),
+            timeout_secs: 7,
+        };
+
+        let resolved = datasource_for_request(&base, None);
+
+        assert_eq!(&*resolved.router_url, "http://base-router:1234");
+        assert_eq!(resolved.timeout_secs, 7);
+    }
 }
