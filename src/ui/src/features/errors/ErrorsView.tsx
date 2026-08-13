@@ -14,6 +14,7 @@ import { ErrorSparkline } from "./ErrorSparkline";
 import {
   applyErrorFilters,
   errorFacetValueLabel,
+  upsertErrorFilter,
   type ErrorFilter,
 } from "../../lib/errorFacets";
 import { parseStacktraceLines } from "../../lib/stacktrace";
@@ -34,8 +35,17 @@ interface Props {
   update: UpdateFn;
 }
 
+// A structured tuple, not a delimiter-joined string: a value containing the
+// delimiter itself (e.g. an exception message with a literal "|") could
+// otherwise collide with a different group's key.
 function groupKey(g: ErrorGroup): string {
-  return `${g.source}|${g.exceptionType ?? ""}|${g.exceptionMessage ?? ""}|${g.serviceName ?? ""}|${g.escaped ?? ""}`;
+  return JSON.stringify([
+    g.source,
+    g.exceptionType,
+    g.exceptionMessage,
+    g.serviceName,
+    g.escaped,
+  ]);
 }
 
 function groupSortValue(g: ErrorGroup, key: string): SortValue {
@@ -91,7 +101,8 @@ export function ErrorsView({ state, update }: Props) {
   );
   const pending = groupsQuery.isPending;
 
-  const addFilter = (f: ErrorFilter) => setFilters((fs) => [...fs, f]);
+  const addFilter = (f: ErrorFilter) =>
+    setFilters((fs) => upsertErrorFilter(fs, f));
   const removeFilter = (f: ErrorFilter) =>
     setFilters((fs) =>
       fs.filter((x) => !(x.field === f.field && x.value === f.value)),
@@ -190,7 +201,16 @@ export function ErrorsView({ state, update }: Props) {
                       }
                       onClick={() => selectGroup(g)}
                     >
-                      <td>{g.exceptionType ?? "—"}</td>
+                      <td>
+                        {/* No own onClick: a native button dispatches a
+                            click on Enter/Space too, which bubbles to the
+                            row's handler below — the same
+                            keyboard-accessible-via-bubbling pattern
+                            MemberTable uses. */}
+                        <button type="button" className="trace-open">
+                          {g.exceptionType ?? "—"}
+                        </button>
+                      </td>
                       <td
                         className="errors-message"
                         title={g.exceptionMessage ?? undefined}
@@ -274,10 +294,15 @@ export function ErrorsView({ state, update }: Props) {
                           aria-expanded={expanded === i}
                           onClick={() => setExpanded(expanded === i ? null : i)}
                         >
-                          <td>{formatTimestamp(nanosToMs(o.timestampNs))}</td>
+                          <td>
+                            <button type="button" className="trace-open">
+                              {formatTimestamp(nanosToMs(o.timestampNs))}
+                            </button>
+                          </td>
                           <td>
                             {o.traceId ? (
                               <button
+                                type="button"
                                 className="act"
                                 onClick={(e) => {
                                   e.stopPropagation();

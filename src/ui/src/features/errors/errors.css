@@ -134,7 +134,7 @@
 
 .errors-stacktrace-line {
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 /* A hanging indent on each frame's own box (not the whole <pre>) so a

@@ -61,6 +61,23 @@ function matches(group: ErrorGroup, filter: ErrorFilter): boolean {
   return fieldValue(group, filter.field) === filter.value;
 }
 
+/**
+ * Add or replace a filter, at most one per field — a group has exactly one
+ * value for each facet field, so two simultaneous filters on the same field
+ * could never both match (an already-filtered facet's new selection
+ * replaces the old one rather than stacking into an impossible AND).
+ */
+export function upsertErrorFilter(
+  filters: ErrorFilter[],
+  next: ErrorFilter,
+): ErrorFilter[] {
+  const idx = filters.findIndex((f) => f.field === next.field);
+  if (idx === -1) return [...filters, next];
+  const copy = [...filters];
+  copy[idx] = next;
+  return copy;
+}
+
 /** Groups satisfying every active filter. */
 export function applyErrorFilters(
   groups: ErrorGroup[],

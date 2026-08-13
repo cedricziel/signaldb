@@ -144,8 +144,22 @@ export async function fetchErrorGroups(
   return { groups, truncated };
 }
 
+/** A field pinned to an exact value, or — when the group's own value for it
+ * is absent — pinned to "absent on this record" via `not exists`, never
+ * left unconstrained. An omitted pin would let occurrence/volume queries
+ * for a "no service" group match records from *any* service instead of
+ * only those genuinely missing one. */
+function pin(field: string, value: string | null): Record<string, unknown> {
+  return {
+    where:
+      value == null
+        ? { not: { field, op: "exists" } }
+        : { field, op: "eq", value },
+  };
+}
+
 function pinnedWhere(group: ErrorGroup): Record<string, unknown>[] {
-  const pins: Record<string, unknown>[] = [
+  return [
     {
       where: {
         field: "exception.type",
@@ -153,27 +167,10 @@ function pinnedWhere(group: ErrorGroup): Record<string, unknown>[] {
         value: group.exceptionType ?? "",
       },
     },
+    pin("exception.message", group.exceptionMessage),
+    pin("service.name", group.serviceName),
+    pin("exception.escaped", group.escaped),
   ];
-  if (group.exceptionMessage != null) {
-    pins.push({
-      where: {
-        field: "exception.message",
-        op: "eq",
-        value: group.exceptionMessage,
-      },
-    });
-  }
-  if (group.serviceName != null) {
-    pins.push({
-      where: { field: "service.name", op: "eq", value: group.serviceName },
-    });
-  }
-  if (group.escaped != null) {
-    pins.push({
-      where: { field: "exception.escaped", op: "eq", value: group.escaped },
-    });
-  }
-  return pins;
 }
 
 /**

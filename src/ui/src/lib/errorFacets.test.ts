@@ -5,6 +5,7 @@ import {
   ERROR_FACET_FIELDS,
   errorFacetLabel,
   errorFacetValueLabel,
+  upsertErrorFilter,
   type ErrorFilter,
 } from "./errorFacets";
 import type { ErrorGroup } from "../api/errors";
@@ -113,6 +114,31 @@ describe("errorFacetValues", () => {
     const withNull = [...groups, group({ serviceName: null })];
     const values = errorFacetValues(withNull, "serviceName", []);
     expect(values.reduce((sum, v) => sum + v.count, 0)).toBe(14);
+  });
+});
+
+describe("upsertErrorFilter", () => {
+  it("adds a filter for a field with no existing selection", () => {
+    const result = upsertErrorFilter([], { field: "source", value: "logs" });
+    expect(result).toEqual([{ field: "source", value: "logs" }]);
+  });
+
+  it("replaces the existing filter on the same field rather than stacking", () => {
+    // A group can only ever have one exceptionType, so two simultaneous
+    // filters on that field could never match anything — selecting a new
+    // value for an already-filtered facet must replace, not add.
+    const existing: ErrorFilter[] = [
+      { field: "exceptionType", value: "ValueError" },
+      { field: "source", value: "logs" },
+    ];
+    const result = upsertErrorFilter(existing, {
+      field: "exceptionType",
+      value: "TypeError",
+    });
+    expect(result).toEqual([
+      { field: "exceptionType", value: "TypeError" },
+      { field: "source", value: "logs" },
+    ]);
   });
 });
 

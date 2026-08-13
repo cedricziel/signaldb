@@ -115,6 +115,44 @@ describe("ErrorsView", () => {
     expect(links).toHaveLength(2);
   });
 
+  it("selects a group via keyboard (focus + Enter on its type button)", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group()],
+      truncated: false,
+    });
+    fetchErrorOccurrences.mockResolvedValue([occurrence()]);
+    renderView();
+    const user = userEvent.setup();
+    const typeButton = await screen.findByRole("button", {
+      name: "std::io::Error",
+    });
+    typeButton.focus();
+    await user.keyboard("{Enter}");
+    expect(fetchErrorOccurrences).toHaveBeenCalledWith(
+      group(),
+      expect.anything(),
+    );
+  });
+
+  it("expands an occurrence via keyboard (focus + Enter on its time button)", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group()],
+      truncated: false,
+    });
+    fetchErrorOccurrences.mockResolvedValue([
+      occurrence({ stacktrace: "at foo\n at bar" }),
+    ]);
+    renderView();
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("std::io::Error"));
+    const timeButton = await screen.findByRole("button", {
+      name: /\d/, // the formatted timestamp
+    });
+    timeButton.focus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText(/at foo/)).toBeInTheDocument();
+  });
+
   it("does not offer a trace link for an occurrence with no active trace", async () => {
     fetchErrorGroups.mockResolvedValue({
       groups: [group()],

@@ -163,13 +163,13 @@ describe("buildErrorOccurrencesDoc", () => {
     expect(doc.pipeline).toContainEqual({ limit: 25 });
   });
 
-  it("uses the logs timestamp field for the logs source and omits pins for absent dimensions", () => {
+  it("uses the logs timestamp field for the logs source", () => {
     const group: ErrorGroup = {
       source: "logs",
       exceptionType: "ValueError",
-      exceptionMessage: null,
-      serviceName: null,
-      escaped: null,
+      exceptionMessage: "x",
+      serviceName: "x",
+      escaped: "true",
       count: 1,
       firstNs: "1000",
       lastNs: "1000",
@@ -183,11 +183,31 @@ describe("buildErrorOccurrencesDoc", () => {
     expect(doc.pipeline).toContainEqual({
       order: [{ of: "timestamp", dir: "desc" }],
     });
-    expect(doc.pipeline).not.toContainEqual(
-      expect.objectContaining({
-        where: expect.objectContaining({ field: "exception.escaped" }),
-      }),
-    );
+  });
+
+  it("pins an absent dimension to not-exists rather than leaving it unconstrained", () => {
+    // A group with no service/message/escaped must not silently match
+    // occurrences from a *different* service/message/escaped state.
+    const group: ErrorGroup = {
+      source: "logs",
+      exceptionType: "ValueError",
+      exceptionMessage: null,
+      serviceName: null,
+      escaped: null,
+      count: 1,
+      firstNs: "1000",
+      lastNs: "1000",
+    };
+    const doc = buildErrorOccurrencesDoc(group, range);
+    expect(doc.pipeline).toContainEqual({
+      where: { not: { field: "exception.message", op: "exists" } },
+    });
+    expect(doc.pipeline).toContainEqual({
+      where: { not: { field: "service.name", op: "exists" } },
+    });
+    expect(doc.pipeline).toContainEqual({
+      where: { not: { field: "exception.escaped", op: "exists" } },
+    });
   });
 });
 
