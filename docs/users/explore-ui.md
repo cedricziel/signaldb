@@ -55,7 +55,11 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   readout for finding your code in a library-heavy profile. A **Compare**
   toggle renders a baseline window (its own time-range picker) alongside the
   current range as two independent, independently-zoomable flame graphs, for
-  spotting what changed. See [Comparing and filtering profiles](#comparing-and-filtering-profiles).
+  spotting what changed. A **Collapse** selector folds below-threshold
+  frames into a muted `(other)` bucket to cut visual noise, and a
+  **Top functions** view swaps the tree for a sortable flat table ranked by
+  self time. See [Comparing and filtering profiles](#comparing-and-filtering-profiles)
+  and [Reading a noisy profile](#reading-a-noisy-profile).
 - **Query** — a native [Query IR](querying-ir.md) builder for `logs`, `traces`,
   and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
@@ -126,6 +130,29 @@ Opening a profile from a trace span's "Profile: `<sample type>` →" button
 renders that one profile's actual payload — matched by its exact stored ID,
 not re-aggregated from a service/type/time filter — with a "← profiles"
 button back to the normal filtered view.
+
+### Reading a noisy profile
+
+A wide, deep profile — especially a Rust one, where monomorphized generics
+and full module paths make individual frame names long — gets hard to read
+fast. Two controls, alongside the highlight box, cut through it:
+
+- **Collapse** folds every frame narrower than the chosen threshold (Off,
+  0.5%, 1%, 2%, 5% of the root — 0.5% by default) into a single muted,
+  dashed `(other)` bar per contiguous run, along with that frame's entire
+  subtree (a child can never be wider than its parent, so anything under a
+  collapsed frame is noise too). It's computed against the profile's total,
+  not the current zoom, so a frame that's negligible at the root doesn't
+  reappear artificially large just because you zoomed into its parent.
+  Changing the threshold resets any active zoom, since the frame you'd
+  zoomed into may no longer exist as its own bar.
+- **Top functions** replaces the tree with a flat, sortable table — Function,
+  Self, Self %, Total, Total % — aggregating every occurrence of each
+  function name (so a recursive function's self time is summed correctly;
+  its total isn't, the same caveat `pprof top` has). It's the "what's
+  actually expensive" view when the tree shape itself isn't what you need.
+  Clicking a row switches back to the flame graph with that function
+  highlighted, so you can see where the time is spent structurally.
 
 ### Reading a log line
 
