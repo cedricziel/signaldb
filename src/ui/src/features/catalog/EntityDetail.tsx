@@ -241,7 +241,9 @@ export function EntityDetail({ state, update }: Props) {
         }
         identityLabel="Span"
         emptyMessage="No matching spans in this window."
-        onOpenTrace={(traceId) => update({ trace: traceId }, { push: true })}
+        onOpenTrace={(traceId) =>
+          update({ signal: "traces", trace: traceId }, { push: true })
+        }
       />
     </div>
   );

@@ -156,13 +156,20 @@ describe("EntityDetail", () => {
   });
 
   it("shows recent matching spans and opens one into the trace waterfall", async () => {
+    // Regression: this used to only set `trace`, which is meaningless
+    // within the catalog signal (only TracesView renders a waterfall for
+    // it) — the row silently did nothing visible. It must also switch to
+    // the traces signal, same as the "View matching traces" escape hatch.
     fetchTraceGroupMembers.mockResolvedValue([
       member("t1", "s1", "GET /health", "gateway"),
     ]);
     const update = renderView();
     const user = userEvent.setup();
     await user.click(await screen.findByText("GET /health"));
-    expect(update).toHaveBeenCalledWith({ trace: "t1" }, { push: true });
+    expect(update).toHaveBeenCalledWith(
+      { signal: "traces", trace: "t1" },
+      { push: true },
+    );
   });
 
   it('offers a "view matching traces" escape hatch that filters Traces', async () => {
