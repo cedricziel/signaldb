@@ -60,6 +60,18 @@ export interface ExploreState {
   profileType: string;
   /** Service filter for the profiles view — "" means all services. */
   profileService: string;
+  /** Extra attribute matcher for the profiles view: a bare attribute key,
+   * "" means unset. Paired with profileMatcherValue. */
+  profileMatcherLabel: string;
+  profileMatcherValue: string;
+  /** Whether the profiles view shows a baseline-vs-comparison diff instead
+   * of a single flamegraph; `range` is the comparison window. */
+  profileCompare: boolean;
+  /** Baseline (left) window for the diff view. */
+  profileBaseline: TimeRange;
+  /** Exact profile id to render (from a trace's linked-profile action) —
+   * "" means the normal service/type-filtered view. */
+  profileId: string;
   /**
    * Explicit tenant/dataset context. Empty means "ambient default": the dev
    * proxy (or a future session) supplies it and no header is sent.
@@ -100,6 +112,11 @@ export const DEFAULT_STATE: ExploreState = {
   promql: "",
   profileType: "",
   profileService: "",
+  profileMatcherLabel: "",
+  profileMatcherValue: "",
+  profileCompare: false,
+  profileBaseline: DEFAULT_RANGE,
+  profileId: "",
   tenant: "",
   dataset: "",
   catalogEntity: DEFAULT_ENTITY_TYPE,
@@ -154,6 +171,11 @@ export function parseExploreState(search: string): ExploreState {
     promql: p.get("promql") ?? "",
     profileType: p.get("ptype") ?? "",
     profileService: p.get("psvc") ?? "",
+    profileMatcherLabel: p.get("plabel") ?? "",
+    profileMatcherValue: p.get("pvalue") ?? "",
+    profileCompare: p.get("pcmp") === "1",
+    profileBaseline: parseRangeParam(p.get("pbase")),
+    profileId: p.get("pid") ?? "",
     tenant: p.get("tenant") ?? "",
     dataset: p.get("dataset") ?? "",
     catalogEntity: p.get("entity") || DEFAULT_ENTITY_TYPE,
@@ -197,6 +219,13 @@ export function buildSearch(state: ExploreState): string {
   if (state.promql) p.set("promql", state.promql);
   if (state.profileType) p.set("ptype", state.profileType);
   if (state.profileService) p.set("psvc", state.profileService);
+  if (state.profileMatcherLabel) p.set("plabel", state.profileMatcherLabel);
+  if (state.profileMatcherValue) p.set("pvalue", state.profileMatcherValue);
+  if (state.profileCompare) p.set("pcmp", "1");
+  if (rangeToParam(state.profileBaseline) !== rangeToParam(DEFAULT_RANGE)) {
+    p.set("pbase", rangeToParam(state.profileBaseline));
+  }
+  if (state.profileId) p.set("pid", state.profileId);
   if (state.tenant) p.set("tenant", state.tenant);
   if (state.dataset) p.set("dataset", state.dataset);
   if (state.catalogEntity !== DEFAULT_ENTITY_TYPE)

@@ -7,6 +7,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchCatalogEntities, type EntityPin } from "../../api/catalog";
 import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
+import { DependencyBreakdown } from "./DependencyBreakdown";
 import {
   formatTimestamp,
   nanosToMs,
@@ -70,6 +71,16 @@ export function EntityDetail({ state, update }: Props) {
     : undefined;
   const atSecondary =
     breakdownEntity !== undefined && state.catalogSecondary !== "";
+
+  const topValuesEntity: EntityTypeDef | undefined = entity.topValues
+    ? {
+        id: `${entity.id}::${entity.topValues.field}`,
+        label: entity.topValues.label,
+        singular: entity.topValues.label,
+        identity: [entity.topValues.field],
+        spanKindScope: entity.spanKindScope,
+      }
+    : undefined;
 
   // What's on screen right now: the parent entity, or — one level deeper —
   // the breakdown row. Same query shape either way.
@@ -228,6 +239,33 @@ export function EntityDetail({ state, update }: Props) {
         />
       )}
 
+      {topValuesEntity && (
+        <EntityTable
+          entity={topValuesEntity}
+          range={range}
+          rangeKey={rangeKey}
+          rangeSeconds={rangeSeconds}
+          pinned={currentPinned}
+        />
+      )}
+
+      {entity.id === "service" && !atSecondary && primaryValues[0] && (
+        <div className="catalog-main">
+          <div className="catalog-headline">
+            <span className="catalog-title">Time by dependency</span>
+            <span className="catalog-sub">
+              discovered from db.system.name, http.request.method, rpc.system,
+              messaging.system
+            </span>
+          </div>
+          <DependencyBreakdown
+            serviceName={primaryValues[0]}
+            range={range}
+            rangeKey={rangeKey}
+          />
+        </div>
+      )}
+
       <div className="catalog-headline">
         <span className="catalog-title">Recent matching spans</span>
       </div>
@@ -241,7 +279,9 @@ export function EntityDetail({ state, update }: Props) {
         }
         identityLabel="Span"
         emptyMessage="No matching spans in this window."
-        onOpenTrace={(traceId) => update({ trace: traceId }, { push: true })}
+        onOpenTrace={(traceId) =>
+          update({ signal: "traces", trace: traceId }, { push: true })
+        }
       />
     </div>
   );

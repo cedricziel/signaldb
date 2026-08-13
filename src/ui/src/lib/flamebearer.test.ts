@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { Flamebearer } from "../api/pyroscope";
 import {
+  ancestorPath,
+  collapseSmallFrames,
   colorBucket,
   decodeFlamebearer,
+  type FlameFrame,
   formatPct,
   formatTicks,
   frameView,
+  OTHER_FRAME_NAME,
   placeFrames,
   rootView,
+  simplifyFrameName,
+  topFunctionsBySelf,
 } from "./flamebearer";
 
 // root(100) -> [a(60 self 20), b(40 self 40)]; a -> [c(40 self 40)]
@@ -92,6 +98,102 @@ describe("placeFrames", () => {
   });
 });
 
+describe("collapseSmallFrames", () => {
+  // total(100) -> [big(70, self 0), s1(10,self10), s2(10,self10), s3(10,self10)]
+  // big -> gc(70, self 70); s2 -> leaf(10, self 10)
+  const levels: FlameFrame[][] = [
+    [{ level: 0, x: 0, total: 100, self: 0, name: "total" }],
+    [
+      { level: 1, x: 0, total: 70, self: 0, name: "big" },
+      { level: 1, x: 70, total: 10, self: 10, name: "s1" },
+      { level: 1, x: 80, total: 10, self: 10, name: "s2" },
+      { level: 1, x: 90, total: 10, self: 10, name: "s3" },
+    ],
+    [
+      { level: 2, x: 0, total: 70, self: 70, name: "gc" },
+      { level: 2, x: 80, total: 10, self: 10, name: "leaf-under-s2" },
+    ],
+  ];
+
+  it("returns the levels unchanged when the threshold is off", () => {
+    expect(collapseSmallFrames(levels, 100, 0)).toBe(levels);
+  });
+
+  it("merges a contiguous run of below-threshold siblings into one (other), dropping their descendants", () => {
+    const collapsed = collapseSmallFrames(levels, 100, 0.15);
+
+    expect(collapsed[1]).toEqual([
+      { level: 1, x: 0, total: 70, self: 0, name: "big" },
+      { level: 1, x: 70, total: 30, self: 30, name: OTHER_FRAME_NAME },
+    ]);
+    // "gc" survives (child of the kept "big"); "leaf-under-s2" is dropped
+    // (its parent "s2" was folded into "(other)").
+    expect(collapsed[2]).toEqual([
+      { level: 2, x: 0, total: 70, self: 70, name: "gc" },
+    ]);
+  });
+
+  it("collapses even a single isolated small frame, uniformly", () => {
+    const oneSmall: FlameFrame[][] = [
+      [{ level: 0, x: 0, total: 100, self: 0, name: "total" }],
+      [
+        { level: 1, x: 0, total: 95, self: 95, name: "big" },
+        { level: 1, x: 95, total: 5, self: 5, name: "tiny" },
+      ],
+    ];
+    const collapsed = collapseSmallFrames(oneSmall, 100, 0.1);
+    expect(collapsed[1]).toEqual([
+      { level: 1, x: 0, total: 95, self: 95, name: "big" },
+      { level: 1, x: 95, total: 5, self: 5, name: OTHER_FRAME_NAME },
+    ]);
+  });
+});
+
+describe("topFunctionsBySelf", () => {
+  it("aggregates self and total time by name across repeated (recursive) occurrences, sorted by self descending", () => {
+    const levels: FlameFrame[][] = [
+      [{ level: 0, x: 0, total: 100, self: 0, name: "total" }],
+      [
+        { level: 1, x: 0, total: 60, self: 20, name: "a" },
+        { level: 1, x: 60, total: 40, self: 40, name: "b" },
+      ],
+      [
+        { level: 2, x: 0, total: 40, self: 40, name: "c" },
+        { level: 2, x: 60, total: 10, self: 5, name: "a" }, // recursive
+      ],
+    ];
+
+    const top = topFunctionsBySelf(levels);
+    expect(top).toEqual([
+      { name: "b", self: 40, total: 40, count: 1 },
+      { name: "c", self: 40, total: 40, count: 1 },
+      { name: "a", self: 25, total: 70, count: 2 },
+      { name: "total", self: 0, total: 100, count: 1 },
+    ]);
+  });
+});
+
+describe("ancestorPath", () => {
+  it("returns just the root when targeting the root frame", () => {
+    const levels = decodeFlamebearer(FB);
+    const root = levels[0]![0]!;
+    expect(ancestorPath(levels, root)).toEqual([root]);
+  });
+
+  it("walks from the root down to a deep frame, skipping unrelated siblings", () => {
+    const levels = decodeFlamebearer(FB);
+    const c = levels[2]![0]!; // "c", nested under "a", sibling of "b"
+    const path = ancestorPath(levels, c);
+    expect(path.map((f) => f.name)).toEqual(["total", "a", "c"]);
+  });
+
+  it("resolves a shallower frame reached directly, without its descendants", () => {
+    const levels = decodeFlamebearer(FB);
+    const b = levels[1]![1]!; // "b", a leaf sibling of "a"
+    expect(ancestorPath(levels, b).map((f) => f.name)).toEqual(["total", "b"]);
+  });
+});
+
 describe("formatTicks", () => {
   it("renders time units as durations", () => {
     expect(formatTicks(1_500_000_000, "nanoseconds")).toBe("1.50s");
@@ -103,6 +205,13 @@ describe("formatTicks", () => {
   it("renders non-time units as counts", () => {
     expect(formatTicks(1234, "samples")).toBe("1,234 samples");
     expect(formatTicks(5, "")).toBe("5");
+  });
+
+  it("renders a byte unit as a binary-scaled size, not a raw byte count", () => {
+    expect(formatTicks(2 * 1024 ** 3, "bytes")).toBe("2.00 GiB");
+    expect(formatTicks(5.5 * 1024 ** 2, "bytes")).toBe("5.5 MiB");
+    expect(formatTicks(1536, "bytes")).toBe("1.5 KiB");
+    expect(formatTicks(512, "bytes")).toBe("512 B");
   });
 });
 
@@ -120,5 +229,78 @@ describe("colorBucket", () => {
     );
     expect(colorBucket("anything", 5)).toBeLessThan(5);
     expect(colorBucket("anything", 5)).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("simplifyFrameName", () => {
+  it("leaves short, already-plain names alone", () => {
+    expect(simplifyFrameName("total")).toBe("total");
+    expect(simplifyFrameName("syscall")).toBe("syscall");
+    expect(simplifyFrameName("malloc")).toBe("malloc");
+    expect(simplifyFrameName("__rjem_je_arena_ptr_array_flush")).toBe(
+      "__rjem_je_arena_ptr_array_flush",
+    );
+  });
+
+  it("keeps the last two segments of a plain module path", () => {
+    expect(simplifyFrameName("datafusion::physical_plan::execute")).toBe(
+      "physical_plan::execute",
+    );
+  });
+
+  it("reduces a <Type as Trait>::method::<Args> call to Type::method", () => {
+    expect(
+      simplifyFrameName(
+        "<std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&uuid::Uuid>",
+      ),
+    ).toBe("RandomState::hash_one");
+  });
+
+  it("reduces a <Type<Generic>>::method call to Type::method", () => {
+    expect(
+      simplifyFrameName(
+        "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write",
+      ),
+    ).toBe("Hasher::write");
+  });
+
+  it("drops closure/vtable-shim noise", () => {
+    expect(
+      simplifyFrameName(
+        "<common::wal::Wal>::mark_processed_many::{closure#0}::{closure#0}",
+      ),
+    ).toBe("Wal::mark_processed_many");
+  });
+
+  it("handles a deeply nested generic receiver with a tuple type parameter", () => {
+    expect(
+      simplifyFrameName(
+        "<hashbrown::raw::RawTable<(uuid::Uuid, ())>>::remove_entry::<hashbrown::map::equivalent_key<uuid::Uuid, uuid::Uuid, ()>>::{closure#0}",
+      ),
+    ).toBe("RawTable::remove_entry");
+  });
+
+  it("handles a chained iterator-adapter type as the receiver", () => {
+    expect(
+      simplifyFrameName(
+        "<core::iter::adapters::cloned::Cloned<core::iter::adapters::filter::Filter<core::slice::iter::Iter<common::wal::WalEntry>, <common::wal::Wal>::get_unprocessed_entries::{closure#0}::{closure#0}>> as core::iter::traits::iterator::Iterator>::next",
+      ),
+    ).toBe("Cloned::next");
+  });
+
+  it("stays reasonable on a FnOnce::call_once shim, the gnarliest real case", () => {
+    const result = simplifyFrameName(
+      "<std::thread::lifecycle::spawn_unchecked<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}",
+    );
+    // Not pretty, but short and recognizable — the point is it's no longer
+    // a 150-character string that swallows the whole bar.
+    expect(result.length).toBeLessThan(30);
+    expect(result).toContain("spawn_thread");
+  });
+
+  it("is idempotent — simplifying an already-simple name is a no-op", () => {
+    expect(simplifyFrameName("RandomState::hash_one")).toBe(
+      "RandomState::hash_one",
+    );
   });
 });

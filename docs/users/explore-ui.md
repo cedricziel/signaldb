@@ -46,19 +46,29 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   aggregation, and range functions, all populated from label metadata) with
   multi-query formulas for ratios, plus a "PromQL" tab as the raw escape
   hatch. See [Building metric queries](#building-metric-queries).
-- **Profiles** — a flame graph of stored profiles, filtered by service and
-  profile type. Click a frame to zoom into its subtree (its ancestors stay
-  as full-width bars above; "reset zoom" or clicking the root returns), and
-  type in the highlight box to light up matching frames — e.g. a crate
+- **Profiles** — a flame graph of stored profiles, filtered by service,
+  profile type, and (optionally) any discovered attribute. Click a frame to
+  zoom into its subtree; a breadcrumb (`root › ... › frame`) tracks the path
+  and lets you step back out one level at a time, not just all the way to
+  root. Type in the highlight box to light up matching frames — e.g. a crate
   prefix like `common::` — while everything else dims, with a matched-share
-  readout for finding your code in a library-heavy profile.
+  readout for finding your code in a library-heavy profile. A **Compare**
+  toggle renders a baseline window (its own time-range picker) alongside the
+  current range as two independent, independently-zoomable flame graphs, for
+  spotting what changed. A **Collapse** selector folds below-threshold
+  frames into a muted `(other)` bucket to cut visual noise, and a
+  **Top functions** view swaps the tree for a sortable flat table ranked by
+  self time. See [Comparing and filtering profiles](#comparing-and-filtering-profiles)
+  and [Reading a noisy profile](#reading-a-noisy-profile).
 - **Query** — a native [Query IR](querying-ir.md) builder for `logs`, `traces`,
   and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
   structured, versioned IR document (no dialect string) via the generated API
   client, rendering the declared `rows`/`series`/`table` result.
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
-  the span panel links back to logs filtered by that trace.
+  the span panel links back to logs filtered by that trace, and, for a span
+  with a linked profile, offers a "Profile: `<sample type>` →" button that
+  opens that exact profile's flame graph.
 - Every view is a URL: each signal has its own path (`/catalog`, `/logs`,
   `/traces`, `/metrics`, `/profiles`, `/query`), with time range, filters, and
   selection in query parameters alongside it — so views are separately
@@ -95,6 +105,63 @@ escape hatch when the catalog's own view isn't enough.
 resource attributes appear on every span it emits, including calls it makes
 to its dependencies, so without that scope its request rate/latency would
 mix inbound and outbound traffic.
+
+### Comparing and filtering profiles
+
+Every flame graph the Profiles tab renders — the single view, each side of
+a comparison, and a profile opened from a trace span — is fetched through
+the native [Query IR](querying-ir.md) `profiles` source, not a separate
+profiling-specific query language. The Service and Profile type selectors
+compile to `service.name`/`sample.type` filters; the optional Attribute
+selector compiles to a filter on whatever profile-level attribute key you
+pick (populated from the profiles seen in the current time range) — the
+same attribute-container resolution the Query tab uses, so anything visible
+there as a filterable field is filterable here too.
+
+**Compare** replaces the single flame graph with two independent ones, a
+**Baseline** window (its own time-range picker, defaulting to the last
+hour) and the current range as the **Comparison** — each fetched, zoomed,
+and searched independently, so you can drill into the same subtree on both
+sides to see where time moved. There's no synchronized zoom between the two
+panes; it's two ordinary flame graphs side by side, not a merged
+diff-coded one.
+
+Opening a profile from a trace span's "Profile: `<sample type>` →" button
+renders that one profile's actual payload — matched by its exact stored ID,
+not re-aggregated from a service/type/time filter — with a "← profiles"
+button back to the normal filtered view.
+
+### Reading a noisy profile
+
+A wide, deep profile — especially a Rust one, where monomorphized generics
+and full module paths make individual frame names long — gets hard to read
+fast. Two controls, alongside the highlight box, cut through it:
+
+- **Collapse** folds every frame narrower than the chosen threshold (Off,
+  0.5%, 1%, 2%, 5% of the root — 0.5% by default) into a single muted,
+  dashed `(other)` bar per contiguous run, along with that frame's entire
+  subtree (a child can never be wider than its parent, so anything under a
+  collapsed frame is noise too). It's computed against the profile's total,
+  not the current zoom, so a frame that's negligible at the root doesn't
+  reappear artificially large just because you zoomed into its parent.
+  Changing the threshold resets any active zoom, since the frame you'd
+  zoomed into may no longer exist as its own bar.
+- **Top functions** replaces the tree with a flat, sortable table — Function,
+  Self, Self %, Total, Total % — aggregating every occurrence of each
+  function name (so a recursive function's self time is summed correctly;
+  its total isn't, the same caveat `pprof top` has). It's the "what's
+  actually expensive" view when the tree shape itself isn't what you need.
+  Clicking a row switches back to the flame graph with that function
+  highlighted, so you can see where the time is spent structurally.
+
+Bar labels are shortened, too — a Rust name for a monomorphized generic
+method (`<Type as Trait>::method::<Args>`) can run to hundreds of
+characters, and worse, the default right-edge ellipsis cuts off exactly the
+distinguishing part (the generics at the end), leaving unrelated frames
+looking identical once truncated. Bars show roughly `Type::method` instead.
+This is display-only: hover any frame (or a row in the top-functions table)
+for a tooltip with the full, unshortened name plus self/total, and the
+detail line and highlight search still operate on the real name.
 
 ### Reading a log line
 

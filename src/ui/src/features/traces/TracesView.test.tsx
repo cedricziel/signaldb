@@ -676,6 +676,39 @@ describe("TracesView detail", () => {
     expect(screen.getByText(/1 error/)).toBeInTheDocument();
   });
 
+  it("colors waterfall bars by span kind and shows a legend, fetched over Query IR", async () => {
+    stubFetchRoutes([
+      { match: "/tempo/api/traces/t1cafe", body: TRACE_BODY },
+      {
+        match: "/api/v1/query",
+        body: {
+          result: "rows",
+          window: { start_ns: 0, end_ns: 0 },
+          columns: [
+            { name: "span_id", type: "string" },
+            { name: "span_kind", type: "string" },
+          ],
+          rows: [
+            ["root", "SERVER"],
+            ["charge", "CLIENT"],
+          ],
+        },
+      },
+    ]);
+    renderView({ trace: "t1cafe" });
+    await screen.findByRole("list", { name: "Spans" });
+
+    const legend = await screen.findByLabelText("Span kind legend");
+    expect(within(legend).getByText("CLIENT")).toBeInTheDocument();
+    expect(within(legend).getByText("SERVER")).toBeInTheDocument();
+
+    // The preselected span ("charge", the error span) shows its kind chip
+    // in the detail panel too.
+    expect(
+      within(screen.getByLabelText("Span details")).getByText("CLIENT"),
+    ).toBeInTheDocument();
+  });
+
   it("shows each event's time offset from the span start", async () => {
     stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
     renderView({ trace: "t1cafe" });
@@ -880,6 +913,47 @@ describe("TracesView detail", () => {
       raw: "",
       filters: [{ label: "trace_id", op: "=", value: "t1cafe" }],
     });
+  });
+
+  it("links to a profile captured during the selected span", async () => {
+    stubFetchRoutes([
+      {
+        match: "/tempo/api/traces/t1cafe",
+        body: {
+          ...TRACE_BODY,
+          profiles: [
+            {
+              profileID: "prof-1",
+              timeUnixNano: "1040000000",
+              durationNano: "258000000",
+              sampleType: "cpu",
+              sampleUnit: "nanoseconds",
+              serviceName: "payments",
+              spanID: "charge",
+            },
+          ],
+        },
+      },
+    ]);
+    // "charge" (the error span with a recorded exception) is preselected.
+    const update = renderView({ trace: "t1cafe" });
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Profile: cpu →" }),
+    );
+    expect(update).toHaveBeenCalledWith(
+      { signal: "profiles", trace: "", profileId: "prof-1" },
+      { push: true },
+    );
+  });
+
+  it("shows no profile link when the selected span has none", async () => {
+    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    renderView({ trace: "t1cafe" });
+    await screen.findByRole("button", { name: "Logs for this trace →" });
+    expect(
+      screen.queryByRole("button", { name: /^Profile:/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("navigates back to the search list", async () => {

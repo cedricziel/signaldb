@@ -8,10 +8,12 @@ import {
 } from "react";
 import {
   tempoGetTrace,
+  type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
 } from "../../api/tempo";
 import { ApiError } from "../../api/http";
+import { fetchSpanKinds } from "../../api/spanKinds";
 import {
   STATUS_COLORS,
   STATUS_ORDER,
@@ -68,6 +70,22 @@ import "./traces.css";
 interface Props {
   state: ExploreState;
   update: UpdateFn;
+}
+
+/** OTel span kind -> a stable slot in the shared --svc-a..e palette (the
+ * same one FlameGraph uses), so a kind's color means the same thing across
+ * the app rather than being hash-bucketed per span name. */
+const KIND_CLASS: Record<string, string> = {
+  SERVER: "kind-server",
+  CLIENT: "kind-client",
+  INTERNAL: "kind-internal",
+  PRODUCER: "kind-producer",
+  CONSUMER: "kind-consumer",
+};
+
+function kindClass(kind: string | undefined): string {
+  if (!kind) return "";
+  return KIND_CLASS[kind.toUpperCase()] ?? "";
 }
 
 function plural(n: number, noun: string): string {
@@ -700,6 +718,23 @@ function TraceDetail({ state, update }: Props) {
     queryFn: () => tempoGetTrace(state.trace),
   });
 
+  // Span kind isn't part of the Tempo-compat wire format — fetched
+  // separately over Query IR once the trace's own time extent is known
+  // (the viewer's selected range may not cover a trace opened by ID).
+  const traceStartMs = trace.data ? nanosToMs(trace.data.startNs) : 0;
+  const traceDurationMs = trace.data?.durationMs ?? 0;
+  const kindsQuery = useQuery({
+    queryKey: ["span-kinds", state.trace, state.tenant, state.dataset],
+    queryFn: () =>
+      fetchSpanKinds(
+        state.trace,
+        traceStartMs - 60_000,
+        traceStartMs + traceDurationMs + 60_000,
+      ),
+    enabled: trace.data !== undefined,
+  });
+  const spanKinds = kindsQuery.data ?? {};
+
   if (trace.isError) {
     if (trace.error instanceof ApiError && trace.error.status === 404) {
       return (
@@ -769,6 +804,17 @@ function TraceDetail({ state, update }: Props) {
         </span>
         <span className="trace-id">{trace.data.traceId}</span>
       </div>
+      {Object.keys(spanKinds).length > 0 && (
+        <div className="span-kind-legend" aria-label="Span kind legend">
+          {Array.from(new Set(Object.values(spanKinds)))
+            .sort()
+            .map((kind) => (
+              <span key={kind} className={`legend-chip ${kindClass(kind)}`}>
+                {kind}
+              </span>
+            ))}
+        </div>
+      )}
       <div
         className="trace-body"
         style={{ "--span-detail-w": `${sidebarWidth}px` } as CSSProperties}
@@ -791,7 +837,7 @@ function TraceDetail({ state, update }: Props) {
               </span>
               <span className="span-track">
                 <span
-                  className={`span-bar${row.span.status === "error" ? " error" : ""}`}
+                  className={`span-bar ${kindClass(spanKinds[row.span.spanId])}${row.span.status === "error" ? " error" : ""}`}
                   style={{
                     left: `${row.leftPct}%`,
                     width: `${row.widthPct}%`,
@@ -818,6 +864,8 @@ function TraceDetail({ state, update }: Props) {
             <SpanDetail
               span={selectedRow.span}
               traceId={trace.data.traceId}
+              profiles={trace.data.profiles}
+              kind={spanKinds[selectedRow.span.spanId]}
               update={update}
             />
           </>
@@ -830,17 +878,25 @@ function TraceDetail({ state, update }: Props) {
 function SpanDetail({
   span,
   traceId,
+  profiles,
+  kind,
   update,
 }: {
   span: TempoSpan;
   traceId: string;
+  profiles: ProfileSummaryView[];
+  /** Not part of the Tempo wire format — fetched separately over Query IR
+   * (see fetchSpanKinds); undefined while that query is still loading. */
+  kind: string | undefined;
   update: UpdateFn;
 }) {
   const groups = groupSpanAttributes(span.attributes);
+  const spanProfiles = profiles.filter((p) => p.spanId === span.spanId);
   return (
     <aside className="span-detail" aria-label="Span details">
       <h4>{span.name}</h4>
       <div className="span-detail-sub">
+        {kind && <span className={`kind-chip ${kindClass(kind)}`}>{kind}</span>}
         {describeService(span.serviceName, span.attributes)}
         {span.status === "error" && <em className="tmeta-err"> · error</em>}
       </div>
@@ -857,6 +913,20 @@ function SpanDetail({
       >
         Logs for this trace →
       </button>
+      {spanProfiles.map((p) => (
+        <button
+          key={p.profileId}
+          className="act"
+          onClick={() =>
+            update(
+              { signal: "profiles", trace: "", profileId: p.profileId },
+              { push: true },
+            )
+          }
+        >
+          Profile: {p.sampleType} →
+        </button>
+      ))}
       {span.events.length > 0 && (
         <>
           <div className="span-detail-sec">Events</div>

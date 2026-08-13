@@ -194,8 +194,12 @@ pub fn grpc_code_name(code: tonic::Code) -> &'static str {
 }
 
 /// CLIENT span for a SQL-catalog operation, per the stable database
-/// semantic conventions. Named `{db.operation.name} {db.namespace}` — never
-/// raw SQL (query text, if recorded at all, must be sanitized first).
+/// semantic conventions. Named `{db.operation.name} {db.namespace}`.
+/// `db.query.text` starts empty; callers that know the statement text
+/// record it via `Span::record` — see `common::self_monitoring::sanitize`
+/// (semconv requires literals sanitized out of non-parameterized text; our
+/// sqlx call sites bind values rather than interpolate them, so there's
+/// nothing to strip, but callers sanitize anyway as a defensive default).
 pub fn db_client_span(system: &str, operation: &str, namespace: &str) -> Span {
     tracing::info_span!(
         "db.client",
@@ -206,6 +210,7 @@ pub fn db_client_span(system: &str, operation: &str, namespace: &str) -> Span {
         db.system.name = %system,
         db.operation.name = %operation,
         db.namespace = %namespace,
+        db.query.text = Empty,
         error.r#type = Empty,
     )
 }
@@ -256,6 +261,7 @@ mod tests {
         assert_eq!("db.system.name", attribute::DB_SYSTEM_NAME);
         assert_eq!("db.operation.name", attribute::DB_OPERATION_NAME);
         assert_eq!("db.namespace", attribute::DB_NAMESPACE);
+        assert_eq!("db.query.text", attribute::DB_QUERY_TEXT);
     }
 
     #[test]

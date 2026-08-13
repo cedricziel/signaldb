@@ -40,4 +40,11 @@ async fn catalog_ops_emit_db_client_spans() {
     assert_eq!(attr("db.system.name").as_deref(), Some("sqlite"));
     assert_eq!(attr("db.operation.name").as_deref(), Some("SELECT"));
     assert_eq!(attr("db.namespace").as_deref(), Some("signaldb-catalog"));
+    // The statement text is safe to record here: sqlx binds values rather
+    // than interpolating them, so it's a parameterized template with no
+    // literals — this is the exact query `list_ingesters` runs.
+    assert_eq!(
+        attr("db.query.text").as_deref(),
+        Some("SELECT id, address, last_seen, service_type, capabilities FROM ingesters")
+    );
 }

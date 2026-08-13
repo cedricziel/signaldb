@@ -65,7 +65,10 @@ flowchart LR
   `network.peer.address`/`network.peer.port` (the connecting socket, from
   `tonic::Request::remote_addr()`) when available.
 - **SQL catalog**: CLIENT spans `{verb} signaldb-catalog` with
-  `db.system.name` / `db.operation.name` / `db.namespace`.
+  `db.system.name` / `db.operation.name` / `db.namespace` /
+  `db.query.text` (literal-sanitized, same `?`-placeholder convention as
+  the query stages below — sqlx binds values rather than interpolating
+  them, so there's normally nothing to strip).
 - **Query stages**: `signaldb.query.plan` / `signaldb.query.execute`
   INTERNAL spans with `signaldb.query.rows`/`batches`; recorded query text
   is always literal-sanitized (`… WHERE name = ?`).
