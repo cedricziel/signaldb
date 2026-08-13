@@ -32,6 +32,18 @@ pub enum Resolved {
         key: String,
         value_type: ValueType,
     },
+    /// An attribute captured on a named span event (e.g. the `exception`
+    /// event's `exception.type`/`exception.message`/`exception.stacktrace`),
+    /// extracted from an events JSON-array column — distinct from
+    /// `JsonPath` because the value lives inside one matching array element's
+    /// own nested attributes, not directly in a per-record attribute
+    /// container.
+    EventAttribute {
+        events_column: String,
+        event_name: String,
+        key: String,
+        value_type: ValueType,
+    },
 }
 
 impl Resolved {
@@ -40,6 +52,7 @@ impl Resolved {
         match self {
             Resolved::Column { value_type, .. } => value_type,
             Resolved::JsonPath { value_type, .. } => value_type,
+            Resolved::EventAttribute { value_type, .. } => value_type,
         }
     }
 }

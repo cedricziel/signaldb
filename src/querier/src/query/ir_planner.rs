@@ -407,8 +407,32 @@ impl SchemaResolver {
     }
 }
 
+/// Exception attributes per the OTel exception semantic conventions
+/// (https://opentelemetry.io/docs/specs/semconv/exceptions/exceptions-spans/):
+/// captured on the span event named `exception`, not as ordinary span
+/// attributes. Logs need no such special-casing — the same attribute names
+/// on a LogRecord (exceptions-logs.md) are already ordinary record
+/// attributes, resolved by the generic fallback below.
+const EXCEPTION_EVENT_ATTRIBUTES: [&str; 4] = [
+    "exception.type",
+    "exception.message",
+    "exception.stacktrace",
+    "exception.escaped",
+];
+
 impl FieldResolver for SchemaResolver {
     fn resolve(&self, _source: &str, field: &str) -> Option<Resolved> {
+        if self.source == "traces"
+            && EXCEPTION_EVENT_ATTRIBUTES.contains(&field)
+            && self.physical_names.contains("events")
+        {
+            return Some(Resolved::EventAttribute {
+                events_column: "events".to_string(),
+                event_name: "exception".to_string(),
+                key: field.to_string(),
+                value_type: ValueType::String,
+            });
+        }
         if let Some(logical) = self.logical_schema.resolve(&self.source, field) {
             let value_type = logical_to_value_type(logical.value_type);
             return match self.column_for(field, value_type.clone()) {
@@ -1277,6 +1301,12 @@ impl Lowering<'_> {
         match self.resolver.resolve("", logical) {
             Some(Resolved::Column { name, .. }) => Ok(col(name)),
             Some(Resolved::JsonPath { key, .. }) => Ok(self.attr_expr(&key)),
+            Some(Resolved::EventAttribute {
+                events_column,
+                event_name,
+                key,
+                ..
+            }) => Ok(self.event_attr_expr(&events_column, &event_name, &key)),
             None => Err(QuerierError::InvalidInput(format!(
                 "field '{logical}' has no canonical type"
             ))),
@@ -1308,6 +1338,17 @@ impl Lowering<'_> {
             1 => parts.remove(0),
             _ => coalesce(parts),
         }
+    }
+
+    /// Extract one attribute from a named span event (see
+    /// `Resolved::EventAttribute`), via the `ir_event_attr` UDF.
+    fn event_attr_expr(&self, events_column: &str, event_name: &str, key: &str) -> Expr {
+        let udf = ScalarUDF::from(EventAttrUdf::new());
+        udf.call(vec![
+            col(events_column),
+            lit(event_name.to_string()),
+            lit(key.to_string()),
+        ])
     }
 
     /// Split a container-qualified field into `(container column, bare key)`.
@@ -1362,11 +1403,20 @@ impl Lowering<'_> {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
                 QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
             })?;
-            let is_json = matches!(resolved, Resolved::JsonPath { .. });
+            let is_json = matches!(
+                resolved,
+                Resolved::JsonPath { .. } | Resolved::EventAttribute { .. }
+            );
             let ty = resolved.value_type().clone();
             let expr = match &resolved {
                 Resolved::Column { name, .. } => col(name.clone()),
                 Resolved::JsonPath { key, .. } => self.attr_expr(key),
+                Resolved::EventAttribute {
+                    events_column,
+                    event_name,
+                    key,
+                    ..
+                } => self.event_attr_expr(events_column, event_name, key),
             };
             (is_json, ty, expr)
         };
@@ -1515,6 +1565,14 @@ impl Lowering<'_> {
                             Some(Resolved::JsonPath { key, .. }) => {
                                 self.attr_expr(&key).alias(safe_ident(f))
                             }
+                            Some(Resolved::EventAttribute {
+                                events_column,
+                                event_name,
+                                key,
+                                ..
+                            }) => self
+                                .event_attr_expr(&events_column, &event_name, &key)
+                                .alias(safe_ident(f)),
                             None => col(safe_ident(f)),
                         }
                     }
@@ -1749,6 +1807,73 @@ fn extract_field(body: &str, parser: &str, key: &str) -> Option<String> {
             None
         }
         _ => None,
+    }
+}
+
+/// A scalar UDF that extracts one attribute from a named span event,
+/// `ir_event_attr(events, event_name, key) -> Utf8` — the mechanism behind
+/// `exception.type`/`.message`/`.stacktrace`/`.escaped` resolution on the
+/// `traces` source (see `EXCEPTION_EVENT_ATTRIBUTES`). `events` is the
+/// stored per-span JSON array of `{name, timestamp_unix_nano,
+/// attributes_json}` objects; NULL/empty/no-match all yield NULL.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct EventAttrUdf {
+    signature: Signature,
+}
+
+impl EventAttrUdf {
+    fn new() -> Self {
+        EventAttrUdf {
+            signature: Signature::exact(
+                vec![DataType::Utf8, DataType::Utf8, DataType::Utf8],
+                Volatility::Immutable,
+            ),
+        }
+    }
+}
+
+impl ScalarUDFImpl for EventAttrUdf {
+    fn name(&self) -> &str {
+        "ir_event_attr"
+    }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+    fn invoke_with_args(
+        &self,
+        args: ScalarFunctionArgs,
+    ) -> datafusion::error::Result<ColumnarValue> {
+        let num_rows = args.number_rows;
+        let events = StrArg::try_from(&args.args[0])?;
+        let event_name = StrArg::try_from(&args.args[1])?;
+        let key = StrArg::try_from(&args.args[2])?;
+
+        let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 16);
+        for i in 0..num_rows {
+            let value = match (events.value_at(i), event_name.value_at(i), key.value_at(i)) {
+                (Some(e), Some(n), Some(k)) => extract_event_attr(e, n, k),
+                _ => None,
+            };
+            builder.append_option(value.as_deref());
+        }
+        Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+    }
+}
+
+/// Find the first event named `event_name` in the stored `events` JSON array
+/// and extract `key` from its own attributes. Tolerant by design, matching
+/// `common::model::span::parse_span_events`: malformed JSON, an absent
+/// event, or a missing/null attribute all yield `None` rather than an error.
+fn extract_event_attr(events_json: &str, event_name: &str, key: &str) -> Option<String> {
+    let events = common::model::span::parse_span_events(events_json);
+    let event = events.into_iter().find(|e| e.name == event_name)?;
+    match event.attributes.get(key)? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Null => None,
+        other => Some(other.to_string()),
     }
 }
 
@@ -3154,6 +3279,214 @@ mod tests {
         cat.register_schema("d", sp).unwrap();
         ctx.register_catalog("t", cat);
         ctx
+    }
+
+    /// Like [`traces_ctx`], plus the `events` column: three spans, one
+    /// clean, one erroring with a captured `exception` event, one erroring
+    /// with no event at all (an error status set without a captured
+    /// exception, e.g. a hand-set span status).
+    fn traces_events_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new("status_code", DataType::Utf8, true),
+            Field::new("events", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t1", "t2"])),
+                Arc::new(StringArray::from(vec!["s0", "s1", "s2"])),
+                Arc::new(StringArray::from(vec!["GET /a", "GET /b", "GET /c"])),
+                Arc::new(StringArray::from(vec!["api", "api", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20, 30])),
+                Arc::new(Int64Array::from(vec![100_i64, 200, 300])),
+                Arc::new(StringArray::from(vec![
+                    Some("OK"),
+                    Some("ERROR"),
+                    Some("ERROR"),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    None,
+                    Some(
+                        r#"[{"name":"exception","timestamp_unix_nano":1700000000000000000,"attributes_json":"{\"exception.type\":\"std::io::Error\",\"exception.message\":\"boom\",\"exception.stacktrace\":\"at foo\"}"}]"#,
+                    ),
+                    Some("[]"),
+                ])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    // exception.type/message/stacktrace are not stored as their own columns —
+    // they live inside the `exception` span event's own attributes. A span
+    // with no exception event (t0: clean, t2: error with no captured
+    // exception) must resolve to NULL rather than erroring or matching.
+    #[tokio::test]
+    async fn exception_attributes_resolve_from_the_exception_event() {
+        let svc = IrService::new(traces_events_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["span.name", "exception.type", "exception.message", "exception.stacktrace"],
+            "pipeline": [
+                { "where": { "field": "exception.type", "op": "exists" } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            total, 1,
+            "only the span with a captured exception event survives the exists filter"
+        );
+        let batch = &batches[0];
+        let name = batch
+            .column_by_name("span_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(name, "GET /b");
+        let ty = batch
+            .column_by_name("exception_type")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(ty, "std::io::Error");
+        let message = batch
+            .column_by_name("exception_message")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(message, "boom");
+        let stacktrace = batch
+            .column_by_name("exception_stacktrace")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(stacktrace, "at foo");
+    }
+
+    // A span with an error status but no captured exception (t2) must not be
+    // mistaken for one that has an exception — `exists` must see NULL, not
+    // an empty string or a spurious match.
+    #[tokio::test]
+    async fn exception_type_is_null_without_a_captured_exception_event() {
+        let svc = IrService::new(traces_events_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["span.name", "exception.type"],
+            "pipeline": [
+                { "where": { "field": "status.code", "op": "eq", "value": "ERROR" } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            total, 2,
+            "both error spans (t1, t2) match the status filter"
+        );
+        let mut by_name: HashMap<String, Option<String>> = HashMap::new();
+        for batch in &batches {
+            let names = batch
+                .column_by_name("span_name")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let types = batch
+                .column_by_name("exception_type")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                by_name.insert(
+                    names.value(i).to_string(),
+                    (!types.is_null(i)).then(|| types.value(i).to_string()),
+                );
+            }
+        }
+        assert_eq!(
+            by_name.get("GET /b"),
+            Some(&Some("std::io::Error".to_string()))
+        );
+        assert_eq!(by_name.get("GET /c"), Some(&None));
+    }
+
+    // The Errors & Exceptions UI groups spans by exception.type to count
+    // occurrences per exception — grouping by a UDF-computed expression
+    // (not a physical column) must work through DataFusion's aggregate().
+    #[tokio::test]
+    async fn spans_group_by_exception_type_with_counts() {
+        let svc = IrService::new(traces_events_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "where": { "field": "exception.type", "op": "exists" } },
+                { "aggregate": {
+                    "by": ["exception.type"],
+                    "aggs": [{ "fn": "count", "as": "count" }]
+                }}
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 1, "one distinct exception.type group");
+        let batch = &batches[0];
+        let ty = batch
+            .column_by_name("exception_type")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(ty, "std::io::Error");
+        let count = batch
+            .column_by_name("count")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(count, 1);
     }
 
     /// Like [`traces_ctx`], plus the `timestamp` partition column the real v2

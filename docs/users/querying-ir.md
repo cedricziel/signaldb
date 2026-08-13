@@ -152,6 +152,50 @@ scope's name (a first-class column), not a key called `name` inside the scope
 attributes. To reach a key that literally begins with one of these prefixes,
 qualify it: `log.resource.foo` is the key `resource.foo` on the record.
 
+### Exception attributes
+
+An exception can be recorded two different ways depending on the source, and
+each needs a different addressing rule:
+
+- **Logs.** Per the
+  [exceptions-on-logs](https://opentelemetry.io/docs/specs/semconv/exceptions/exceptions-logs/)
+  convention, `exception.type`, `exception.message`, `exception.stacktrace`,
+  and `exception.escaped` are ordinary record attributes on the log —
+  address them exactly like any other attribute, unqualified or with `log.`.
+- **Traces.** Per the
+  [exceptions-on-spans](https://opentelemetry.io/docs/specs/semconv/exceptions/exceptions-spans/)
+  convention, an exception is a span **event** named `exception`, not a span
+  attribute — its `exception.type`/`.message`/`.stacktrace`/`.escaped` live
+  inside that event's own attributes. On the `traces` source, these four
+  names resolve specially: filtering, grouping, and projecting on
+  `exception.type` reads the first `exception` event on each span, not a
+  regular span attribute. A span with no `exception` event resolves the field
+  to absent (`exists` is false), even if its status is `Error`.
+
+```jsonc
+// Traces grouped by exception type — reads each span's `exception` event.
+{
+  "irVersion": 1,
+  "from": "traces",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "table",
+  "pipeline": [
+    { "where": { "field": "exception.type", "op": "exists" } },
+    {
+      "aggregate": {
+        "by": ["exception.type"],
+        "aggs": [{ "fn": "count", "as": "count" }],
+      },
+    },
+  ],
+}
+```
+
+Because a caught-and-logged exception and an exception recorded as a span
+event are different data, finding "all exceptions" means querying both
+sources and combining the results client-side — there is no single query
+that spans both.
+
 ### Structured operands
 
 Aggregate/rank/order operands are structured values, never mini-expression
