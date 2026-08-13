@@ -60,17 +60,19 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   **Top functions** view swaps the tree for a sortable flat table ranked by
   self time. See [Comparing and filtering profiles](#comparing-and-filtering-profiles)
   and [Reading a noisy profile](#reading-a-noisy-profile).
-- **Errors** — exceptions grouped by type, message, and service, ranked by
-  count with first/last-seen timestamps. Combines the two places OTel records
-  an exception — a span's `exception` event, and a log record's own
-  `exception.type`/`.message` attributes (see [Exception
-  attributes](querying-ir.md#exception-attributes)) — since neither source
-  alone is the whole picture. A facet sidebar (type, service, source) narrows
-  the list. Selecting a group lists its individual occurrences (up to 25,
-  newest first); each one independently offers a link into the trace
-  waterfall when it carries a trace id — occurrences of the same group don't
-  all share one trace outcome — and expands to its own stacktrace, rendered
-  with the caller's own frames legible against dimmed dependency noise.
+- **Errors** — exceptions grouped by type, message, service, and whether
+  they were handled, sortable by count (default) or by last-seen recency.
+  Combines the two places OTel records an exception — a span's `exception`
+  event, and a log record's own `exception.type`/`.message` attributes (see
+  [Exception attributes](querying-ir.md#exception-attributes)) — since
+  neither source alone is the whole picture. A facet sidebar (type, service,
+  source, handled) narrows the list. Selecting a group shows a
+  count-over-time chart for that exact group plus its individual
+  occurrences (up to 25, newest first); each occurrence independently offers
+  a link into the trace waterfall when it carries a trace id — occurrences
+  of the same group don't all share one trace outcome — and expands to its
+  own stacktrace, rendered with the caller's own frames legible against
+  dimmed dependency noise.
 - **Query** — a native [Query IR](querying-ir.md) builder for `logs`, `traces`,
   and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
