@@ -21,9 +21,11 @@ execution paths.
   `common::self_monitoring::spans`, following the same shape as the
   existing `db_client_span` catalog factory: `otel.kind="client"`,
   `db.system.name` (custom value identifying DataFusion), `db.operation.name`
-  (query-type specific), `db.namespace` (tenant/dataset), and
-  `db.query.text` (sanitized, reusing the existing
-  `sanitize_query_text` helper).
+  (one fixed literal per query surface — never parsed from the submitted
+  query text), `db.namespace` (tenant/dataset), and `db.query.text`
+  (sanitized per-surface — reusing the existing `sanitize_query_text`
+  helper for SQL, new equivalents for PromQL/LogQL/TraceQL, omitted where
+  safe sanitization isn't available).
 - Wire this span into all five DataFusion execution call sites in the
   querier: raw SQL (`execute_query`), query-IR (`IrService::query`),
   PromQL (`MetricsService::query_metric`), LogQL (`LogsService::query_logs`),
@@ -36,9 +38,11 @@ execution paths.
 - Extend `otel/registry/signaldb.yaml` with the new span/attribute
   definitions and add corresponding weaver live-check coverage.
 - Tag the existing `signaldb.query.duration`, `signaldb.query.errors`, and
-  `signaldb.query.rows_returned` metrics with the same `db.*` attributes
-  carried on the new span, so traces and metrics correlate for the same
-  query.
+  `signaldb.query.rows_returned` metrics with a fixed low-cardinality
+  subset of the new span's attributes — `db.system.name` and
+  `db.operation.name` only, never `db.namespace` or `db.query.text` — so
+  traces and metrics correlate on the query type without growing metric
+  cardinality by tenant count or copying free text into a metric label.
 - Add pin/regression tests for the new factory (semconv field names,
   literal attribute values) following the existing
   `db_catalog_span_semconv.rs` pattern.
@@ -56,12 +60,15 @@ execution paths.
 
 ### Modified Capabilities
 
-- `self-monitoring-traces`: the existing "Database client spans for catalog
-  access" requirement is broadened so DB client spans are required for
-  DataFusion query execution as well as catalog access. The existing
-  "Query execution stage spans" requirement is amended so the per-stage
-  INTERNAL spans it already requires must nest under a DB CLIENT span
-  rather than directly under the Flight SERVER span.
+- `self-monitoring-traces`: adds two new requirements ("Database client
+  spans for query execution" and "Query-execution metric attributes are a
+  fixed low-cardinality allowlist") alongside the existing catalog-spans
+  requirement, which is left unchanged. The existing "Query execution
+  stage spans" requirement is modified so its per-stage INTERNAL spans nest
+  under the new DB CLIENT span rather than directly under the Flight
+  SERVER span, and its wording is narrowed from four described stages to
+  the two spans the implementation actually produces (planning,
+  execution — see design.md for why).
 
 ## Impact
 

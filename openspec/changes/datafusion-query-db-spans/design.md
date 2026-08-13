@@ -73,15 +73,24 @@ convention doesn't require every system to be). Using the literal engine
 name keeps the value meaningful to someone reading a trace, and matches how
 `db_system_name` is already threaded as a plain `&str` rather than an enum.
 
-**`db.operation.name` values are query-surface-specific, not SQL-verb-only.**
-Raw SQL: the parsed leading verb (`SELECT`, matching existing SQL
-conventions) where cheaply extractable, else a generic `"query"`.
-PromQL/LogQL/TraceQL/query-IR: a fixed literal per surface
-(`"promql_query"`, `"logql_query"`, `"traceql_query"`, `"query_ir"`) — these
-protocols don't have a small enum of "verbs" the way SQL does, and a fixed
-per-surface literal keeps cardinality bounded and makes the five query
-types distinguishable in aggregate views (e.g. "average CLIENT span
-duration grouped by `db.operation.name`").
+**`db.operation.name` is a fixed, five-value literal per query surface —
+never parsed from query text.**
+Raw SQL: the fixed literal `"query"` on every call, regardless of the
+submitted SQL text. PromQL/LogQL/TraceQL/query-IR: one fixed literal per
+surface (`"promql_query"`, `"logql_query"`, `"traceql_query"`,
+`"query_ir"`). This differs from the catalog factory's convention (real
+CRUD verbs — `"SELECT"`, `"INSERT"` — supplied as literals by the caller at
+each call site), because the querier's raw-SQL surface neither validates
+nor distinguishes statement types before execution: parsing a leading verb
+out of arbitrary client-submitted SQL to label a span would let a client
+grow the attribute's value set arbitrarily (also SQL-injection-adjacent —
+never derive a span attribute from unvalidated input). Five fixed literals,
+none derived from request content, keeps `db.operation.name` exactly as
+low-cardinality as the registry enum declares it.
+Alternative considered: parse the SQL verb for a friendlier per-verb value
+— rejected for the reasons above; if per-verb distinction is ever wanted,
+it requires an explicit allowlist-and-reject step (unsupported verbs
+rejected before execution), which is out of scope here.
 
 **`db.namespace` is threaded as an explicit parameter, not derived from
 `SessionContext`.**
@@ -92,22 +101,61 @@ avoids adding a `SessionContext` inspection helper that would need to parse
 `default_catalog`/`default_schema` back out — more code, and a second
 source of truth for something already known at the call site.
 
-**Stage spans (`signaldb.query.plan`/`signaldb.query.execute`) become
-children of the new CLIENT span via normal span nesting (entering the
-CLIENT span, then creating the stage spans as before) — no attribute
-changes to the stage spans themselves.**
-This satisfies the modified "Query execution stage spans" requirement
-(nesting changes, content doesn't) with a one-line change per call site:
-wrap the existing stage-span-producing code in `.instrument(db_client_span(...))`
-or enter the CLIENT span around the existing block.
+**Stage spans stay exactly the two that exist today
+(`signaldb.query.plan`/`signaldb.query.execute`) and become children of
+the new CLIENT span via normal span nesting — no new stage spans are
+added, and no attribute changes to the existing two.**
+The pre-existing "Query execution stage spans" requirement text (inherited
+unmodified from before this change) names four stages — planning,
+table/Iceberg scan, execution, result encoding — but the implementation
+has only ever produced two spans: `signaldb.query.plan` wraps
+`ctx.sql()`/`plan()` (planning), and `signaldb.query.execute` wraps
+`.collect()` (which covers scan, execution, and result encoding together,
+since DataFusion's `DataFrame::collect` doesn't expose those as separable
+async boundaries at the `DataFrame` API level this codebase uses). This
+change does not add scan/encoding spans — see Non-Goals — so the spec delta
+narrows the requirement's wording to name the two spans that actually
+exist, rather than perpetuating a four-stage description nothing
+implements. Splitting scan/execution/encoding into separate spans would
+require operating on `ExecutionPlan` directly, which is the same
+instrumentation depth as `ExecutionPlan::metrics()` — explicitly deferred.
 
-**Metrics get the same `db.*` attributes added as separate `KeyValue`s
-alongside the existing `query_type` attribute, not a replacement of it.**
-`query_type` (the ticket verb) and `db.operation.name` differ slightly in
+**Metrics carry a fixed, explicit attribute allowlist — `db.system.name`
+and `db.operation.name` only — added alongside the existing `query_type`
+attribute, never `db.namespace` or `db.query.text`.**
+`db.query.text` is excluded outright: unbounded, and a metric attribute
+(unlike a span attribute) is a label copied verbatim into every metric
+data point's identity — recording free text there multiplies storage and
+risks retaining sanitized-but-still-sensitive content in aggregate form.
+`db.namespace` (tenant/dataset) is also excluded: no existing
+`self_monitoring` metric in this codebase carries a tenant- or
+dataset-scoped label today (checked directly — `app_metrics.rs` has no
+`tenant_id`/`dataset_id` attribute on any instrument), and introducing one
+here would make per-query metrics scale with tenant count for the first
+time, an architectural change bigger than this proposal's scope. Per-tenant
+query cost is already visible on the CLIENT _span_ (which does carry
+`db.namespace`) via trace queries; the metric only needs the
+low-cardinality, unconditionally-safe subset. `query_type` (the ticket
+verb) is kept unchanged since `db.operation.name` differs slightly in
 intent (Flight-protocol dispatch vs. DB-semconv operation) and existing
-dashboards/alerts may already key on `query_type`; adding rather than
-replacing avoids a breaking change to metric cardinality/labels for
-existing consumers.
+dashboards/alerts may already key on it.
+
+**Sanitization of recorded query text is mandatory and unconditional for
+every literal-bearing surface (SQL, PromQL, LogQL, TraceQL), and every
+attribute that records query text — `db.query.text` on the new CLIENT span
+and the pre-existing `signaldb.query.text` on the SQL stage span alike —
+reuses one sanitized value per query, never a second, independently-derived
+copy.**
+`sanitize_query_text` already exists and is proven for SQL. For
+PromQL/LogQL/TraceQL, this change adds an equivalent sanitizer per surface
+(scoped to what each grammar can carry as a literal — e.g. quoted label
+matcher values) _before_ any query text is recorded anywhere, including
+`tracing::info!` logging. If a surface's literal shape can't be safely
+sanitized with reasonable effort, that surface's `db.query.text` is
+omitted entirely rather than recording unsanitized text — recording
+nothing is always the safe default over recording something unscrubbed.
+Task 8.1 (see tasks.md) is a blocking implementation-and-test requirement,
+not an optional follow-up review.
 
 ## Risks / Trade-offs
 
@@ -118,16 +166,12 @@ existing consumers.
   from `db_catalog_span_semconv.rs`'s pattern extended to the new
   parameter, plus one integration-style test per query surface asserting
   the CLIENT span exists in the exported trace.
-- [Risk] `db.query.text` on PromQL/LogQL/TraceQL spans records query
-  language text that was never covered by `sanitize_query_text` (built for
-  SQL literal patterns) — a PromQL/LogQL/TraceQL literal (e.g. a label
-  value) could leak through unsanitized → Mitigation: these three surfaces
-  don't currently have any literal-scrubbing needs called out in existing
-  specs (their query languages don't have the same free-text-literal
-  injection shape SQL does — labels/matchers are structured), but this
-  needs explicit review during implementation; if a surface can carry
-  free-text literals, extend or scope `sanitize_query_text` to it before
-  recording `db.query.text`, rather than recording it unsanitized.
+- [Risk] A PromQL/LogQL/TraceQL sanitizer that's incomplete for its
+  grammar could let a literal through unscrubbed despite the mandatory
+  policy above → Mitigation: per-surface unit tests asserting known literal
+  shapes (quoted label values, string matchers) are stripped, and the
+  omit-rather-than-leak fallback keeps an incomplete sanitizer failing
+  safe instead of failing open.
 - [Risk] Additional span per query changes self-monitoring export volume
   and cost for the `_system`/`_monitoring` tenant → Mitigation: this is one
   additional span per query (not per-operator), a small, bounded increase
