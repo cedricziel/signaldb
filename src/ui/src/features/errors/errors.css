@@ -1,3 +1,10 @@
+/* Matches .histo-wrap's left padding (the traces/logs tabs' equivalent
+   above-the-sidebar content) so the page title aligns with the rest of the
+   explore shell instead of sitting flush against the viewport edge. */
+.errors-head {
+  padding: 10px 16px 4px;
+}
+
 .errors-table {
   width: 100%;
   border-collapse: collapse;

@@ -99,29 +99,31 @@ export function ErrorsView({ state, update }: Props) {
 
   return (
     <div className="errors-view">
-      <div className="catalog-headline">
-        <span className="catalog-title">Errors &amp; Exceptions</span>
-        <span className="catalog-sub">
-          grouped from span exception events and log exception attributes
-        </span>
-      </div>
-
-      {filters.length > 0 && (
-        <div className="trace-chips" aria-label="Active filters">
-          {filters.map((f) => (
-            <button
-              className="chip"
-              key={`${f.field}|${f.value}`}
-              aria-label={`Remove filter ${f.field} = ${f.value}`}
-              onClick={() => removeFilter(f)}
-            >
-              <span className="chip-k">{f.field}</span>
-              <span className="chip-v">{f.value}</span>
-              <span className="chip-x">×</span>
-            </button>
-          ))}
+      <div className="errors-head">
+        <div className="catalog-headline">
+          <span className="catalog-title">Errors &amp; Exceptions</span>
+          <span className="catalog-sub">
+            grouped from span exception events and log exception attributes
+          </span>
         </div>
-      )}
+
+        {filters.length > 0 && (
+          <div className="trace-chips" aria-label="Active filters">
+            {filters.map((f) => (
+              <button
+                className="chip"
+                key={`${f.field}|${f.value}`}
+                aria-label={`Remove filter ${f.field} = ${f.value}`}
+                onClick={() => removeFilter(f)}
+              >
+                <span className="chip-k">{f.field}</span>
+                <span className="chip-v">{f.value}</span>
+                <span className="chip-x">×</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="errors-body">
         <ErrorFacets
