@@ -60,6 +60,18 @@ impl Catalog {
         crate::self_monitoring::spans::db_client_span(system, operation, "signaldb-catalog")
     }
 
+    /// Record the statement text on the current `db.client` span. sqlx
+    /// binds values rather than interpolating them, so `stmt` is already a
+    /// parameterized template with nothing sensitive in it; sanitizing
+    /// anyway is a defensive default (see `db_client_span`'s doc comment)
+    /// and a no-op on text that has no literals to strip.
+    fn record_query_text(stmt: &str) {
+        tracing::Span::current().record(
+            "db.query.text",
+            crate::self_monitoring::sanitize::sanitize_query_text(stmt).as_str(),
+        );
+    }
+
     /// Create an in-memory SQLite catalog for fast tests.
     ///
     /// This is equivalent to `Catalog::new("sqlite::memory:")` and provides
@@ -741,6 +753,7 @@ impl Catalog {
                 INSERT INTO ingesters (id, address, last_seen, service_type, capabilities)
                 VALUES (?, ?, ?, ?, ?)
                 "#;
+                Self::record_query_text(insert_stmt);
 
                 let result = query(insert_stmt)
                     .bind(&id_str)
@@ -781,6 +794,7 @@ impl Catalog {
                 VALUES ($1, $2, NOW(), $3, $4)
                 ON CONFLICT (id) DO UPDATE SET address = $2, last_seen = NOW(), service_type = $3, capabilities = $4
                 "#;
+                Self::record_query_text(stmt);
                 query(stmt)
                     .bind(id)
                     .bind(address)
@@ -811,6 +825,7 @@ impl Catalog {
                 UPDATE ingesters SET last_seen = ?
                 WHERE id = ?
                 "#;
+                Self::record_query_text(stmt);
                 let result = query(stmt).bind(&now).bind(&id_str).execute(pool).await?;
                 if result.rows_affected() == 0 {
                     return Err(sqlx::Error::RowNotFound);
@@ -821,6 +836,7 @@ impl Catalog {
                 UPDATE ingesters SET last_seen = NOW()
                 WHERE id = $1
                 "#;
+                Self::record_query_text(stmt);
                 let result = query(stmt).bind(id).execute(pool).await?;
                 if result.rows_affected() == 0 {
                     return Err(sqlx::Error::RowNotFound);
@@ -839,6 +855,9 @@ impl Catalog {
     }
 
     async fn list_ingesters_inner(&self) -> Result<Vec<Ingester>, sqlx::Error> {
+        Self::record_query_text(
+            "SELECT id, address, last_seen, service_type, capabilities FROM ingesters",
+        );
         match self {
             Catalog::Sqlite(pool) => {
                 let rows = query(
@@ -1154,6 +1173,7 @@ impl Catalog {
                 DELETE FROM ingesters
                 WHERE id = ?
                 "#;
+                Self::record_query_text(stmt);
                 query(stmt).bind(&id_str).execute(pool).await?;
             }
             Catalog::Postgres(pool) => {
@@ -1161,6 +1181,7 @@ impl Catalog {
                 DELETE FROM ingesters
                 WHERE id = $1
                 "#;
+                Self::record_query_text(stmt);
                 query(stmt).bind(id).execute(pool).await?;
             }
         }
