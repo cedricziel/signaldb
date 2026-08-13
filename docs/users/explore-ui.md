@@ -66,10 +66,11 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   `exception.type`/`.message` attributes (see [Exception
   attributes](querying-ir.md#exception-attributes)) — since neither source
   alone is the whole picture. A facet sidebar (type, service, source) narrows
-  the list. Selecting a group fetches one example occurrence's stacktrace —
-  rendered with the caller's own frames legible against dimmed dependency
-  noise — plus a link into the trace waterfall when that occurrence carries a
-  trace id.
+  the list. Selecting a group lists its individual occurrences (up to 25,
+  newest first); each one independently offers a link into the trace
+  waterfall when it carries a trace id — occurrences of the same group don't
+  all share one trace outcome — and expands to its own stacktrace, rendered
+  with the caller's own frames legible against dimmed dependency noise.
 - **Query** — a native [Query IR](querying-ir.md) builder for `logs`, `traces`,
   and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
