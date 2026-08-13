@@ -7,6 +7,7 @@ import type { ErrorGroup } from "../../api/errors";
 import {
   ERROR_FACET_FIELDS,
   errorFacetLabel,
+  errorFacetValueLabel,
   errorFacetValues,
   type ErrorFacetField,
   type ErrorFilter,
@@ -99,7 +100,9 @@ function FacetValues({
               (active ? onRemoveFilter : onAddFilter)(filter);
             }}
           >
-            <span className="facet-val-name">{v.value}</span>
+            <span className="facet-val-name">
+              {errorFacetValueLabel(field, v.value)}
+            </span>
             <span className="facet-val-count">{NUM.format(v.count)}</span>
           </button>
         );

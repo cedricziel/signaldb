@@ -62,6 +62,23 @@
   margin-top: 20px;
 }
 
+.errors-sparkline {
+  display: block;
+  width: 100%;
+  height: 32px;
+  margin: 8px 0 4px;
+}
+
+.errors-sparkline-bar {
+  fill: var(--svc-a);
+}
+
+.errors-sparkline-empty {
+  font-size: 12px;
+  color: var(--faint);
+  margin: 8px 0 4px;
+}
+
 .errors-occurrences {
   width: 100%;
   border-collapse: collapse;

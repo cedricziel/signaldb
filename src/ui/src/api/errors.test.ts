@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildErrorGroupDoc,
+  buildErrorGroupVolumeDoc,
   buildErrorOccurrencesDoc,
+  fetchErrorGroupVolume,
   fetchErrorGroups,
   fetchErrorOccurrences,
   type ErrorGroup,
@@ -36,7 +38,7 @@ function tableResponse(rows: unknown[][]) {
 }
 
 describe("buildErrorGroupDoc", () => {
-  it("groups spans with a captured exception by type/message/service", () => {
+  it("groups spans with a captured exception by type/message/service/escaped", () => {
     const doc = buildErrorGroupDoc("traces", range);
     expect(doc.from).toBe("traces");
     expect(doc.pipeline).toContainEqual({
@@ -44,7 +46,12 @@ describe("buildErrorGroupDoc", () => {
     });
     expect(doc.pipeline).toContainEqual({
       aggregate: {
-        by: ["exception.type", "exception.message", "service.name"],
+        by: [
+          "exception.type",
+          "exception.message",
+          "service.name",
+          "exception.escaped",
+        ],
         aggs: [
           { fn: "count", as: "n" },
           { fn: "min", of: "start_time_unix_nano", as: "first" },
@@ -59,7 +66,12 @@ describe("buildErrorGroupDoc", () => {
     expect(doc.from).toBe("logs");
     expect(doc.pipeline).toContainEqual({
       aggregate: {
-        by: ["exception.type", "exception.message", "service.name"],
+        by: [
+          "exception.type",
+          "exception.message",
+          "service.name",
+          "exception.escaped",
+        ],
         aggs: [
           { fn: "count", as: "n" },
           { fn: "min", of: "timestamp", as: "first" },
@@ -79,10 +91,10 @@ describe("fetchErrorGroups", () => {
       const body =
         call === 1
           ? tableResponse([
-              ["std::io::Error", "boom", "signaldb", 3, 1000, 2000],
+              ["std::io::Error", "boom", "signaldb", "true", 3, 1000, 2000],
             ])
           : tableResponse([
-              ["ValueError", "bad input", "signaldb-ui", 9, 500, 1500],
+              ["ValueError", "bad input", "signaldb-ui", null, 9, 500, 1500],
             ]);
       return Promise.resolve(jsonResponse(body));
     });
@@ -95,6 +107,7 @@ describe("fetchErrorGroups", () => {
         exceptionType: "ValueError",
         exceptionMessage: "bad input",
         serviceName: "signaldb-ui",
+        escaped: null,
         count: 9,
         firstNs: "500",
         lastNs: "1500",
@@ -104,6 +117,7 @@ describe("fetchErrorGroups", () => {
         exceptionType: "std::io::Error",
         exceptionMessage: "boom",
         serviceName: "signaldb",
+        escaped: "true",
         count: 3,
         firstNs: "1000",
         lastNs: "2000",
@@ -114,12 +128,13 @@ describe("fetchErrorGroups", () => {
 });
 
 describe("buildErrorOccurrencesDoc", () => {
-  it("pins the lookup to the exact group's type/message/service, newest first", () => {
+  it("pins the lookup to the exact group's type/message/service/escaped, newest first", () => {
     const group: ErrorGroup = {
       source: "traces",
       exceptionType: "std::io::Error",
       exceptionMessage: "boom",
       serviceName: "signaldb",
+      escaped: "true",
       count: 3,
       firstNs: "1000",
       lastNs: "2000",
@@ -140,17 +155,21 @@ describe("buildErrorOccurrencesDoc", () => {
       where: { field: "service.name", op: "eq", value: "signaldb" },
     });
     expect(doc.pipeline).toContainEqual({
+      where: { field: "exception.escaped", op: "eq", value: "true" },
+    });
+    expect(doc.pipeline).toContainEqual({
       order: [{ of: "start_time_unix_nano", dir: "desc" }],
     });
     expect(doc.pipeline).toContainEqual({ limit: 25 });
   });
 
-  it("uses the logs timestamp field for the logs source", () => {
+  it("uses the logs timestamp field for the logs source and omits pins for absent dimensions", () => {
     const group: ErrorGroup = {
       source: "logs",
       exceptionType: "ValueError",
       exceptionMessage: null,
       serviceName: null,
+      escaped: null,
       count: 1,
       firstNs: "1000",
       lastNs: "1000",
@@ -164,6 +183,11 @@ describe("buildErrorOccurrencesDoc", () => {
     expect(doc.pipeline).toContainEqual({
       order: [{ of: "timestamp", dir: "desc" }],
     });
+    expect(doc.pipeline).not.toContainEqual(
+      expect.objectContaining({
+        where: expect.objectContaining({ field: "exception.escaped" }),
+      }),
+    );
   });
 });
 
@@ -190,6 +214,7 @@ describe("fetchErrorOccurrences", () => {
       exceptionType: "std::io::Error",
       exceptionMessage: "boom",
       serviceName: "signaldb",
+      escaped: "true",
       count: 3,
       firstNs: "1000",
       lastNs: "2000",
@@ -219,11 +244,83 @@ describe("fetchErrorOccurrences", () => {
       exceptionType: "ValueError",
       exceptionMessage: null,
       serviceName: null,
+      escaped: null,
       count: 1,
       firstNs: "1000",
       lastNs: "1000",
     };
     const occurrences = await fetchErrorOccurrences(group, range);
     expect(occurrences).toEqual([]);
+  });
+});
+
+describe("buildErrorGroupVolumeDoc", () => {
+  it("pins the lookup to the exact group and step-buckets a count series", () => {
+    const group: ErrorGroup = {
+      source: "traces",
+      exceptionType: "std::io::Error",
+      exceptionMessage: "boom",
+      serviceName: "signaldb",
+      escaped: "true",
+      count: 3,
+      firstNs: "1000",
+      lastNs: "2000",
+    };
+    const doc = buildErrorGroupVolumeDoc(group, range, "1m");
+    expect(doc.result).toBe("series");
+    expect(doc.pipeline).toContainEqual({
+      where: { field: "exception.type", op: "eq", value: "std::io::Error" },
+    });
+    expect(doc.pipeline).toContainEqual({
+      where: { field: "exception.escaped", op: "eq", value: "true" },
+    });
+    expect(doc.pipeline).toContainEqual({
+      aggregate: {
+        by: ["exception.type"],
+        aggs: [{ fn: "count", as: "n" }],
+        step: "1m",
+      },
+    });
+  });
+});
+
+describe("fetchErrorGroupVolume", () => {
+  it("converts a series envelope to millisecond-keyed points", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        jsonResponse({
+          result: "series",
+          window: { start_ns: 0, end_ns: 0 },
+          step_ns: 60_000_000_000,
+          series: [
+            {
+              labels: { exception_type: "std::io::Error" },
+              points: [
+                [60_000_000_000, 2],
+                [120_000_000_000, 5],
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const group: ErrorGroup = {
+      source: "traces",
+      exceptionType: "std::io::Error",
+      exceptionMessage: "boom",
+      serviceName: "signaldb",
+      escaped: null,
+      count: 7,
+      firstNs: "1000",
+      lastNs: "2000",
+    };
+    const series = await fetchErrorGroupVolume(group, range, "1m");
+    expect(series).toHaveLength(1);
+    expect(series[0]!.points).toEqual([
+      [60_000, 2],
+      [120_000, 5],
+    ]);
   });
 });

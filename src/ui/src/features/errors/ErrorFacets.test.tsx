@@ -11,6 +11,7 @@ function group(overrides: Partial<ErrorGroup> = {}): ErrorGroup {
     exceptionType: "std::io::Error",
     exceptionMessage: "boom",
     serviceName: "signaldb",
+    escaped: null,
     count: 3,
     firstNs: "1000",
     lastNs: "2000",

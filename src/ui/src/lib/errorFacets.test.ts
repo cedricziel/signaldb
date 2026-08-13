@@ -4,6 +4,7 @@ import {
   errorFacetValues,
   ERROR_FACET_FIELDS,
   errorFacetLabel,
+  errorFacetValueLabel,
   type ErrorFilter,
 } from "./errorFacets";
 import type { ErrorGroup } from "../api/errors";
@@ -14,6 +15,7 @@ function group(overrides: Partial<ErrorGroup> = {}): ErrorGroup {
     exceptionType: "std::io::Error",
     exceptionMessage: "boom",
     serviceName: "signaldb",
+    escaped: null,
     count: 3,
     firstNs: "1000",
     lastNs: "2000",
@@ -48,10 +50,26 @@ describe("ERROR_FACET_FIELDS / errorFacetLabel", () => {
       "exceptionType",
       "serviceName",
       "source",
+      "escaped",
     ]);
     expect(errorFacetLabel("exceptionType")).toBe("Type");
     expect(errorFacetLabel("serviceName")).toBe("Service");
     expect(errorFacetLabel("source")).toBe("Source");
+    expect(errorFacetLabel("escaped")).toBe("Handled");
+  });
+});
+
+describe("errorFacetValueLabel", () => {
+  it("renders exception.escaped's raw true/false as Unhandled/Handled", () => {
+    expect(errorFacetValueLabel("escaped", "true")).toBe("Unhandled");
+    expect(errorFacetValueLabel("escaped", "false")).toBe("Handled");
+  });
+
+  it("passes through other fields' values unchanged", () => {
+    expect(errorFacetValueLabel("exceptionType", "ValueError")).toBe(
+      "ValueError",
+    );
+    expect(errorFacetValueLabel("source", "logs")).toBe("logs");
   });
 });
 
@@ -60,6 +78,18 @@ describe("errorFacetValues", () => {
     expect(errorFacetValues(groups, "exceptionType", [])).toEqual([
       { value: "ValueError", count: 9 },
       { value: "std::io::Error", count: 5 },
+    ]);
+  });
+
+  it("facets on exception.escaped like any other field", () => {
+    const withEscaped = [
+      group({ escaped: "true", count: 4 }),
+      group({ escaped: "false", count: 1 }),
+      group({ escaped: null, count: 7 }),
+    ];
+    expect(errorFacetValues(withEscaped, "escaped", [])).toEqual([
+      { value: "true", count: 4 },
+      { value: "false", count: 1 },
     ]);
   });
 

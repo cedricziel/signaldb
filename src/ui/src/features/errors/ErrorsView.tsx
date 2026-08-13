@@ -1,21 +1,30 @@
 // Errors & Exceptions: exceptions grouped by (type, message, service) across
-// both places SignalDB can find them (see api/errors.ts) — a Sentry-issue-list
+// both places SignalDB can find them (see api/errors.ts) — an issue-list
 // style view built entirely on Query IR, no dedicated backend endpoint.
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useState } from "react";
 import {
+  fetchErrorGroupVolume,
   fetchErrorGroups,
   fetchErrorOccurrences,
   type ErrorGroup,
 } from "../../api/errors";
 import { ErrorFacets } from "./ErrorFacets";
-import { applyErrorFilters, type ErrorFilter } from "../../lib/errorFacets";
-import { parseStacktraceLines } from "../../lib/stacktrace";
+import { ErrorSparkline } from "./ErrorSparkline";
 import {
+  applyErrorFilters,
+  errorFacetValueLabel,
+  type ErrorFilter,
+} from "../../lib/errorFacets";
+import { parseStacktraceLines } from "../../lib/stacktrace";
+import { SortTh, sortRows, useSort, type SortValue } from "../../lib/sortTable";
+import {
+  durationToSeconds,
   formatTimestamp,
   nanosToMs,
   rangeToParam,
   resolveRange,
+  stepForRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import "./errors.css";
@@ -26,7 +35,11 @@ interface Props {
 }
 
 function groupKey(g: ErrorGroup): string {
-  return `${g.source}|${g.exceptionType ?? ""}|${g.exceptionMessage ?? ""}|${g.serviceName ?? ""}`;
+  return `${g.source}|${g.exceptionType ?? ""}|${g.exceptionMessage ?? ""}|${g.serviceName ?? ""}|${g.escaped ?? ""}`;
+}
+
+function groupSortValue(g: ErrorGroup, key: string): SortValue {
+  return key === "last" ? BigInt(g.lastNs) : g.count;
 }
 
 export function ErrorsView({ state, update }: Props) {
@@ -35,6 +48,7 @@ export function ErrorsView({ state, update }: Props) {
   const [selected, setSelected] = useState<ErrorGroup | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [filters, setFilters] = useState<ErrorFilter[]>([]);
+  const [sort, toggle] = useSort("count", "desc");
 
   const groupsQuery = useQuery({
     queryKey: ["error-groups", rangeKey],
@@ -51,13 +65,30 @@ export function ErrorsView({ state, update }: Props) {
     enabled: selected !== null,
   });
 
+  const step = stepForRange(range, 20);
+  const stepMs = (durationToSeconds(step) ?? 0) * 1000;
+  const volumeQuery = useQuery({
+    queryKey: [
+      "error-group-volume",
+      rangeKey,
+      selected ? groupKey(selected) : null,
+      step,
+    ],
+    queryFn: () => fetchErrorGroupVolume(selected!, range, step),
+    enabled: selected !== null,
+  });
+
   const selectGroup = (g: ErrorGroup) => {
     setSelected(g);
     setExpanded(null);
   };
 
   const allGroups = groupsQuery.data?.groups ?? [];
-  const groups = applyErrorFilters(allGroups, filters);
+  const groups = sortRows(
+    applyErrorFilters(allGroups, filters),
+    sort,
+    groupSortValue,
+  );
   const pending = groupsQuery.isPending;
 
   const addFilter = (f: ErrorFilter) => setFilters((fs) => [...fs, f]);
@@ -127,9 +158,22 @@ export function ErrorsView({ state, update }: Props) {
                   <th>Message</th>
                   <th>Service</th>
                   <th>Source</th>
-                  <th>Count</th>
+                  <th>Handled</th>
+                  <SortTh
+                    label="Count"
+                    sortKey="count"
+                    sort={sort}
+                    toggle={toggle}
+                    numeric
+                  />
                   <th>First seen</th>
-                  <th>Last seen</th>
+                  <SortTh
+                    label="Last seen"
+                    sortKey="last"
+                    sort={sort}
+                    toggle={toggle}
+                    firstDir="desc"
+                  />
                 </tr>
               </thead>
               <tbody>
@@ -159,6 +203,11 @@ export function ErrorsView({ state, update }: Props) {
                           {g.source}
                         </span>
                       </td>
+                      <td>
+                        {g.escaped != null
+                          ? errorFacetValueLabel("escaped", g.escaped)
+                          : "—"}
+                      </td>
                       <td>{g.count}</td>
                       <td>{formatTimestamp(nanosToMs(g.firstNs))}</td>
                       <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
@@ -185,6 +234,13 @@ export function ErrorsView({ state, update }: Props) {
                   individual occurrences — click one to view its stacktrace
                 </span>
               </div>
+              {volumeQuery.data && (
+                <ErrorSparkline
+                  series={volumeQuery.data}
+                  rangeMs={range}
+                  stepMs={stepMs}
+                />
+              )}
               {occurrencesQuery.isPending && (
                 <div className="traces-note">Loading…</div>
               )}

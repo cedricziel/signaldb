@@ -14,6 +14,7 @@
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
+import type { VolumeSeries } from "../features/explore/SignalHistogram";
 
 export type ErrorSource = "traces" | "logs";
 
@@ -22,6 +23,10 @@ export interface ErrorGroup {
   exceptionType: string | null;
   exceptionMessage: string | null;
   serviceName: string | null;
+  /** `exception.escaped`: "true" when the exception escaped the scope it
+   * was recorded in (uncaught/unhandled), "false" when it did not
+   * (caught), `null` when the record carries no such attribute. */
+  escaped: string | null;
   count: number;
   firstNs: string;
   lastNs: string;
@@ -51,6 +56,7 @@ const GROUP_DIMENSIONS = [
   "exception.type",
   "exception.message",
   "service.name",
+  "exception.escaped",
 ];
 
 function rangeDoc(range: ResolvedRange) {
@@ -93,9 +99,10 @@ export function buildErrorGroupDoc(
 }
 
 /**
- * Decode a `table` envelope of `[type, message, service, count, first, last]`
- * rows, positionally — the server answers with physical column names, so a
- * lookup by the logical names sent would silently miss.
+ * Decode a `table` envelope of
+ * `[type, message, service, escaped, count, first, last]` rows, positionally
+ * — the server answers with physical column names, so a lookup by the
+ * logical names sent would silently miss.
  */
 function groupsFromResponse(
   res: QueryIrResponse,
@@ -112,9 +119,10 @@ function groupsFromResponse(
       exceptionType: str(cells[0]),
       exceptionMessage: str(cells[1]),
       serviceName: str(cells[2]),
-      count: num(cells[3]),
-      firstNs: ns(cells[4]),
-      lastNs: ns(cells[5]),
+      escaped: str(cells[3]),
+      count: num(cells[4]),
+      firstNs: ns(cells[5]),
+      lastNs: ns(cells[6]),
     };
   });
 }
@@ -158,6 +166,11 @@ function pinnedWhere(group: ErrorGroup): Record<string, unknown>[] {
   if (group.serviceName != null) {
     pins.push({
       where: { field: "service.name", op: "eq", value: group.serviceName },
+    });
+  }
+  if (group.escaped != null) {
+    pins.push({
+      where: { field: "exception.escaped", op: "eq", value: group.escaped },
     });
   }
   return pins;
@@ -212,4 +225,55 @@ export async function fetchErrorOccurrences(
 ): Promise<ErrorOccurrence[]> {
   const res = await runIrQuery(buildErrorOccurrencesDoc(group, range));
   return occurrencesFromResponse(res);
+}
+
+/**
+ * The IR document for a group's own step-bucketed occurrence count — the
+ * "count over time" chart error-tracking issue views commonly show above
+ * the sample list. `by` regroups on the already-pinned exception.type only
+ * to guarantee a single named series; the pins already scope it to the
+ * exact group.
+ */
+export function buildErrorGroupVolumeDoc(
+  group: ErrorGroup,
+  range: ResolvedRange,
+  step: string,
+): QueryIrRequest {
+  return {
+    irVersion: 1,
+    from: group.source,
+    range: rangeDoc(range),
+    result: "series",
+    pipeline: [
+      ...pinnedWhere(group),
+      {
+        aggregate: {
+          by: ["exception.type"],
+          aggs: [{ fn: "count", as: "n" }],
+          step,
+        },
+      },
+    ],
+  };
+}
+
+function volumeFromResponse(res: QueryIrResponse): VolumeSeries[] {
+  return (res.series ?? []).map((s, i) => ({
+    key: `s${i}`,
+    points: s.points.flatMap((p): [number, number][] => {
+      const [tNs, value] = p as [unknown, unknown];
+      if (typeof tNs !== "number" || typeof value !== "number") return [];
+      return [[Math.round(tNs / 1e6), value]];
+    }),
+  }));
+}
+
+/** A group's own occurrence count over time, one point per step bucket. */
+export async function fetchErrorGroupVolume(
+  group: ErrorGroup,
+  range: ResolvedRange,
+  step: string,
+): Promise<VolumeSeries[]> {
+  const res = await runIrQuery(buildErrorGroupVolumeDoc(group, range, step));
+  return volumeFromResponse(res);
 }

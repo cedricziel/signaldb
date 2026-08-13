@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE } from "../../lib/urlState";
@@ -13,11 +13,13 @@ vi.mock("../../api/errors", async (importOriginal) => {
     ...actual,
     fetchErrorGroups: vi.fn(),
     fetchErrorOccurrences: vi.fn(),
+    fetchErrorGroupVolume: vi.fn(),
   };
 });
 
 const fetchErrorGroups = vi.mocked(errorsApi.fetchErrorGroups);
 const fetchErrorOccurrences = vi.mocked(errorsApi.fetchErrorOccurrences);
+const fetchErrorGroupVolume = vi.mocked(errorsApi.fetchErrorGroupVolume);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -26,8 +28,10 @@ afterEach(() => {
 beforeEach(() => {
   fetchErrorGroups.mockReset();
   fetchErrorOccurrences.mockReset();
+  fetchErrorGroupVolume.mockReset();
   fetchErrorGroups.mockResolvedValue({ groups: [], truncated: false });
   fetchErrorOccurrences.mockResolvedValue([]);
+  fetchErrorGroupVolume.mockResolvedValue([]);
 });
 
 function group(overrides: Partial<ErrorGroup> = {}): ErrorGroup {
@@ -36,6 +40,7 @@ function group(overrides: Partial<ErrorGroup> = {}): ErrorGroup {
     exceptionType: "std::io::Error",
     exceptionMessage: "boom",
     serviceName: "signaldb",
+    escaped: null,
     count: 3,
     firstNs: "1700000000000000000",
     lastNs: "1700000100000000000",
@@ -189,5 +194,67 @@ describe("ErrorsView", () => {
     expect(
       screen.getByRole("button", { name: /Remove filter source = logs/ }),
     ).toBeInTheDocument();
+  });
+
+  it("shows Handled/Unhandled/— per group's exception.escaped", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [
+        group({ exceptionType: "A", escaped: "true" }),
+        group({ exceptionType: "B", escaped: "false" }),
+        group({ exceptionType: "C", escaped: null }),
+      ],
+      truncated: false,
+    });
+    renderView();
+    await screen.findByText("A");
+    expect(screen.getByText("Unhandled")).toBeInTheDocument();
+    // "Handled" also names the column header, so scope to a data row's cell.
+    const cRow = screen.getByText("C").closest("tr")!;
+    expect(within(cRow).getByText("—")).toBeInTheDocument();
+    const bRow = screen.getByText("B").closest("tr")!;
+    expect(within(bRow).getByText("Handled")).toBeInTheDocument();
+  });
+
+  it("sorts by last-seen when the Last seen header is clicked", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [
+        group({ exceptionType: "Older", count: 9, lastNs: "1000" }),
+        group({ exceptionType: "Newer", count: 1, lastNs: "2000" }),
+      ],
+      truncated: false,
+    });
+    renderView();
+    const user = userEvent.setup();
+    await screen.findByText("Older");
+
+    // Default sort is by count: "Older" (9) before "Newer" (1).
+    let rows = screen.getAllByRole("row").slice(1); // drop header row
+    expect(rows[0]).toHaveTextContent("Older");
+
+    await user.click(screen.getByRole("button", { name: "Last seen" }));
+
+    rows = screen.getAllByRole("row").slice(1);
+    expect(rows[0]).toHaveTextContent("Newer");
+  });
+
+  it("shows a count-over-time sparkline for the selected group", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group()],
+      truncated: false,
+    });
+    fetchErrorGroupVolume.mockResolvedValue([
+      { key: "s0", points: [[1_700_000_000_000, 3]] },
+    ]);
+    renderView();
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("std::io::Error"));
+    expect(
+      await screen.findByRole("img", { name: /Occurrences over time/ }),
+    ).toBeInTheDocument();
+    expect(fetchErrorGroupVolume).toHaveBeenCalledWith(
+      group(),
+      expect.anything(),
+      expect.any(String),
+    );
   });
 });

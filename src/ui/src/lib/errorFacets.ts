@@ -6,7 +6,8 @@
 // extra query.
 import type { ErrorGroup, ErrorSource } from "../api/errors";
 
-export type ErrorFacetField = "exceptionType" | "serviceName" | "source";
+export type ErrorFacetField =
+  "exceptionType" | "serviceName" | "source" | "escaped";
 
 export interface ErrorFilter {
   field: ErrorFacetField;
@@ -22,16 +23,33 @@ export const ERROR_FACET_FIELDS: ErrorFacetField[] = [
   "exceptionType",
   "serviceName",
   "source",
+  "escaped",
 ];
 
 const LABELS: Record<ErrorFacetField, string> = {
   exceptionType: "Type",
   serviceName: "Service",
   source: "Source",
+  escaped: "Handled",
 };
 
 export function errorFacetLabel(field: ErrorFacetField): string {
   return LABELS[field];
+}
+
+/**
+ * `exception.escaped` per OTel semconv: "true" means it escaped the scope
+ * it was recorded in — i.e. it was *not* handled there — "false" means it
+ * was caught. Displayed the way error-tracking tools commonly label
+ * handled-vs-unhandled facets; the underlying filter value stays the raw
+ * "true"/"false" string.
+ */
+export function errorFacetValueLabel(
+  field: ErrorFacetField,
+  value: string,
+): string {
+  if (field === "escaped") return value === "true" ? "Unhandled" : "Handled";
+  return value;
 }
 
 function fieldValue(group: ErrorGroup, field: ErrorFacetField): string | null {
