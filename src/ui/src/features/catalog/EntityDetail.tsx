@@ -7,6 +7,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchCatalogEntities, type EntityPin } from "../../api/catalog";
 import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
+import { DependencyBreakdown } from "./DependencyBreakdown";
 import {
   formatTimestamp,
   nanosToMs,
@@ -246,6 +247,23 @@ export function EntityDetail({ state, update }: Props) {
           rangeSeconds={rangeSeconds}
           pinned={currentPinned}
         />
+      )}
+
+      {entity.id === "service" && !atSecondary && primaryValues[0] && (
+        <div className="catalog-main">
+          <div className="catalog-headline">
+            <span className="catalog-title">Time by dependency</span>
+            <span className="catalog-sub">
+              discovered from db.system.name, http.request.method, rpc.system,
+              messaging.system
+            </span>
+          </div>
+          <DependencyBreakdown
+            serviceName={primaryValues[0]}
+            range={range}
+            rangeKey={rangeKey}
+          />
+        </div>
       )}
 
       <div className="catalog-headline">

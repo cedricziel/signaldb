@@ -7,6 +7,7 @@ import { renderWithClient } from "../../test/render";
 import { EntityDetail } from "./EntityDetail";
 import * as catalogApi from "../../api/catalog";
 import * as membersApi from "../../api/traceGroupMembers";
+import * as dependencyBreakdownApi from "../../api/dependencyBreakdown";
 import type { TraceGroup } from "../../api/traceGroups";
 import type { TraceGroupMember } from "../../api/traceGroupMembers";
 
@@ -19,9 +20,17 @@ vi.mock("../../api/traceGroupMembers", async (importOriginal) => {
     await importOriginal<typeof import("../../api/traceGroupMembers")>();
   return { ...actual, fetchTraceGroupMembers: vi.fn() };
 });
+vi.mock("../../api/dependencyBreakdown", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/dependencyBreakdown")>();
+  return { ...actual, fetchDependencyBreakdown: vi.fn() };
+});
 
 const fetchCatalogEntities = vi.mocked(catalogApi.fetchCatalogEntities);
 const fetchTraceGroupMembers = vi.mocked(membersApi.fetchTraceGroupMembers);
+const fetchDependencyBreakdown = vi.mocked(
+  dependencyBreakdownApi.fetchDependencyBreakdown,
+);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -30,8 +39,10 @@ afterEach(() => {
 beforeEach(() => {
   fetchCatalogEntities.mockReset();
   fetchTraceGroupMembers.mockReset();
+  fetchDependencyBreakdown.mockReset();
   fetchCatalogEntities.mockResolvedValue({ groups: [], truncated: false });
   fetchTraceGroupMembers.mockResolvedValue([]);
+  fetchDependencyBreakdown.mockResolvedValue([]);
 });
 
 function group(
@@ -219,5 +230,65 @@ describe("EntityDetail", () => {
     const user = userEvent.setup();
     await user.click(cell);
     expect(update).not.toHaveBeenCalled();
+  });
+
+  describe("dependency-type breakdown", () => {
+    it("shows a proportional bar and legend for a service's own page", async () => {
+      fetchDependencyBreakdown.mockResolvedValue([
+        { key: "database", label: "Database", durationNs: 300, count: 3 },
+        { key: "http", label: "HTTP", durationNs: 100, count: 1 },
+      ]);
+      renderView(); // default state: catalogEntity "service", primary "gateway · edge"
+
+      expect(screen.getByText("Time by dependency")).toBeInTheDocument();
+      // The section headline renders immediately; its content is a
+      // separate async query, so wait for that to settle too.
+      expect(await screen.findByText("Database")).toBeInTheDocument();
+      expect(screen.getByText(/75\.0%/)).toBeInTheDocument();
+      expect(screen.getByText("HTTP")).toBeInTheDocument();
+      expect(screen.getByText(/25\.0%/)).toBeInTheDocument();
+      expect(fetchDependencyBreakdown).toHaveBeenCalledWith(
+        "gateway",
+        expect.anything(),
+      );
+    });
+
+    it("shows an empty note rather than an empty bar when there's no dependency traffic", async () => {
+      fetchDependencyBreakdown.mockResolvedValue([]);
+      renderView();
+
+      expect(
+        await screen.findByText(/No database, HTTP, RPC, or messaging calls/),
+      ).toBeInTheDocument();
+    });
+
+    it("is not shown for non-service entity types", async () => {
+      renderView({
+        catalogEntity: "database",
+        catalogPrimary: compositeKey(["prod", "postgres"]),
+      });
+
+      await screen.findByText("Recent matching spans");
+      expect(screen.queryByText("Time by dependency")).not.toBeInTheDocument();
+      expect(fetchDependencyBreakdown).not.toHaveBeenCalled();
+    });
+
+    it("is hidden at the breakdown drill-in depth", async () => {
+      fetchCatalogEntities.mockImplementation(async (entityType) => {
+        if (entityType.identity[0] === "span.name") {
+          return {
+            groups: [
+              group(["GET /health"], 400, 0, 5, 9, "1700000000000000000"),
+            ],
+            truncated: false,
+          };
+        }
+        return { groups: [], truncated: false };
+      });
+      renderView({ catalogSecondary: "GET /health" });
+
+      await screen.findByText("Recent matching spans");
+      expect(screen.queryByText("Time by dependency")).not.toBeInTheDocument();
+    });
   });
 });

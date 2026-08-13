@@ -117,3 +117,83 @@
 .entity-kpis dd.err-rate {
   color: var(--err);
 }
+
+/* ---------- dependency-type breakdown ---------- */
+
+.dep-bar {
+  display: flex;
+  height: 20px;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.dep-seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.dep-seg:not(:last-child) {
+  border-right: 1px solid var(--surface);
+}
+
+.dep-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 12px 0 0;
+}
+
+.dep-legend-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.dep-legend-item dd {
+  margin: 0;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.dep-swatch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dep-swatch::before {
+  content: "";
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.dep-database,
+.dep-swatch.dep-database::before {
+  background: var(--svc-a);
+}
+
+.dep-http,
+.dep-swatch.dep-http::before {
+  background: var(--svc-b);
+}
+
+.dep-rpc,
+.dep-swatch.dep-rpc::before {
+  background: var(--svc-c);
+}
+
+.dep-messaging,
+.dep-swatch.dep-messaging::before {
+  background: var(--svc-d);
+}
+
+.dep-other,
+.dep-swatch.dep-other::before {
+  background: var(--faint);
+}
