@@ -21,14 +21,14 @@
 //! behind an internal gate.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use common::catalog_manager::{CatalogManager, ResolvedTenant};
 use tokio::sync::Mutex;
 use tracing::Instrument;
 
-use crate::executor::CompactionExecutor;
+use crate::executor::{CompactionExecutor, CompactionStatus};
 use crate::lease::LeaseManager;
 use crate::metrics::CompactionMetrics;
 use crate::orphan::{OrphanCleaner, OrphanCleanupConfig, OrphanDetector};
@@ -139,7 +139,7 @@ impl CompactionCycle {
         let deferred_before = self.metrics.deferred_open_partition_files();
         let unclassifiable_before = self.metrics.unclassifiable_files();
 
-        let candidates = match self.scheduler.schedule().await {
+        let candidates = match self.scheduler.schedule(Instant::now()).await {
             Ok(candidates) => candidates,
             Err(e) => {
                 tracing::error!("Compaction scheduling cycle failed: {e:?}");
@@ -207,6 +207,10 @@ impl CompactionCycle {
                     // Keep the lease alive for jobs longer than the TTL.
                     let renewal = self.lease_manager.spawn_renewal(lease.clone());
 
+                    // `execute_candidate` consumes the candidate, but the
+                    // outcome has to be attributed back to its partition.
+                    let outcome_key = candidate.clone();
+
                     match self.executor.execute_candidate(candidate).await {
                         Ok(result) => {
                             tracing::info!(
@@ -228,9 +232,25 @@ impl CompactionCycle {
                                     result.duration
                                 );
                             }
+
+                            match result.status {
+                                CompactionStatus::Success => {
+                                    self.scheduler.record_success(&outcome_key)
+                                }
+                                // A conflict means another actor committed
+                                // first. That is contention to retry, not a
+                                // partition that cannot succeed — cooling it
+                                // down would suppress the very retry the
+                                // conflict path exists to perform.
+                                CompactionStatus::Conflict => {}
+                                CompactionStatus::Failed => {
+                                    self.scheduler.record_failure(&outcome_key, Instant::now())
+                                }
+                            }
                         }
                         Err(e) => {
                             tracing::error!("Failed to execute compaction: {e:?}");
+                            self.scheduler.record_failure(&outcome_key, Instant::now());
                         }
                     }
 

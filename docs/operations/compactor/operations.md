@@ -393,6 +393,34 @@ never expired — investigate the table's manifests.
 increase(compactor_unclassifiable_files_total[24h])
 ```
 
+#### Compaction Backoff
+
+**Partitions Skipped While Cooling Down:**
+
+When a compaction job fails, the scheduler suppresses that partition for 15
+minutes, doubling on each consecutive failure up to a 6-hour ceiling. A
+success clears the suppression and resets the escalation. Commit conflicts are
+not failures for this purpose — they mean another actor committed first and the
+job should be retried, not backed off.
+
+The counter increments once per partition per cycle that is withheld, so it
+climbs steadily while a partition is stuck rather than reporting a single
+event.
+
+```promql
+# Steady growth means some partition cannot be compacted at all
+increase(compactor_cooldown_partitions_skipped_total[1h])
+```
+
+A non-zero value is not itself an error: it is the compactor declining to spend
+capacity on work that just failed. A value that never returns to zero means a
+partition is permanently stuck — find it in the logs, which name the tenant,
+dataset, table, partition, and consecutive failure count at each skip:
+
+```bash
+journalctl -u signaldb-compactor | grep "cooling down"
+```
+
 #### Orphan Cleanup
 
 **Storage Reclaimed:**

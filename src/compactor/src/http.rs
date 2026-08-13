@@ -137,6 +137,11 @@ impl ObservabilityState {
             "Partitions the planner declined because their eligible input bytes exceed max_partition_input_mb; these stay uncompacted until the cap is raised",
             s.compaction.oversized_partitions_skipped() as u64,
         );
+        counter(
+            "compactor_cooldown_partitions_skipped_total",
+            "Partitions the scheduler withheld because a recent compaction failure put them in a backoff window; a climbing value means some partition cannot be compacted at all",
+            s.compaction.cooldown_partitions_skipped() as u64,
+        );
 
         // Retention enforcement
         counter(
@@ -266,6 +271,7 @@ impl ObservabilityState {
                 "retries_attempted": compaction.retries_attempted,
                 "stale_leases_expired": compaction.stale_leases_expired,
                 "oversized_partitions_skipped": s.compaction.oversized_partitions_skipped(),
+                "cooldown_partitions_skipped": s.compaction.cooldown_partitions_skipped(),
                 "input_files": compaction.total_input_files,
                 "output_files": compaction.total_output_files,
                 "bytes_before": compaction.bytes_before_compaction,

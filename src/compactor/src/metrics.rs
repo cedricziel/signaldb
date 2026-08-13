@@ -27,6 +27,7 @@ struct MetricsInner {
     deferred_open_partitions: AtomicUsize,
     unclassifiable_files: AtomicUsize,
     oversized_partitions_skipped: AtomicUsize,
+    cooldown_partitions_skipped: AtomicUsize,
     stale_leases_expired: AtomicU64,
 }
 
@@ -54,6 +55,7 @@ impl CompactionMetrics {
                 deferred_open_partitions: AtomicUsize::new(0),
                 unclassifiable_files: AtomicUsize::new(0),
                 oversized_partitions_skipped: AtomicUsize::new(0),
+                cooldown_partitions_skipped: AtomicUsize::new(0),
                 stale_leases_expired: AtomicU64::new(0),
             }),
         }
@@ -106,6 +108,25 @@ impl CompactionMetrics {
     pub fn oversized_partitions_skipped(&self) -> usize {
         self.inner
             .oversized_partitions_skipped
+            .load(Ordering::Relaxed)
+    }
+
+    /// Record a partition the scheduler withheld because its compaction
+    /// recently failed and it is still inside its cooldown window.
+    ///
+    /// Unlike a conflict, this is capacity deliberately not spent. A steadily
+    /// climbing value means some partition cannot be compacted at all and is
+    /// being backed off rather than retried every tick (#1053).
+    pub fn record_cooldown_partition_skipped(&self) {
+        self.inner
+            .cooldown_partitions_skipped
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Partitions skipped because they are cooling down after a failure.
+    pub fn cooldown_partitions_skipped(&self) -> usize {
+        self.inner
+            .cooldown_partitions_skipped
             .load(Ordering::Relaxed)
     }
 
@@ -282,6 +303,9 @@ impl CompactionMetrics {
             .deferred_open_partitions
             .store(0, Ordering::Relaxed);
         self.inner.unclassifiable_files.store(0, Ordering::Relaxed);
+        self.inner
+            .cooldown_partitions_skipped
+            .store(0, Ordering::Relaxed);
     }
 }
 

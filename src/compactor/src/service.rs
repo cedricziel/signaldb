@@ -224,7 +224,10 @@ impl CompactorService {
             planner.clone(),
             config.compactor.max_candidates_per_cycle,
             config.compactor.max_per_tenant,
-        );
+        )
+        // Partitions withheld by a failure cooldown are capacity deliberately
+        // not spent, so they belong in the same metrics as the work done.
+        .with_metrics(compaction_metrics.clone());
 
         tracing::info!(
             "Round-robin scheduler initialized (max_per_cycle: {}, max_per_tenant: {})",
