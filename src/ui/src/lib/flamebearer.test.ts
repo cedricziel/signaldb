@@ -12,6 +12,7 @@ import {
   OTHER_FRAME_NAME,
   placeFrames,
   rootView,
+  simplifyFrameName,
   topFunctionsBySelf,
 } from "./flamebearer";
 
@@ -228,5 +229,78 @@ describe("colorBucket", () => {
     );
     expect(colorBucket("anything", 5)).toBeLessThan(5);
     expect(colorBucket("anything", 5)).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("simplifyFrameName", () => {
+  it("leaves short, already-plain names alone", () => {
+    expect(simplifyFrameName("total")).toBe("total");
+    expect(simplifyFrameName("syscall")).toBe("syscall");
+    expect(simplifyFrameName("malloc")).toBe("malloc");
+    expect(simplifyFrameName("__rjem_je_arena_ptr_array_flush")).toBe(
+      "__rjem_je_arena_ptr_array_flush",
+    );
+  });
+
+  it("keeps the last two segments of a plain module path", () => {
+    expect(simplifyFrameName("datafusion::physical_plan::execute")).toBe(
+      "physical_plan::execute",
+    );
+  });
+
+  it("reduces a <Type as Trait>::method::<Args> call to Type::method", () => {
+    expect(
+      simplifyFrameName(
+        "<std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&uuid::Uuid>",
+      ),
+    ).toBe("RandomState::hash_one");
+  });
+
+  it("reduces a <Type<Generic>>::method call to Type::method", () => {
+    expect(
+      simplifyFrameName(
+        "<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write",
+      ),
+    ).toBe("Hasher::write");
+  });
+
+  it("drops closure/vtable-shim noise", () => {
+    expect(
+      simplifyFrameName(
+        "<common::wal::Wal>::mark_processed_many::{closure#0}::{closure#0}",
+      ),
+    ).toBe("Wal::mark_processed_many");
+  });
+
+  it("handles a deeply nested generic receiver with a tuple type parameter", () => {
+    expect(
+      simplifyFrameName(
+        "<hashbrown::raw::RawTable<(uuid::Uuid, ())>>::remove_entry::<hashbrown::map::equivalent_key<uuid::Uuid, uuid::Uuid, ()>>::{closure#0}",
+      ),
+    ).toBe("RawTable::remove_entry");
+  });
+
+  it("handles a chained iterator-adapter type as the receiver", () => {
+    expect(
+      simplifyFrameName(
+        "<core::iter::adapters::cloned::Cloned<core::iter::adapters::filter::Filter<core::slice::iter::Iter<common::wal::WalEntry>, <common::wal::Wal>::get_unprocessed_entries::{closure#0}::{closure#0}>> as core::iter::traits::iterator::Iterator>::next",
+      ),
+    ).toBe("Cloned::next");
+  });
+
+  it("stays reasonable on a FnOnce::call_once shim, the gnarliest real case", () => {
+    const result = simplifyFrameName(
+      "<std::thread::lifecycle::spawn_unchecked<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}",
+    );
+    // Not pretty, but short and recognizable — the point is it's no longer
+    // a 150-character string that swallows the whole bar.
+    expect(result.length).toBeLessThan(30);
+    expect(result).toContain("spawn_thread");
+  });
+
+  it("is idempotent — simplifying an already-simple name is a no-op", () => {
+    expect(simplifyFrameName("RandomState::hash_one")).toBe(
+      "RandomState::hash_one",
+    );
   });
 });

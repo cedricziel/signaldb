@@ -276,3 +276,122 @@ export function colorBucket(name: string, buckets: number): number {
   }
   return Math.abs(hash) % buckets;
 }
+
+/** Index of a top-level (bracket-depth-0) " as " in `s`, or -1. Used to
+ * split `<Type as Trait>` without getting confused by generics that
+ * themselves contain " as " (they can't in Rust, but nested `<...>` must
+ * still not shift what "top-level" means). */
+function topLevelAsIndex(s: string): number {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "<") depth++;
+    else if (c === ">") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && s.startsWith(" as ", i)) return i;
+  }
+  return -1;
+}
+
+/** Index one past the `<...>` block opening at `s[openIdx]`, or -1 if
+ * unbalanced. */
+function matchingAngleClose(s: string, openIdx: number): number {
+  let depth = 0;
+  for (let i = openIdx; i < s.length; i++) {
+    if (s[i] === "<") depth++;
+    else if (s[i] === ">") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Drop every top-level `<...>` block (turbofish / generic parameter
+ * lists) from `s`, wherever it occurs. */
+function stripGenerics(s: string): string {
+  let out = "";
+  let depth = 0;
+  for (const c of s) {
+    if (c === "<") {
+      depth++;
+      continue;
+    }
+    if (c === ">") {
+      if (depth > 0) depth--;
+      continue;
+    }
+    if (depth === 0) out += c;
+  }
+  return out;
+}
+
+/** Drop `::{closure#N}`, `::{shim:vtable#N}`, and similar `::{...}`
+ * compiler-generated segments. */
+function stripCompilerNoise(s: string): string {
+  return s.replace(/::\{[^{}]*\}/g, "").replace(/,?\s*\(\)/g, "");
+}
+
+function lastPathSegment(path: string): string {
+  const parts = path
+    .split("::")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return parts[parts.length - 1] ?? path.trim();
+}
+
+/** Last one or two `::`-separated segments — two when there's a natural
+ * "container::member" pair to preserve (so an already-short `Type::method`
+ * name round-trips unchanged instead of losing its receiver), one for a
+ * single bare name. */
+function lastOneOrTwoSegments(path: string): string {
+  const parts = path
+    .split("::")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return path.trim();
+  return parts.slice(-2).join("::");
+}
+
+/**
+ * Shorten a mangled/demangled symbol for on-bar display: a Rust name for a
+ * monomorphized generic method (`<Type as Trait>::method::<Args>`) can run
+ * to hundreds of characters, and — worse — the useful, distinguishing part
+ * (the trailing generics) is exactly what a right-edge ellipsis cuts off
+ * first, leaving unrelated frames looking identical once truncated.
+ *
+ * This keeps roughly `ReceiverType::method`, dropping the `as Trait`
+ * qualifier, nested generic parameter lists, and closure/vtable-shim
+ * noise. It's a heuristic: two distinct symbols can collapse to the same
+ * short label. That's an acceptable trade — the full name is always still
+ * available (hover, the detail panel, the top-functions table), this is
+ * display-only.
+ */
+export function simplifyFrameName(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return trimmed;
+
+  let receiver = "";
+  let rest = trimmed;
+
+  if (trimmed.startsWith("<")) {
+    const close = matchingAngleClose(trimmed, 0);
+    if (close !== -1) {
+      const inner = trimmed.slice(1, close);
+      const asIdx = topLevelAsIndex(inner);
+      const typeExpr = asIdx === -1 ? inner : inner.slice(0, asIdx);
+      receiver = lastPathSegment(stripCompilerNoise(stripGenerics(typeExpr)));
+      rest = trimmed.slice(close + 1);
+    }
+  }
+
+  rest = stripCompilerNoise(stripGenerics(rest)).replace(/^::+/, "");
+  // When there's already a receiver from a leading <Type as Trait> block,
+  // `rest` is just the method name; otherwise `rest` is the whole
+  // remaining path and gets to keep one segment of its own context.
+  const method = receiver ? lastPathSegment(rest) : lastOneOrTwoSegments(rest);
+
+  if (receiver && method) return `${receiver}::${method}`;
+  if (receiver) return receiver;
+  if (method) return method;
+  return trimmed;
+}

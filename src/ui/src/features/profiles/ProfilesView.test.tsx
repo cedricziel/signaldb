@@ -77,9 +77,13 @@ describe("ProfilesView", () => {
       screen.getByRole("option", { name: "cpu · nanoseconds" }),
     ).toBeInTheDocument();
 
-    // Flame frames render with their names.
-    expect(await screen.findByText("main")).toBeInTheDocument();
-    expect(screen.getByText("work")).toBeInTheDocument();
+    // Flame frames render with their names (accessible name — the visible
+    // label may be simplified, and the name also appears in the hover
+    // tooltip, so a plain text query would be ambiguous).
+    expect(
+      await screen.findByRole("button", { name: "main" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "work" })).toBeInTheDocument();
   });
 
   it("submits a where-pipeline scoped to the selected service and sample type", async () => {
@@ -94,7 +98,7 @@ describe("ProfilesView", () => {
         update={vi.fn()}
       />,
     );
-    await screen.findByText("main");
+    await screen.findByRole("button", { name: "main" });
 
     const irCall = fetchMock.mock.calls.find((c) =>
       String((c[0] as Request).url).includes("/api/v1/query"),
@@ -166,7 +170,7 @@ describe("ProfilesView", () => {
     ]);
 
     renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
-    await screen.findByText("work");
+    await screen.findByRole("button", { name: "work" });
 
     await userEvent.type(screen.getByLabelText("Highlight frames"), "work");
 
@@ -318,7 +322,7 @@ describe("ProfilesView", () => {
         update={vi.fn()}
       />,
     );
-    await screen.findByText("main");
+    await screen.findByRole("button", { name: "main" });
 
     const irCall = fetchMock.mock.calls.find((c) =>
       String((c[0] as Request).url).includes("/api/v1/query"),
@@ -361,7 +365,7 @@ describe("ProfilesView", () => {
     const update = vi.fn();
 
     renderWithClient(<ProfilesView state={state()} update={update} />);
-    await screen.findByText("main");
+    await screen.findByRole("button", { name: "main" });
 
     await userEvent.click(screen.getByRole("checkbox", { name: "Compare" }));
     expect(update).toHaveBeenCalledWith({ profileCompare: true });
@@ -376,7 +380,9 @@ describe("ProfilesView", () => {
     );
 
     expect(await screen.findByText("abc123")).toBeInTheDocument();
-    expect(await screen.findByText("work")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "work" }),
+    ).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /profiles/ }));
     expect(update).toHaveBeenCalledWith({ profileId: "" });
@@ -456,14 +462,18 @@ describe("ProfilesView", () => {
       ]);
 
       renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
-      await screen.findByText("work");
+      await screen.findByRole("button", { name: "work" });
 
       await userEvent.click(screen.getByRole("tab", { name: "Top functions" }));
 
       const rows = await screen.findAllByRole("row");
       // rows[0] is the header; work (self 80) outranks main (self 20).
-      expect(within(rows[1]!).getByText("work")).toBeInTheDocument();
-      expect(within(rows[2]!).getByText("main")).toBeInTheDocument();
+      expect(
+        within(rows[1]!).getByRole("button", { name: "work" }),
+      ).toBeInTheDocument();
+      expect(
+        within(rows[2]!).getByRole("button", { name: "main" }),
+      ).toBeInTheDocument();
     });
 
     it("clicking a function row highlights it back on the flame graph", async () => {
@@ -473,7 +483,7 @@ describe("ProfilesView", () => {
       ]);
 
       renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
-      await screen.findByText("work");
+      await screen.findByRole("button", { name: "work" });
       await userEvent.click(screen.getByRole("tab", { name: "Top functions" }));
 
       await userEvent.click(screen.getByRole("button", { name: "work" }));
@@ -486,6 +496,46 @@ describe("ProfilesView", () => {
       );
       expect(screen.getByLabelText("Highlight frames")).toHaveValue("work");
       expect(screen.getByRole("button", { name: /main/ })).toHaveClass("dim");
+    });
+  });
+
+  describe("long Rust symbol names", () => {
+    const LONG_NAME =
+      "<std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&uuid::Uuid>";
+    const LONG_NAME_PROFILE = flamegraphBody({
+      names: ["total", LONG_NAME],
+      levels: [
+        [0, 100, 0, 0],
+        [0, 100, 100, 1],
+      ],
+      total: 100,
+      max_self: 100,
+    });
+
+    it("shows a simplified label on the bar but the full name in the tooltip and accessible name", async () => {
+      stubFetchRoutes([
+        ...DISCOVERY_ROUTES,
+        { match: "/api/v1/query", body: LONG_NAME_PROFILE },
+      ]);
+
+      renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
+
+      // Accessible name (used for hit-testing/screen readers) is the real,
+      // untruncated symbol — findable even though the label is shortened.
+      const bar = await screen.findByRole("button", { name: LONG_NAME });
+      expect(bar).toHaveTextContent("RandomState::hash_one");
+      expect(bar).not.toHaveTextContent(LONG_NAME);
+
+      // The hover tooltip (always in the DOM, CSS-shown, not depending on
+      // an actual pointer hover in jsdom) carries the full name plus
+      // self/total — unsimplified, unlike the bar's own label. There are
+      // two tooltips (root + this frame); find this one by content.
+      const tooltip = screen
+        .getAllByRole("tooltip")
+        .find((t) => t.textContent?.includes("RandomState"));
+      expect(tooltip).toBeDefined();
+      expect(tooltip).toHaveTextContent(LONG_NAME);
+      expect(tooltip).toHaveTextContent(/self.*100\.0%/);
     });
   });
 });

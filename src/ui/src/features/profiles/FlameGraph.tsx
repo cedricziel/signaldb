@@ -13,6 +13,7 @@ import {
   frameView,
   OTHER_FRAME_NAME,
   placeFrames,
+  simplifyFrameName,
   topFunctionsBySelf,
 } from "../../lib/flamebearer";
 import { type SortValue, SortTh, sortRows, useSort } from "../../lib/sortTable";
@@ -221,27 +222,39 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
                       needle !== "" &&
                       !frame.name.toLowerCase().includes(needle);
                     return (
-                      <button
+                      <div
                         key={`${frame.level}-${frame.x}`}
-                        type="button"
-                        className={`flame-frame${dim ? " dim" : ""}${isOther ? " other" : ""}`}
-                        style={
-                          isOther
-                            ? { left: `${leftPct}%`, width: `${widthPct}%` }
-                            : {
-                                left: `${leftPct}%`,
-                                width: `${widthPct}%`,
-                                background: `var(${color}-soft, var(${color}))`,
-                                borderColor: `var(${color})`,
-                              }
-                        }
-                        title={`${frame.name} — ${formatTicks(frame.total, unit)} (${formatPct(frame.total, totalTicks)})`}
-                        onMouseEnter={() => setHovered(frame)}
-                        onFocus={() => setHovered(frame)}
-                        onClick={() => zoomTo(frame)}
+                        className="flame-frame-wrap"
+                        style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
                       >
-                        <span className="flame-label">{frame.name}</span>
-                      </button>
+                        <button
+                          type="button"
+                          className={`flame-frame${dim ? " dim" : ""}${isOther ? " other" : ""}`}
+                          style={
+                            isOther
+                              ? undefined
+                              : {
+                                  background: `var(${color}-soft, var(${color}))`,
+                                  borderColor: `var(${color})`,
+                                }
+                          }
+                          aria-label={frame.name}
+                          onMouseEnter={() => setHovered(frame)}
+                          onFocus={() => setHovered(frame)}
+                          onClick={() => zoomTo(frame)}
+                        >
+                          <span className="flame-label">
+                            {simplifyFrameName(frame.name)}
+                          </span>
+                        </button>
+                        <FrameTooltip
+                          name={frame.name}
+                          self={frame.self}
+                          total={frame.total}
+                          unit={unit}
+                          totalTicks={totalTicks}
+                        />
+                      </div>
                     );
                   })}
                 </div>
@@ -294,9 +307,16 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
               {topRows.map((f) => (
                 <tr key={f.name} onClick={() => selectFunction(f.name)}>
                   <td>
-                    <button className="flame-top-open" title={f.name}>
-                      {f.name}
-                    </button>
+                    <span className="flame-top-name-wrap">
+                      <button className="flame-top-open">{f.name}</button>
+                      <FrameTooltip
+                        name={f.name}
+                        self={f.self}
+                        total={f.total}
+                        unit={unit}
+                        totalTicks={totalTicks}
+                      />
+                    </span>
                     {f.count > 1 && (
                       <span className="flame-top-count"> ×{f.count}</span>
                     )}
@@ -321,6 +341,39 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Hover content for a frame: the full (never-simplified, never-truncated)
+ * name plus self/total. Pure CSS show/hide (`:hover`/`:focus-within` on the
+ * wrapper) rather than a JS-tracked floating tooltip — cheap even with
+ * thousands of frames on screen, since there's no mousemove handler or
+ * per-hover re-render.
+ */
+function FrameTooltip({
+  name,
+  self,
+  total,
+  unit,
+  totalTicks,
+}: {
+  name: string;
+  self: number;
+  total: number;
+  unit: string;
+  totalTicks: number;
+}) {
+  return (
+    <span className="flame-tooltip" role="tooltip">
+      <span className="flame-tooltip-name">{name}</span>
+      <span className="flame-tooltip-row">
+        self {formatTicks(self, unit)} ({formatPct(self, totalTicks)})
+      </span>
+      <span className="flame-tooltip-row">
+        total {formatTicks(total, unit)} ({formatPct(total, totalTicks)})
+      </span>
+    </span>
   );
 }
 
