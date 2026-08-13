@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use common::CatalogManager;
+use iceberg_rust::error::Error as IcebergError;
 use iceberg_rust::table::Table;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -52,6 +53,49 @@ pub fn is_conflict_error(error: &anyhow::Error) -> bool {
                 || msg.contains("version")
                 || msg.contains("mismatch"))
     })
+}
+
+/// Message the pinned iceberg-rust fork attaches to a failed
+/// `check_table_requirements` call, across every catalog backend.
+const TABLE_REQUIREMENTS_NOT_VALID: &str = "Table requirements not valid";
+
+/// Classify a commit failure raised by the iceberg-rust fork.
+///
+/// A catalog compare-and-swap failure means a concurrent writer advanced the
+/// table between our metadata read and the commit. That is routine rather than
+/// exceptional — ingest commits every few seconds per table while a partition
+/// rewrite takes seconds — so it must reach the executor's retry path, which
+/// re-runs the job against freshly loaded metadata and a re-derived input set.
+///
+/// The fork exposes two CAS shapes and only one of them is typed:
+/// `CommitConflict` for the guarded SQL UPDATE matching no rows, and a generic
+/// `InvalidFormat` for the Iceberg table-requirements assertion. The latter is
+/// indistinguishable by type from genuinely malformed metadata, so its message
+/// is the only signal available until a distinct variant lands upstream in
+/// JanKaul/iceberg-rust.
+pub fn classify_commit_error(error: IcebergError) -> anyhow::Error {
+    let conflict_detail = match &error {
+        IcebergError::CommitConflict(_) => Some(error.to_string()),
+        IcebergError::InvalidFormat(detail) if detail == TABLE_REQUIREMENTS_NOT_VALID => Some(
+            "Iceberg table requirements check failed: a concurrent commit advanced the table \
+             between the metadata read and this commit"
+                .to_string(),
+        ),
+        _ => None,
+    };
+
+    match conflict_detail {
+        // Losing this race is expected operation, so it is logged here at
+        // DEBUG; ERROR is reserved for the executor exhausting its retries.
+        Some(detail) => {
+            tracing::debug!(
+                iceberg_error = %error,
+                "Catalog compare-and-swap failed; classifying as retryable snapshot conflict"
+            );
+            CommitError::SnapshotConflict(detail).into()
+        }
+        None => anyhow::Error::new(error),
+    }
 }
 
 /// Information about a data file to add or remove (reporting/metrics only)
@@ -127,7 +171,8 @@ impl IcebergCommitter {
             .replace(new_files)
             .commit()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to commit compaction snapshot: {e}"))?;
+            .map_err(classify_commit_error)
+            .context("Failed to commit compaction snapshot")?;
 
         // The commit mutated our local handle to the snapshot it created.
         let committed_snapshot_id = Self::get_current_snapshot_id(&table)?;
@@ -250,7 +295,8 @@ impl IcebergCommitter {
             .overwrite(new_files, files_to_overwrite)
             .commit()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to commit compaction delta snapshot: {e}"))?;
+            .map_err(classify_commit_error)
+            .context("Failed to commit compaction delta snapshot")?;
 
         let committed_snapshot_id = Self::get_current_snapshot_id(&table)?;
 
@@ -449,5 +495,63 @@ mod tests {
             !is_conflict_error(&error),
             "unrelated errors must not be classified as conflicts"
         );
+    }
+
+    #[test]
+    fn table_requirements_failure_is_classified_as_conflict() {
+        // The catalog's compare-and-swap assertion. Wrapped generically this
+        // reads "Table requirements not valid doesn't have the right format",
+        // which matches none of the text heuristics and used to be counted as
+        // a permanent, non-retryable failure (#1065).
+        let error = classify_commit_error(IcebergError::InvalidFormat(
+            "Table requirements not valid".to_owned(),
+        ));
+        assert!(
+            matches!(
+                error.downcast_ref::<CommitError>(),
+                Some(CommitError::SnapshotConflict(_))
+            ),
+            "catalog CAS failure must carry the typed SnapshotConflict marker"
+        );
+        assert!(is_conflict_error(&error));
+    }
+
+    #[test]
+    fn table_requirements_failure_stays_a_conflict_under_context_wrapping() {
+        let error = classify_commit_error(IcebergError::InvalidFormat(
+            "Table requirements not valid".to_owned(),
+        ))
+        .context("Failed to commit compaction delta snapshot");
+        assert!(is_conflict_error(&error));
+    }
+
+    #[test]
+    fn catalog_commit_conflict_is_classified_as_conflict() {
+        // The fork's other CAS shape: the SQL UPDATE guarded on the previous
+        // metadata location matched no rows.
+        let error =
+            classify_commit_error(IcebergError::CommitConflict("acme.prod.traces".to_owned()));
+        assert!(is_conflict_error(&error));
+    }
+
+    #[test]
+    fn genuine_invalid_format_is_not_classified_as_conflict() {
+        // Same variant, different cause — real malformed metadata must stay a
+        // permanent failure.
+        let error = classify_commit_error(IcebergError::InvalidFormat(
+            "Table update on entity that is not a table".to_owned(),
+        ));
+        assert!(
+            error.downcast_ref::<CommitError>().is_none(),
+            "a genuine format error must not be marked as a conflict"
+        );
+        assert!(!is_conflict_error(&error));
+    }
+
+    #[test]
+    fn unrelated_iceberg_error_is_preserved_verbatim() {
+        let error = classify_commit_error(IcebergError::NotFound("manifest".to_owned()));
+        assert!(!is_conflict_error(&error));
+        assert!(error.downcast_ref::<IcebergError>().is_some());
     }
 }
