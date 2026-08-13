@@ -910,11 +910,19 @@ commit compaction", which every commit failure shares.
 - `Failed to re-read manifests for delta commit` — manifest read failed against
   the object store
 - `Failed to commit compaction delta snapshot` — Iceberg rejected the
-  `overwrite`
+  `overwrite` for a reason other than losing the commit race
 
 Snapshot conflicts are a _different_ path: they are retried with exponential
 backoff and reported as "Conflict", not here. Seeing this message means the
 failure was not contention.
+
+This includes the catalog's compare-and-swap rejection, which the Iceberg
+fork reports as `Table requirements not valid doesn't have the right format`.
+That message means a concurrent writer advanced the table between the
+compactor's metadata read and its commit — routine contention against live
+ingest, not malformed metadata. It is classified as a conflict and retried
+against freshly loaded metadata, so it is reported as "Conflict" and does not
+appear under this heading.
 
 **Solutions:**
 
