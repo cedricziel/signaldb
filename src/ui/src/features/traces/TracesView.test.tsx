@@ -676,6 +676,39 @@ describe("TracesView detail", () => {
     expect(screen.getByText(/1 error/)).toBeInTheDocument();
   });
 
+  it("colors waterfall bars by span kind and shows a legend, fetched over Query IR", async () => {
+    stubFetchRoutes([
+      { match: "/tempo/api/traces/t1cafe", body: TRACE_BODY },
+      {
+        match: "/api/v1/query",
+        body: {
+          result: "rows",
+          window: { start_ns: 0, end_ns: 0 },
+          columns: [
+            { name: "span_id", type: "string" },
+            { name: "span_kind", type: "string" },
+          ],
+          rows: [
+            ["root", "SERVER"],
+            ["charge", "CLIENT"],
+          ],
+        },
+      },
+    ]);
+    renderView({ trace: "t1cafe" });
+    await screen.findByRole("list", { name: "Spans" });
+
+    const legend = await screen.findByLabelText("Span kind legend");
+    expect(within(legend).getByText("CLIENT")).toBeInTheDocument();
+    expect(within(legend).getByText("SERVER")).toBeInTheDocument();
+
+    // The preselected span ("charge", the error span) shows its kind chip
+    // in the detail panel too.
+    expect(
+      within(screen.getByLabelText("Span details")).getByText("CLIENT"),
+    ).toBeInTheDocument();
+  });
+
   it("shows each event's time offset from the span start", async () => {
     stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
     renderView({ trace: "t1cafe" });

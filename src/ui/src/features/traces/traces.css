@@ -447,10 +447,93 @@
   opacity: 0.9;
 }
 
+/* Span kind, same --svc-a..e palette FlameGraph uses. Rules stay before
+   .span-bar.error below so error status always wins on a span that's both
+   a known kind and erroring — same specificity, source order decides. */
+.span-bar.kind-server {
+  background: var(--svc-a-soft, var(--svc-a));
+}
+
+.span-bar.kind-client {
+  background: var(--svc-b-soft, var(--svc-b));
+}
+
+.span-bar.kind-internal {
+  background: var(--svc-c-soft, var(--svc-c));
+}
+
+.span-bar.kind-producer {
+  background: var(--svc-d-soft, var(--svc-d));
+}
+
+.span-bar.kind-consumer {
+  background: var(--svc-e-soft, var(--svc-e));
+}
+
 .span-bar.error {
   background: var(--err-bar);
   outline: 1.5px solid var(--err);
   outline-offset: 1px;
+}
+
+.span-kind-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 8px;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.legend-chip,
+.kind-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.legend-chip::before,
+.kind-chip::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--dim);
+}
+
+.legend-chip.kind-server::before,
+.kind-chip.kind-server::before {
+  background: var(--svc-a);
+}
+
+.legend-chip.kind-client::before,
+.kind-chip.kind-client::before {
+  background: var(--svc-b);
+}
+
+.legend-chip.kind-internal::before,
+.kind-chip.kind-internal::before {
+  background: var(--svc-c);
+}
+
+.legend-chip.kind-producer::before,
+.kind-chip.kind-producer::before {
+  background: var(--svc-d);
+}
+
+.legend-chip.kind-consumer::before,
+.kind-chip.kind-consumer::before {
+  background: var(--svc-e);
+}
+
+.kind-chip {
+  color: var(--dim);
+  font-size: 10px;
+  margin-right: 6px;
 }
 
 .span-dur {
