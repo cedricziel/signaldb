@@ -630,6 +630,50 @@ memory_limit_mb = 1024
    per-sorter share is below the spill floor. Both combinations produce this
    failure and neither is visible from any single setting.
 
+### Issue 14: A Partition Stops Being Compacted After Repeated Failures
+
+**Symptoms:**
+
+- A partition was failing every cycle, and now no longer appears in the logs at all
+- `compactor_cooldown_partitions_skipped_total` is non-zero and climbing
+- Logs show `Skipping partition — compaction is cooling down after repeated failures`
+
+**What it means:** this is the compactor working as intended, not a new fault.
+A failed compaction suppresses its partition for 15 minutes, doubling per
+consecutive failure up to a 6-hour ceiling, so that a partition which cannot
+succeed stops consuming capacity that other partitions are queued behind. The
+underlying failure is still there — the cooldown only stops the retry loop.
+
+Commit conflicts never trigger a cooldown, so a partition suppressed this way
+failed for some other reason.
+
+**Diagnostic Steps:**
+
+```bash
+# 1. Which partitions are suppressed, and how badly?  The skip log names the
+#    tenant, dataset, table, partition, and consecutive failure count.
+journalctl -u signaldb-compactor | grep "cooling down" | tail -20
+
+# 2. Find the original failure — it is logged when the cooldown is armed.
+journalctl -u signaldb-compactor | grep "will be skipped until its cooldown"
+
+# 3. Is capacity actually being withheld, or is this a single stuck partition?
+curl -s localhost:9091/status | jq '.compaction.cooldown_partitions_skipped'
+```
+
+**Solutions:**
+
+1. **Fix the underlying failure.** The counter is a symptom; step 2 above gives
+   the real error. Common causes are covered by Issue 9 and Issue 13 (memory)
+   and Issue 13's startup warnings (incoherent memory settings).
+2. **Restart the compactor** to clear all cooldowns immediately — the tracker is
+   in-memory and per-instance. Only useful once the cause is fixed; otherwise the
+   partition fails again and is suppressed again, from the base window.
+3. **Expect a climbing counter while a partition is genuinely stuck.** It
+   increments once per withheld partition per cycle, so it grows steadily rather
+   than reporting one event. A value that returns to zero means the partition
+   recovered and its entry was cleared.
+
 ## Data Integrity Issues
 
 ### Issue 10: Queries Failing After Retention
