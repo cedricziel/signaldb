@@ -78,8 +78,10 @@ Query execution in the querier SHALL emit INTERNAL child spans for its two
 stages — planning (`signaldb.query.plan`) and execution
 (`signaldb.query.execute`, which covers scan and result encoding as part
 of the same stage) — nested under the DataFusion query CLIENT span (itself
-nested under the Flight SERVER span), carrying result-size attributes
-(row/byte counts) in the `signaldb.*` namespace. Any recorded query text
+nested under the Flight SERVER span), with the execution span carrying
+result-size attributes (`signaldb.query.rows`, `signaldb.query.batches`)
+in the `signaldb.*` namespace. No byte-count attribute is required — the
+implementation records row and batch counts only. Any recorded query text
 SHALL follow the DB-semconv sanitization rules: literals replaced with
 placeholders before recording, and parameterized values never inlined,
 using the same sanitized value as the DB client span's `db.query.text` for
