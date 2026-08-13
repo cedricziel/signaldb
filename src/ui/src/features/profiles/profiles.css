@@ -110,6 +110,43 @@
   font-variant-numeric: tabular-nums;
 }
 
+.flame-view-toggle {
+  display: flex;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.flame-view-toggle button {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: var(--dim);
+}
+
+.flame-view-toggle button.active {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+.flame-collapse {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.flame-collapse select {
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--text);
+}
+
 .flame-title {
   font-size: 11px;
   font-weight: 600;
@@ -187,6 +224,25 @@
   opacity: 0.6;
 }
 
+/* A synthetic "(other)" bucket folding below-threshold frames — muted and
+ * dashed so it reads as a collapse artifact, not a real function. */
+.flame-frame.other {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--surface2),
+    var(--surface2) 4px,
+    var(--surface3, var(--border)) 4px,
+    var(--surface3, var(--border)) 8px
+  );
+  border-color: var(--border);
+  color: var(--faint);
+  font-style: italic;
+}
+
+.flame-frame.other:hover {
+  color: var(--dim);
+}
+
 .flame-label {
   display: block;
   overflow: hidden;
@@ -216,4 +272,81 @@
   color: var(--dim);
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- top functions table ---------- */
+
+.flame-top {
+  overflow: auto;
+}
+
+.flame-top-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+.flame-top-table th {
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 650;
+}
+
+.flame-top-table th.num,
+.flame-top-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.flame-top-table .th-sort {
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.flame-top-table .th-sort:hover {
+  color: var(--text);
+}
+
+.flame-top-table th[aria-sort] .th-sort {
+  color: var(--text);
+}
+
+.flame-top-table th[aria-sort="ascending"] .th-sort::after {
+  content: " ↑";
+}
+
+.flame-top-table th[aria-sort="descending"] .th-sort::after {
+  content: " ↓";
+}
+
+.flame-top-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+}
+
+.flame-top-table tbody tr {
+  cursor: pointer;
+}
+
+.flame-top-table tbody tr:hover {
+  background: var(--surface2);
+}
+
+.flame-top-open {
+  font-weight: 550;
+  color: var(--accent);
+}
+
+.flame-top-count {
+  color: var(--faint);
+  font-size: 10.5px;
 }

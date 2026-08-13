@@ -114,6 +114,110 @@ export function ancestorPath(
   return path;
 }
 
+/** Synthetic bucket a run of below-threshold frames collapses into. */
+export const OTHER_FRAME_NAME = "(other)";
+
+/**
+ * Fold every frame narrower than `minFraction` of `totalTicks` — and its
+ * whole subtree, since a child's total can never exceed its parent's —
+ * into a single `OTHER_FRAME_NAME` sibling per contiguous run. Computed
+ * against the root total (not the current zoom view) so it stays stable as
+ * the user zooms and matches the %-of-root figures shown everywhere else.
+ * `minFraction <= 0` returns `levels` unchanged.
+ */
+export function collapseSmallFrames(
+  levels: FlameFrame[][],
+  totalTicks: number,
+  minFraction: number,
+): FlameFrame[][] {
+  if (minFraction <= 0 || levels.length === 0) return levels;
+  const minTicks = totalTicks * minFraction;
+  const result: FlameFrame[][] = [];
+  // Ranges (in root-tick space) still expanded at the previous level — a
+  // frame only survives to the next level if its parent wasn't collapsed.
+  let keptRanges: Array<[number, number]> = [
+    [-Infinity, Infinity], // level 0 has no parent to have collapsed
+  ];
+
+  for (const source of levels) {
+    const candidates = source.filter((f) =>
+      keptRanges.some(([lo, hi]) => f.x >= lo && f.x + f.total <= hi),
+    );
+    const out: FlameFrame[] = [];
+    const nextKept: Array<[number, number]> = [];
+    let run: FlameFrame[] = [];
+    const flushRun = () => {
+      if (run.length === 0) return;
+      const total = run.reduce((sum, f) => sum + f.total, 0);
+      const self = run.reduce((sum, f) => sum + f.self, 0);
+      const first = run[0]!; // guarded by the run.length === 0 check above
+      out.push({
+        level: first.level,
+        x: first.x,
+        total,
+        self,
+        name: OTHER_FRAME_NAME,
+      });
+      run = [];
+    };
+    for (const frame of candidates) {
+      if (frame.total < minTicks) {
+        run.push(frame);
+      } else {
+        flushRun();
+        out.push(frame);
+        nextKept.push([frame.x, frame.x + frame.total]);
+      }
+    }
+    flushRun();
+    result.push(out);
+    keptRanges = nextKept;
+  }
+  return result;
+}
+
+/** One row of the top-functions-by-self-time table. */
+export interface FunctionTotal {
+  name: string;
+  self: number;
+  total: number;
+  /** Number of tree positions this function occupied — > 1 for recursive
+   * or repeatedly-called functions. */
+  count: number;
+}
+
+/**
+ * Aggregate self (and total) time by function name across every tree
+ * position, sorted by self time descending — the "flat" view real
+ * profilers (pprof's `top`, Speedscope's Sandwich) offer alongside the
+ * call tree, for scanning "what's actually expensive" without wading
+ * through tree structure. Self-time sums are exact (a call node's self
+ * time is never double-counted elsewhere); total-time sums over a
+ * recursive function double-count its own recursive calls, same
+ * limitation pprof's flat view has — self is the number to trust here.
+ */
+export function topFunctionsBySelf(levels: FlameFrame[][]): FunctionTotal[] {
+  const byName = new Map<string, FunctionTotal>();
+  for (const level of levels) {
+    for (const frame of level) {
+      const existing = byName.get(frame.name);
+      if (existing) {
+        existing.self += frame.self;
+        existing.total += frame.total;
+        existing.count += 1;
+      } else {
+        byName.set(frame.name, {
+          name: frame.name,
+          self: frame.self,
+          total: frame.total,
+          count: 1,
+        });
+      }
+    }
+  }
+  return Array.from(byName.values()).sort((a, b) => b.self - a.self);
+}
+
 const TIME_UNITS = new Set([
   "nanoseconds",
   "microseconds",

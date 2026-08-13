@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 import type { Flamebearer } from "../api/pyroscope";
 import {
   ancestorPath,
+  collapseSmallFrames,
   colorBucket,
   decodeFlamebearer,
+  type FlameFrame,
   formatPct,
   formatTicks,
   frameView,
+  OTHER_FRAME_NAME,
   placeFrames,
   rootView,
+  topFunctionsBySelf,
 } from "./flamebearer";
 
 // root(100) -> [a(60 self 20), b(40 self 40)]; a -> [c(40 self 40)]
@@ -90,6 +94,81 @@ describe("placeFrames", () => {
     expect(names).toContain("c");
     expect(names).not.toContain("b");
     expect(placed[2]?.[0]?.frame.name).toBe("c");
+  });
+});
+
+describe("collapseSmallFrames", () => {
+  // total(100) -> [big(70, self 0), s1(10,self10), s2(10,self10), s3(10,self10)]
+  // big -> gc(70, self 70); s2 -> leaf(10, self 10)
+  const levels: FlameFrame[][] = [
+    [{ level: 0, x: 0, total: 100, self: 0, name: "total" }],
+    [
+      { level: 1, x: 0, total: 70, self: 0, name: "big" },
+      { level: 1, x: 70, total: 10, self: 10, name: "s1" },
+      { level: 1, x: 80, total: 10, self: 10, name: "s2" },
+      { level: 1, x: 90, total: 10, self: 10, name: "s3" },
+    ],
+    [
+      { level: 2, x: 0, total: 70, self: 70, name: "gc" },
+      { level: 2, x: 80, total: 10, self: 10, name: "leaf-under-s2" },
+    ],
+  ];
+
+  it("returns the levels unchanged when the threshold is off", () => {
+    expect(collapseSmallFrames(levels, 100, 0)).toBe(levels);
+  });
+
+  it("merges a contiguous run of below-threshold siblings into one (other), dropping their descendants", () => {
+    const collapsed = collapseSmallFrames(levels, 100, 0.15);
+
+    expect(collapsed[1]).toEqual([
+      { level: 1, x: 0, total: 70, self: 0, name: "big" },
+      { level: 1, x: 70, total: 30, self: 30, name: OTHER_FRAME_NAME },
+    ]);
+    // "gc" survives (child of the kept "big"); "leaf-under-s2" is dropped
+    // (its parent "s2" was folded into "(other)").
+    expect(collapsed[2]).toEqual([
+      { level: 2, x: 0, total: 70, self: 70, name: "gc" },
+    ]);
+  });
+
+  it("collapses even a single isolated small frame, uniformly", () => {
+    const oneSmall: FlameFrame[][] = [
+      [{ level: 0, x: 0, total: 100, self: 0, name: "total" }],
+      [
+        { level: 1, x: 0, total: 95, self: 95, name: "big" },
+        { level: 1, x: 95, total: 5, self: 5, name: "tiny" },
+      ],
+    ];
+    const collapsed = collapseSmallFrames(oneSmall, 100, 0.1);
+    expect(collapsed[1]).toEqual([
+      { level: 1, x: 0, total: 95, self: 95, name: "big" },
+      { level: 1, x: 95, total: 5, self: 5, name: OTHER_FRAME_NAME },
+    ]);
+  });
+});
+
+describe("topFunctionsBySelf", () => {
+  it("aggregates self and total time by name across repeated (recursive) occurrences, sorted by self descending", () => {
+    const levels: FlameFrame[][] = [
+      [{ level: 0, x: 0, total: 100, self: 0, name: "total" }],
+      [
+        { level: 1, x: 0, total: 60, self: 20, name: "a" },
+        { level: 1, x: 60, total: 40, self: 40, name: "b" },
+      ],
+      [
+        { level: 2, x: 0, total: 40, self: 40, name: "c" },
+        { level: 2, x: 60, total: 10, self: 5, name: "a" }, // recursive
+      ],
+    ];
+
+    const top = topFunctionsBySelf(levels);
+    expect(top).toEqual([
+      { name: "b", self: 40, total: 40, count: 1 },
+      { name: "c", self: 40, total: 40, count: 1 },
+      { name: "a", self: 25, total: 70, count: 2 },
+      { name: "total", self: 0, total: 100, count: 1 },
+    ]);
   });
 });
 

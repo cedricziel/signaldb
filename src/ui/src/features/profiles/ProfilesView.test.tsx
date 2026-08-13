@@ -395,4 +395,97 @@ describe("ProfilesView", () => {
     );
     expect(await screen.findByText(/not found/)).toBeInTheDocument();
   });
+
+  describe("collapsing small frames", () => {
+    // total(1000) -> main(997, self 997), tiny(3, self 3) — "tiny" is
+    // 0.3% of root, below the default 0.5% collapse threshold.
+    const SPARSE = flamegraphBody({
+      names: ["total", "main", "tiny"],
+      levels: [
+        [0, 1000, 0, 0],
+        [0, 997, 997, 1, 0, 3, 3, 2],
+      ],
+      total: 1000,
+      max_self: 997,
+    });
+
+    it("folds a below-threshold frame into (other) by default", async () => {
+      stubFetchRoutes([
+        ...DISCOVERY_ROUTES,
+        { match: "/api/v1/query", body: SPARSE },
+      ]);
+
+      renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
+
+      expect(
+        await screen.findByRole("button", { name: "(other)" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "tiny" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("reveals the folded frame when the threshold is turned off", async () => {
+      stubFetchRoutes([
+        ...DISCOVERY_ROUTES,
+        { match: "/api/v1/query", body: SPARSE },
+      ]);
+
+      renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
+      await screen.findByRole("button", { name: "(other)" });
+
+      await userEvent.selectOptions(
+        screen.getByLabelText("Collapse small frames"),
+        "Off",
+      );
+
+      expect(
+        await screen.findByRole("button", { name: "tiny" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "(other)" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  describe("top functions view", () => {
+    it("lists functions sorted by self time, highest first", async () => {
+      stubFetchRoutes([
+        ...DISCOVERY_ROUTES,
+        { match: "/api/v1/query", body: FLAMEGRAPH },
+      ]);
+
+      renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
+      await screen.findByText("work");
+
+      await userEvent.click(screen.getByRole("tab", { name: "Top functions" }));
+
+      const rows = await screen.findAllByRole("row");
+      // rows[0] is the header; work (self 80) outranks main (self 20).
+      expect(within(rows[1]!).getByText("work")).toBeInTheDocument();
+      expect(within(rows[2]!).getByText("main")).toBeInTheDocument();
+    });
+
+    it("clicking a function row highlights it back on the flame graph", async () => {
+      stubFetchRoutes([
+        ...DISCOVERY_ROUTES,
+        { match: "/api/v1/query", body: FLAMEGRAPH },
+      ]);
+
+      renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
+      await screen.findByText("work");
+      await userEvent.click(screen.getByRole("tab", { name: "Top functions" }));
+
+      await userEvent.click(screen.getByRole("button", { name: "work" }));
+
+      // Back on the flame graph, "work" is highlighted (not dimmed) and
+      // the other frames are.
+      expect(screen.getByRole("tab", { name: "Flame graph" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      expect(screen.getByLabelText("Highlight frames")).toHaveValue("work");
+      expect(screen.getByRole("button", { name: /main/ })).toHaveClass("dim");
+    });
+  });
 });
