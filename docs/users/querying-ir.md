@@ -159,9 +159,9 @@ each needs a different addressing rule:
 
 - **Logs.** Per the
   [exceptions-on-logs](https://opentelemetry.io/docs/specs/semconv/exceptions/exceptions-logs/)
-  convention, `exception.type`, `exception.message`, and `exception.stacktrace`
-  are ordinary record attributes on the log — address them exactly like any
-  other attribute, unqualified or with `log.`.
+  convention, `exception.type`, `exception.message`, `exception.stacktrace`,
+  and `exception.escaped` are ordinary record attributes on the log —
+  address them exactly like any other attribute, unqualified or with `log.`.
 - **Traces.** Per the
   [exceptions-on-spans](https://opentelemetry.io/docs/specs/semconv/exceptions/exceptions-spans/)
   convention, an exception is a span **event** named `exception`, not a span

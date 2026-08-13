@@ -10,12 +10,14 @@ occurrences.
 
 ### Requirement: Exceptions grouped across traces and logs
 
-The Errors tab SHALL show exceptions grouped by (exception type, exception
-message, service name, `exception.escaped`), combining both places an
-exception can be recorded — a span's `exception` event, and a log record's
-own exception attributes — since neither source alone is complete. Each
-group SHALL show its occurrence count and first/last-seen timestamps. The
-group list SHALL be sortable by count (default) or by last-seen recency.
+The Errors tab SHALL show exceptions grouped by (source, exception type,
+exception message, service name, `exception.escaped`) — source (traces or
+logs) is itself part of the group identity, not merely a display column —
+combining both places an exception can be recorded — a span's `exception`
+event, and a log record's own exception attributes — since neither source
+alone is complete. Each group SHALL show its occurrence count and
+first/last-seen timestamps. The group list SHALL be sortable by count
+(default) or by last-seen recency.
 
 #### Scenario: A group appears once per distinct exception across both sources
 
