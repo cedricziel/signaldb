@@ -21,7 +21,9 @@ pipeline of typed stages. The document SHALL carry an explicit IR version, and
 the server SHALL accept a bounded range of versions and report the range it
 supports. The IR schema SHALL evolve additively — new stages, operators, and
 optional fields MAY be added; accepted operators SHALL be deprecated before any
-removal — so that a previously valid stored query remains valid.
+removal — so that a previously valid stored query remains valid. A stage or
+envelope introduced in a later IR version SHALL be rejected when submitted under
+an earlier version.
 
 #### Scenario: A versioned query executes
 
@@ -41,6 +43,12 @@ removal — so that a previously valid stored query remains valid.
 - **WHEN** the IR schema gains a new optional field or stage in a later server
   version and an older stored query is replayed
 - **THEN** the older query still validates and executes with unchanged meaning
+
+#### Scenario: A v2-only heatmap is rejected under v1
+
+- **WHEN** a client submits a `heatmap` stage or `heatmap` result envelope with
+  `irVersion: 1`
+- **THEN** the server rejects the document as unsupported for that version
 
 ### Requirement: Defined type system and evaluation semantics
 
@@ -95,25 +103,25 @@ client SHALL NOT express an operand as a mini-expression string.
 ### Requirement: Supported stage set
 
 This capability SHALL support the single-signal stage set `from`, `where`,
-`extract`, `aggregate`, `topk`/`bottomk`, `order`, and `limit`, and no others; a
-query using a stage outside this set (for example a cross-signal or structural
-stage) SHALL be rejected as unsupported by this capability's version rather than
-silently ignored. The `extract` stage SHALL support the `json` and `logfmt`
-parsers; the `regex` parser is not part of this capability and, together with the
-predicate `regex` operator, SHALL run only behind a bounded, timeout-guarded
-matcher.
+`extract`, `aggregate`, `topk`/`bottomk`, `order`, and `limit` in IR v1. IR v2
+SHALL additionally support the terminal `heatmap` stage for a bounded
+time-by-numeric-distribution count aggregate. An unknown stage, or a stage
+illegal for the source or IR version, SHALL be rejected as unsupported rather
+than silently ignored. The `extract` stage SHALL support the `json` and
+`logfmt` parsers; the `regex` parser is not part of this capability and,
+together with the predicate `regex` operator, SHALL run only behind a bounded,
+timeout-guarded matcher.
 
 #### Scenario: A supported stage executes
 
-- **WHEN** a query uses only stages from the supported set on a logs or traces
-  source
+- **WHEN** a query uses only stages supported by its IR version on a logs or
+  traces source
 - **THEN** the query validates and executes
 
 #### Scenario: An out-of-set stage is rejected, not ignored
 
-- **WHEN** a query includes a stage this capability does not support (e.g. a
-  correlate or structural-match stage)
-- **THEN** the request is rejected identifying the unsupported stage, rather than
+- **WHEN** a query includes a stage its IR version does not support
+- **THEN** the query is rejected identifying the unsupported stage, rather than
   the stage being dropped
 
 #### Scenario: Extract offers json and logfmt
@@ -128,9 +136,8 @@ matcher.
 - **WHEN** an `extract` stage declares derived fields with names and value types,
   and a later `where`/`aggregate`/`order` references one
 - **THEN** the reference resolves to the derived field with its declared type
-  (used for literal coercion just like a registry field), and a derived name that
-  collides with a registry-owned logical field or an earlier extracted field is
-  rejected rather than silently shadowing it
+  and a derived name that collides with a registry-owned logical field or an
+  earlier extracted field is rejected rather than silently shadowing it
 
 ### Requirement: Shared predicate grammar over logical field names
 
@@ -174,19 +181,66 @@ promoted; promotion state SHALL affect only performance.
 ### Requirement: Extensible signal-source model
 
 The IR source SHALL reference a registered signal source rather than a fixed,
-hardcoded set. Logs and traces SHALL be available as sources in this capability;
-the model SHALL allow additional sources (e.g. metrics, profiles) to be added by
-later changes without altering the IR document shape.
+hardcoded set. Logs, traces, and profiles SHALL be available as sources in this
+capability; the model SHALL allow additional sources (e.g. metrics) to be added
+by later changes without altering the IR document shape. A profile source query
+SHALL operate on profile-summary rows and SHALL expose only registered scalar
+profile metadata and registered resource or scope attributes; it SHALL NOT
+expose sample, stacktrace, or attribute JSON payloads as logical fields.
 
 #### Scenario: Logs and traces are queryable sources
 
 - **WHEN** a client selects `logs` or `traces` as the query source
 - **THEN** the query executes against that signal
 
+#### Scenario: Profiles is a queryable source
+
+- **WHEN** a client selects `profiles` as the query source
+- **THEN** the query executes against that signal
+
+#### Scenario: Profile summary query returns registered metadata
+
+- **WHEN** a client requests profile fields such as `profile.id`, `timestamp`,
+  `duration`, `sample.type`, or `service.name`
+- **THEN** the result contains the requested typed metadata values without raw
+  sample, stacktrace, or attribute JSON payloads
+
+#### Scenario: Profile payload addressing is rejected
+
+- **WHEN** a profile query references a raw sample, stacktrace, or attribute JSON
+  storage payload
+- **THEN** validation rejects the query as an unregistered logical field
+
 #### Scenario: Adding a source does not reshape the IR
 
 - **WHEN** a later change registers an additional signal source
 - **THEN** existing IR documents remain valid and the document shape is unchanged
+
+### Requirement: Source-specific read authorization
+
+The native Query IR endpoint SHALL authorize a request for a registered signal
+source using that signal's read scope before it dispatches the query. A request
+for `profiles` SHALL require `profiles:read`; authorization SHALL remain bound
+to the authenticated tenant and dataset rather than any client-supplied tenant
+or dataset value.
+
+#### Scenario: Profile scope permits profile IR query
+
+- **WHEN** an authenticated request with `profiles:read` submits a profile IR
+  document for its tenant and dataset
+- **THEN** the endpoint dispatches the query using that authenticated context
+
+#### Scenario: Missing profile scope is rejected
+
+- **WHEN** an authenticated request without `profiles:read` submits a profile IR
+  document
+- **THEN** the endpoint rejects the request before dispatching it to a querier
+
+#### Scenario: Other source scopes remain isolated
+
+- **WHEN** an authenticated request with only `profiles:read` submits a logs or
+  traces IR document
+- **THEN** the endpoint rejects the request for lacking that source's read scope
 
 ### Requirement: Legal-stage enforcement by relation type
 
@@ -203,17 +257,18 @@ offending stage.
 
 ### Requirement: Declared and validated result envelope
 
-A query SHALL declare its result envelope (`rows`, `series`, `table`, or —
-for the `profiles` source only — `flamegraph`), and the system SHALL
-validate the declared envelope against the inferred terminal relation type
-and against the selected source, rejecting a mismatch before execution.
-Each envelope SHALL have a single canonical response payload shape and
-value encoding, described by the OpenAPI schema so the generated clients
-decode one contract. The columns of a `rows`/`table` result SHALL be a
-curated projection: taken from an explicit document-level `fields` list of
-logical names when present, otherwise a bounded server default — never all
-physical columns implicitly. A `fields` entry absent from the terminal
-relation, or a `fields` list on a `series` or `flamegraph` result, SHALL be
+A query SHALL declare its result envelope (`rows`, `series`, or `table` in
+IR v1; `heatmap` additionally in IR v2; and, for the `profiles` source
+only, `flamegraph`), and the system SHALL validate the declared envelope
+against the inferred terminal relation type and against the selected
+source, rejecting a mismatch before execution. Each envelope SHALL have a
+single canonical response payload shape and value encoding, described by
+the OpenAPI schema so the generated clients decode one contract. The
+columns of a `rows`/`table` result SHALL be a curated projection: taken
+from an explicit document-level `fields` list of logical names when
+present, otherwise a bounded server default — never all physical columns
+implicitly. A `fields` entry absent from the terminal relation, or a
+`fields` list on a `series`, `heatmap`, or `flamegraph` result, SHALL be
 rejected.
 
 #### Scenario: Envelope mismatch is rejected
@@ -234,7 +289,8 @@ rejected.
 #### Scenario: Invalid projection is rejected
 
 - **WHEN** a query's `fields` list names something the terminal relation
-  does not carry, or a `series` or `flamegraph` query declares `fields`
+  does not carry, or a `series`, `heatmap`, or `flamegraph` query declares
+  `fields`
 - **THEN** the query is rejected at validation time
 
 #### Scenario: Flamegraph envelope requires the profiles source
@@ -243,6 +299,43 @@ rejected.
   `from: "traces"`
 - **THEN** the query is rejected at validation as an envelope/source
   mismatch, naming the source
+
+### Requirement: Bounded two-dimensional heatmap aggregate
+
+An IR v2 `heatmap` stage SHALL be terminal and SHALL aggregate matching records
+into epoch-aligned time buckets on the x-axis and typed numeric or duration
+buckets on the y-axis. The stage SHALL resolve its y-axis field through the
+logical field registry, SHALL use a count value, and SHALL return sparse cells.
+The server SHALL enforce bounded time-bucket and duration-bound cardinalities.
+
+#### Scenario: Trace duration heatmap returns sparse count cells
+
+- **WHEN** a traces query filters a selected window and applies a heatmap over
+  `duration` with valid duration bounds and a time step
+- **THEN** the response contains time-axis metadata, duration bounds, and only
+  non-zero count cells
+- **AND** every matching span contributes to exactly one time and duration cell
+
+#### Scenario: Duration boundaries have deterministic inclusion semantics
+
+- **WHEN** a span duration equals a configured duration boundary
+- **THEN** it is included in the bucket beginning at that boundary
+- **AND** a duration below the first boundary is included in the first bucket
+- **AND** a duration at or above the final boundary is included in the overflow
+  bucket
+
+#### Scenario: Heatmap preserves native query isolation
+
+- **WHEN** authenticated requests for different tenant or dataset contexts submit
+  otherwise identical heatmap documents
+- **THEN** each response contains only records from its authenticated tenant and
+  dataset
+
+#### Scenario: Unsafe heatmap dimensions are rejected
+
+- **WHEN** a client requests non-increasing bounds, a non-positive time step, or
+  an axis cardinality above the server limit
+- **THEN** the server rejects the document before executing the query
 
 ### Requirement: Profile flamegraph retrieval
 
