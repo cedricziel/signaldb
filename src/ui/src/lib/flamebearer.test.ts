@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Flamebearer } from "../api/pyroscope";
 import {
+  ancestorPath,
   colorBucket,
   decodeFlamebearer,
   formatPct,
@@ -89,6 +90,27 @@ describe("placeFrames", () => {
     expect(names).toContain("c");
     expect(names).not.toContain("b");
     expect(placed[2]?.[0]?.frame.name).toBe("c");
+  });
+});
+
+describe("ancestorPath", () => {
+  it("returns just the root when targeting the root frame", () => {
+    const levels = decodeFlamebearer(FB);
+    const root = levels[0]![0]!;
+    expect(ancestorPath(levels, root)).toEqual([root]);
+  });
+
+  it("walks from the root down to a deep frame, skipping unrelated siblings", () => {
+    const levels = decodeFlamebearer(FB);
+    const c = levels[2]![0]!; // "c", nested under "a", sibling of "b"
+    const path = ancestorPath(levels, c);
+    expect(path.map((f) => f.name)).toEqual(["total", "a", "c"]);
+  });
+
+  it("resolves a shallower frame reached directly, without its descendants", () => {
+    const levels = decodeFlamebearer(FB);
+    const b = levels[1]![1]!; // "b", a leaf sibling of "a"
+    expect(ancestorPath(levels, b).map((f) => f.name)).toEqual(["total", "b"]);
   });
 });
 

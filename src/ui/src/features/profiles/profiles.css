@@ -75,10 +75,39 @@
   font-variant-numeric: tabular-nums;
 }
 
-.flame-reset {
-  margin-left: auto;
-  color: var(--accent);
+.flame-title {
   font-size: 11px;
+  font-weight: 600;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.flame-breadcrumb {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.flame-crumb {
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+.flame-crumb:last-child {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.flame-crumb-sep {
+  color: var(--faint);
+  margin: 0 2px;
 }
 
 .flame-rows {

@@ -91,6 +91,29 @@ export function placeFrames(
   });
 }
 
+/**
+ * The chain of frames from the root down to (and including) `target`, one
+ * per level. Each ancestor is the unique frame at that level whose interval
+ * contains `target`'s — proper flamegraph nesting guarantees exactly one.
+ * Used to build a breadcrumb trail and to support zooming to a frame the
+ * user never explicitly stepped through (e.g. clicking straight into a deep
+ * frame from the root view).
+ */
+export function ancestorPath(
+  levels: FlameFrame[][],
+  target: FlameFrame,
+): FlameFrame[] {
+  const path: FlameFrame[] = [];
+  const end = target.x + target.total;
+  for (let level = 0; level <= target.level; level++) {
+    const found = levels[level]?.find(
+      (f) => f.x <= target.x && f.x + f.total >= end,
+    );
+    if (found) path.push(found);
+  }
+  return path;
+}
+
 const TIME_UNITS = new Set([
   "nanoseconds",
   "microseconds",
