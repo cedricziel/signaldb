@@ -84,6 +84,10 @@
   flex-direction: column;
   padding: 8px 16px 12px;
   gap: 6px;
+  /* Flex items default to min-width:auto, which lets a wide child (the
+   * top-functions table) force this container — and its ancestors —
+   * wider instead of scrolling within .flame-top. */
+  min-width: 0;
 }
 
 .flame-toolbar {
@@ -342,6 +346,12 @@
 }
 
 .flame-top-open {
+  display: inline-block;
+  max-width: min(480px, 60vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
   font-weight: 550;
   color: var(--accent);
 }

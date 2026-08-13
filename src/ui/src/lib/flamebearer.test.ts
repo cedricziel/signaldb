@@ -205,6 +205,13 @@ describe("formatTicks", () => {
     expect(formatTicks(1234, "samples")).toBe("1,234 samples");
     expect(formatTicks(5, "")).toBe("5");
   });
+
+  it("renders a byte unit as a binary-scaled size, not a raw byte count", () => {
+    expect(formatTicks(2 * 1024 ** 3, "bytes")).toBe("2.00 GiB");
+    expect(formatTicks(5.5 * 1024 ** 2, "bytes")).toBe("5.5 MiB");
+    expect(formatTicks(1536, "bytes")).toBe("1.5 KiB");
+    expect(formatTicks(512, "bytes")).toBe("512 B");
+  });
 });
 
 describe("formatPct", () => {

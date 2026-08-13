@@ -294,7 +294,9 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
               {topRows.map((f) => (
                 <tr key={f.name} onClick={() => selectFunction(f.name)}>
                   <td>
-                    <button className="flame-top-open">{f.name}</button>
+                    <button className="flame-top-open" title={f.name}>
+                      {f.name}
+                    </button>
                     {f.count > 1 && (
                       <span className="flame-top-count"> ×{f.count}</span>
                     )}

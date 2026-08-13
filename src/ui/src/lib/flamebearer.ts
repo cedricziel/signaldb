@@ -232,8 +232,14 @@ const TO_NANOS: Record<string, number> = {
   seconds: 1_000_000_000,
 };
 
-/** Human value for a tick count: a duration when the unit is time, else a
- * plain count with the unit appended. */
+const BYTE_UNITS = new Set(["bytes", "byte"]);
+const KIB = 1024;
+const MIB = KIB * 1024;
+const GIB = MIB * 1024;
+
+/** Human value for a tick count: a duration for a time unit, a binary-scaled
+ * size for a byte unit (memory profiles), else a plain count with the unit
+ * appended. */
 export function formatTicks(ticks: number, unit: string): string {
   if (TIME_UNITS.has(unit)) {
     const nanos = ticks * (TO_NANOS[unit] ?? 1);
@@ -241,6 +247,13 @@ export function formatTicks(ticks: number, unit: string): string {
     if (nanos >= 1_000_000) return `${(nanos / 1e6).toFixed(1)}ms`;
     if (nanos >= 1_000) return `${(nanos / 1e3).toFixed(1)}µs`;
     return `${Math.round(nanos)}ns`;
+  }
+  if (BYTE_UNITS.has(unit)) {
+    const abs = Math.abs(ticks);
+    if (abs >= GIB) return `${(ticks / GIB).toFixed(2)} GiB`;
+    if (abs >= MIB) return `${(ticks / MIB).toFixed(1)} MiB`;
+    if (abs >= KIB) return `${(ticks / KIB).toFixed(1)} KiB`;
+    return `${Math.round(ticks)} B`;
   }
   const rounded = Math.round(ticks).toLocaleString();
   return unit ? `${rounded} ${unit}` : rounded;
