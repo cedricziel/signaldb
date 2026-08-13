@@ -274,6 +274,10 @@
 .trace-table td {
   padding: 6px 14px;
   border-bottom: 1px solid var(--border);
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .trace-table tbody tr {
@@ -282,6 +286,16 @@
 
 .trace-table tbody tr:hover {
   background: var(--surface2);
+}
+
+/* A row with nothing to drill into (e.g. a topValues ranking) — no
+ * pointer cursor or hover affordance implying it's clickable. */
+.trace-table tbody tr.catalog-row-static {
+  cursor: default;
+}
+
+.trace-table tbody tr.catalog-row-static:hover {
+  background: none;
 }
 
 .trace-open {

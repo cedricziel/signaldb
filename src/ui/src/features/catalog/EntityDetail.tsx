@@ -71,6 +71,16 @@ export function EntityDetail({ state, update }: Props) {
   const atSecondary =
     breakdownEntity !== undefined && state.catalogSecondary !== "";
 
+  const topValuesEntity: EntityTypeDef | undefined = entity.topValues
+    ? {
+        id: `${entity.id}::${entity.topValues.field}`,
+        label: entity.topValues.label,
+        singular: entity.topValues.label,
+        identity: [entity.topValues.field],
+        spanKindScope: entity.spanKindScope,
+      }
+    : undefined;
+
   // What's on screen right now: the parent entity, or — one level deeper —
   // the breakdown row. Same query shape either way.
   const current = atSecondary && breakdownEntity ? breakdownEntity : entity;
@@ -225,6 +235,16 @@ export function EntityDetail({ state, update }: Props) {
           onRowClick={(values) =>
             update({ catalogSecondary: compositeKey(values) }, { push: true })
           }
+        />
+      )}
+
+      {topValuesEntity && (
+        <EntityTable
+          entity={topValuesEntity}
+          range={range}
+          rangeKey={rangeKey}
+          rangeSeconds={rangeSeconds}
+          pinned={currentPinned}
         />
       )}
 

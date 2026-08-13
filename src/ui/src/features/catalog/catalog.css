@@ -47,12 +47,19 @@
   margin-top: 0;
 }
 
-/* The breakdown table is an EntityTable, itself a `.catalog-main` section —
-   nested directly inside the detail page's own `.catalog-main`, so it must
-   not repeat that padding/overflow a second time. */
+/* The breakdown/topValues tables are each an EntityTable, itself a
+   `.catalog-main` section — nested directly inside the detail page's own
+   `.catalog-main`, so it must not repeat that padding/overflow a second
+   time. Each one's own headline resets its margin-top via :first-of-type
+   (it's the only headline within its own wrapper), so consecutive nested
+   tables need their own spacing rather than relying on that. */
 .entity-detail .catalog-main {
   padding: 0;
   overflow: visible;
+}
+
+.entity-detail .catalog-main + .catalog-main {
+  margin-top: 24px;
 }
 
 .catalog-breadcrumb {

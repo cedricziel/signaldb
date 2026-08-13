@@ -168,7 +168,9 @@ export function EntityTable({
   rangeKey: string;
   rangeSeconds: number;
   pinned?: EntityPin[];
-  onRowClick: (values: (string | null)[]) => void;
+  /** Omit for a read-only table (e.g. a `topValues` ranking with nothing
+   * to drill into) — rows render without a click affordance. */
+  onRowClick?: (values: (string | null)[]) => void;
 }) {
   const [sort, toggle] = useSort("n", "desc");
   const pinKey = (pinned ?? []).map((p) => `${p.field}=${p.value}`).join(",");
@@ -264,11 +266,15 @@ export function EntityTable({
             rows.map((g) => (
               <tr
                 key={g.values.join("")}
-                className="catalog-row-drillable"
-                onClick={() => onRowClick(g.values)}
+                className={
+                  onRowClick ? "catalog-row-drillable" : "catalog-row-static"
+                }
+                onClick={onRowClick ? () => onRowClick(g.values) : undefined}
               >
                 {g.values.map((v, i) => (
-                  <td key={entity.identity[i]}>{v ?? NOT_SET}</td>
+                  <td key={entity.identity[i]} title={v ?? undefined}>
+                    {v ?? NOT_SET}
+                  </td>
                 ))}
                 <td className="num">{g.count}</td>
                 <td className="num">{formatRate(g.count, rangeSeconds)}</td>

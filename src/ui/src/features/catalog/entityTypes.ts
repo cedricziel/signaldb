@@ -43,6 +43,14 @@ export interface EntityTypeDef {
    * see the module doc).
    */
   breakdown?: { field: string; label: string };
+  /**
+   * A third dimension shown as its own read-only table (no drill-down —
+   * `catalogSecondary` already belongs to `breakdown`) below it, ranked by
+   * count rather than pinned to a specific value. Distinct from `breakdown`
+   * because it identifies individual occurrences (e.g. a SQL statement)
+   * rather than a small, stable set of categories worth drilling into.
+   */
+  topValues?: { field: string; label: string };
 }
 
 export const ENTITY_TYPES: EntityTypeDef[] = [
@@ -60,6 +68,7 @@ export const ENTITY_TYPES: EntityTypeDef[] = [
     singular: "database",
     identity: ["db.namespace", "db.system.name"],
     breakdown: { field: "db.operation.name", label: "Operations" },
+    topValues: { field: "db.query.text", label: "Top statements" },
   },
   {
     id: "messaging_destination",

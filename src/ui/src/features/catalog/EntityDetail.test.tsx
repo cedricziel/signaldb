@@ -186,4 +186,38 @@ describe("EntityDetail", () => {
       { push: true },
     );
   });
+
+  it("shows a read-only top-values table for an entity type that defines one", async () => {
+    fetchCatalogEntities.mockImplementation(async (entityType) => {
+      if (entityType.identity[0] === "db.query.text") {
+        return {
+          groups: [
+            group(
+              ["SELECT * FROM users WHERE id = ?"],
+              300,
+              0,
+              4,
+              8,
+              "1700000000000000000",
+            ),
+          ],
+          truncated: false,
+        };
+      }
+      return { groups: [], truncated: false };
+    });
+    const update = renderView({
+      catalogEntity: "database",
+      catalogPrimary: compositeKey(["prod", "postgres"]),
+    });
+
+    expect(await screen.findByText("Top statements")).toBeInTheDocument();
+    const cell = await screen.findByText("SELECT * FROM users WHERE id = ?");
+    expect(cell).toBeInTheDocument();
+
+    // Read-only: clicking a row doesn't drill in or otherwise call update.
+    const user = userEvent.setup();
+    await user.click(cell);
+    expect(update).not.toHaveBeenCalled();
+  });
 });
