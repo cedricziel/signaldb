@@ -33,3 +33,48 @@ sample_names = ["signaldb.*"]
 [[live-check.finding_filters]]
 signal_type = "span"
 exclude_samples = ["level", "target", "error"]
+
+# busy_ns / idle_ns / target / code.module.name on *log* records (#912): the
+# span layer (common::self_monitoring::otel_span_layer, pinned by the
+# otel_bridge_attrs test in the common crate) already disables these
+# tracing-opentelemetry convenience attributes via with_tracked_inactivity /
+# with_target / with_location. But cli.rs wires the log-record bridge
+# (opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge) as a
+# separate layer with no equivalent toggle, so the same convenience
+# attributes still land on every OTel log record. None of them exist in
+# otel/registry/ or upstream semconv, so each is an unactionable
+# `missing_attribute` violation. This is a narrower, log-only case than the
+# span-event `target` filtered above — it does not overlap with it.
+[[live-check.finding_filters]]
+signal_type = "log"
+exclude_samples = ["busy_ns", "idle_ns", "target", "code.module.name"]
+
+# log.target / log.module_path / log.file / log.line (#912): the `log`
+# crate's records are bridged into `tracing` (so third-party `log::info!`
+# etc. calls are captured), and that bridge stamps the original `log`
+# record's target/module/file/line onto the resulting tracing event as
+# fields literally named with a `log.` prefix. The log-record OTel bridge
+# forwards them verbatim as log record attributes. None are registered
+# semconv attributes, so each is an unactionable `missing_attribute`
+# violation.
+[[live-check.finding_filters]]
+signal_type = "log"
+exclude_samples = ["log.target", "log.module_path", "log.file", "log.line"]
+
+# "log event" / "event src/*.rs:NN" event names (#912): neither the `log`
+# crate bridge nor a bare `tracing::info!(...)` call (without `event!(name:
+# "...")`) gives its event a name registered in otel/registry/, so every
+# OTel log record they produce fails `missing_event` ("Event 'X' does not
+# exist in the registry"). Confirmed against weaver v0.25.1
+# (crates/weaver_live_check/src/sample_log.rs,
+# crates/weaver_live_check/src/finding_modifier.rs): for a log-signal
+# finding, `sample_names`/`exclude` scope by `SampleRef::Log(log).name()`,
+# i.e. the record's `event_name` — so this is the same filter mechanism as
+# the attribute-name filters above, just scoped to the event's own name
+# instead of one of its attributes. `log event` is the literal name the
+# `log`->`tracing` bridge gives every bridged record; `event *` (glob)
+# matches tracing's default per-callsite event name for unnamed events.
+[[live-check.finding_filters]]
+exclude = ["missing_event"]
+signal_type = "log"
+sample_names = ["log event", "event *"]
