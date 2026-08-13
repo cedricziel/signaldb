@@ -890,19 +890,19 @@ find .data/storage -name "*.parquet" -mtime -1 -ls
 
 ## Common Error Messages
 
-### Error: "Job ... failed with non-conflict error"
+### Error: "Compaction job failed with a terminal error, not retrying"
 
 **Full Message:**
 
 ```
-ERROR compactor::executor: Job 6e30dfc6-0367-41a5-833d-2f075b0e40aa failed with non-conflict error: Failed to commit compaction: Failed to commit compaction delta snapshot: <underlying cause>
+ERROR compactor::executor: Compaction job failed with a terminal error, not retrying job_id=6e30dfc6-0367-41a5-833d-2f075b0e40aa error_class=terminal error=Failed to commit compaction: Failed to commit compaction delta snapshot: <underlying cause>
 ```
 
-A compaction job failed for a reason the executor did **not** classify as a
-snapshot conflict. Everything after the first colon is the `anyhow` cause
-chain; the last segment is the real failure. The chain is what makes this
-message actionable — read it to the end rather than stopping at "Failed to
-commit compaction", which every commit failure shares.
+A compaction job failed for a reason the executor classified as deterministic.
+The `error` field is the `anyhow` cause chain; the last segment is the real
+failure. The chain is what makes this message actionable — read it to the end
+rather than stopping at "Failed to commit compaction", which every commit
+failure shares.
 
 **Causes:** the chain distinguishes them; the wrapper alone does not.
 
@@ -912,18 +912,28 @@ commit compaction", which every commit failure shares.
 - `Failed to commit compaction delta snapshot` — Iceberg rejected the
   `overwrite`
 
-Snapshot conflicts are a _different_ path: they are retried with exponential
-backoff and reported as "Conflict", not here. Seeing this message means the
-failure was not contention.
+Every failed attempt is classified into one of three `error_class` values:
+
+- `conflict` — a lost optimistic-concurrency race; retried with exponential
+  backoff and reported as "Conflict"
+- `transient` — an object store blip, network hiccup, or catalog contention;
+  retried with the same backoff budget as conflicts, and reported as "Failed"
+  only once the retries are exhausted ("Compaction job failed after exhausting
+  retries")
+- `terminal` — deterministic (validation, schema, malformed input); fails on
+  the first attempt, because a retry would repeat the whole rewrite to reach
+  the same error
+
+Anything the executor cannot positively identify as transient is treated as
+terminal, so this message can also mean "a transient failure mode we do not yet
+recognize". If the chain reads like infrastructure, that is worth reporting.
 
 **Solutions:**
 
 1. Read the last segment of the chain and treat it as the actual error —
    catalog connectivity, object store availability/permissions, or an Iceberg
    commit rejection.
-2. Note that non-conflict failures are **not** retried; the job fails on its
-   first attempt.
-3. Check whether the same table/partition recurs across cycles. Planning has no
+2. Check whether the same table/partition recurs across cycles. Planning has no
    failure memory, so a partition that cannot commit is re-selected every
    `tick_interval` and fails again, consuming compaction capacity. A persistent
    repeat is a stuck partition, not a transient error.
