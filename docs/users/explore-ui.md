@@ -154,6 +154,15 @@ fast. Two controls, alongside the highlight box, cut through it:
   Clicking a row switches back to the flame graph with that function
   highlighted, so you can see where the time is spent structurally.
 
+Bar labels are shortened, too — a Rust name for a monomorphized generic
+method (`<Type as Trait>::method::<Args>`) can run to hundreds of
+characters, and worse, the default right-edge ellipsis cuts off exactly the
+distinguishing part (the generics at the end), leaving unrelated frames
+looking identical once truncated. Bars show roughly `Type::method` instead.
+This is display-only: hover any frame (or a row in the top-functions table)
+for a tooltip with the full, unshortened name plus self/total, and the
+detail line and highlight search still operate on the real name.
+
 ### Reading a log line
 
 Selecting a log line expands it. Alongside the stream labels it lists the
