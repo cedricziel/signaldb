@@ -1,0 +1,76 @@
+.errors-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.errors-table th {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  border-bottom: 1px solid var(--border);
+}
+
+.errors-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.errors-row {
+  cursor: pointer;
+}
+
+.errors-row:hover,
+.errors-row[aria-selected="true"] {
+  background: var(--surface2);
+}
+
+.errors-message {
+  font-family: var(--mono);
+  color: var(--dim);
+}
+
+.errors-source {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+
+.errors-source-traces {
+  color: var(--svc-a);
+  border-color: var(--svc-a);
+}
+
+.errors-source-logs {
+  color: var(--svc-b);
+  border-color: var(--svc-b);
+}
+
+.errors-detail {
+  margin-top: 20px;
+}
+
+.errors-stacktrace {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}

@@ -26,7 +26,7 @@ import {
 } from "./time";
 
 export type Signal =
-  "logs" | "traces" | "metrics" | "profiles" | "query" | "catalog";
+  "logs" | "traces" | "metrics" | "profiles" | "query" | "catalog" | "errors";
 
 export interface ExploreState {
   signal: Signal;
@@ -131,6 +131,7 @@ export const SIGNALS: Signal[] = [
   "profiles",
   "query",
   "catalog",
+  "errors",
 ];
 
 /** Maps a `:signal` route param to a known signal, defaulting invalid/missing values to "logs". */
