@@ -60,6 +60,14 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   **Top functions** view swaps the tree for a sortable flat table ranked by
   self time. See [Comparing and filtering profiles](#comparing-and-filtering-profiles)
   and [Reading a noisy profile](#reading-a-noisy-profile).
+- **Errors** — exceptions grouped by type, message, and service, ranked by
+  count with first/last-seen timestamps. Combines the two places OTel records
+  an exception — a span's `exception` event, and a log record's own
+  `exception.type`/`.message` attributes (see [Exception
+  attributes](querying-ir.md#exception-attributes)) — since neither source
+  alone is the whole picture. Selecting a group fetches one example
+  occurrence's stacktrace, plus a link into the trace waterfall when that
+  occurrence carries a trace id.
 - **Query** — a native [Query IR](querying-ir.md) builder for `logs`, `traces`,
   and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
