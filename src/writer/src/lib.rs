@@ -15,44 +15,16 @@ pub mod schema_transform;
 /// Shared test helpers for the writer crate.
 #[cfg(test)]
 pub(crate) mod test_support {
+    use crate::schema_transform::create_metrics_gauge_arrow_schema;
     use datafusion::arrow::array::{
         Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
     };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
 
     /// A schema-valid `metrics_gauge` batch serialized for WAL append, so a
     /// test can drive a real Iceberg commit through the writer.
     pub(crate) fn metrics_gauge_bytes(num_rows: usize) -> Vec<u8> {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(
-                "timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(
-                "start_timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new("service_name", DataType::Utf8, false),
-            Field::new("metric_name", DataType::Utf8, false),
-            Field::new("metric_description", DataType::Utf8, true),
-            Field::new("metric_unit", DataType::Utf8, true),
-            Field::new("value", DataType::Float64, false),
-            Field::new("flags", DataType::Int32, true),
-            Field::new("resource_schema_url", DataType::Utf8, true),
-            Field::new("resource_attributes", DataType::Utf8, true),
-            Field::new("scope_name", DataType::Utf8, true),
-            Field::new("scope_version", DataType::Utf8, true),
-            Field::new("scope_schema_url", DataType::Utf8, true),
-            Field::new("scope_attributes", DataType::Utf8, true),
-            Field::new("scope_dropped_attr_count", DataType::Int32, true),
-            Field::new("attributes", DataType::Utf8, true),
-            Field::new("exemplars", DataType::Utf8, true),
-            Field::new("date_day", DataType::Date32, false),
-            Field::new("hour", DataType::Int32, false),
-        ]));
+        let schema = create_metrics_gauge_arrow_schema();
 
         let timestamps: Vec<i64> = (0..num_rows)
             .map(|i| 1_000_000_000 + (i as i64 * 1_000_000))

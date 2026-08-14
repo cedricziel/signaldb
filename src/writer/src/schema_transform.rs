@@ -26,21 +26,6 @@ pub struct FlightMetadata {
     pub tracestate: Option<String>,
 }
 
-/// Extract schema version from Flight metadata
-pub fn extract_schema_version(metadata: &[u8]) -> Result<String> {
-    let metadata_str =
-        std::str::from_utf8(metadata).map_err(|e| anyhow!("Invalid UTF-8 in metadata: {}", e))?;
-
-    let metadata_json: serde_json::Value = serde_json::from_str(metadata_str)
-        .map_err(|e| anyhow!("Invalid JSON in metadata: {}", e))?;
-
-    metadata_json
-        .get("schema_version")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow!("Missing schema_version in metadata"))
-}
-
 /// Extract all metadata from Flight metadata bytes
 /// Returns FlightMetadata with schema_version, signal_type, and target_table (if present)
 pub fn extract_flight_metadata(metadata: &[u8]) -> Result<FlightMetadata> {
@@ -2246,16 +2231,16 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_schema_version() {
+    fn extract_flight_metadata_reads_schema_version() {
         let metadata = r#"{"schema_version": "v1", "signal_type": "traces"}"#;
-        let version = extract_schema_version(metadata.as_bytes()).unwrap();
-        assert_eq!(version, "v1");
+        let parsed = extract_flight_metadata(metadata.as_bytes()).unwrap();
+        assert_eq!(parsed.schema_version, "v1");
     }
 
     #[test]
-    fn test_extract_schema_version_missing() {
+    fn extract_flight_metadata_errors_on_missing_schema_version() {
         let metadata = r#"{"signal_type": "traces"}"#;
-        let result = extract_schema_version(metadata.as_bytes());
+        let result = extract_flight_metadata(metadata.as_bytes());
         assert!(result.is_err());
     }
 

@@ -27,7 +27,6 @@ use common::CatalogManager;
 use common::config::WriterConfig;
 use common::flight::decode::flight_data_vec_to_batches;
 use common::wal::{Wal, WalOperation, record_batch_to_bytes};
-use datafusion::arrow::datatypes::SchemaRef;
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
@@ -269,7 +268,6 @@ impl FlightService for IcebergWriterFlightService {
         let mut inbound = request.into_inner();
         let mut data_vec = Vec::new();
         let mut flight_metadata: Option<FlightMetadata> = None;
-        let mut schema_ref: Option<SchemaRef> = None;
         let put_start = std::time::Instant::now();
         let mut bytes_received: u64 = 0;
 
@@ -397,9 +395,6 @@ impl FlightService for IcebergWriterFlightService {
                         &materialized,
                     ) {
                         Ok(transformed_batch) => {
-                            if schema_ref.is_none() {
-                                schema_ref = Some(transformed_batch.schema());
-                            }
                             transformed.push(transformed_batch);
                         }
                         Err(e) => {

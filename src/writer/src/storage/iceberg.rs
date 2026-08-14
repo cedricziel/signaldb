@@ -116,13 +116,8 @@ impl IcebergTableWriter {
     /// transformed (e.g. the Flight ingestion path).
     fn apply_schema_transformation_if_needed(&self, batch: RecordBatch) -> Result<RecordBatch> {
         let num_columns = batch.num_columns();
-        let field_names: Vec<String> = batch
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| f.name().clone())
-            .collect();
-        let has_field = |name: &str| field_names.iter().any(|f| f == name);
+        let schema = batch.schema();
+        let has_field = |name: &str| schema.index_of(name).is_ok();
 
         match self.table.identifier().name() {
             "traces" => {
@@ -135,6 +130,8 @@ impl IcebergTableWriter {
                     tracing::debug!("Detected v2 traces batch, no transformation needed");
                     Ok(batch)
                 } else {
+                    let field_names: Vec<&str> =
+                        schema.fields().iter().map(|f| f.name().as_str()).collect();
                     tracing::warn!(
                         "Unknown traces schema: {num_columns} columns with fields: {field_names:?}. Assuming no transformation needed."
                     );
