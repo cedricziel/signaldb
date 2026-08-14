@@ -308,7 +308,7 @@ impl WalManager {
     ///
     /// This will drop all WAL references. WALs will be recreated on next access.
     /// Note: This doesn't delete WAL files on disk, just clears the in-memory cache.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // public cache-invalidation API, exercised only by tests today
     pub async fn clear_cache(&self) {
         let mut wals = self.wals.lock().await;
         wals.clear();
