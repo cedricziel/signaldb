@@ -42,7 +42,7 @@ impl DatasetAction {
                     .send()
                     .await?
                     .into_inner();
-                println!("{}", serde_json::to_string_pretty(&resp)?);
+                crate::commands::print_json(&resp)?;
             }
             DatasetAction::Create { tenant_id, name } => {
                 let resp = client
@@ -52,7 +52,7 @@ impl DatasetAction {
                     .send()
                     .await?
                     .into_inner();
-                println!("{}", serde_json::to_string_pretty(&resp)?);
+                crate::commands::print_json(&resp)?;
             }
             DatasetAction::Delete {
                 tenant_id,

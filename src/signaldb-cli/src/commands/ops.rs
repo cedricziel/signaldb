@@ -45,7 +45,7 @@ impl OpsAction {
             },
         };
         let value = result.map_err(|e| anyhow::anyhow!("ops request failed: {e}"))?;
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        crate::commands::print_json(&value)?;
         Ok(())
     }
 }
