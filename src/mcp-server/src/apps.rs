@@ -64,6 +64,8 @@ struct UiApp {
     description: &'static str,
     /// The complete, self-contained HTML5 document.
     html: &'static str,
+    /// The `#[tool]` method whose result this app renders.
+    tool_name: &'static str,
 }
 
 /// Every app this server serves. Compiled in, so the binary carries its UI and
@@ -76,6 +78,7 @@ const APPS: &[UiApp] = &[
         description: "Interactive waterfall for a single trace: span timings, self time vs. \
                       time in child spans, per-span attributes, and span events.",
         html: include_str!("../ui/trace.html"),
+        tool_name: "get_trace",
     },
     UiApp {
         uri: PROFILE_APP_URI,
@@ -84,8 +87,17 @@ const APPS: &[UiApp] = &[
         description: "Interactive flamegraph for a single profile: per-frame self/total sample \
                       values across the call stack.",
         html: include_str!("../ui/profile.html"),
+        tool_name: "get_profile",
     },
 ];
+
+/// The `ui://` resource URI rendered for `tool_name`'s result, if this
+/// server has a UI app for that tool.
+pub fn tool_ui_uri(tool_name: &str) -> Option<&'static str> {
+    APPS.iter()
+        .find(|app| app.tool_name == tool_name)
+        .map(|app| app.uri)
+}
 
 /// Whether the connected client negotiated the MCP Apps extension *and* can
 /// render what this server serves.

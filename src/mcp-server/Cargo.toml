@@ -14,7 +14,6 @@ rmcp.workspace = true
 
 tokio.workspace = true
 axum.workspace = true
-http = "1"
 reqwest.workspace = true
 
 anyhow.workspace = true
