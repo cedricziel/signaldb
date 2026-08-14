@@ -8,7 +8,7 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::config::QuerierConfig;
 use common::flight::batches_to_compressed_flight_data;
-use common::flight::schema::{FlightSchemas, create_span_batch_schema};
+use common::flight::schema::create_span_batch_schema;
 use common::flight::transport::InMemoryFlightTransport;
 use common::storage::create_object_store_from_dsn;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -282,11 +282,7 @@ enum TicketRequest {
 
 /// Flight service for query execution against stored data
 pub struct QuerierFlightService {
-    #[allow(dead_code)]
-    object_store: Arc<dyn ObjectStore>,
     _flight_transport: Arc<InMemoryFlightTransport>,
-    #[allow(dead_code)]
-    schemas: FlightSchemas,
     session_ctx: Arc<SessionContext>,
     trace_service: TraceService,
     profile_service: ProfileService,
@@ -450,9 +446,7 @@ impl QuerierFlightService {
         let ir_service = IrService::new(session_ctx.as_ref().clone());
 
         Self {
-            object_store,
             _flight_transport: flight_transport,
-            schemas: FlightSchemas::new(),
             session_ctx,
             trace_service,
             profile_service,
@@ -507,10 +501,6 @@ impl QuerierFlightService {
             }
         }
 
-        // Struct field placeholder — not used at runtime (all per-dataset stores
-        // are registered above). InMemory avoids coupling to any specific DSN.
-        let object_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-
         let iceberg_catalog = catalog_manager.catalog();
 
         let registered_tenants: dashmap::DashSet<String> = dashmap::DashSet::new();
@@ -539,9 +529,7 @@ impl QuerierFlightService {
         let ir_service = IrService::new(session_ctx.as_ref().clone());
 
         Ok(Self {
-            object_store,
             _flight_transport: flight_transport,
-            schemas: FlightSchemas::new(),
             session_ctx,
             trace_service,
             profile_service,
