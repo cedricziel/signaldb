@@ -9,6 +9,8 @@
  * treatment (a facet sidebar row, a catalog drill-down), not speculatively.
  */
 
+import { escapeQuotedString, upsertBy } from "./collections";
+
 export interface TraceFilter {
   field: string;
   value: string;
@@ -127,10 +129,6 @@ export function facetField(field: string): FacetField | undefined {
   return FACET_FIELDS.find((f) => f.field === field);
 }
 
-function escapeTraceQLString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
 /**
  * Compile filters into a TraceQL selector for `/api/search?q=`. Filters on
  * fields that are not facetable are dropped rather than emitted as invalid
@@ -140,7 +138,7 @@ export function compileTraceQL(filters: TraceFilter[]): string {
   const terms = filters.flatMap((f) => {
     const facet = facetField(f.field);
     if (!facet) return [];
-    const rhs = facet.quoted ? `"${escapeTraceQLString(f.value)}"` : f.value;
+    const rhs = facet.quoted ? `"${escapeQuotedString(f.value)}"` : f.value;
     return [`${facet.selector} = ${rhs}`];
   });
   return terms.length === 0 ? "" : `{ ${terms.join(" && ")} }`;
@@ -165,9 +163,5 @@ export function upsertTraceFilter(
   filters: TraceFilter[],
   next: TraceFilter,
 ): TraceFilter[] {
-  const idx = filters.findIndex((f) => f.field === next.field);
-  if (idx === -1) return [...filters, next];
-  const copy = [...filters];
-  copy[idx] = next;
-  return copy;
+  return upsertBy(filters, next, (f) => f.field === next.field);
 }

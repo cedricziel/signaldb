@@ -7,7 +7,7 @@
 // or an error).
 
 import { useEffect, useMemo, useState } from "react";
-import { isAuthError } from "../../api/http";
+import { isAuthError, toErrorMessage } from "../../api/http";
 import {
   type ConsentContextResponse,
   consentContext,
@@ -88,7 +88,7 @@ export function ConsentView() {
         if (isAuthError(err)) {
           setNeedsLogin(true);
         } else {
-          setError(err instanceof Error ? err.message : String(err));
+          setError(toErrorMessage(err));
         }
       });
     return () => {
@@ -162,7 +162,7 @@ export function ConsentView() {
       })
       .catch((err: unknown) => {
         setBusy(false);
-        setError(err instanceof Error ? err.message : String(err));
+        setError(toErrorMessage(err));
       });
   };
 

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -34,7 +35,7 @@ import {
   durationToSeconds,
   formatTimestamp,
   nanosToMs,
-  rangeToParam,
+  rangeScopeKey,
   resolveRange,
   resolveStep,
   stepOptionsForRange,
@@ -103,7 +104,7 @@ function TraceSearch({ state, update }: Props) {
   const [volumeView, setVolumeView] = useState<
     "histogram" | "area" | "heatmap"
   >("histogram");
-  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const rangeKey = rangeScopeKey(state);
   const filters = state.traceFilters;
   const traceql = compileTraceQL(filters);
   const dims = parseGroupBy(state.groupBy);
@@ -597,7 +598,7 @@ function GroupDetail({
   state: ExploreState;
   update: UpdateFn;
 }) {
-  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const rangeKey = rangeScopeKey(state);
   const range = resolveRange(state.range, Date.now());
   const traceql = compileTraceQL(state.traceFilters);
   const dims = parseGroupBy(state.groupBy);
@@ -734,6 +735,10 @@ function TraceDetail({ state, update }: Props) {
     enabled: trace.data !== undefined,
   });
   const spanKinds = kindsQuery.data ?? {};
+  const waterfall = useMemo(
+    () => (trace.data ? buildWaterfall(trace.data.spans) : undefined),
+    [trace.data],
+  );
 
   if (trace.isError) {
     if (trace.error instanceof ApiError && trace.error.status === 404) {
@@ -765,7 +770,8 @@ function TraceDetail({ state, update }: Props) {
     );
   }
 
-  const waterfall = buildWaterfall(trace.data.spans);
+  if (!waterfall) return null;
+
   const selectedRow =
     waterfall.rows.find((r) => r.span.spanId === selected) ??
     // An error span with no recorded exception (e.g. a root span that only
@@ -890,7 +896,10 @@ function SpanDetail({
   kind: string | undefined;
   update: UpdateFn;
 }) {
-  const groups = groupSpanAttributes(span.attributes);
+  const groups = useMemo(
+    () => groupSpanAttributes(span.attributes),
+    [span.attributes],
+  );
   const spanProfiles = profiles.filter((p) => p.spanId === span.spanId);
   return (
     <aside className="span-detail" aria-label="Span details">

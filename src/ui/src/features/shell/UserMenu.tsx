@@ -4,17 +4,16 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { whoami, deleteSession } from "../../api/session";
+import { whoami, deleteSession, type WhoamiResponse } from "../../api/session";
 import type { ExploreState } from "../../lib/urlState";
-import { toggleTheme } from "../../lib/theme";
+import { isDarkTheme, toggleTheme } from "../../lib/theme";
 import "./UserMenu.css";
 
 interface Props {
   state: ExploreState;
-  update: (patch: Partial<ExploreState>) => void;
 }
 
-export function UserMenu({ state, update }: Props) {
+export function UserMenu({ state }: Props) {
   const [open, setOpen] = useState(false);
   const { data: who } = useQuery({
     queryKey: ["whoami", state.tenant, state.dataset],
@@ -43,33 +42,18 @@ export function UserMenu({ state, update }: Props) {
         <span className="user-name">{user.display_name || user.email}</span>
         <span className="user-caret">▾</span>
       </button>
-      {open && (
-        <UserMenuPopover
-          who={who}
-          role={role}
-          onClose={close}
-          update={update}
-        />
-      )}
+      {open && <UserMenuPopover who={who} role={role} onClose={close} />}
     </span>
   );
 }
 
 interface PopoverProps {
-  who: NonNullable<
-    ReturnType<typeof whoami> extends Promise<infer T> ? T : never
-  >;
+  who: WhoamiResponse;
   role: string | undefined;
   onClose: () => void;
-  update: (patch: Partial<ExploreState>) => void;
 }
 
-function UserMenuPopover({
-  who,
-  role,
-  onClose,
-  update: _update,
-}: PopoverProps) {
+function UserMenuPopover({ who, role, onClose }: PopoverProps) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const backdropRef = useRef<HTMLSpanElement>(null);
@@ -103,10 +87,7 @@ function UserMenuPopover({
     toggleTheme();
   };
 
-  const isDark =
-    document.documentElement.getAttribute("data-theme") === "dark" ||
-    (!document.documentElement.getAttribute("data-theme") &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const isDark = isDarkTheme();
 
   const user = who.user!;
 

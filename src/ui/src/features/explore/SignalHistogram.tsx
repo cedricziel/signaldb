@@ -7,7 +7,7 @@
  * traces are two thin adapters over it rather than two copies of the same
  * rendering maths.
  */
-import { useRef, useState, type CSSProperties } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 import { axisLabelFormatter, durationToSeconds } from "../../lib/time";
 import { barHeight, splitSegments, valueAtFraction, type Scale } from "./scale";
 
@@ -181,10 +181,12 @@ export function SignalHistogram({
     setTip({ x, y: box.bottom - rect.top, flipX: x > rect.width / 2 });
   };
 
-  let buckets = bucketizeSeries(series);
-  if (buckets.length > 0) {
-    buckets = padBuckets(buckets, rangeMs.fromMs, rangeMs.toMs, stepMs);
-  }
+  const buckets = useMemo(() => {
+    const raw = bucketizeSeries(series);
+    return raw.length > 0
+      ? padBuckets(raw, rangeMs.fromMs, rangeMs.toMs, stepMs)
+      : raw;
+  }, [series, rangeMs.fromMs, rangeMs.toMs, stepMs]);
 
   if (buckets.length === 0 || buckets.every((b) => b.total === 0)) {
     return <div className="svol svol-empty">No volume in range</div>;

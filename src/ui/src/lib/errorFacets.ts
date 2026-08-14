@@ -5,6 +5,7 @@
 // faceting is a plain client-side fold over data already in memory — no
 // extra query.
 import type { ErrorGroup, ErrorSource } from "../api/errors";
+import { upsertBy } from "./collections";
 
 export type ErrorFacetField =
   "exceptionType" | "serviceName" | "source" | "escaped";
@@ -71,11 +72,7 @@ export function upsertErrorFilter(
   filters: ErrorFilter[],
   next: ErrorFilter,
 ): ErrorFilter[] {
-  const idx = filters.findIndex((f) => f.field === next.field);
-  if (idx === -1) return [...filters, next];
-  const copy = [...filters];
-  copy[idx] = next;
-  return copy;
+  return upsertBy(filters, next, (f) => f.field === next.field);
 }
 
 /** Groups satisfying every active filter. */

@@ -25,6 +25,11 @@ export function isAuthError(err: unknown): boolean {
   return err instanceof ApiError && err.status === 401;
 }
 
+/** Render a caught value as a display string, whether or not it's an Error. */
+export function toErrorMessage(value: unknown): string {
+  return value instanceof Error ? value.message : String(value);
+}
+
 let current: TenantContext = { tenant: "", dataset: "" };
 
 export function setTenantContext(ctx: TenantContext): void {

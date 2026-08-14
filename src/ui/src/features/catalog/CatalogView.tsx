@@ -12,7 +12,7 @@ import { NOT_SET, compositeKey, formatRate } from "../../lib/traceGroups";
 import {
   formatTimestamp,
   nanosToMs,
-  rangeToParam,
+  rangeScopeKey,
   resolveRange,
   type ResolvedRange,
 } from "../../lib/time";
@@ -45,7 +45,7 @@ export function CatalogView({ state, update }: Props) {
   }
 
   const range = resolveRange(state.range, Date.now());
-  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const rangeKey = rangeScopeKey(state);
   const selected =
     entityType(state.catalogEntity) ?? entityType(DEFAULT_ENTITY_TYPE)!;
 

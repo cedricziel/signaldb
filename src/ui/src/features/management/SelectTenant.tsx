@@ -35,6 +35,8 @@ interface TenantRowProps {
   isExpanded: boolean;
   isActive: boolean;
   currentTenantId: string;
+  /** The signed-in user's own tenant data, already fetched by the parent. */
+  currentWho: TenantData;
   onTenantClick: (tenantId: string) => void;
   onDatasetClick: (tenantId: string, datasetId: string) => void;
 }
@@ -45,6 +47,7 @@ function TenantRow({
   isExpanded,
   isActive,
   currentTenantId,
+  currentWho,
   onTenantClick,
   onDatasetClick,
 }: TenantRowProps) {
@@ -54,14 +57,6 @@ function TenantRow({
     staleTime: mpMountTime,
     retry: false,
     enabled: isExpanded && tenantId !== currentTenantId,
-  });
-
-  // For current tenant, we already have the data from the main query
-  const { data: currentWho } = useQuery<TenantData>({
-    queryKey: ["whoami", currentTenantId],
-    queryFn: () => whoami(),
-    staleTime: mpMountTime,
-    retry: false,
   });
 
   const datasets =
@@ -161,6 +156,7 @@ export function SelectTenant() {
                 isExpanded={isExpanded}
                 isActive={isActive}
                 currentTenantId={state.tenant}
+                currentWho={currentWho}
                 onTenantClick={handleTenantClick}
                 onDatasetClick={handleDatasetClick}
               />

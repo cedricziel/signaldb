@@ -7,7 +7,7 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { isAuthError, setTenantContext } from "../../api/http";
+import { isAuthError, setTenantContext, toErrorMessage } from "../../api/http";
 import type { SessionMembership } from "../../api/session";
 import { createSession, whoami } from "../../api/session";
 import "./LoginPanel.css";
@@ -150,7 +150,7 @@ export function LoginPanel({ onSuccess }: PanelProps) {
               }
             })
             .catch((err: unknown) => {
-              setError(err instanceof Error ? err.message : String(err));
+              setError(toErrorMessage(err));
             })
             .finally(() => setBusy(false));
         }}

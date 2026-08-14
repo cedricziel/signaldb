@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 
 import { CopyValueButton } from "./CopyValueButton";
 
@@ -55,7 +55,7 @@ function highlightedJson(value: string) {
 const LONG_VALUE_THRESHOLD = 200;
 const LONG_VALUE_PREVIEW_CHARS = 160;
 
-export function AttributeValue({ value, label }: Props) {
+function AttributeValueImpl({ value, label }: Props) {
   const parsed = parseJsonContainer(value);
   const [expanded, setExpanded] = useState(false);
 
@@ -121,3 +121,8 @@ export function AttributeValue({ value, label }: Props) {
     </span>
   );
 }
+
+/** Memoized: `value`/`label` are primitives, and this renders in dense
+ * per-row lists (log lines, span attributes) that re-render often for
+ * reasons unrelated to any single row's value. */
+export const AttributeValue = memo(AttributeValueImpl);

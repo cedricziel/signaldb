@@ -11,7 +11,7 @@ import { DependencyBreakdown } from "./DependencyBreakdown";
 import {
   formatTimestamp,
   nanosToMs,
-  rangeToParam,
+  rangeScopeKey,
   resolveRange,
 } from "../../lib/time";
 import {
@@ -49,7 +49,7 @@ export function EntityDetail({ state, update }: Props) {
   const entity =
     entityType(state.catalogEntity) ?? entityType(DEFAULT_ENTITY_TYPE)!;
   const range = resolveRange(state.range, Date.now());
-  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const rangeKey = rangeScopeKey(state);
   const rangeSeconds = catalogRangeSeconds(state);
 
   const primaryValues = parseCompositeKey(
