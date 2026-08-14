@@ -42,9 +42,14 @@ impl PartialEq<&str> for RequestCredentials {
 
 /// Extract and validate the optional `X-Dataset-ID` header.
 fn dataset_id_header(headers: &HeaderMap) -> Result<Option<String>, AuthError> {
-    match headers.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
-        Some(id) => Ok(Some(validate_dataset_id(id)?)),
+    match headers.get("x-dataset-id") {
         None => Ok(None),
+        Some(value) => {
+            let id = value
+                .to_str()
+                .map_err(|_| AuthError::bad_request("Invalid X-Dataset-ID header"))?;
+            Ok(Some(validate_dataset_id(id)?))
+        }
     }
 }
 
@@ -884,6 +889,28 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.status_code, 400);
         assert!(err.message.contains("Invalid dataset ID"));
+    }
+
+    #[test]
+    fn test_extract_auth_headers_rejects_non_utf8_dataset_id() {
+        // A present but non-UTF8 X-Dataset-ID must be rejected, not silently
+        // treated as absent (which could fall through to a default dataset).
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test-api-key-123"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+        headers.insert(
+            "x-dataset-id",
+            HeaderValue::from_bytes(b"prod\xffuction").unwrap(),
+        );
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("Invalid X-Dataset-ID header"));
     }
 
     #[test]
