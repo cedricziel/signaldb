@@ -18,7 +18,6 @@ use std::sync::Arc;
 
 use axum::{
     body::Bytes,
-    extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
@@ -39,7 +38,6 @@ use tracing;
 
 use super::WalManager;
 use super::forward::forward_batch_to_writer;
-use crate::middleware::TenantContextExtractor;
 
 /// Content type for Prometheus remote_write requests
 pub const PROMETHEUS_CONTENT_TYPE: &str = "application/x-protobuf";
@@ -184,7 +182,7 @@ impl PrometheusHandler {
             })?;
 
         // Partition metrics by type for proper schema handling
-        let partitions = Self::partition_metrics_by_type(&otel_request);
+        let partitions = super::metrics_partition::partition_metrics_by_type(&otel_request);
 
         if partitions.is_empty() {
             tracing::warn!("No metrics found after conversion");
@@ -315,20 +313,6 @@ impl PrometheusHandler {
 
         Ok(())
     }
-
-    /// Partition metrics by type for proper schema handling
-    /// Returns: HashMap<metric_type, (table_name, partitioned_request)>
-    fn partition_metrics_by_type(
-        request: &opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest,
-    ) -> std::collections::HashMap<
-        String,
-        (
-            String,
-            opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest,
-        ),
-    > {
-        super::metrics_partition::partition_metrics_by_type(request)
-    }
 }
 
 /// Errors that can occur during Prometheus remote_write handling
@@ -338,7 +322,6 @@ pub enum PrometheusError {
     ConversionError(String),
     SerializationError(String),
     WalError(String),
-    InternalError(String),
     RateLimited(String),
     QuotaExceeded(String),
 }
@@ -350,7 +333,6 @@ impl std::fmt::Display for PrometheusError {
             Self::ConversionError(msg) => write!(f, "Conversion error: {msg}"),
             Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
             Self::WalError(msg) => write!(f, "WAL error: {msg}"),
-            Self::InternalError(msg) => write!(f, "Internal error: {msg}"),
             Self::RateLimited(msg) => write!(f, "Rate limited: {msg}"),
             Self::QuotaExceeded(msg) => write!(f, "Quota exceeded: {msg}"),
         }
@@ -366,39 +348,12 @@ impl IntoResponse for PrometheusError {
             Self::ConversionError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::SerializationError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::WalError(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
-            Self::InternalError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
             Self::QuotaExceeded(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
         };
 
         (status, message).into_response()
     }
-}
-
-/// Axum handler for POST /api/v1/write
-///
-/// This is the HTTP endpoint that receives Prometheus remote_write requests.
-/// Authentication is expected to be handled by middleware that sets TenantContext.
-#[tracing::instrument(
-    skip_all,
-    fields(
-        signaldb.tenant.id = %tenant_context.tenant_id,
-        signaldb.dataset.id = %tenant_context.dataset_id
-    )
-)]
-pub async fn handle_prometheus_write(
-    State(state): State<PrometheusHandlerState>,
-    headers: HeaderMap,
-    TenantContextExtractor(tenant_context): TenantContextExtractor,
-    body: Bytes,
-) -> Result<StatusCode, PrometheusError> {
-    state
-        .handler
-        .handle_remote_write(&tenant_context, body, &headers)
-        .await?;
-
-    // Prometheus expects 204 No Content on success
-    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]

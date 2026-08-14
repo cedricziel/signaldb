@@ -8,6 +8,6 @@ pub mod prometheus_handler;
 pub mod wal_manager;
 pub mod wal_retry;
 
-pub use prometheus_handler::{PrometheusHandler, PrometheusHandlerState, handle_prometheus_write};
+pub use prometheus_handler::{PrometheusHandler, PrometheusHandlerState};
 pub use wal_manager::WalManager;
 pub use wal_retry::WalRetryConsumer;

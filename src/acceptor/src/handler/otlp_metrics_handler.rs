@@ -9,6 +9,7 @@ use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequ
 
 use super::WalManager;
 use super::forward::forward_batch_to_writer;
+use super::metrics_partition;
 
 pub struct MetricsHandler {
     /// Flight transport for forwarding telemetry
@@ -66,14 +67,6 @@ impl MetricsHandler {
         }
     }
 
-    /// Partition metrics by type to avoid schema conflicts
-    /// Returns: HashMap<metric_type, (table_name, partitioned_request)>
-    fn partition_metrics_by_type(
-        request: &ExportMetricsServiceRequest,
-    ) -> std::collections::HashMap<String, (String, ExportMetricsServiceRequest)> {
-        super::metrics_partition::partition_metrics_by_type(request)
-    }
-
     /// Handle an OTLP metrics export.
     ///
     /// Returns `Ok(())` once every metric-type partition is durably
@@ -114,7 +107,7 @@ impl MetricsHandler {
             .context("Failed to get WAL")?;
 
         // Partition metrics by type to prevent schema conflicts
-        let partitions = Self::partition_metrics_by_type(&request);
+        let partitions = metrics_partition::partition_metrics_by_type(&request);
 
         if partitions.is_empty() {
             tracing::warn!("No metrics found in request");
@@ -359,7 +352,7 @@ mod tests {
         };
 
         // Call the partition function
-        let partitions = MetricsHandler::partition_metrics_by_type(&request);
+        let partitions = metrics_partition::partition_metrics_by_type(&request);
 
         // Verify we got 3 partitions: gauge, sum, histogram
         assert_eq!(
@@ -466,7 +459,7 @@ mod tests {
             }],
         };
 
-        let partitions = MetricsHandler::partition_metrics_by_type(&request);
+        let partitions = metrics_partition::partition_metrics_by_type(&request);
 
         // Should only have 1 partition
         assert_eq!(partitions.len(), 1, "Should have only 1 partition");
@@ -483,7 +476,7 @@ mod tests {
             resource_metrics: vec![],
         };
 
-        let partitions = MetricsHandler::partition_metrics_by_type(&request);
+        let partitions = metrics_partition::partition_metrics_by_type(&request);
 
         // Should have no partitions
         assert_eq!(
@@ -540,7 +533,7 @@ mod tests {
             }],
         };
 
-        let partitions = MetricsHandler::partition_metrics_by_type(&request);
+        let partitions = metrics_partition::partition_metrics_by_type(&request);
 
         // Verify we got the exponential_histogram partition
         assert_eq!(
@@ -623,7 +616,7 @@ mod tests {
             }],
         };
 
-        let partitions = MetricsHandler::partition_metrics_by_type(&request);
+        let partitions = metrics_partition::partition_metrics_by_type(&request);
 
         // Verify we got the summary partition
         assert_eq!(partitions.len(), 1, "Should have 1 partition for summary");
@@ -781,7 +774,7 @@ mod tests {
             }],
         };
 
-        let partitions = MetricsHandler::partition_metrics_by_type(&request);
+        let partitions = metrics_partition::partition_metrics_by_type(&request);
 
         // Verify we got 5 partitions for all types
         assert_eq!(
