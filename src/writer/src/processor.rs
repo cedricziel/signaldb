@@ -495,22 +495,35 @@ impl WalProcessor {
         // instead, and do it BEFORE any new commit replaces the marker.
         // A mark failure aborts the whole group for the same reason.
         let committed = writer.load_committed_marker(&wal_writer_id).await?;
-        let mut processed_ids = Vec::new();
+        let mut already_committed_ids = Vec::new();
         let mut fresh = Vec::new();
         for (entry_id, batch) in entries {
             if committed.contains(&entry_id) {
-                wal.mark_processed(entry_id).await.with_context(|| {
-                    format!("Failed to mark already-committed WAL entry {entry_id} as processed")
-                })?;
                 tracing::info!(
                     entry_id = %entry_id,
                     table_name = %table_name,
                     "Skipping re-insert of WAL entry already committed to Iceberg"
                 );
-                processed_ids.push(entry_id);
+                already_committed_ids.push(entry_id);
             } else {
                 fresh.push((entry_id, batch));
             }
+        }
+
+        // Mark every already-committed id in one batch call so the WAL
+        // persists the affected segment index(es) once instead of once
+        // per entry (same rationale as the chunked mark below, #943).
+        let mut processed_ids = Vec::new();
+        if !already_committed_ids.is_empty() {
+            wal.mark_processed_many(&already_committed_ids)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to mark {} already-committed WAL entries as processed",
+                        already_committed_ids.len()
+                    )
+                })?;
+            processed_ids.extend(already_committed_ids);
         }
 
         // Step 2: commit fresh entries in bounded chunks, marking each
