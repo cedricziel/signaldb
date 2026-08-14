@@ -27,14 +27,14 @@ const ATTR_COLUMNS: &[&str] = &[
 ];
 
 /// The signal a table's statistics are recorded under.
+///
+/// Classified through [`crate::retention::SignalType::from_table_name`], the
+/// crate's single table->signal predicate, rather than a second hand-rolled
+/// match that could silently drift from it.
 pub fn signal_of_table(table_name: &str) -> &'static str {
-    match table_name {
-        "traces" => "traces",
-        "logs" => "logs",
-        "profiles" => "profiles",
-        t if t.starts_with("metrics_") => "metrics",
-        _ => "unknown",
-    }
+    crate::retention::SignalType::from_table_name(table_name)
+        .map(|s| s.table_name())
+        .unwrap_or("unknown")
 }
 
 /// Cap on the tracked distinct values per key. Keys that exceed it are
