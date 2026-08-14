@@ -1105,7 +1105,7 @@ impl Wal {
         // Add to buffer first for batching
         {
             let mut buffer = self.buffer.write().await;
-            buffer.push_back((entry_id, operation.clone(), data.clone(), metadata));
+            buffer.push_back((entry_id, operation, data, metadata));
         }
 
         // Check if we need to flush immediately
