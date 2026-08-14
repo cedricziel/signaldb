@@ -35,7 +35,6 @@ use common::{
     storage_usage::StorageUsageTracker,
     wal::{WalOperation, record_batch_to_bytes},
 };
-use opentelemetry_proto::tonic::metrics::v1::metric::Data;
 use tracing;
 
 use super::WalManager;
@@ -247,11 +246,7 @@ impl PrometheusHandler {
             let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
 
             let wal_entry_id = wal
-                .append(
-                    WalOperation::WriteMetrics,
-                    batch_bytes.clone(),
-                    wal_metadata_str,
-                )
+                .append(WalOperation::WriteMetrics, batch_bytes, wal_metadata_str)
                 .await
                 .map_err(|e| {
                     tracing::error!(error = ?e, "Failed to write to WAL");
@@ -332,145 +327,7 @@ impl PrometheusHandler {
             opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest,
         ),
     > {
-        use std::collections::HashMap;
-
-        let mut partitions: HashMap<String, Vec<(usize, usize, usize)>> = HashMap::new();
-
-        // First pass: detect types and collect indices
-        for (res_idx, resource_metrics) in request.resource_metrics.iter().enumerate() {
-            for (scope_idx, scope_metrics) in resource_metrics.scope_metrics.iter().enumerate() {
-                for (metric_idx, metric) in scope_metrics.metrics.iter().enumerate() {
-                    if let Some(data) = &metric.data {
-                        let metric_type = match data {
-                            Data::Gauge(_) => "gauge",
-                            Data::Sum(_) => "sum",
-                            Data::Histogram(_) => "histogram",
-                            Data::ExponentialHistogram(_) => "exponential_histogram",
-                            Data::Summary(_) => "summary",
-                        };
-
-                        partitions
-                            .entry(metric_type.to_string())
-                            .or_default()
-                            .push((res_idx, scope_idx, metric_idx));
-                    }
-                }
-            }
-        }
-
-        // Second pass: build separate requests for each type
-        let mut result = HashMap::new();
-
-        for (metric_type, indices) in partitions {
-            let table_name = match metric_type.as_str() {
-                "gauge" => "metrics_gauge",
-                "sum" => "metrics_sum",
-                "histogram" => "metrics_histogram",
-                "exponential_histogram" => "metrics_exponential_histogram",
-                "summary" => "metrics_summary",
-                _ => "metrics_gauge",
-            };
-
-            let mut partitioned_resource_metrics = vec![];
-            let mut current_resource_idx = None;
-            let mut current_scope_idx = None;
-            let mut current_scope_metrics = vec![];
-            let mut current_resource_scope_metrics = vec![];
-
-            for (res_idx, scope_idx, metric_idx) in indices {
-                let resource_metrics = &request.resource_metrics[res_idx];
-                let scope_metrics = &resource_metrics.scope_metrics[scope_idx];
-                let metric = scope_metrics.metrics[metric_idx].clone();
-
-                if current_resource_idx != Some(res_idx) {
-                    // Finalize previous scope and resource
-                    if !current_scope_metrics.is_empty() {
-                        let src: &opentelemetry_proto::tonic::metrics::v1::ScopeMetrics = &request
-                            .resource_metrics[current_resource_idx.unwrap()]
-                        .scope_metrics[current_scope_idx.unwrap()];
-                        current_resource_scope_metrics.push(
-                            opentelemetry_proto::tonic::metrics::v1::ScopeMetrics {
-                                scope: src.scope.clone(),
-                                metrics: current_scope_metrics,
-                                schema_url: src.schema_url.clone(),
-                            },
-                        );
-                        current_scope_metrics = vec![];
-                    }
-
-                    if let Some(res_idx) = current_resource_idx {
-                        let src = &request.resource_metrics[res_idx];
-                        partitioned_resource_metrics.push(
-                            opentelemetry_proto::tonic::metrics::v1::ResourceMetrics {
-                                resource: src.resource.clone(),
-                                scope_metrics: current_resource_scope_metrics,
-                                schema_url: src.schema_url.clone(),
-                            },
-                        );
-                        current_resource_scope_metrics = vec![];
-                    }
-
-                    current_resource_idx = Some(res_idx);
-                    current_scope_idx = Some(scope_idx);
-                    current_scope_metrics.push(metric);
-                } else if current_scope_idx != Some(scope_idx) {
-                    // Finalize previous scope
-                    if !current_scope_metrics.is_empty() {
-                        let src = &request.resource_metrics[current_resource_idx.unwrap()]
-                            .scope_metrics[current_scope_idx.unwrap()];
-                        current_resource_scope_metrics.push(
-                            opentelemetry_proto::tonic::metrics::v1::ScopeMetrics {
-                                scope: src.scope.clone(),
-                                metrics: current_scope_metrics,
-                                schema_url: src.schema_url.clone(),
-                            },
-                        );
-                        current_scope_metrics = vec![];
-                    }
-
-                    current_scope_idx = Some(scope_idx);
-                    current_scope_metrics.push(metric);
-                } else {
-                    current_scope_metrics.push(metric);
-                }
-            }
-
-            // Finalize last scope and resource
-            if !current_scope_metrics.is_empty() {
-                let src = &request.resource_metrics[current_resource_idx.unwrap()].scope_metrics
-                    [current_scope_idx.unwrap()];
-                current_resource_scope_metrics.push(
-                    opentelemetry_proto::tonic::metrics::v1::ScopeMetrics {
-                        scope: src.scope.clone(),
-                        metrics: current_scope_metrics,
-                        schema_url: src.schema_url.clone(),
-                    },
-                );
-            }
-
-            if !current_resource_scope_metrics.is_empty() {
-                partitioned_resource_metrics.push(
-                    opentelemetry_proto::tonic::metrics::v1::ResourceMetrics {
-                        resource: request.resource_metrics[current_resource_idx.unwrap()]
-                            .resource
-                            .clone(),
-                        scope_metrics: current_resource_scope_metrics,
-                        schema_url: request.resource_metrics[current_resource_idx.unwrap()]
-                            .schema_url
-                            .clone(),
-                    },
-                );
-            }
-
-            let partitioned_request =
-                opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest {
-                    resource_metrics: partitioned_resource_metrics,
-                };
-
-            result.insert(metric_type, (table_name.to_string(), partitioned_request));
-        }
-
-        result
+        super::metrics_partition::partition_metrics_by_type(request)
     }
 }
 
