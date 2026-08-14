@@ -96,16 +96,7 @@ impl ParquetRewriter {
         let identifier = self
             .catalog_manager
             .build_table_identifier(tenant_id, dataset_id, table_name);
-        let tabular = self
-            .catalog_manager
-            .catalog()
-            .load_tabular(&identifier)
-            .await
-            .with_context(|| format!("Failed to load table {identifier} with fresh metadata"))?;
-        match tabular {
-            iceberg_rust::catalog::tabular::Tabular::Table(table) => Ok(table),
-            _ => Err(anyhow::anyhow!("Expected table but got view: {identifier}")),
-        }
+        self.load_fresh_by_identifier(&identifier).await
     }
 
     /// Read, merge, sort, and rewrite ONE hour partition into new Parquet
@@ -684,25 +675,30 @@ impl ParquetRewriter {
     ///
     /// Returns a list of (column_name, ascending, nulls_first) tuples
     /// for sorting compacted data. Returns empty vector for unknown tables.
-    fn get_sort_columns(table_name: &str) -> Vec<(&str, bool, bool)> {
-        match table_name {
-            "traces" => vec![("timestamp", true, true), ("trace_id", true, true)],
-            "logs" => vec![
+    fn get_sort_columns(table_name: &str) -> Vec<(&'static str, bool, bool)> {
+        // Classified through the crate's single table->signal predicate
+        // (see SignalType::from_table_name) rather than a second hand-rolled
+        // match, so a table this crate doesn't yet know about warns instead
+        // of silently compacting unsorted (issue #1014's failure mode).
+        match crate::retention::SignalType::from_table_name(table_name) {
+            Ok(crate::retention::SignalType::Traces) => {
+                vec![("timestamp", true, true), ("trace_id", true, true)]
+            }
+            Ok(crate::retention::SignalType::Logs) => vec![
                 ("timestamp", true, true),
                 ("service_name", true, true),
                 ("severity_text", true, true),
             ],
             // All 5 metrics types use the same sort pattern
-            "metrics_gauge"
-            | "metrics_sum"
-            | "metrics_histogram"
-            | "metrics_exponential_histogram"
-            | "metrics_summary" => vec![
+            Ok(crate::retention::SignalType::Metrics) => vec![
                 ("timestamp", true, true),
                 ("metric_name", true, true),
                 ("service_name", true, true),
             ],
-            _ => {
+            Ok(crate::retention::SignalType::Profiles) => {
+                vec![("timestamp", true, true), ("service_name", true, true)]
+            }
+            Err(_) => {
                 tracing::warn!(
                     "No sort configuration for table {table_name}, data will not be sorted"
                 );
@@ -1267,6 +1263,28 @@ mod tests {
             "one sorter must not be able to take 90% of the pool while a peer is registered — \
              that is the greedy behavior that fails compaction"
         );
+    }
+
+    /// Every signal table classified by `SignalType::from_table_name` must
+    /// get a non-empty sort order — a table silently falling through to the
+    /// `_` arm compacts unsorted forever (issue #1014's failure mode).
+    #[test]
+    fn get_sort_columns_covers_every_known_signal_table() {
+        for table in [
+            "traces",
+            "logs",
+            "metrics_gauge",
+            "metrics_sum",
+            "metrics_histogram",
+            "metrics_exponential_histogram",
+            "metrics_summary",
+            "profiles",
+        ] {
+            assert!(
+                !ParquetRewriter::get_sort_columns(table).is_empty(),
+                "table '{table}' has no sort columns"
+            );
+        }
     }
 
     /// `0` is the documented escape hatch back to DataFusion's own

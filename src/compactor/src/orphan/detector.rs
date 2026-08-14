@@ -19,6 +19,7 @@ use crate::orphan::metrics::{OrphanMetrics, SkipReason};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use common::catalog_manager::CatalogManager;
+use common::iceberg::names::build_table_location;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, ObjectStoreExt};
 use std::collections::HashSet;
@@ -269,7 +270,7 @@ impl OrphanDetector {
     ) -> Result<Vec<ObjectStoreFile>> {
         // Build table location path
         // Format: /{tenant_slug}/{dataset_slug}/{table_name}/data/
-        let table_location = format!("{}/{}/{}", tenant_id, dataset_id, table_name);
+        let table_location = build_table_location(tenant_id, dataset_id, table_name);
         let data_path = format!("{}/data/", table_location);
         let path = ObjectPath::from(data_path.as_str());
 
@@ -352,7 +353,10 @@ impl OrphanDetector {
             .await
             .context("Failed to build live metadata set")?;
 
-        let metadata_dir = format!("{tenant_id}/{dataset_id}/{table_name}/metadata");
+        let metadata_dir = format!(
+            "{}/metadata",
+            build_table_location(tenant_id, dataset_id, table_name)
+        );
 
         // The current metadata.json is not part of the metadata-log; protect
         // the file the version hint points at.
@@ -459,7 +463,7 @@ impl OrphanDetector {
         let grace_period = chrono::Duration::from_std(self.config.grace_period())
             .context("Failed to convert grace period duration")?;
         let cutoff_time = Utc::now() - grace_period;
-        let table_identifier = format!("{tenant_id}/{dataset_id}/{table_name}");
+        let table_identifier = build_table_location(tenant_id, dataset_id, table_name);
 
         let mut candidates = vec![];
 

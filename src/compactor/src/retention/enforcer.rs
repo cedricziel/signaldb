@@ -28,7 +28,7 @@ use common::CatalogManager;
 
 use crate::commit::{IcebergCommitter, is_conflict_error};
 use crate::iceberg::partition::{TIMESTAMP_HOUR_FIELD, data_file_partition_hours};
-use crate::iceberg::{ManifestReader, PartitionManager, SnapshotManager};
+use crate::iceberg::{PartitionManager, SnapshotManager};
 use crate::retention::config::RetentionConfig;
 use crate::retention::policy::RetentionPolicyResolver;
 
@@ -73,8 +73,6 @@ pub struct RetentionEnforcer {
     policy_resolver: RetentionPolicyResolver,
     partition_manager: PartitionManager,
     snapshot_manager: SnapshotManager,
-    #[allow(dead_code)] // Will be used in orphan cleanup phase
-    manifest_reader: ManifestReader,
     metrics: RetentionMetrics,
     config: RetentionConfig,
     /// Serializes this table's partition drops and snapshot expiration
@@ -101,7 +99,6 @@ impl RetentionEnforcer {
             policy_resolver,
             partition_manager: PartitionManager::new(),
             snapshot_manager: SnapshotManager::new(),
-            manifest_reader: ManifestReader::new(),
             metrics,
             config,
             table_locks: crate::table_lock::TableLockRegistry::new(),

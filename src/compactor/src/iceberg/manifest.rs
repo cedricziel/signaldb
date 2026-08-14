@@ -174,55 +174,6 @@ impl ManifestReader {
 
         Ok(files)
     }
-
-    /// Build live file set using DataFusion table scan (alternative approach)
-    ///
-    /// This uses DataFusion's Iceberg integration to enumerate files
-    /// instead of reading manifests directly. This is more reliable
-    /// given the current state of iceberg-rust APIs.
-    ///
-    /// # Arguments
-    /// * `table_location` - Base location of the table (e.g., "s3://bucket/path")
-    ///
-    /// # Returns
-    /// A HashSet of file paths found in the table
-    pub async fn build_live_file_set_via_datafusion(
-        &self,
-        _table_location: &str,
-    ) -> Result<HashSet<String>> {
-        // This will be implemented when we integrate with DataFusion
-        // context in the orphan cleanup module.
-
-        tracing::debug!("Building live file set via DataFusion table scan");
-
-        Ok(HashSet::new())
-    }
-
-    /// Read manifest list file to get manifest file paths
-    ///
-    /// This is a low-level operation that parses the manifest list Avro file.
-    /// The manifest list contains references to individual manifest files.
-    #[allow(dead_code)] // Reserved for future implementation
-    async fn read_manifest_list(&self, _manifest_list_path: &str) -> Result<Vec<String>> {
-        // Placeholder for actual manifest list reading
-        // Would use Avro reader to parse the manifest list file
-
-        tracing::debug!("Would read manifest list from path");
-        Ok(vec![])
-    }
-
-    /// Read a manifest file to extract data file entries
-    ///
-    /// This parses an individual manifest Avro file to get the list of
-    /// data files (Parquet files) it references.
-    #[allow(dead_code)] // Reserved for future implementation
-    async fn read_manifest_file(&self, _manifest_path: &str) -> Result<Vec<ManifestFileInfo>> {
-        // Placeholder for actual manifest reading
-        // Would use Avro reader to parse the manifest file
-
-        tracing::debug!("Would read manifest file");
-        Ok(vec![])
-    }
 }
 
 impl Default for ManifestReader {

@@ -13,7 +13,6 @@ use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, ObjectStoreExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Result of a deletion operation.
 #[derive(Debug, Clone)]
@@ -131,10 +130,12 @@ impl OrphanCleaner {
             "Starting batch deletion of orphan files"
         );
 
-        let deleted_count = AtomicUsize::new(0);
-        let total_bytes_freed = AtomicU64::new(0);
-        let would_delete_count = AtomicUsize::new(0);
-        let would_free_bytes = AtomicU64::new(0);
+        // Deletion runs strictly sequentially (batch-by-batch, rate-limited
+        // in between), so these are plain counters, not atomics.
+        let mut deleted_count: usize = 0;
+        let mut total_bytes_freed: u64 = 0;
+        let mut would_delete_count: usize = 0;
+        let mut would_free_bytes: u64 = 0;
         let mut failed_deletions = vec![];
 
         // Process in batches
@@ -178,8 +179,8 @@ impl OrphanCleaner {
                     );
 
                     // Track dry-run metrics separately
-                    would_delete_count.fetch_add(1, Ordering::Relaxed);
-                    would_free_bytes.fetch_add(candidate.size_bytes as u64, Ordering::Relaxed);
+                    would_delete_count += 1;
+                    would_free_bytes += candidate.size_bytes as u64;
                 } else {
                     // Actually delete the file
                     match self.delete_file(&candidate.path).await {
@@ -191,9 +192,8 @@ impl OrphanCleaner {
                                 "Deleted orphan file"
                             );
 
-                            deleted_count.fetch_add(1, Ordering::Relaxed);
-                            total_bytes_freed
-                                .fetch_add(candidate.size_bytes as u64, Ordering::Relaxed);
+                            deleted_count += 1;
+                            total_bytes_freed += candidate.size_bytes as u64;
                         }
                         Err(e) => {
                             tracing::error!(
@@ -217,11 +217,11 @@ impl OrphanCleaner {
         }
 
         let result = DeletionResult {
-            deleted_count: deleted_count.load(Ordering::Relaxed),
+            deleted_count,
             failed_count: failed_deletions.len(),
-            total_bytes_freed: total_bytes_freed.load(Ordering::Relaxed),
-            would_delete_count: would_delete_count.load(Ordering::Relaxed),
-            would_free_bytes: would_free_bytes.load(Ordering::Relaxed),
+            total_bytes_freed,
+            would_delete_count,
+            would_free_bytes,
             failed_deletions,
         };
 
