@@ -20,12 +20,59 @@
 //! error text, which is brittle across upgrades and would swallow genuine
 //! planning failures.
 
+use datafusion::arrow::array::{Array, RecordBatch, StringArray};
 use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::LogicalPlanBuilder;
-use datafusion::prelude::{DataFrame, SessionContext};
+use datafusion::prelude::{DataFrame, SessionContext, col, lit};
+use datafusion::scalar::ScalarValue;
+use std::collections::BTreeSet;
 
 use super::error::QuerierError;
 use super::table_ref::build_table_reference;
+
+/// Inclusive nanosecond time-window filter on a `timestamp` column.
+pub(super) fn time_window(df: DataFrame, start: i64, end: i64) -> Result<DataFrame, QuerierError> {
+    df.filter(
+        col("timestamp")
+            .gt_eq(lit(ScalarValue::TimestampNanosecond(Some(start), None)))
+            .and(col("timestamp").lt_eq(lit(ScalarValue::TimestampNanosecond(Some(end), None)))),
+    )
+    .map_err(QuerierError::QueryFailed)
+}
+
+/// Borrow `name` from `batch` as a `StringArray`, erroring if the column is
+/// missing or a different type.
+pub(super) fn string_column<'a>(
+    batch: &'a RecordBatch,
+    name: &str,
+) -> Result<&'a StringArray, QuerierError> {
+    batch
+        .column_by_name(name)
+        .ok_or_else(|| QuerierError::InvalidInput(format!("missing column '{name}'")))?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| {
+            QuerierError::InvalidInput(format!("column '{name}' is not a string column"))
+        })
+}
+
+/// Collect the distinct non-empty, non-null values of `column` across
+/// `batches`, sorted.
+pub(super) fn distinct_non_empty(
+    batches: &[RecordBatch],
+    column: &str,
+) -> Result<Vec<String>, QuerierError> {
+    let mut values = BTreeSet::new();
+    for batch in batches {
+        let col = string_column(batch, column)?;
+        for i in 0..batch.num_rows() {
+            if !col.is_null(i) && !col.value(i).is_empty() {
+                values.insert(col.value(i).to_string());
+            }
+        }
+    }
+    Ok(values.into_iter().collect())
+}
 
 /// Resolve `{tenant_slug}.{dataset_slug}.{table_name}` to a [`DataFrame`],
 /// reporting an absent table as `Ok(None)` rather than as an error.

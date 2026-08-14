@@ -40,8 +40,9 @@ use super::logql_metric::{
     Aggregate, ArithOp, LabelReplaceSpec, OuterAgg, ScalarOp, SortSpec, TopKSpec, plan_metric_query,
 };
 use super::{
-    DetectedField, DetectedFieldsParams, LogQueryParams, MetricQueryParams, error::QuerierError,
-    table_lookup::optional_table,
+    DetectedField, DetectedFieldsParams, LogQueryParams, MetricQueryParams,
+    error::QuerierError,
+    table_lookup::{distinct_non_empty, optional_table, string_column, time_window},
 };
 
 /// Columns projected for a log-line query, in wire order. The Flight
@@ -270,7 +271,7 @@ impl LogsService {
         };
 
         let filter = log_query_filter_with_columns(&plan.log_query, &attr_context_of(&df))?;
-        df = apply_window(df, params.start, params.end)?;
+        df = time_window(df, params.start, params.end)?;
         if let Some(filter) = filter {
             df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
         }
@@ -382,7 +383,7 @@ impl LogsService {
             return Ok(Vec::new());
         };
         let map_attrs = attr_context_of(&df).map_attrs;
-        let df = apply_window(df, start, end)?;
+        let df = time_window(df, start, end)?;
         let df = df
             .select_columns(&["log_attributes", "resource_attributes"])
             .map_err(QuerierError::QueryFailed)?;
@@ -430,7 +431,7 @@ impl LogsService {
             return Ok(Vec::new());
         };
         let map_attrs = attr_context_of(&df).map_attrs;
-        let df = apply_window(df, start, end)?;
+        let df = time_window(df, start, end)?;
 
         // Known labels are dedicated columns: distinct on the column.
         if let Some(column) = column_for_label(label) {
@@ -506,7 +507,7 @@ impl LogsService {
                 df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
             }
         }
-        let df = apply_window(df, params.start, params.end)?;
+        let df = time_window(df, params.start, params.end)?;
         let batches = df
             .select_columns(&["log_attributes", "resource_attributes"])
             .map_err(QuerierError::QueryFailed)?
@@ -595,7 +596,7 @@ impl LogsService {
             return Ok(Vec::new());
         };
         let filter = log_query_filter_with_columns(&query, &attr_context_of(&df))?;
-        df = apply_window(df, start, end)?;
+        df = time_window(df, start, end)?;
         if let Some(filter) = filter {
             df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
         }
@@ -643,7 +644,7 @@ pub fn shape_log_query(
     limit: u32,
     direction: Direction,
 ) -> Result<DataFrame, QuerierError> {
-    let mut df = apply_window(df, start, end)?;
+    let mut df = time_window(df, start, end)?;
     if let Some(filter) = filter {
         df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
     }
@@ -687,13 +688,6 @@ fn attr_context_of(df: &DataFrame) -> AttrContext {
         map_attrs,
         attr_tokens,
     }
-}
-
-fn apply_window(df: DataFrame, start: i64, end: i64) -> Result<DataFrame, QuerierError> {
-    df.filter(col("timestamp").gt_eq(lit(ScalarValue::TimestampNanosecond(Some(start), None))))
-        .map_err(QuerierError::QueryFailed)?
-        .filter(col("timestamp").lt_eq(lit(ScalarValue::TimestampNanosecond(Some(end), None))))
-        .map_err(QuerierError::QueryFailed)
 }
 
 /// Build the DataFusion aggregate expression for a metric plan's value.
@@ -1390,20 +1384,6 @@ fn column_for_label(label: &str) -> Option<&'static str> {
     }
 }
 
-/// Collect the sorted, distinct, non-empty values of a string column.
-fn distinct_non_empty(batches: &[RecordBatch], column: &str) -> Result<Vec<String>, QuerierError> {
-    let mut values = BTreeSet::new();
-    for batch in batches {
-        let col = string_column(batch, column)?;
-        for i in 0..batch.num_rows() {
-            if !col.is_null(i) && !col.value(i).is_empty() {
-                values.insert(col.value(i).to_string());
-            }
-        }
-    }
-    Ok(values.into_iter().collect())
-}
-
 /// Read an attribute column's per-row documents as string key/value maps.
 ///
 /// Delegates to [`common::attrs::attr_documents`], which owns the decode of
@@ -1416,17 +1396,6 @@ pub(super) fn attr_documents(
 ) -> Result<Vec<Option<BTreeMap<String, String>>>, QuerierError> {
     common::attrs::attr_documents(batch, name)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))
-}
-
-fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, QuerierError> {
-    batch
-        .column_by_name(name)
-        .ok_or_else(|| QuerierError::InvalidInput(format!("missing column '{name}'")))?
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| {
-            QuerierError::InvalidInput(format!("column '{name}' is not a string column"))
-        })
 }
 
 #[cfg(test)]

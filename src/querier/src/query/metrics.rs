@@ -38,7 +38,10 @@ use super::promql::{
     MatchKind, MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql,
     plan_query,
 };
-use super::{error::QuerierError, table_lookup::optional_table};
+use super::{
+    error::QuerierError,
+    table_lookup::{distinct_non_empty, optional_table, string_column, time_window},
+};
 use common::schema::materialized_column_name;
 
 /// The metrics tables a PromQL query scans (gauge + sum cover counters
@@ -1502,7 +1505,7 @@ impl MetricsService {
         let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
             return Ok(Vec::new());
         };
-        let df = window(df, start, end)?;
+        let df = time_window(df, start, end)?;
         let df = df
             .select_columns(&[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES])
             .map_err(QuerierError::QueryFailed)?;
@@ -1549,7 +1552,7 @@ impl MetricsService {
         let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
             return Ok(Vec::new());
         };
-        let df = window(df, start, end)?;
+        let df = time_window(df, start, end)?;
 
         // `__name__` → metric_name; other known labels → their column.
         let column = match label {
@@ -1647,30 +1650,6 @@ impl MetricsService {
     }
 }
 
-/// Inclusive nanosecond time-window filter on `timestamp`.
-fn window(df: DataFrame, start: i64, end: i64) -> Result<DataFrame, QuerierError> {
-    df.filter(
-        col("timestamp")
-            .gt_eq(lit(ScalarValue::TimestampNanosecond(Some(start), None)))
-            .and(col("timestamp").lt_eq(lit(ScalarValue::TimestampNanosecond(Some(end), None)))),
-    )
-    .map_err(QuerierError::QueryFailed)
-}
-
-/// Collect the sorted, distinct, non-empty values of a string column.
-fn distinct_non_empty(batches: &[RecordBatch], column: &str) -> Result<Vec<String>, QuerierError> {
-    let mut values = BTreeSet::new();
-    for batch in batches {
-        let col = string_column(batch, column)?;
-        for i in 0..batch.num_rows() {
-            if !col.is_null(i) && !col.value(i).is_empty() {
-                values.insert(col.value(i).to_string());
-            }
-        }
-    }
-    Ok(values.into_iter().collect())
-}
-
 /// Add every attribute key from an attribute column (JSON-string or
 /// map-typed) to `keys`.
 fn collect_attribute_keys(
@@ -1704,17 +1683,6 @@ fn collect_attribute_values(
         }
     }
     Ok(())
-}
-
-fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, QuerierError> {
-    batch
-        .column_by_name(name)
-        .ok_or_else(|| QuerierError::InvalidInput(format!("missing column '{name}'")))?
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| {
-            QuerierError::InvalidInput(format!("column '{name}' is not a string column"))
-        })
 }
 
 /// Extract `(bucket_ns, service_name, value)` rows from a matrix batch.

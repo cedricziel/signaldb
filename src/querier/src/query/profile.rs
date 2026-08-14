@@ -159,8 +159,7 @@ impl ProfileService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        if params.profile_id.is_empty() || !params.profile_id.chars().all(|c| c.is_ascii_hexdigit())
-        {
+        if !is_hex_id(&params.profile_id) {
             return Err(QuerierError::InvalidInput(format!(
                 "profile_id must be a hex string, got '{}'",
                 params.profile_id
@@ -406,13 +405,13 @@ impl ProfileService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        if trace_id.is_empty() || !trace_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        if !is_hex_id(trace_id) {
             return Err(QuerierError::InvalidInput(format!(
                 "trace_id must be a hex string, got '{trace_id}'"
             )));
         }
         if let Some(span_id) = span_id
-            && (span_id.is_empty() || !span_id.chars().all(|c| c.is_ascii_hexdigit()))
+            && !is_hex_id(span_id)
         {
             return Err(QuerierError::InvalidInput(format!(
                 "span_id must be a hex string, got '{span_id}'"
@@ -649,6 +648,12 @@ pub(crate) fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
         });
     }
     profiles
+}
+
+/// Whether `s` is a non-empty lowercase-or-uppercase hex string, as required
+/// for profile/trace/span IDs.
+fn is_hex_id(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, QuerierError> {
