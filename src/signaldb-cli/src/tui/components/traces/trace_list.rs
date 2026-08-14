@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
 
 use crate::tui::client::models::TraceResult;
+use crate::tui::format::format_duration_ms as format_duration;
 
 /// Tri-state data model for the trace list.
 #[derive(Debug, Clone)]
@@ -564,16 +565,6 @@ fn group_key_display(raw: String) -> String {
         "(unknown)".to_string()
     } else {
         raw
-    }
-}
-
-fn format_duration(duration_ms: f64) -> String {
-    if duration_ms < 1.0 {
-        format!("{:.0}us", duration_ms * 1000.0)
-    } else if duration_ms < 1000.0 {
-        format!("{duration_ms:.1}ms")
-    } else {
-        format!("{:.2}s", duration_ms / 1000.0)
     }
 }
 

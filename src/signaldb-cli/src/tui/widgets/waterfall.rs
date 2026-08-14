@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::tui::client::models::SpanInfo;
+use crate::tui::format::format_duration_ms as format_duration;
 
 /// Colors cycled through for different service names.
 const SERVICE_COLORS: &[Color] = &[
@@ -249,17 +250,6 @@ pub fn render_waterfall(
     frame.render_widget(paragraph, inner);
 }
 
-/// Format duration in milliseconds to a human-readable string.
-fn format_duration(ms: f64) -> String {
-    if ms < 1.0 {
-        format!("{:.0}us", ms * 1000.0)
-    } else if ms < 1000.0 {
-        format!("{:.1}ms", ms)
-    } else {
-        format!("{:.2}s", ms / 1000.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ratatui::Terminal;
@@ -340,21 +330,6 @@ mod tests {
         assert!((waterfall[0].duration_fraction - 1.0).abs() < 0.01);
         assert!((waterfall[1].start_fraction - 0.1).abs() < 0.01);
         assert!((waterfall[1].duration_fraction - 0.5).abs() < 0.01);
-    }
-
-    #[test]
-    fn format_duration_us() {
-        assert_eq!(format_duration(0.5), "500us");
-    }
-
-    #[test]
-    fn format_duration_ms() {
-        assert_eq!(format_duration(42.0), "42.0ms");
-    }
-
-    #[test]
-    fn format_duration_seconds() {
-        assert_eq!(format_duration(2500.0), "2.50s");
     }
 
     #[test]
