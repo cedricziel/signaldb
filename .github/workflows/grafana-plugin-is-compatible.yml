@@ -2,8 +2,7 @@ name: Grafana Plugin - API Compatibility Check
 
 on:
   pull_request:
-    branches:
-      - main
+    types: [opened, synchronize, reopened, ready_for_review, edited]
     paths:
       - 'src/grafana-plugin/**'
       - '.github/workflows/grafana-plugin-is-compatible*.yml'

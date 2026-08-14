@@ -8,8 +8,7 @@ on:
       - 'src/grafana-plugin/**'
       - '.github/workflows/grafana-plugin-ci.yml'
   pull_request:
-    branches:
-      - main
+    types: [opened, synchronize, reopened, ready_for_review, edited]
     paths:
       - 'src/grafana-plugin/**'
       - '.github/workflows/grafana-plugin-ci.yml'
