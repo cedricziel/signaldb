@@ -41,6 +41,7 @@ use crate::services::{
 use common::auth::Authenticator;
 
 /// Shared resources for acceptor services (gRPC and HTTP)
+#[derive(Clone)]
 pub struct AcceptorResources {
     pub flight_transport: Arc<InMemoryFlightTransport>,
     pub wal_manager: Arc<WalManager>,
@@ -74,37 +75,30 @@ pub async fn init_acceptor_resources(
     // Start background connection cleanup
     flight_transport.start_connection_cleanup(std::time::Duration::from_secs(60));
 
-    // Initialize WalManager with separate base configurations for each signal type
-
-    // Base WAL config for traces - baseline configuration
-    let mut traces_wal_config = WalConfig::with_defaults(wal_dir.clone());
-    traces_wal_config.max_segment_size = 64 * 1024 * 1024; // 64MB
-    traces_wal_config.max_buffer_entries = 1000;
-    traces_wal_config.flush_interval_secs = 30;
-
-    // Base WAL config for logs - higher volume, more frequent flushes
-    let mut logs_wal_config = WalConfig::with_defaults(wal_dir.clone());
-    logs_wal_config.max_segment_size = 64 * 1024 * 1024; // 64MB
-    logs_wal_config.max_buffer_entries = 2000;
-    logs_wal_config.flush_interval_secs = 15;
-
-    // Base WAL config for metrics - highest volume, most aggressive flushing
-    let mut metrics_wal_config = WalConfig::with_defaults(wal_dir.clone());
-    metrics_wal_config.max_segment_size = 128 * 1024 * 1024; // 128MB
-    metrics_wal_config.max_buffer_entries = 5000;
-    metrics_wal_config.flush_interval_secs = 10;
-
-    // Base WAL config for profiles - large payloads, lower entry count
-    let mut profiles_wal_config = WalConfig::with_defaults(wal_dir.clone());
-    profiles_wal_config.max_segment_size = 256 * 1024 * 1024; // 256MB
-    profiles_wal_config.max_buffer_entries = 500;
-    profiles_wal_config.flush_interval_secs = 60;
+    // Initialize WalManager with separate base configurations per signal
+    // type, tuned for that signal's typical volume and payload size.
+    fn wal_config(
+        wal_dir: &std::path::Path,
+        max_segment_mb: u64,
+        max_buffer_entries: usize,
+        flush_interval_secs: u64,
+    ) -> WalConfig {
+        let mut config = WalConfig::with_defaults(wal_dir.to_path_buf());
+        config.max_segment_size = max_segment_mb * 1024 * 1024;
+        config.max_buffer_entries = max_buffer_entries;
+        config.flush_interval_secs = flush_interval_secs;
+        config
+    }
 
     let wal_manager = Arc::new(WalManager::new(
-        traces_wal_config,
-        logs_wal_config,
-        metrics_wal_config,
-        profiles_wal_config,
+        // traces - baseline configuration
+        wal_config(&wal_dir, 64, 1000, 30),
+        // logs - higher volume, more frequent flushes
+        wal_config(&wal_dir, 64, 2000, 15),
+        // metrics - highest volume, most aggressive flushing
+        wal_config(&wal_dir, 128, 5000, 10),
+        // profiles - large payloads, lower entry count
+        wal_config(&wal_dir, 256, 500, 60),
     ));
 
     tracing::info!(
