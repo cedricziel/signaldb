@@ -1,6 +1,6 @@
 use acceptor::{
-    AcceptorResources, GrpcAcceptorConfig, HttpAcceptorConfig, init_acceptor_resources,
-    serve_otlp_grpc, serve_otlp_http,
+    GrpcAcceptorConfig, HttpAcceptorConfig, init_acceptor_resources, serve_otlp_grpc,
+    serve_otlp_http,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -403,22 +403,9 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to initialize acceptor resources")?;
 
-    // Clone resources for HTTP server
-    let grpc_resources = AcceptorResources {
-        flight_transport: Arc::clone(&acceptor_resources.flight_transport),
-        wal_manager: Arc::clone(&acceptor_resources.wal_manager),
-        authenticator: Arc::clone(&acceptor_resources.authenticator),
-        rate_limiter: Arc::clone(&acceptor_resources.rate_limiter),
-        storage_usage: Arc::clone(&acceptor_resources.storage_usage),
-    };
-
-    let http_resources = AcceptorResources {
-        flight_transport: Arc::clone(&acceptor_resources.flight_transport),
-        wal_manager: Arc::clone(&acceptor_resources.wal_manager),
-        authenticator: Arc::clone(&acceptor_resources.authenticator),
-        rate_limiter: Arc::clone(&acceptor_resources.rate_limiter),
-        storage_usage: Arc::clone(&acceptor_resources.storage_usage),
-    };
+    // Clone resources for both servers (all fields are Arcs, cheap to clone)
+    let grpc_resources = acceptor_resources.clone();
+    let http_resources = acceptor_resources.clone();
 
     // Start OTLP/gRPC server
     let grpc_config = GrpcAcceptorConfig {
@@ -498,7 +485,6 @@ async fn main() -> Result<()> {
 
     // Start Router Flight service
     let flight_service = create_flight_service(state);
-    let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053));
     let router_flight_auth = tenant_flight_auth.clone();
     let flight_handle = tokio::spawn(async move {
         tracing::info!("Starting Router Flight service on {flight_addr}");
