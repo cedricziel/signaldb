@@ -162,7 +162,7 @@ pub async fn query<S: RouterState>(
     let logql = require_query(&params.query)?;
     validate_direction(&params.direction)?;
 
-    let end = parse_timestamp_ns(params.time.as_deref()).unwrap_or_else(now_ns);
+    let end = parse_timestamp_ns(params.time.as_deref()).unwrap_or_else(super::now_ns);
     let start = end - HOUR_NS;
     let streams = run_log_query(
         &state,
@@ -213,7 +213,7 @@ pub async fn query_range<S: RouterState>(
     let logql = require_query(&params.query)?;
     validate_direction(&params.direction)?;
 
-    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(now_ns);
+    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(super::now_ns);
     let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
 
     // A metric query returns a matrix; a log query returns streams.
@@ -795,16 +795,9 @@ fn value_at(col: &Option<&StringArray>, i: usize) -> Option<String> {
 /// Resolve a metadata endpoint's `[start, end]` window in nanoseconds,
 /// defaulting to the last hour.
 fn metadata_window(params: &MetadataParams) -> (i64, i64) {
-    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(now_ns);
+    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(super::now_ns);
     let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
     (start, end)
-}
-
-/// Current time as unix-epoch nanoseconds.
-fn now_ns() -> i64 {
-    chrono::Utc::now()
-        .timestamp_nanos_opt()
-        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() * 1_000_000)
 }
 
 /// Parse a Loki timestamp parameter into unix-epoch nanoseconds. Accepts

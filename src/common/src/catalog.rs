@@ -1017,7 +1017,7 @@ impl Catalog {
 
                 // Ignore duplicate key errors
                 if let Err(sqlx::Error::Database(db_err)) = &result
-                    && db_err.message().contains("UNIQUE constraint failed")
+                    && db_err.is_unique_violation()
                 {
                     return Ok(());
                 }
@@ -1060,7 +1060,7 @@ impl Catalog {
 
                 // Ignore duplicate key errors
                 if let Err(sqlx::Error::Database(db_err)) = &result
-                    && db_err.message().contains("UNIQUE constraint failed")
+                    && db_err.is_unique_violation()
                 {
                     return Ok(());
                 }

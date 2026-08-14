@@ -111,7 +111,7 @@ pub async fn query_range<S: RouterState>(
             "missing or empty 'query'",
         )));
     };
-    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(now_ns);
+    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(super::now_ns);
     let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
     let step = parse_step_ns(params.step.as_deref()).unwrap_or_else(|| default_step_ns(start, end));
 
@@ -156,7 +156,7 @@ pub async fn query<S: RouterState>(
             "missing or empty 'query'",
         )));
     };
-    let at = parse_timestamp_ns(params.time.as_deref()).unwrap_or_else(now_ns);
+    let at = parse_timestamp_ns(params.time.as_deref()).unwrap_or_else(super::now_ns);
     let start = at - HOUR_NS;
     // One bucket spanning the lookback so each series yields one sample.
     let step = HOUR_NS;
@@ -526,7 +526,7 @@ fn series_from_batches(batches: &[RecordBatch]) -> Vec<HashMap<String, String>> 
 /// Resolve a metadata endpoint's `[start, end]` window in nanoseconds,
 /// defaulting to the last hour.
 fn metadata_window(params: &MetadataParams) -> (i64, i64) {
-    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(now_ns);
+    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(super::now_ns);
     let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
     (start, end)
 }
@@ -549,12 +549,6 @@ fn non_empty(value: &Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-}
-
-fn now_ns() -> i64 {
-    chrono::Utc::now()
-        .timestamp_nanos_opt()
-        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() * 1_000_000)
 }
 
 /// Parse a Prometheus timestamp (unix seconds float, or RFC3339) → ns.

@@ -8,7 +8,7 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::config::QuerierConfig;
 use common::flight::batches_to_compressed_flight_data;
-use common::flight::schema::{FlightSchemas, create_span_batch_schema};
+use common::flight::schema::create_span_batch_schema;
 use common::flight::transport::InMemoryFlightTransport;
 use common::storage::create_object_store_from_dsn;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -282,11 +282,7 @@ enum TicketRequest {
 
 /// Flight service for query execution against stored data
 pub struct QuerierFlightService {
-    #[allow(dead_code)]
-    object_store: Arc<dyn ObjectStore>,
     _flight_transport: Arc<InMemoryFlightTransport>,
-    #[allow(dead_code)]
-    schemas: FlightSchemas,
     session_ctx: Arc<SessionContext>,
     trace_service: TraceService,
     profile_service: ProfileService,
@@ -450,9 +446,7 @@ impl QuerierFlightService {
         let ir_service = IrService::new(session_ctx.as_ref().clone());
 
         Self {
-            object_store,
             _flight_transport: flight_transport,
-            schemas: FlightSchemas::new(),
             session_ctx,
             trace_service,
             profile_service,
@@ -507,10 +501,6 @@ impl QuerierFlightService {
             }
         }
 
-        // Struct field placeholder — not used at runtime (all per-dataset stores
-        // are registered above). InMemory avoids coupling to any specific DSN.
-        let object_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-
         let iceberg_catalog = catalog_manager.catalog();
 
         let registered_tenants: dashmap::DashSet<String> = dashmap::DashSet::new();
@@ -539,9 +529,7 @@ impl QuerierFlightService {
         let ir_service = IrService::new(session_ctx.as_ref().clone());
 
         Ok(Self {
-            object_store,
             _flight_transport: flight_transport,
-            schemas: FlightSchemas::new(),
             session_ctx,
             trace_service,
             profile_service,
@@ -1634,17 +1622,7 @@ impl FlightService for QuerierFlightService {
                                             tracing::error!(error = ?e, "Error querying trace");
                                             // Mirror the search arm: caller errors are
                                             // surfaced as such instead of a blanket 500.
-                                            return Err(match e {
-                                                crate::query::error::QuerierError::InvalidInput(
-                                                    msg,
-                                                ) => Status::invalid_argument(msg),
-                                                crate::query::error::QuerierError::Unsupported(
-                                                    msg,
-                                                ) => Status::unimplemented(msg),
-                                                other => Status::internal(format!(
-                                                    "Trace query failed: {other:?}"
-                                                )),
-                                            });
+                                            return Err(trace_error_to_status("Trace query")(e));
                                         }
                                     }
                                 }
@@ -1694,17 +1672,7 @@ impl FlightService for QuerierFlightService {
                                             // Distinguish caller errors from server
                                             // errors so bad or unsupported selectors
                                             // surface as 400/501, not 500.
-                                            return Err(match e {
-                                                crate::query::error::QuerierError::InvalidInput(
-                                                    msg,
-                                                ) => Status::invalid_argument(msg),
-                                                crate::query::error::QuerierError::Unsupported(
-                                                    msg,
-                                                ) => Status::unimplemented(msg),
-                                                other => Status::internal(format!(
-                                                    "Trace search failed: {other:?}"
-                                                )),
-                                            });
+                                            return Err(trace_error_to_status("Trace search")(e));
                                         }
                                     }
                                 }
@@ -2277,6 +2245,19 @@ fn querier_error_to_status(
             Status::invalid_argument(too_many.to_string())
         }
         other => Status::internal(format!("{signal} query failed: {other:?}")),
+    }
+}
+
+/// Map trace lookup/search errors onto gRPC statuses: same caller-error
+/// arms as [`querier_error_to_status`], but keeps each call site's existing
+/// message wording (`context` names the action, e.g. "Trace query").
+fn trace_error_to_status(
+    context: &'static str,
+) -> impl Fn(crate::query::error::QuerierError) -> Status {
+    move |e| match e {
+        crate::query::error::QuerierError::InvalidInput(msg) => Status::invalid_argument(msg),
+        crate::query::error::QuerierError::Unsupported(msg) => Status::unimplemented(msg),
+        other => Status::internal(format!("{context} failed: {other:?}")),
     }
 }
 

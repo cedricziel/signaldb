@@ -58,15 +58,6 @@ impl SignalDBFlightClient {
         Ok(Self { client })
     }
 
-    /// Execute a query without authentication and return record batches.
-    #[allow(dead_code)]
-    pub async fn query(
-        &mut self,
-        ticket: &str,
-    ) -> Result<(Vec<RecordBatch>, Arc<Schema>), FlightClientError> {
-        self.query_with_auth(ticket, None).await
-    }
-
     /// Execute a query with optional authentication headers and return record batches.
     pub async fn query_with_auth(
         &mut self,

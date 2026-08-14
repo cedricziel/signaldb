@@ -242,7 +242,7 @@ pub async fn query_ir<S: RouterState>(
 
     // Stamp the server clock once, at the ticket boundary, so relative anchors
     // resolve to a single absolute window every stage of the plan sees.
-    let now = now_ns();
+    let now = super::now_ns();
     let window = resolve_window(&req.range, now)?;
 
     // The IR document is the request re-serialized; the querier validates it.
@@ -785,13 +785,6 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
         .filter_map(|k| series.remove(&k))
         .collect();
     (ordered, None)
-}
-
-/// Current time as unix-epoch nanoseconds.
-fn now_ns() -> i64 {
-    chrono::Utc::now()
-        .timestamp_nanos_opt()
-        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() * 1_000_000)
 }
 
 #[cfg(test)]
