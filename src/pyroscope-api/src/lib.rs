@@ -90,9 +90,10 @@ impl ProfileType {
     /// Build a profile type from a `{sample_type}:{sample_unit}` pair as
     /// returned by the querier's discovery queries.
     pub fn from_type_unit(sample_type: &str, sample_unit: &str) -> Self {
+        let name = sample_type.to_string();
         Self {
-            id: format!("{sample_type}:{sample_type}:{sample_unit}"),
-            name: sample_type.to_string(),
+            id: format!("{name}:{sample_type}:{sample_unit}"),
+            name,
             sample_type: sample_type.to_string(),
             sample_unit: sample_unit.to_string(),
             period_type: String::new(),
@@ -103,6 +104,7 @@ impl ProfileType {
 
 /// Response body of the label-names / label-values endpoints.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LabelsResponse {
     pub names: Vec<String>,
 }
