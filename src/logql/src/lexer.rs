@@ -267,30 +267,29 @@ impl<'a> Lexer<'a> {
 
     /// Read the digits (with optional fraction/exponent) of one number
     /// starting with `first`.
-    fn read_number(&mut self, first: char, line: u32, col: u32) -> Result<f64, LexError> {
-        let mut text = String::from(first);
+    /// Push consecutive ASCII digits from the input onto `text`. Returns
+    /// whether any digit was consumed.
+    fn read_digits(&mut self, text: &mut String) -> bool {
+        let mut any = false;
         while let Some(&c) = self.chars.peek() {
             if c.is_ascii_digit() {
                 text.push(c);
                 self.bump();
+                any = true;
             } else {
                 break;
             }
         }
+        any
+    }
+
+    fn read_number(&mut self, first: char, line: u32, col: u32) -> Result<f64, LexError> {
+        let mut text = String::from(first);
+        self.read_digits(&mut text);
         if self.chars.peek() == Some(&'.') {
             text.push('.');
             self.bump();
-            let mut has_fraction = false;
-            while let Some(&c) = self.chars.peek() {
-                if c.is_ascii_digit() {
-                    text.push(c);
-                    self.bump();
-                    has_fraction = true;
-                } else {
-                    break;
-                }
-            }
-            if !has_fraction {
+            if !self.read_digits(&mut text) {
                 return Err(self.error("expected digits after decimal point", line, col));
             }
         }
@@ -314,14 +313,7 @@ impl<'a> Lexer<'a> {
                 if matches!(self.chars.peek(), Some('+') | Some('-')) {
                     text.push(self.bump().expect("peeked sign"));
                 }
-                while let Some(&c) = self.chars.peek() {
-                    if c.is_ascii_digit() {
-                        text.push(c);
-                        self.bump();
-                    } else {
-                        break;
-                    }
-                }
+                self.read_digits(&mut text);
             }
         }
         text.parse::<f64>()
