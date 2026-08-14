@@ -8,6 +8,18 @@ use uuid::Uuid;
 use crate::catalog::{Catalog, Ingester};
 use crate::config::Configuration;
 
+/// Split a `host:port` address into its host and numeric port.
+///
+/// Returns `None` if the address has no `:port` suffix or the suffix isn't a
+/// valid `u16` (e.g. an IPv6 address without brackets). Callers that want a
+/// default port on `None` should check `addr.contains(':')` to distinguish
+/// "no port given" from "malformed port".
+pub(crate) fn split_host_port(addr: &str) -> Option<(&str, u16)> {
+    let (host, port) = addr.rsplit_once(':')?;
+    let port = port.parse::<u16>().ok()?;
+    Some((host, port))
+}
+
 /// Service types that can be bootstrapped
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ServiceType {
@@ -345,21 +357,24 @@ impl ServiceBootstrap {
 
     /// Extract port from service address
     pub fn extract_port(&self) -> Result<u16> {
-        let parts: Vec<&str> = self.address.split(':').collect();
-        if parts.len() == 2 {
-            parts[1]
-                .parse::<u16>()
-                .map_err(|e| anyhow::anyhow!("Invalid port in address '{}': {}", self.address, e))
-        } else {
+        match split_host_port(&self.address) {
+            Some((_, port)) => Ok(port),
             // Default to Flight port if no port specified
-            Ok(50051)
+            None if !self.address.contains(':') => Ok(50051),
+            None => Err(anyhow::anyhow!(
+                "Invalid port in address '{}'",
+                self.address
+            )),
         }
     }
 
     /// Extract hostname from service address
     pub fn extract_hostname(&self) -> String {
-        let parts: Vec<&str> = self.address.split(':').collect();
-        parts[0].to_string()
+        self.address
+            .split(':')
+            .next()
+            .unwrap_or(&self.address)
+            .to_string()
     }
 
     /// Create a lightweight service bootstrap for tests.
@@ -469,6 +484,18 @@ mod tests {
     use super::*;
     use crate::config::{DatabaseConfig, DiscoveryConfig};
     use std::time::Duration;
+
+    #[test]
+    fn split_host_port_parses_valid_address() {
+        assert_eq!(split_host_port("localhost:4317"), Some(("localhost", 4317)));
+        assert_eq!(split_host_port("10.0.0.1:50051"), Some(("10.0.0.1", 50051)));
+    }
+
+    #[test]
+    fn split_host_port_rejects_missing_or_invalid_port() {
+        assert_eq!(split_host_port("localhost"), None);
+        assert_eq!(split_host_port("localhost:not-a-port"), None);
+    }
 
     #[test]
     fn test_ensure_data_directory() {
