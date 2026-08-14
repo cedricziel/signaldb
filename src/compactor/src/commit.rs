@@ -363,45 +363,6 @@ impl IcebergCommitter {
 
         Ok(snapshot_id)
     }
-
-    /// Reload table metadata to get fresh snapshot information
-    ///
-    /// This is used after detecting a conflict to get the latest state
-    pub async fn reload_table(
-        &self,
-        tenant_id: &str,
-        dataset_id: &str,
-        table_name: &str,
-    ) -> Result<Table> {
-        tracing::debug!(
-            "Reloading table metadata for {}/{}/{}",
-            tenant_id,
-            dataset_id,
-            table_name
-        );
-
-        // Note: For Phase 2, we simply reload the table.
-        // A full implementation would invalidate caching if the catalog supports it.
-
-        let table_identifier = self
-            .catalog_manager
-            .build_table_identifier(tenant_id, dataset_id, table_name);
-
-        let catalog = self.catalog_manager.catalog();
-        let table = catalog
-            .load_tabular(&table_identifier)
-            .await
-            .with_context(|| {
-                format!("Failed to reload table {tenant_id}/{dataset_id}/{table_name}")
-            })?;
-
-        match table {
-            iceberg_rust::catalog::tabular::Tabular::Table(t) => Ok(t),
-            _ => Err(anyhow::anyhow!(
-                "Expected table but got view for {tenant_id}/{dataset_id}/{table_name}"
-            )),
-        }
-    }
 }
 
 #[cfg(test)]
