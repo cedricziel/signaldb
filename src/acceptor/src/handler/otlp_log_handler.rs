@@ -136,7 +136,7 @@ impl LogHandler {
             record_batch_to_bytes(&record_batch).context("Failed to serialize record batch")?;
 
         let wal_entry_id = wal
-            .append(WalOperation::WriteLogs, batch_bytes.clone(), metadata_str)
+            .append(WalOperation::WriteLogs, batch_bytes, metadata_str)
             .await
             .context("Failed to write logs to WAL")?;
 
