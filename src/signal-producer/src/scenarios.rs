@@ -348,15 +348,7 @@ fn rideshare_request_ride(sim: &mut Sim) {
         );
 
         // Publish trip.requested to Kafka, consumed by notification-service.
-        let producer = kafka_produce(
-            sim,
-            trip,
-            &trip_srv,
-            "trip.requested",
-            &trip_id,
-            488.0,
-            520.0,
-        );
+        let producer = kafka_produce(sim, trip, &trip_srv, "trip.requested", &trip_id, 488.0);
         emit::log(
             trip,
             &trip_srv,
@@ -787,15 +779,7 @@ fn shop_checkout(sim: &mut Sim) {
         postgres_op(
             sim, checkout, &co_srv, "INSERT", "orders", "orders", 320.0, 372.0,
         );
-        let producer = kafka_produce(
-            sim,
-            checkout,
-            &co_srv,
-            "order.placed",
-            &order_id,
-            378.0,
-            410.0,
-        );
+        let producer = kafka_produce(sim, checkout, &co_srv, "order.placed", &order_id, 378.0);
         emit::log(
             checkout,
             &co_srv,
@@ -1214,7 +1198,6 @@ fn kafka_produce(
     topic: &str,
     key: &str,
     start_ms: f64,
-    _end_ms: f64,
 ) -> Context {
     let partition = sim.rng.random_range(0i64..12);
     let attrs = |extra: KeyValue| {
