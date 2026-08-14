@@ -2692,14 +2692,14 @@ pub mod types {
               "spanID": "563d623c76514f8e",
               "startTimeUnixNano": "1684778327735077898",
               "durationNanos": "446979497",
-              "attributes": [
-                {
+              "attributes": {
+                "status": {
                   "key": "status",
                   "value": {
                     "stringValue": "error"
                   }
                 }
-              ]
+              }
             }
           ],
           "matched": 1
@@ -2712,7 +2712,7 @@ pub mod types {
     ///
     /// ```json
     ///{
-    ///  "description": "A trace is a collection of spans that represent a single request\n\nExample:\n```json\n{\n  \"traceID\": \"2f3e0cee77ae5dc9c17ade3689eb2e54\",\n  \"rootServiceName\": \"shop-backend\",\n  \"rootTraceName\": \"update-billing\",\n  \"startTimeUnixNano\": \"1684778327699392724\",\n  \"durationMs\": 557,\n  \"spanSets\": [\n    {\n      \"spans\": [\n        {\n          \"spanID\": \"563d623c76514f8e\",\n          \"startTimeUnixNano\": \"1684778327735077898\",\n          \"durationNanos\": \"446979497\",\n          \"attributes\": [\n            {\n              \"key\": \"status\",\n              \"value\": {\n                \"stringValue\": \"error\"\n              }\n            }\n          ]\n        }\n      ],\n      \"matched\": 1\n    }\n  ]\n}\n```",
+    ///  "description": "A trace is a collection of spans that represent a single request\n\nExample:\n```json\n{\n  \"traceID\": \"2f3e0cee77ae5dc9c17ade3689eb2e54\",\n  \"rootServiceName\": \"shop-backend\",\n  \"rootTraceName\": \"update-billing\",\n  \"startTimeUnixNano\": \"1684778327699392724\",\n  \"durationMs\": 557,\n  \"spanSets\": [\n    {\n      \"spans\": [\n        {\n          \"spanID\": \"563d623c76514f8e\",\n          \"startTimeUnixNano\": \"1684778327735077898\",\n          \"durationNanos\": \"446979497\",\n          \"attributes\": {\n            \"status\": {\n              \"key\": \"status\",\n              \"value\": {\n                \"stringValue\": \"error\"\n              }\n            }\n          }\n        }\n      ],\n      \"matched\": 1\n    }\n  ]\n}\n```",
     ///  "type": "object",
     ///  "required": [
     ///    "durationMs",

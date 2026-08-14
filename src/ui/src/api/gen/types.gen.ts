@@ -695,14 +695,14 @@ export type TenantResponse = {
  * "spanID": "563d623c76514f8e",
  * "startTimeUnixNano": "1684778327735077898",
  * "durationNanos": "446979497",
- * "attributes": [
- * {
+ * "attributes": {
+ * "status": {
  * "key": "status",
  * "value": {
  * "stringValue": "error"
  * }
  * }
- * ]
+ * }
  * }
  * ],
  * "matched": 1
