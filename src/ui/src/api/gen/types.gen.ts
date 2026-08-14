@@ -681,6 +681,7 @@ export type TenantResponse = {
  * A trace is a collection of spans that represent a single request
  *
  * Example:
+ * ```json
  * {
  * "traceID": "2f3e0cee77ae5dc9c17ade3689eb2e54",
  * "rootServiceName": "shop-backend",
@@ -694,19 +695,21 @@ export type TenantResponse = {
  * "spanID": "563d623c76514f8e",
  * "startTimeUnixNano": "1684778327735077898",
  * "durationNanos": "446979497",
- * "attributes": [
- * {
+ * "attributes": {
+ * "status": {
  * "key": "status",
  * "value": {
  * "stringValue": "error"
  * }
  * }
- * ]
+ * }
  * }
  * ],
  * "matched": 1
  * }
  * ]
+ * }
+ * ```
  */
 export type Trace = {
     durationMs: number;
