@@ -47,6 +47,16 @@ fn extract_grpc_auth_headers(
     Ok((api_key, tenant_id, dataset_id))
 }
 
+/// Map an [`AuthError`] to the equivalent gRPC [`Status`].
+fn auth_error_to_status(err: AuthError) -> Status {
+    match err.status_code {
+        400 => Status::invalid_argument(err.message),
+        401 => Status::unauthenticated(err.message),
+        403 => Status::permission_denied(err.message),
+        _ => Status::internal("Authentication error"),
+    }
+}
+
 /// gRPC interceptor function for authentication
 ///
 /// This interceptor validates authentication headers and inserts TenantContext
@@ -72,12 +82,7 @@ pub fn grpc_auth_interceptor<T>(
 ) -> Result<Request<T>, Status> {
     // Extract authentication headers
     let (api_key, tenant_id, dataset_id) =
-        extract_grpc_auth_headers(request.metadata()).map_err(|err| match err.status_code {
-            400 => Status::invalid_argument(err.message),
-            401 => Status::unauthenticated(err.message),
-            403 => Status::permission_denied(err.message),
-            _ => Status::internal("Authentication error"),
-        })?;
+        extract_grpc_auth_headers(request.metadata()).map_err(auth_error_to_status)?;
 
     // Authenticate using the Authenticator (blocking version)
     // Note: We need to use blocking context here since interceptors are not async
@@ -94,12 +99,7 @@ pub fn grpc_auth_interceptor<T>(
             error = %err.message,
             "gRPC authentication failed"
         );
-        match err.status_code {
-            400 => Status::invalid_argument(err.message),
-            401 => Status::unauthenticated(err.message),
-            403 => Status::permission_denied(err.message),
-            _ => Status::internal("Authentication error"),
-        }
+        auth_error_to_status(err)
     })?;
 
     // Anti-loop guard: don't emit exportable auth telemetry for the

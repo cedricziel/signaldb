@@ -1,13 +1,12 @@
 use acceptor::{
-    AcceptorResources, GrpcAcceptorConfig, HttpAcceptorConfig, init_acceptor_resources,
-    serve_otlp_grpc, serve_otlp_http,
+    GrpcAcceptorConfig, HttpAcceptorConfig, init_acceptor_resources, serve_otlp_grpc,
+    serve_otlp_http,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use common::cli::{CommonArgs, CommonCommands, utils};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::oneshot;
 
 #[derive(Parser)]
@@ -127,22 +126,9 @@ async fn main() -> Result<()> {
 
     tracing::info!("Acceptor resources initialized successfully");
 
-    // Clone resources for HTTP server (Arc refs are cheap to clone)
-    let grpc_resources = AcceptorResources {
-        flight_transport: Arc::clone(&resources.flight_transport),
-        wal_manager: Arc::clone(&resources.wal_manager),
-        authenticator: Arc::clone(&resources.authenticator),
-        rate_limiter: Arc::clone(&resources.rate_limiter),
-        storage_usage: Arc::clone(&resources.storage_usage),
-    };
-
-    let http_resources = AcceptorResources {
-        flight_transport: Arc::clone(&resources.flight_transport),
-        wal_manager: Arc::clone(&resources.wal_manager),
-        authenticator: Arc::clone(&resources.authenticator),
-        rate_limiter: Arc::clone(&resources.rate_limiter),
-        storage_usage: Arc::clone(&resources.storage_usage),
-    };
+    // Clone resources for both servers (all fields are Arcs, cheap to clone)
+    let grpc_resources = resources.clone();
+    let http_resources = resources.clone();
 
     // Channels for OTLP/gRPC server signals
     let (grpc_init_tx, grpc_init_rx) = oneshot::channel::<()>();

@@ -28,17 +28,13 @@ fn extract_auth_headers(
 
     // Parse Bearer token (case-insensitive scheme, trim whitespace)
     let api_key = {
-        // Find first whitespace to split scheme from token
-        let parts: Vec<&str> = auth_header.splitn(2, char::is_whitespace).collect();
-
-        if parts.len() != 2 {
+        // Split scheme from token at the first whitespace
+        let Some((scheme, token)) = auth_header.split_once(char::is_whitespace) else {
             return Err(AuthError::bad_request(
                 "Authorization header must be in format: Bearer <token>",
             ));
-        }
-
-        let scheme = parts[0];
-        let token = parts[1].trim();
+        };
+        let token = token.trim();
 
         // Verify scheme is "bearer" (case-insensitive)
         if !scheme.eq_ignore_ascii_case("bearer") {
