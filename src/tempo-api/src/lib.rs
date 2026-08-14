@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-#[allow(dead_code)]
+#[allow(dead_code)] // prost generates both directions of every message; only one side is used per binary
 pub mod tempopb {
     include!("generated/tempopb.rs");
 
@@ -119,6 +118,7 @@ pub struct SearchResult {
 /// A trace is a collection of spans that represent a single request
 ///
 /// Example:
+/// ```json
 /// {
 ///   "traceID": "2f3e0cee77ae5dc9c17ade3689eb2e54",
 ///   "rootServiceName": "shop-backend",
@@ -145,6 +145,8 @@ pub struct SearchResult {
 ///       "matched": 1
 ///     }
 ///   ]
+/// }
+/// ```
 #[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct Trace {
     #[serde(rename = "traceID")]
@@ -267,29 +269,6 @@ pub enum TagScope {
     Resource,
     Span,
     Intrinsic,
-}
-
-impl TagScope {
-    pub fn as_str(&self) -> &str {
-        match self {
-            TagScope::Resource => "resource",
-            TagScope::Span => "span",
-            TagScope::Intrinsic => "intrinsic",
-        }
-    }
-}
-
-impl FromStr for TagScope {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "resource" => Ok(TagScope::Resource),
-            "span" => Ok(TagScope::Span),
-            "intrinsic" => Ok(TagScope::Intrinsic),
-            _ => Err(()),
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
