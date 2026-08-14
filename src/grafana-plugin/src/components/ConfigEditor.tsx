@@ -16,56 +16,30 @@ export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
   const { jsonData, secureJsonFields, secureJsonData } = options;
 
-  const onRouterUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const setJsonData = <K extends keyof SignalDBDataSourceOptions>(key: K, value: SignalDBDataSourceOptions[K]) => {
     onOptionsChange({
       ...options,
       jsonData: {
         ...jsonData,
-        routerUrl: event.target.value,
+        [key]: value,
       },
     });
   };
 
-  const onProtocolChange = (value: SelectableValue<Protocol>) => {
-    onOptionsChange({
-      ...options,
-      jsonData: {
-        ...jsonData,
-        protocol: value.value ?? 'http',
-      },
-    });
-  };
+  const onRouterUrlChange = (event: ChangeEvent<HTMLInputElement>) => setJsonData('routerUrl', event.target.value);
+
+  const onProtocolChange = (value: SelectableValue<Protocol>) => setJsonData('protocol', value.value ?? 'http');
 
   const onTimeoutChange = (event: ChangeEvent<HTMLInputElement>) => {
     const timeout = parseInt(event.target.value, 10);
-    onOptionsChange({
-      ...options,
-      jsonData: {
-        ...jsonData,
-        timeout: isNaN(timeout) ? undefined : timeout,
-      },
-    });
+    setJsonData('timeout', isNaN(timeout) ? undefined : timeout);
   };
 
-  const onTenantIdChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      jsonData: {
-        ...jsonData,
-        tenantId: event.target.value || undefined,
-      },
-    });
-  };
+  const onTenantIdChange = (event: ChangeEvent<HTMLInputElement>) =>
+    setJsonData('tenantId', event.target.value || undefined);
 
-  const onDatasetIdChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      jsonData: {
-        ...jsonData,
-        datasetId: event.target.value || undefined,
-      },
-    });
-  };
+  const onDatasetIdChange = (event: ChangeEvent<HTMLInputElement>) =>
+    setJsonData('datasetId', event.target.value || undefined);
 
   const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
@@ -109,12 +83,7 @@ export function ConfigEditor(props: Props) {
       </InlineField>
 
       <InlineField label="Protocol" labelWidth={20} interactive tooltip="Communication protocol">
-        <Select
-          options={PROTOCOL_OPTIONS}
-          value={jsonData.protocol || 'http'}
-          onChange={onProtocolChange}
-          width={30}
-        />
+        <Select options={PROTOCOL_OPTIONS} value={jsonData.protocol || 'http'} onChange={onProtocolChange} width={30} />
       </InlineField>
 
       <InlineField label="Timeout (seconds)" labelWidth={20} interactive tooltip="Query timeout in seconds">
@@ -128,7 +97,12 @@ export function ConfigEditor(props: Props) {
         />
       </InlineField>
 
-      <InlineField label="Tenant ID" labelWidth={20} interactive tooltip="Tenant identifier for multi-tenancy (optional)">
+      <InlineField
+        label="Tenant ID"
+        labelWidth={20}
+        interactive
+        tooltip="Tenant identifier for multi-tenancy (optional)"
+      >
         <Input
           id="config-editor-tenant-id"
           onChange={onTenantIdChange}
@@ -138,7 +112,12 @@ export function ConfigEditor(props: Props) {
         />
       </InlineField>
 
-      <InlineField label="Dataset ID" labelWidth={20} interactive tooltip="Dataset identifier for data isolation (optional)">
+      <InlineField
+        label="Dataset ID"
+        labelWidth={20}
+        interactive
+        tooltip="Dataset identifier for data isolation (optional)"
+      >
         <Input
           id="config-editor-dataset-id"
           onChange={onDatasetIdChange}
@@ -148,7 +127,12 @@ export function ConfigEditor(props: Props) {
         />
       </InlineField>
 
-      <InlineField label="API Key" labelWidth={20} interactive tooltip="Optional API key for authentication (stored securely)">
+      <InlineField
+        label="API Key"
+        labelWidth={20}
+        interactive
+        tooltip="Optional API key for authentication (stored securely)"
+      >
         <SecretInput
           isConfigured={secureJsonFields?.apiKey || false}
           id="config-editor-api-key"
