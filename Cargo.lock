@@ -4242,7 +4242,6 @@ dependencies = [
  "axum",
  "clap",
  "dashmap",
- "http",
  "reqwest 0.13.4",
  "rmcp",
  "serde",
