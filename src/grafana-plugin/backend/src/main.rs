@@ -1,6 +1,7 @@
 mod conversion;
 mod flight_client;
 
+use arrow::array::Array;
 use flight_client::{AuthContext, SignalDBFlightClient};
 use grafana_plugin_sdk::{backend, data, prelude::*};
 use serde::Deserialize;
@@ -77,22 +78,16 @@ pub struct SignalDBQuery {
 
 impl SignalDBDataSource {
     pub fn new() -> Self {
-        let router_url =
-            std::env::var("SIGNALDB_ROUTER_URL").unwrap_or_else(|_| DEFAULT_FLIGHT_URL.to_string());
-
+        let router_url = std::env::var("SIGNALDB_ROUTER_URL").ok();
         let timeout_secs = std::env::var("SIGNALDB_TIMEOUT_SECS")
             .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_TIMEOUT_SECS);
+            .and_then(|v| v.parse().ok());
 
-        tracing::info!(
-            "SignalDB DataSource initialized with router: {router_url}, timeout: {timeout_secs}s"
-        );
-
-        Self {
-            router_url: Arc::from(router_url.as_str()),
-            timeout_secs,
-        }
+        Self::with_config(DataSourceConfig {
+            router_url,
+            timeout: timeout_secs,
+            ..Default::default()
+        })
     }
 
     /// Create a new instance with configuration from frontend settings.
@@ -254,6 +249,36 @@ impl SignalDBDataSource {
         }
     }
 
+    /// Execute a Flight query for one signal type and convert the result to
+    /// a time-indexed Grafana frame, falling back to `empty_frame` when the
+    /// query returns no batches.
+    async fn execute_signal_query(
+        &self,
+        ticket: String,
+        frame_name: &str,
+        timestamp_column: &str,
+        auth: Option<&AuthContext>,
+        empty_frame: impl FnOnce() -> data::Frame,
+    ) -> anyhow::Result<data::Frame> {
+        tracing::debug!("Executing Flight query with ticket: {ticket}");
+
+        let mut client = self.create_flight_client().await?;
+        let (batches, schema) = client.query_with_auth(&ticket, auth).await?;
+
+        if batches.is_empty() {
+            tracing::debug!("No {frame_name} data returned from Flight query");
+            return Ok(empty_frame());
+        }
+
+        Ok(conversion::batches_to_frame_with_time(
+            &batches,
+            &schema,
+            frame_name,
+            timestamp_column,
+            "time",
+        )?)
+    }
+
     /// Query traces via Flight.
     async fn query_traces(
         &self,
@@ -269,27 +294,14 @@ impl SignalDBDataSource {
             format!("trace_by_id?id={}", query.query_text)
         };
 
-        tracing::debug!("Executing Flight query with ticket: {ticket}");
-
-        // Connect and execute query
-        let mut client = self.create_flight_client().await?;
-        let (batches, schema) = client.query_with_auth(&ticket, auth).await?;
-
-        if batches.is_empty() {
-            tracing::debug!("No trace data returned from Flight query");
-            return Ok(create_empty_traces_frame());
-        }
-
-        // Convert Arrow batches to Grafana Frame with time field
-        let frame = conversion::batches_to_frame_with_time(
-            &batches,
-            &schema,
+        self.execute_signal_query(
+            ticket,
             "traces",
             "start_time_unix_nano",
-            "time",
-        )?;
-
-        Ok(frame)
+            auth,
+            create_empty_traces_frame,
+        )
+        .await
     }
 
     /// Query metrics via Flight.
@@ -298,28 +310,14 @@ impl SignalDBDataSource {
         _query: &SignalDBQuery,
         auth: Option<&AuthContext>,
     ) -> anyhow::Result<data::Frame> {
-        let ticket = "metrics".to_string();
-
-        tracing::debug!("Executing Flight query for metrics");
-
-        let mut client = self.create_flight_client().await?;
-        let (batches, schema) = client.query_with_auth(&ticket, auth).await?;
-
-        if batches.is_empty() {
-            tracing::debug!("No metrics data returned from Flight query");
-            return Ok(create_empty_metrics_frame());
-        }
-
-        // Convert Arrow batches to Grafana Frame with time field
-        let frame = conversion::batches_to_frame_with_time(
-            &batches,
-            &schema,
+        self.execute_signal_query(
+            "metrics".to_string(),
             "metrics",
             "time_unix_nano",
-            "time",
-        )?;
-
-        Ok(frame)
+            auth,
+            create_empty_metrics_frame,
+        )
+        .await
     }
 
     /// Query logs via Flight.
@@ -328,32 +326,16 @@ impl SignalDBDataSource {
         _query: &SignalDBQuery,
         auth: Option<&AuthContext>,
     ) -> anyhow::Result<data::Frame> {
-        let ticket = "logs".to_string();
-
-        tracing::debug!("Executing Flight query for logs");
-
-        let mut client = self.create_flight_client().await?;
-        let (batches, schema) = client.query_with_auth(&ticket, auth).await?;
-
-        if batches.is_empty() {
-            tracing::debug!("No logs data returned from Flight query");
-            return Ok(create_empty_logs_frame());
-        }
-
-        // Convert Arrow batches to Grafana Frame with time field
-        let frame = conversion::batches_to_frame_with_time(
-            &batches,
-            &schema,
+        self.execute_signal_query(
+            "logs".to_string(),
             "logs",
             "time_unix_nano",
-            "time",
-        )?;
-
-        Ok(frame)
+            auth,
+            create_empty_logs_frame,
+        )
+        .await
     }
-}
 
-impl SignalDBDataSource {
     /// Query profiles via Flight and render them as a flamegraph frame.
     async fn query_profiles(
         &self,
@@ -388,7 +370,6 @@ impl SignalDBDataSource {
         let (batches, _schema) = client.query_with_auth(&ticket, auth).await?;
 
         // The querier returns a single-row, single-column JSON document.
-        use arrow::array::Array;
         let json = batches
             .iter()
             .find_map(|batch| {
