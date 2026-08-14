@@ -26,7 +26,6 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::config::WriterConfig;
 use common::flight::decode::flight_data_vec_to_batches;
-use common::flight::schema::FlightSchemas;
 use common::wal::{Wal, WalOperation, record_batch_to_bytes};
 use datafusion::arrow::datatypes::SchemaRef;
 use futures::StreamExt;
@@ -82,8 +81,6 @@ fn parse_flush_scope(metadata: &tonic::metadata::MetadataMap) -> Result<FlushSco
 pub struct IcebergWriterFlightService {
     processor: Arc<Mutex<WalProcessor>>,
     wal: Arc<Wal>,
-    #[allow(dead_code)]
-    schemas: FlightSchemas,
     reconciler: Arc<crate::reconcile::TableReconciler>,
     table_reconcile_interval: std::time::Duration,
 }
@@ -109,7 +106,6 @@ impl IcebergWriterFlightService {
         Self {
             processor: Arc::new(Mutex::new(processor)),
             wal,
-            schemas: FlightSchemas::new(),
             reconciler: Arc::new(crate::reconcile::TableReconciler::new(catalog_manager)),
             table_reconcile_interval: writer_config.table_reconcile_interval,
         }
