@@ -14,6 +14,12 @@ use clap::{Parser, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
 
+/// Pretty-print a JSON-serializable value to stdout.
+pub(crate) fn print_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
 /// SignalDB CLI — manage tenants, API keys, and datasets
 #[derive(Parser)]
 #[command(name = "signaldb-cli", version, about)]
@@ -183,20 +189,13 @@ impl Cli {
             return app.run().await;
         }
 
-        // Ops uses admin authentication, but its endpoints have absolute paths
-        // (`/api/v1/ops/...`), so the SDK client base is the router root — not
-        // the `/api/v1/admin` prefix the admin dispatch uses below.
+        // Both admin-authenticated dispatches (Ops and Admin/User below) carry
+        // absolute paths (e.g. `/api/v1/ops/...`, `/api/v1/admin/tenants`), so
+        // the SDK client base is the router root in both cases, not
+        // `{url}/api/v1/...`, which would double-prefix.
         if matches!(self.command, Commands::Ops { .. }) {
             let admin_key = self.resolve_admin_key()?;
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert(
-                reqwest::header::AUTHORIZATION,
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {admin_key}"))?,
-            );
-            let http = reqwest::Client::builder()
-                .default_headers(headers)
-                .build()?;
-            let client = Client::new_with_client(self.url.trim_end_matches('/'), http);
+            let client = self.bearer_client(&admin_key)?;
             let Commands::Ops { action } = self.command else {
                 unreachable!()
             };
@@ -204,21 +203,7 @@ impl Cli {
         }
 
         let admin_key = self.resolve_admin_key()?;
-        // The generated admin methods carry absolute paths (e.g.
-        // `/api/v1/admin/tenants`), so the SDK client base URL is the router
-        // root — not `{url}/api/v1/admin`, which would double-prefix.
-        let base_url = self.url.trim_end_matches('/').to_string();
-
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {admin_key}"))?,
-        );
-        let http = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()?;
-
-        let client = Client::new_with_client(&base_url, http);
+        let client = self.bearer_client(&admin_key)?;
 
         match self.command {
             Commands::Admin { action } => match action {
@@ -233,6 +218,24 @@ impl Cli {
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
         }
+    }
+
+    /// A SignalDB SDK client authenticated with `admin_key`, rooted at the
+    /// router base URL (the generated admin/ops methods carry absolute
+    /// paths, so the client base must not add an `/api/v1/...` prefix).
+    fn bearer_client(&self, admin_key: &str) -> anyhow::Result<Client> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {admin_key}"))?,
+        );
+        let http = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
+        Ok(Client::new_with_client(
+            self.url.trim_end_matches('/'),
+            http,
+        ))
     }
 
     fn resolve_admin_key(&self) -> anyhow::Result<String> {
