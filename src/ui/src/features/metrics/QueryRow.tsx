@@ -3,7 +3,7 @@
 // and group-by are pick-from-what-exists rather than typed blind. State is a
 // MetricQuery (see buildPromQL); the row is fully controlled via onChange.
 
-import { useId } from "react";
+import { useId, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   promLabelNames,
@@ -54,7 +54,10 @@ export function QueryRow({ query, range, onChange }: Props) {
     queryFn: () => promLabelStats(range),
     staleTime: 60_000,
   });
-  const statByName = indexLabelStats(labelStats.data ?? []);
+  const statByName = useMemo(
+    () => indexLabelStats(labelStats.data ?? []),
+    [labelStats.data],
+  );
 
   const patch = (p: Partial<MetricQuery>) => onChange({ ...query, ...p });
 
