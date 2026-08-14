@@ -1,5 +1,5 @@
 use axum::{
-    Json, Router,
+    Router,
     http::StatusCode,
     middleware,
     response::IntoResponse,
@@ -204,7 +204,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .route("/users", post(endpoints::admin::create_user::<S>))
         .layer(admin_auth_layer);
 
-    // Load OpenAPI spec from the generated JSON file
+    // Serialize the OpenAPI spec once at startup; served as pre-encoded bytes
+    // so each request only bumps a refcount instead of re-serializing (and
+    // previously deep-cloning) the whole document.
     let openapi_spec = load_openapi_spec();
 
     // OAuth 2.1 authorization-server surface (change: mcp-oauth-dcr). Mounted
@@ -223,7 +225,12 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
             "/api/v1/openapi.json",
             get(move || {
                 let spec = openapi_spec.clone();
-                async move { Json(spec) }
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        spec,
+                    )
+                }
             }),
         )
         // Protected routes with authentication
@@ -337,9 +344,10 @@ async fn health_check() -> impl IntoResponse {
 /// (see [`crate::openapi`]). This is the same document checked into
 /// `api/signaldb-api.json` by the golden test, so the served spec can never
 /// drift from the code.
-fn load_openapi_spec() -> serde_json::Value {
-    serde_json::to_value(crate::openapi::openapi_document())
-        .expect("OpenAPI document must serialize to JSON")
+fn load_openapi_spec() -> axum::body::Bytes {
+    let json = serde_json::to_vec(&crate::openapi::openapi_document())
+        .expect("OpenAPI document must serialize to JSON");
+    axum::body::Bytes::from(json)
 }
 
 #[cfg(test)]

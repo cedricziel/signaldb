@@ -115,12 +115,10 @@ pub async fn query_range<S: RouterState>(
     let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
     let step = parse_step_ns(params.step.as_deref()).unwrap_or_else(|| default_step_ns(start, end));
 
-    match run_promql(&state, &tenant_ctx, &promql, start, end, step).await {
-        Ok(batches) => Ok(axum::Json(QueryResponse::success(QueryResult::Matrix(
-            batches_to_matrix(&batches),
-        )))),
-        Err(status) => Err(status),
-    }
+    let batches = run_promql(&state, &tenant_ctx, &promql, start, end, step).await?;
+    Ok(axum::Json(QueryResponse::success(QueryResult::Matrix(
+        batches_to_matrix(&batches),
+    ))))
 }
 
 /// GET|POST /prometheus/api/v1/query — instant query.
@@ -161,15 +159,11 @@ pub async fn query<S: RouterState>(
     // One bucket spanning the lookback so each series yields one sample.
     let step = HOUR_NS;
 
-    match run_promql(&state, &tenant_ctx, &promql, start, at, step).await {
-        Ok(batches) => {
-            let vector = matrix_to_vector(batches_to_matrix(&batches));
-            Ok(axum::Json(QueryResponse::success(QueryResult::Vector(
-                vector,
-            ))))
-        }
-        Err(status) => Err(status),
-    }
+    let batches = run_promql(&state, &tenant_ctx, &promql, start, at, step).await?;
+    let vector = matrix_to_vector(batches_to_matrix(&batches));
+    Ok(axum::Json(QueryResponse::success(QueryResult::Vector(
+        vector,
+    ))))
 }
 
 /// GET /prometheus/api/v1/labels — metric label names.

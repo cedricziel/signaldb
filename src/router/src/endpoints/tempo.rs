@@ -649,13 +649,6 @@ pub async fn query_single_trace<S: RouterState>(
         "Querying for trace"
     );
 
-    // Use service registry to find available services for routing
-    let services = state.service_registry().get_services().await;
-    tracing::info!(
-        service_count = services.len(),
-        "Available services for trace query"
-    );
-
     // Get a Flight client for a querier service
     let (mut client, server_address) = match state
         .service_registry()
@@ -865,13 +858,6 @@ pub async fn search<S: RouterState>(
         tenant_id = %tenant_ctx.0.tenant_id,
         dataset_id = %tenant_ctx.0.dataset_id,
         "Searching for traces"
-    );
-
-    // Use service registry to find available services for routing
-    let services = state.service_registry().get_services().await;
-    tracing::info!(
-        service_count = services.len(),
-        "Available services for trace search"
     );
 
     // Get a Flight client for a querier service
