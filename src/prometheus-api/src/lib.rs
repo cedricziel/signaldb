@@ -16,6 +16,11 @@ use serde::de::{self, SeqAccess, Visitor};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// The `status` field of a successful response envelope.
+const STATUS_SUCCESS: &str = "success";
+/// The `status` field of an error response envelope.
+const STATUS_ERROR: &str = "error";
+
 /// Envelope for `/api/v1/query` and `/api/v1/query_range`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryResponse {
@@ -35,7 +40,7 @@ impl QueryResponse {
     /// Successful response carrying a typed result.
     pub fn success(result: QueryResult) -> Self {
         Self {
-            status: "success".to_string(),
+            status: STATUS_SUCCESS.to_string(),
             data: Some(QueryData { result }),
             error_type: None,
             error: None,
@@ -45,7 +50,7 @@ impl QueryResponse {
     /// Error response with a Prometheus error type and message.
     pub fn error(error_type: impl Into<String>, error: impl Into<String>) -> Self {
         Self {
-            status: "error".to_string(),
+            status: STATUS_ERROR.to_string(),
             data: None,
             error_type: Some(error_type.into()),
             error: Some(error.into()),
@@ -167,7 +172,7 @@ pub struct LabelsResponse {
 impl LabelsResponse {
     pub fn success(data: Vec<String>) -> Self {
         Self {
-            status: "success".to_string(),
+            status: STATUS_SUCCESS.to_string(),
             data,
         }
     }
@@ -200,7 +205,7 @@ pub struct LabelStatsResponse {
 impl LabelStatsResponse {
     pub fn success(data: Vec<LabelStat>) -> Self {
         Self {
-            status: "success".to_string(),
+            status: STATUS_SUCCESS.to_string(),
             data,
         }
     }
@@ -217,7 +222,7 @@ pub struct SeriesResponse {
 impl SeriesResponse {
     pub fn success(data: Vec<HashMap<String, String>>) -> Self {
         Self {
-            status: "success".to_string(),
+            status: STATUS_SUCCESS.to_string(),
             data,
         }
     }
