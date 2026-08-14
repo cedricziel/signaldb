@@ -8,6 +8,7 @@ import {
   type IngestScope,
 } from "../../api/management";
 import { whoami } from "../../api/session";
+import { toErrorMessage } from "../../api/http";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import "./ApiKeys.css";
 
@@ -50,8 +51,7 @@ export function ApiKeys() {
         queryKey: ["managed-api-keys", tenant],
       });
     },
-    onError: (value) =>
-      setError(value instanceof Error ? value.message : String(value)),
+    onError: (value) => setError(toErrorMessage(value)),
   });
 
   const revokeMutation = useMutation({
@@ -61,8 +61,7 @@ export function ApiKeys() {
         queryKey: ["managed-api-keys", tenant],
       });
     },
-    onError: (value) =>
-      setError(value instanceof Error ? value.message : String(value)),
+    onError: (value) => setError(toErrorMessage(value)),
   });
 
   if (isLoading) return null;

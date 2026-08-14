@@ -51,7 +51,7 @@ export function TopBar({ state, update }: Props) {
           Manage
         </Link>
       )}
-      <UserMenu state={state} update={update} />
+      <UserMenu state={state} />
     </header>
   );
 }

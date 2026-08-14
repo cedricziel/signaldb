@@ -13,6 +13,7 @@ import {
   type IngestScope,
 } from "../../api/management";
 import type { WhoamiResponse } from "../../api/session";
+import { toErrorMessage } from "../../api/http";
 import "./management.css";
 
 const scopes: IngestScope[] = [
@@ -51,8 +52,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
   const datasetMutation = useMutation({
     mutationFn: (name: string) => createDataset(tenant, name),
     onSuccess: refresh,
-    onError: (value) =>
-      setError(value instanceof Error ? value.message : String(value)),
+    onError: (value) => setError(toErrorMessage(value)),
   });
   const keyMutation = useMutation({
     mutationFn: (input: {
@@ -65,8 +65,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
       setError(null);
       refresh();
     },
-    onError: (value) =>
-      setError(value instanceof Error ? value.message : String(value)),
+    onError: (value) => setError(toErrorMessage(value)),
   });
 
   return (
@@ -106,13 +105,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                       onClick={() =>
                         deleteDataset(tenant, dataset.id)
                           .then(refresh)
-                          .catch((value) =>
-                            setError(
-                              value instanceof Error
-                                ? value.message
-                                : String(value),
-                            ),
-                          )
+                          .catch((value) => setError(toErrorMessage(value)))
                       }
                     >
                       Delete
@@ -125,13 +118,17 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
               onSubmit={(event) => {
                 event.preventDefault();
                 const form = event.currentTarget;
-                const name = String(new FormData(form).get("name") ?? "").trim();
+                const name = String(
+                  new FormData(form).get("name") ?? "",
+                ).trim();
                 if (name) datasetMutation.mutate(name);
                 form.reset();
               }}
             >
               <input name="name" placeholder="new-dataset" required />
-              <button disabled={datasetMutation.isPending}>Create dataset</button>
+              <button disabled={datasetMutation.isPending}>
+                Create dataset
+              </button>
             </form>
           </section>
 
@@ -150,11 +147,9 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                   {!key.revoked && (
                     <button
                       onClick={() =>
-                        revokeApiKey(tenant, key.id).then(refresh).catch((value) =>
-                          setError(
-                            value instanceof Error ? value.message : String(value),
-                          ),
-                        )
+                        revokeApiKey(tenant, key.id)
+                          .then(refresh)
+                          .catch((value) => setError(toErrorMessage(value)))
                       }
                     >
                       Revoke
@@ -216,11 +211,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                     onClick={() =>
                       removeMembership(tenant, membership.user_id)
                         .then(refresh)
-                        .catch((value) =>
-                          setError(
-                            value instanceof Error ? value.message : String(value),
-                          ),
-                        )
+                        .catch((value) => setError(toErrorMessage(value)))
                     }
                   >
                     Remove
@@ -237,21 +228,21 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
               const data = new FormData(form);
               upsertMembership(tenant, {
                 email: String(data.get("email") ?? "").trim(),
-                role: String(data.get("role")) as
-                  | "admin"
-                  | "member"
-                  | "viewer",
+                role: String(data.get("role")) as "admin" | "member" | "viewer",
               })
                 .then(() => {
                   form.reset();
                   refresh();
                 })
-                .catch((value) =>
-                  setError(value instanceof Error ? value.message : String(value)),
-                );
+                .catch((value) => setError(toErrorMessage(value)));
             }}
           >
-            <input name="email" type="email" placeholder="user@example.com" required />
+            <input
+              name="email"
+              type="email"
+              placeholder="user@example.com"
+              required
+            />
             <select name="role" defaultValue="viewer">
               <option value="viewer">Viewer</option>
               <option value="member">Member</option>
@@ -277,9 +268,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                   default_dataset: dataset || undefined,
                 })
                   .then(() => onTenantCreated(id, dataset))
-                  .catch((value) =>
-                    setError(value instanceof Error ? value.message : String(value)),
-                  );
+                  .catch((value) => setError(toErrorMessage(value)));
               }}
             >
               <input name="id" placeholder="tenant-id" required />

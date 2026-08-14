@@ -2,6 +2,8 @@
 // input; "edit as text" switches the query to a raw LogQL string that takes
 // precedence until cleared.
 
+import { escapeQuotedString, upsertBy } from "./collections";
+
 export type FilterOp = "=" | "!=" | "=~" | "!~";
 
 export interface LabelFilter {
@@ -26,10 +28,6 @@ export function isValidLabelName(name: string): boolean {
   return LABEL_RE.test(name);
 }
 
-export function escapeLogQLString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
 /**
  * LogQL requires at least one matcher in a selector; match everything via a
  * non-empty regex on service_name (always present in SignalDB log streams).
@@ -40,7 +38,7 @@ export function compileSelector(filters: LabelFilter[]): string {
   const valid = filters.filter((f) => isValidLabelName(f.label));
   if (valid.length === 0) return MATCH_ALL_SELECTOR;
   const matchers = valid.map(
-    (f) => `${f.label}${f.op}"${escapeLogQLString(f.value)}"`,
+    (f) => `${f.label}${f.op}"${escapeQuotedString(f.value)}"`,
   );
   return `{${matchers.join(", ")}}`;
 }
@@ -49,7 +47,7 @@ export function compileLogQL(model: LogQueryModel): string {
   if (model.raw && model.raw.trim() !== "") return model.raw.trim();
   let q = compileSelector(model.filters);
   if (model.search.trim() !== "") {
-    q += ` |= "${escapeLogQLString(model.search.trim())}"`;
+    q += ` |= "${escapeQuotedString(model.search.trim())}"`;
   }
   return q;
 }
@@ -85,11 +83,9 @@ export function upsertFilter(
   filters: LabelFilter[],
   next: LabelFilter,
 ): LabelFilter[] {
-  const idx = filters.findIndex(
+  return upsertBy(
+    filters,
+    next,
     (f) => f.label === next.label && f.op === next.op,
   );
-  if (idx === -1) return [...filters, next];
-  const copy = [...filters];
-  copy[idx] = next;
-  return copy;
 }

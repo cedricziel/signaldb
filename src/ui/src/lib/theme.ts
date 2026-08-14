@@ -16,14 +16,20 @@ export function initTheme(): void {
   }
 }
 
+/** Whether `<html>` is currently in dark mode, honoring an explicit
+ * data-theme override before falling back to prefers-color-scheme. */
+export function isDarkTheme(): boolean {
+  const current = document.documentElement.getAttribute("data-theme");
+  return (
+    current === "dark" ||
+    (!current && window.matchMedia("(prefers-color-scheme: dark)").matches)
+  );
+}
+
 /** Flip the current theme and persist the new choice. */
 export function toggleTheme(): void {
   const root = document.documentElement;
-  const current = root.getAttribute("data-theme");
-  const isDark =
-    current === "dark" ||
-    (!current && window.matchMedia("(prefers-color-scheme: dark)").matches);
-  const next = isDark ? "light" : "dark";
+  const next = isDarkTheme() ? "light" : "dark";
   root.setAttribute("data-theme", next);
   try {
     localStorage.setItem(STORAGE_KEY, next);

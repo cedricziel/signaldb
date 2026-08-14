@@ -132,12 +132,6 @@ export interface LabelStat {
   capped: boolean;
 }
 
-interface LabelStatsResponse {
-  status: string;
-  data?: LabelStat[];
-  error?: string;
-}
-
 /**
  * Cardinality statistics for each label in the window. Only labels whose data
  * has been compacted at least once appear; the builder treats missing labels
@@ -164,7 +158,7 @@ export async function promLabelStats(
       res.status,
     );
   }
-  const json = (await res.json()) as LabelStatsResponse;
+  const json = (await res.json()) as PromEnvelope<LabelStat[]>;
   if (json.status !== "success") {
     throw new Error(
       `Prometheus label_stats failed: ${json.error ?? json.status}`,

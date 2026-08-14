@@ -4,11 +4,8 @@
 // selector, an optional range-vector function (rate/*_over_time), and an
 // optional outer space aggregation with grouping.
 
-import {
-  escapeLogQLString,
-  isValidLabelName,
-  type LabelFilter,
-} from "../../lib/filters";
+import { isValidLabelName, type LabelFilter } from "../../lib/filters";
+import { escapeQuotedString } from "../../lib/collections";
 
 export type SpaceAgg = "sum" | "avg" | "min" | "max" | "count";
 
@@ -71,7 +68,7 @@ export function emptyQuery(ref: string): MetricQuery {
 export function buildSelector(metric: string, filters: LabelFilter[]): string {
   const matchers = filters
     .filter((f) => isValidLabelName(f.label))
-    .map((f) => `${f.label}${f.op}"${escapeLogQLString(f.value)}"`);
+    .map((f) => `${f.label}${f.op}"${escapeQuotedString(f.value)}"`);
   if (matchers.length === 0) return metric;
   return `${metric}{${matchers.join(", ")}}`;
 }

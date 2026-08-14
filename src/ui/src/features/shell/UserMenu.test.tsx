@@ -39,7 +39,7 @@ describe("UserMenu", () => {
         body: { ...WHOAMI, user: undefined },
       },
     ]);
-    renderUserMenu({ state: DEFAULT_STATE, update: vi.fn() });
+    renderUserMenu({ state: DEFAULT_STATE });
     // No user menu button should appear
     await waitFor(() => {
       expect(screen.queryByText("JD")).not.toBeInTheDocument();
@@ -48,7 +48,7 @@ describe("UserMenu", () => {
 
   it("shows avatar with initials from display name", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE, update: vi.fn() });
+    renderUserMenu({ state: DEFAULT_STATE });
     await waitFor(() => {
       expect(screen.getByText("JD")).toBeInTheDocument();
     });
@@ -56,7 +56,7 @@ describe("UserMenu", () => {
 
   it("shows user display name next to avatar", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE, update: vi.fn() });
+    renderUserMenu({ state: DEFAULT_STATE });
     await waitFor(() => {
       expect(screen.getByText("Jane Doe")).toBeInTheDocument();
     });
@@ -64,7 +64,7 @@ describe("UserMenu", () => {
 
   it("opens popover on click", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE, update: vi.fn() });
+    renderUserMenu({ state: DEFAULT_STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -74,7 +74,7 @@ describe("UserMenu", () => {
 
   it("shows user info in popover", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE, update: vi.fn() });
+    renderUserMenu({ state: DEFAULT_STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -85,7 +85,7 @@ describe("UserMenu", () => {
 
   it("shows theme toggle in menu", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE, update: vi.fn() });
+    renderUserMenu({ state: DEFAULT_STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -95,7 +95,7 @@ describe("UserMenu", () => {
 
   it("shows navigation items with correct links", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE, update: vi.fn() });
+    renderUserMenu({ state: DEFAULT_STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -114,7 +114,7 @@ describe("UserMenu", () => {
 
   it("closes popover on Escape key", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE, update: vi.fn() });
+    renderUserMenu({ state: DEFAULT_STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -128,7 +128,7 @@ describe("UserMenu", () => {
 
   it("closes popover on backdrop click", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE, update: vi.fn() });
+    renderUserMenu({ state: DEFAULT_STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -144,7 +144,7 @@ describe("UserMenu", () => {
 
   it("shows sign out button", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE, update: vi.fn() });
+    renderUserMenu({ state: DEFAULT_STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
