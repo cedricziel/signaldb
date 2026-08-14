@@ -23,7 +23,7 @@ import {
   durationToSeconds,
   formatTimestamp,
   nanosToMs,
-  rangeToParam,
+  rangeScopeKey,
   resolveRange,
   stepForRange,
 } from "../../lib/time";
@@ -54,7 +54,7 @@ function groupSortValue(g: ErrorGroup, key: string): SortValue {
 
 export function ErrorsView({ state, update }: Props) {
   const range = resolveRange(state.range, Date.now());
-  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const rangeKey = rangeScopeKey(state);
   const [selected, setSelected] = useState<ErrorGroup | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [filters, setFilters] = useState<ErrorFilter[]>([]);

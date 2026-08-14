@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
 import {
   pyroscopeLabelNames,
   pyroscopeLabelValues,
@@ -6,7 +7,12 @@ import {
   pyroscopeServices,
 } from "../../api/pyroscope";
 import { fetchFlamegraph, fetchFlamegraphById } from "../../api/profilesIr";
-import { rangeToParam, resolveRange, type TimeRange } from "../../lib/time";
+import {
+  rangeScopeKey,
+  rangeToParam,
+  resolveRange,
+  type TimeRange,
+} from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { TimeRangePicker } from "../shell/TimeRangePicker";
 import { FlameGraph, FlamePane } from "./FlameGraph";
@@ -31,7 +37,7 @@ export function ProfilesView({ state, update }: Props) {
 /** The service/type/attribute selectors shared by the single and compare
  * views — everything except the time range and the rendered graph(s). */
 function useProfileSelectors(state: ExploreState) {
-  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const rangeKey = rangeScopeKey(state);
 
   const typesQuery = useQuery({
     queryKey: ["pyro-types", rangeKey],
@@ -222,7 +228,7 @@ function SingleRangeView({ state, update }: Props) {
   const selectors = useProfileSelectors(state);
   const { typesQuery, servicesQuery, selectedType, selectedTypeMeta, unit } =
     selectors;
-  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const rangeKey = rangeScopeKey(state);
 
   const renderQuery = useFlamegraphRender({
     label: "single",
@@ -294,7 +300,7 @@ function CompareView({ state, update }: Props) {
   const selectors = useProfileSelectors(state);
   const { typesQuery, servicesQuery, selectedType, selectedTypeMeta, unit } =
     selectors;
-  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const rangeKey = rangeScopeKey(state);
   const baselineKey = rangeToParam(state.profileBaseline);
 
   const matcher = state.profileMatcherLabel
@@ -372,6 +378,9 @@ function ComparePane({
   >;
   unit: string;
 }) {
+  const fb = query.data?.render.flamebearer;
+  const levels = useMemo(() => (fb ? decodeFlamebearer(fb) : []), [fb]);
+
   if (query.isFetching && !query.data) {
     return (
       <div className="profiles-compare-pane">
@@ -388,7 +397,6 @@ function ComparePane({
       </div>
     );
   }
-  const levels = decodeFlamebearer(query.data.render.flamebearer);
   return (
     <div className="profiles-compare-pane">
       <FlamePane

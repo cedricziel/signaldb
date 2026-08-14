@@ -48,6 +48,20 @@ export function rangeToParam(range: TimeRange): string {
   return secondsToDuration(range.seconds);
 }
 
+/**
+ * React Query cache key for "the current range + tenant + dataset" — the
+ * scoping every explore view's queries share. Structural rather than typed
+ * against `ExploreState` to avoid importing it here; any object with these
+ * three fields (which `ExploreState` satisfies) works.
+ */
+export function rangeScopeKey(scope: {
+  range: TimeRange;
+  tenant: string;
+  dataset: string;
+}): string {
+  return `${rangeToParam(scope.range)}|${scope.tenant}|${scope.dataset}`;
+}
+
 export function parseRangeParam(param: string | null): TimeRange {
   if (!param) return DEFAULT_RANGE;
   const abs = /^(\d+)-(\d+)$/.exec(param);

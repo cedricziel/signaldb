@@ -9,7 +9,7 @@ import {
 } from "../../lib/filters";
 import {
   durationToSeconds,
-  rangeToParam,
+  rangeScopeKey,
   resolveRange,
   resolveStep,
   stepOptionsForRange,
@@ -40,7 +40,7 @@ export function LogsView({ state, update }: Props) {
   const logql = compileLogQL(model);
   // Cache scope: time range plus tenant context, so switching tenants
   // refetches instead of serving another tenant's cached results.
-  const rangeKey = `${rangeToParam(state.range)}|${state.tenant}|${state.dataset}`;
+  const rangeKey = rangeScopeKey(state);
   // Relative ranges resolve "now" per fetch so live mode slides forward.
   const range = () => resolveRange(state.range, Date.now());
   const refetchInterval = state.live ? LIVE_INTERVAL_MS : false;

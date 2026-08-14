@@ -6,7 +6,7 @@ import { runIrQuery } from "../../api/queryIr";
 import { AttributeValue } from "../../components/AttributeValue";
 import {
   durationToSeconds,
-  rangeToParam,
+  rangeScopeKey,
   resolveRange,
   stepForRange,
 } from "../../lib/time";
@@ -45,8 +45,7 @@ export function MetricsView({ state, update }: Props) {
   // "upgraded" to IR — only an interactive builder Run is.
   const [ranQuery, setRanQuery] = useState<MetricQuery | null>(null);
 
-  const rangeParam = rangeToParam(state.range);
-  const rangeKey = `${rangeParam}|${state.tenant}|${state.dataset}`;
+  const rangeKey = rangeScopeKey(state);
   // Freeze the resolved window per range selection so metadata pickers don't
   // refetch on every render (relative ranges resolve to a shifting "now").
   // Keyed on rangeKey rather than state.range so the window only moves when
