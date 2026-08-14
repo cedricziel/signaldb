@@ -51,7 +51,7 @@ impl TenantAction {
         match self {
             TenantAction::List => {
                 let resp = client.list_tenants().send().await?.into_inner();
-                println!("{}", serde_json::to_string_pretty(&resp)?);
+                crate::commands::print_json(&resp)?;
             }
             TenantAction::Create {
                 id,
@@ -68,7 +68,7 @@ impl TenantAction {
                     .send()
                     .await?
                     .into_inner();
-                println!("{}", serde_json::to_string_pretty(&resp)?);
+                crate::commands::print_json(&resp)?;
             }
             TenantAction::Get { id } => {
                 let resp = client
@@ -77,7 +77,7 @@ impl TenantAction {
                     .send()
                     .await?
                     .into_inner();
-                println!("{}", serde_json::to_string_pretty(&resp)?);
+                crate::commands::print_json(&resp)?;
             }
             TenantAction::Update {
                 id,
@@ -94,7 +94,7 @@ impl TenantAction {
                     .send()
                     .await?
                     .into_inner();
-                println!("{}", serde_json::to_string_pretty(&resp)?);
+                crate::commands::print_json(&resp)?;
             }
             TenantAction::Delete { id } => {
                 client.delete_tenant().tenant_id(&id).send().await?;
