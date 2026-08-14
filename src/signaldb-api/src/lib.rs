@@ -5,7 +5,6 @@
 //! schemas. The `router` crate annotates its handlers with `#[utoipa::path]`
 //! and assembles these schemas into the emitted spec (`api/signaldb-api.json`).
 
-mod extensions;
 mod schemas;
 
 pub use schemas::*;
