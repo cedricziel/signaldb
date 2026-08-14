@@ -353,52 +353,42 @@ impl TenantSchemaRegistry {
         self.catalogs.remove(tenant_id);
     }
 
+    /// Build a `table_name -> T` map over every configured, non-custom table
+    /// schema, via an accessor shared by [`Self::get_schema_definitions`] and
+    /// [`Self::get_partition_specifications`] (custom schemas are skipped for
+    /// both — TODO: parse them from JSON configuration).
+    fn collect_table_schema_map<T>(
+        &self,
+        accessor: impl Fn(&iceberg_schemas::TableSchema) -> Result<T>,
+    ) -> Result<HashMap<String, T>> {
+        let mut out = HashMap::new();
+        let default_schemas = &self.config.schema.default_schemas;
+
+        for table_schema in iceberg_schemas::TableSchema::all_from_config(default_schemas) {
+            if matches!(table_schema, iceberg_schemas::TableSchema::Custom(_)) {
+                continue;
+            }
+            let value = accessor(&table_schema)?;
+            out.insert(table_schema.table_name().to_string(), value);
+        }
+
+        Ok(out)
+    }
+
     /// Get schema definitions for a tenant
     pub fn get_schema_definitions(
         &self,
         _tenant_id: &str,
     ) -> Result<HashMap<String, iceberg_rust::spec::schema::Schema>> {
-        let mut schemas = HashMap::new();
-        let default_schemas = &self.config.schema.default_schemas;
-
-        for table_schema in iceberg_schemas::TableSchema::all_from_config(default_schemas) {
-            match &table_schema {
-                iceberg_schemas::TableSchema::Custom(_) => {
-                    // Skip custom schemas for now
-                    // TODO: Parse custom schema from JSON configuration
-                }
-                _ => {
-                    let schema = table_schema.schema()?;
-                    schemas.insert(table_schema.table_name().to_string(), schema);
-                }
-            }
-        }
-
-        Ok(schemas)
+        self.collect_table_schema_map(iceberg_schemas::TableSchema::schema)
     }
 
-    /// Get partition specifications for a tenant  
+    /// Get partition specifications for a tenant
     pub fn get_partition_specifications(
         &self,
         _tenant_id: &str,
     ) -> Result<HashMap<String, iceberg_rust::spec::partition::PartitionSpec>> {
-        let mut partition_specs = HashMap::new();
-        let default_schemas = &self.config.schema.default_schemas;
-
-        for table_schema in iceberg_schemas::TableSchema::all_from_config(default_schemas) {
-            match &table_schema {
-                iceberg_schemas::TableSchema::Custom(_) => {
-                    // Skip custom schemas for now
-                    // TODO: Parse custom partition spec from configuration
-                }
-                _ => {
-                    let partition_spec = table_schema.partition_spec()?;
-                    partition_specs.insert(table_schema.table_name().to_string(), partition_spec);
-                }
-            }
-        }
-
-        Ok(partition_specs)
+        self.collect_table_schema_map(iceberg_schemas::TableSchema::partition_spec)
     }
 
     /// Provision every signal table enabled for a tenant, across all of its
