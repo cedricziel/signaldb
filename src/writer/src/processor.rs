@@ -102,7 +102,7 @@ impl FlushScope {
 /// link its batch span back to the originating ingest trace instead of
 /// appearing as a detached root. Returns `(None, None)` when the metadata is
 /// absent, not JSON, or carries no trace context.
-fn trace_context_from_metadata(metadata: &Option<String>) -> (Option<String>, Option<String>) {
+fn trace_context_from_metadata(metadata: &Option<String>) -> EntryTraceContext {
     let Some(raw) = metadata else {
         return (None, None);
     };
