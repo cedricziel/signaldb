@@ -697,12 +697,6 @@ impl CompletionSource {
     }
 }
 
-/// Tools that ship a UI app, paired with the resource that renders them.
-const UI_TOOLS: [(&str, &str); 2] = [
-    ("get_trace", apps::TRACE_APP_URI),
-    ("get_profile", apps::PROFILE_APP_URI),
-];
-
 /// SEP-2549 cache TTL for `tools/list`: short-lived because `_meta.ui` varies
 /// with the connecting client's negotiated capabilities.
 const TOOL_LIST_CACHE_TTL_MS: u64 = 30_000;
@@ -755,7 +749,7 @@ impl ServerHandler for McpServer {
         let mut tools = Self::tool_router().list_all();
         if client_supports_ui(&context) {
             for tool in &mut tools {
-                if let Some((_, uri)) = UI_TOOLS.iter().find(|(name, _)| *name == tool.name) {
+                if let Some(uri) = apps::tool_ui_uri(&tool.name) {
                     tool.meta = Some(apps::tool_ui_meta(uri));
                 }
             }
@@ -863,8 +857,9 @@ fn json_result_for_app<T: serde::Serialize>(
     value: &T,
     with_structured: bool,
 ) -> Result<CallToolResult, ErrorData> {
-    let text = serde_json::to_string(value)
+    let json = serde_json::to_value(value)
         .map_err(|e| ErrorData::internal_error(format!("failed to serialize result: {e}"), None))?;
+    let text = json.to_string();
     if text.len() > MAX_TOOL_PAYLOAD_BYTES {
         let notice = serde_json::json!({
             "truncated": true,
@@ -878,9 +873,7 @@ fn json_result_for_app<T: serde::Serialize>(
     }
     let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
     if with_structured {
-        result.structured_content = Some(serde_json::to_value(value).map_err(|e| {
-            ErrorData::internal_error(format!("failed to serialize result: {e}"), None)
-        })?);
+        result.structured_content = Some(json);
     }
     Ok(result)
 }
