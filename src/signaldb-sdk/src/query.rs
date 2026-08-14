@@ -17,7 +17,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Endpoint;
 
@@ -143,19 +143,13 @@ impl QueryClient {
         };
         let mut request = tonic::Request::new(ticket);
         if let Some(key) = &self.api_key {
-            let value = MetadataValue::try_from(format!("Bearer {key}"))
-                .map_err(|e| QueryError::Metadata(e.to_string()))?;
-            request.metadata_mut().insert("authorization", value);
+            insert_metadata(&mut request, "authorization", &format!("Bearer {key}"))?;
         }
         if let Some(tenant) = &self.tenant_id {
-            let value = MetadataValue::try_from(tenant.as_str())
-                .map_err(|e| QueryError::Metadata(e.to_string()))?;
-            request.metadata_mut().insert("x-tenant-id", value);
+            insert_metadata(&mut request, "x-tenant-id", tenant)?;
         }
         if let Some(dataset) = &self.dataset_id {
-            let value = MetadataValue::try_from(dataset.as_str())
-                .map_err(|e| QueryError::Metadata(e.to_string()))?;
-            request.metadata_mut().insert("x-dataset-id", value);
+            insert_metadata(&mut request, "x-dataset-id", dataset)?;
         }
 
         let response = client
@@ -163,16 +157,27 @@ impl QueryClient {
             .await
             .map_err(|status| QueryError::Server(format_flight_error(&status)))?;
         let flight_stream = response.into_inner();
-        let mut batch_stream = FlightRecordBatchStream::new_from_flight_data(
+        let batch_stream = FlightRecordBatchStream::new_from_flight_data(
             flight_stream.map_err(|e| arrow_flight::error::FlightError::Tonic(Box::new(e))),
         );
 
-        let mut batches = Vec::new();
-        while let Some(result) = batch_stream.next().await {
-            batches.push(result.map_err(|e| QueryError::Decode(e.to_string()))?);
-        }
-        Ok(batches)
+        batch_stream
+            .map_err(|e| QueryError::Decode(e.to_string()))
+            .try_collect()
+            .await
     }
+}
+
+/// Insert a single metadata header on a Flight request, mapping the
+/// ASCII-validity error tonic returns into a [`QueryError`].
+fn insert_metadata(
+    request: &mut tonic::Request<Ticket>,
+    key: &'static str,
+    value: &str,
+) -> Result<(), QueryError> {
+    let value = MetadataValue::try_from(value).map_err(|e| QueryError::Metadata(e.to_string()))?;
+    request.metadata_mut().insert(key, value);
+    Ok(())
 }
 
 /// Render a tonic `Status` from the Flight endpoint into an operator-facing
@@ -217,15 +222,12 @@ mod tests {
         assert_eq!(c.dataset_id.as_deref(), Some("prod"));
     }
 
-    #[test]
-    fn invalid_url_is_reported() {
+    #[tokio::test]
+    async fn invalid_url_is_reported() {
         // `Endpoint::from_shared` rejects a malformed scheme/URI.
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let err = rt
-            .block_on(QueryClient::new("not a url").sql("SELECT 1"))
+        let err = QueryClient::new("not a url")
+            .sql("SELECT 1")
+            .await
             .unwrap_err();
         assert!(matches!(err, QueryError::InvalidUrl { .. }), "got {err:?}");
     }
