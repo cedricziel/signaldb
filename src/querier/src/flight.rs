@@ -1622,17 +1622,7 @@ impl FlightService for QuerierFlightService {
                                             tracing::error!(error = ?e, "Error querying trace");
                                             // Mirror the search arm: caller errors are
                                             // surfaced as such instead of a blanket 500.
-                                            return Err(match e {
-                                                crate::query::error::QuerierError::InvalidInput(
-                                                    msg,
-                                                ) => Status::invalid_argument(msg),
-                                                crate::query::error::QuerierError::Unsupported(
-                                                    msg,
-                                                ) => Status::unimplemented(msg),
-                                                other => Status::internal(format!(
-                                                    "Trace query failed: {other:?}"
-                                                )),
-                                            });
+                                            return Err(trace_error_to_status("Trace query")(e));
                                         }
                                     }
                                 }
@@ -1682,17 +1672,7 @@ impl FlightService for QuerierFlightService {
                                             // Distinguish caller errors from server
                                             // errors so bad or unsupported selectors
                                             // surface as 400/501, not 500.
-                                            return Err(match e {
-                                                crate::query::error::QuerierError::InvalidInput(
-                                                    msg,
-                                                ) => Status::invalid_argument(msg),
-                                                crate::query::error::QuerierError::Unsupported(
-                                                    msg,
-                                                ) => Status::unimplemented(msg),
-                                                other => Status::internal(format!(
-                                                    "Trace search failed: {other:?}"
-                                                )),
-                                            });
+                                            return Err(trace_error_to_status("Trace search")(e));
                                         }
                                     }
                                 }
@@ -2265,6 +2245,19 @@ fn querier_error_to_status(
             Status::invalid_argument(too_many.to_string())
         }
         other => Status::internal(format!("{signal} query failed: {other:?}")),
+    }
+}
+
+/// Map trace lookup/search errors onto gRPC statuses: same caller-error
+/// arms as [`querier_error_to_status`], but keeps each call site's existing
+/// message wording (`context` names the action, e.g. "Trace query").
+fn trace_error_to_status(
+    context: &'static str,
+) -> impl Fn(crate::query::error::QuerierError) -> Status {
+    move |e| match e {
+        crate::query::error::QuerierError::InvalidInput(msg) => Status::invalid_argument(msg),
+        crate::query::error::QuerierError::Unsupported(msg) => Status::unimplemented(msg),
+        other => Status::internal(format!("{context} failed: {other:?}")),
     }
 }
 
