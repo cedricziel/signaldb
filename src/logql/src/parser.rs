@@ -199,10 +199,7 @@ impl Parser {
     /// The operand of a line filter: a quoted string, or `ip("...")`.
     fn parse_line_filter_value(&mut self, op: LineFilterOp) -> Result<LineFilter, ParseError> {
         // `ip("...")` matcher.
-        if let Some(t) = self.peek()
-            && matches!(&t.token, Token::Ident(name) if name == "ip")
-        {
-            self.next();
+        if self.eat_ip_ident() {
             let value = self.parse_ip_call()?;
             return Ok(LineFilter {
                 op,
@@ -224,6 +221,29 @@ impl Parser {
             },
             None => Err(self.error_at("expected a quoted string or ip() after line filter", None)),
         }
+    }
+
+    /// Consume a `,` if the next token is one, for comma-separated lists.
+    /// Returns whether a comma was consumed.
+    fn eat_comma(&mut self) -> bool {
+        let is_comma = matches!(self.peek().map(|t| &t.token), Some(Token::Comma));
+        if is_comma {
+            self.next();
+        }
+        is_comma
+    }
+
+    /// Consume a leading `ip` identifier if present, so a caller can follow
+    /// up with [`Self::parse_ip_call`] to parse the rest of `ip(...)`.
+    fn eat_ip_ident(&mut self) -> bool {
+        let is_ip = matches!(
+            self.peek().map(|t| &t.token),
+            Some(Token::Ident(name)) if name == "ip"
+        );
+        if is_ip {
+            self.next();
+        }
+        is_ip
     }
 
     /// The `("...")` argument of an `ip(...)` matcher; `ip` is consumed.
@@ -338,9 +358,7 @@ impl Parser {
         match self.next() {
             Some(t) => match &t.token {
                 Token::Ident(name) => Ok(name.clone()),
-                other if Token::keyword_text(other).is_some() => {
-                    Ok(Token::keyword_text(other).expect("checked").to_string())
-                }
+                other if let Some(kw) = Token::keyword_text(other) => Ok(kw.to_string()),
                 other => Err(self.error_at(format!("expected {what}, found '{other}'"), Some(&t))),
             },
             None => Err(self.error_at(format!("expected {what}, found end of input"), None)),
@@ -364,9 +382,7 @@ impl Parser {
                 None
             };
             out.push(LabelExtraction { name, expr });
-            if matches!(self.peek().map(|t| &t.token), Some(Token::Comma)) {
-                self.next();
-            } else {
+            if !self.eat_comma() {
                 break;
             }
         }
@@ -396,9 +412,7 @@ impl Parser {
                 }
             };
             out.push(LabelFormat { dst, value });
-            if matches!(self.peek().map(|t| &t.token), Some(Token::Comma)) {
-                self.next();
-            } else {
+            if !self.eat_comma() {
                 break;
             }
         }
@@ -408,8 +422,7 @@ impl Parser {
     /// Comma-separated bare label names for `distinct`.
     fn parse_label_name_list(&mut self) -> Result<Vec<String>, ParseError> {
         let mut out = vec![self.expect_ident("a label name")?];
-        while matches!(self.peek().map(|t| &t.token), Some(Token::Comma)) {
-            self.next();
+        while self.eat_comma() {
             out.push(self.expect_ident("a label name")?);
         }
         Ok(out)
@@ -429,8 +442,7 @@ impl Parser {
     /// `name op "value"` matcher.
     fn parse_label_predicate_list(&mut self) -> Result<Vec<LabelPredicate>, ParseError> {
         let mut out = vec![self.parse_label_predicate()?];
-        while matches!(self.peek().map(|t| &t.token), Some(Token::Comma)) {
-            self.next();
+        while self.eat_comma() {
             out.push(self.parse_label_predicate()?);
         }
         Ok(out)
@@ -547,10 +559,7 @@ impl Parser {
 
     fn parse_filter_value(&mut self) -> Result<FilterValue, ParseError> {
         // `ip("...")` matcher.
-        if let Some(t) = self.peek()
-            && matches!(&t.token, Token::Ident(name) if name == "ip")
-        {
-            self.next();
+        if self.eat_ip_ident() {
             return Ok(FilterValue::Ip(self.parse_ip_call()?));
         }
         match self.next() {
@@ -647,22 +656,9 @@ impl Parser {
 
     /// `name (= | != | =~ | !~) "value"`
     fn parse_matcher(&mut self) -> Result<LabelMatcher, ParseError> {
-        let name = match self.next() {
-            // Grammar keywords are valid label names inside a selector
-            // (`{by="x"}` selects the label "by").
-            Some(t) => match &t.token {
-                Token::Ident(name) => name.clone(),
-                other if Token::keyword_text(other).is_some() => {
-                    Token::keyword_text(other).expect("checked").to_string()
-                }
-                other => {
-                    return Err(
-                        self.error_at(format!("expected label name, found '{other}'"), Some(&t))
-                    );
-                }
-            },
-            None => return Err(self.error_at("expected label name, found end of input", None)),
-        };
+        // Grammar keywords are valid label names inside a selector
+        // (`{by="x"}` selects the label "by").
+        let name = self.expect_ident("label name")?;
 
         let op = match self.next() {
             Some(t) => match t.token {
@@ -784,9 +780,7 @@ impl Parser {
         if !matches!(self.peek().map(|t| &t.token), Some(Token::RParen)) {
             loop {
                 labels.push(self.expect_ident(what)?);
-                if matches!(self.peek().map(|t| &t.token), Some(Token::Comma)) {
-                    self.next();
-                } else {
+                if !self.eat_comma() {
                     break;
                 }
             }
@@ -884,13 +878,8 @@ impl Parser {
         let function = RangeFunction::from_name(&name).expect("checked by caller");
         self.expect(&Token::LParen, "'(' after a range function")?;
 
-        let param = if function.takes_param() {
-            let p = self.parse_number("a scalar parameter")?;
-            self.expect(&Token::Comma, "',' after the range function parameter")?;
-            Some(p)
-        } else {
-            None
-        };
+        let param =
+            self.parse_optional_scalar_param(function.takes_param(), "the range function")?;
 
         let (log_query, range, mut offset, unwrap) = self.parse_log_range_expr()?;
         self.expect(&Token::RParen, "')' to close the range aggregation")?;
@@ -1051,13 +1040,7 @@ impl Parser {
         let mut grouping = self.parse_optional_grouping()?;
 
         self.expect(&Token::LParen, "'(' after an aggregation function")?;
-        let param = if function.takes_param() {
-            let p = self.parse_number("a scalar parameter")?;
-            self.expect(&Token::Comma, "',' after the aggregation parameter")?;
-            Some(p)
-        } else {
-            None
-        };
+        let param = self.parse_optional_scalar_param(function.takes_param(), "the aggregation")?;
         let inner = self.parse_metric_expr()?;
         self.expect(&Token::RParen, "')' to close the aggregation")?;
 
@@ -1082,19 +1065,7 @@ impl Parser {
             _ => return Ok(None),
         };
         self.next();
-        self.expect(&Token::LParen, "'(' after by/without")?;
-        let mut labels = Vec::new();
-        if !matches!(self.peek().map(|t| &t.token), Some(Token::RParen)) {
-            loop {
-                labels.push(self.expect_ident("a grouping label")?);
-                if matches!(self.peek().map(|t| &t.token), Some(Token::Comma)) {
-                    self.next();
-                } else {
-                    break;
-                }
-            }
-        }
-        self.expect(&Token::RParen, "')' to close by/without")?;
+        let labels = self.parse_label_paren_list("a grouping label")?;
         Ok(Some(Grouping { without, labels }))
     }
 
@@ -1109,6 +1080,21 @@ impl Parser {
             },
             None => Err(self.error_at(format!("expected {what}, found end of input"), None)),
         }
+    }
+
+    /// A leading `<scalar>,` argument for functions where `takes_param` is
+    /// true (e.g. `quantile_over_time(0.9, ...)`), else `None`.
+    fn parse_optional_scalar_param(
+        &mut self,
+        takes_param: bool,
+        what: &str,
+    ) -> Result<Option<f64>, ParseError> {
+        if !takes_param {
+            return Ok(None);
+        }
+        let p = self.parse_number("a scalar parameter")?;
+        self.expect(&Token::Comma, &format!("',' after {what} parameter"))?;
+        Ok(Some(p))
     }
 }
 
