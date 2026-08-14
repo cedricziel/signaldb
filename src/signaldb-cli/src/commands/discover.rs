@@ -9,7 +9,7 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 
-use super::query::build_http_client;
+use super::query::{build_http_client, print_json_response};
 
 /// Which signal to discover attributes for.
 #[derive(Clone, Debug, ValueEnum)]
@@ -137,23 +137,6 @@ async fn run_metrics(connect: &ConnectArgs) -> anyhow::Result<()> {
         .await
         .map(|r| r.into_inner());
     print_json_response(result, "discover metrics")
-}
-
-/// Print a JSON response to stdout, or turn an SDK error into an `anyhow`
-/// error with context so the process exits non-zero with a diagnostic on
-/// stderr (mirrors `query::print_json_response`).
-fn print_json_response<T, E>(result: Result<T, E>, what: &str) -> anyhow::Result<()>
-where
-    T: serde::Serialize,
-    E: std::fmt::Display,
-{
-    match result {
-        Ok(value) => {
-            println!("{}", serde_json::to_string_pretty(&value)?);
-            Ok(())
-        }
-        Err(e) => anyhow::bail!("{what} failed: {e}"),
-    }
 }
 
 #[cfg(test)]

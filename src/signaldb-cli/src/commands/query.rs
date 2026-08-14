@@ -276,7 +276,7 @@ async fn submit_ir(
 /// Print a native-JSON query response to stdout, or turn an SDK error into an
 /// `anyhow` error with context so the process exits non-zero with a diagnostic
 /// on stderr.
-fn print_json_response<T, E>(result: Result<T, E>, what: &str) -> anyhow::Result<()>
+pub(crate) fn print_json_response<T, E>(result: Result<T, E>, what: &str) -> anyhow::Result<()>
 where
     T: serde::Serialize,
     E: std::fmt::Display,
