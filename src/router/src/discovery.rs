@@ -51,11 +51,8 @@ impl ServiceRegistry {
         flight_transport: InMemoryFlightTransport,
     ) -> Self {
         Self {
-            services: Arc::new(RwLock::new(HashMap::new())),
-            catalog,
             flight_transport: Some(Arc::new(flight_transport)),
-            discovery_ttl: std::time::Duration::from_secs(300),
-            round_robin: Arc::new(AtomicUsize::new(0)),
+            ..Self::new(catalog)
         }
     }
 
