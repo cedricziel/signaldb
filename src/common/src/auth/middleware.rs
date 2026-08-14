@@ -40,6 +40,26 @@ impl PartialEq<&str> for RequestCredentials {
     }
 }
 
+/// Extract and validate the optional `X-Dataset-ID` header.
+fn dataset_id_header(headers: &HeaderMap) -> Result<Option<String>, AuthError> {
+    match headers.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
+        Some(id) => Ok(Some(validate_dataset_id(id)?)),
+        None => Ok(None),
+    }
+}
+
+/// Extract and validate the required `X-Tenant-ID` header. Absent credentials
+/// are 401 (unauthenticated), not 400 — the embedded UI's login gate keys on
+/// 401.
+fn required_tenant_id_header(headers: &HeaderMap) -> Result<String, AuthError> {
+    let tenant_id_raw = headers
+        .get("x-tenant-id")
+        .ok_or_else(|| AuthError::unauthorized("Missing X-Tenant-ID header"))?
+        .to_str()
+        .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?;
+    validate_tenant_id(tenant_id_raw)
+}
+
 fn extract_auth_headers(
     headers: &HeaderMap,
 ) -> Result<(RequestCredentials, String, Option<String>), AuthError> {
@@ -57,12 +77,8 @@ fn extract_auth_headers(
         .ok_or_else(|| AuthError::bad_request("Authorization header must use Bearer scheme"))?
         .to_string();
 
-    // Extract and validate the optional X-Dataset-ID header (shared by all
-    // bearer kinds).
-    let dataset_id = match headers.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
-        Some(id) => Some(validate_dataset_id(id)?),
-        None => None,
-    };
+    // Shared by all bearer kinds.
+    let dataset_id = dataset_id_header(headers)?;
 
     // An OAuth access token carries its own tenant, so X-Tenant-ID is neither
     // required nor consulted — an OAuth session cannot be pointed at a tenant
@@ -75,15 +91,7 @@ fn extract_auth_headers(
         ));
     }
 
-    // Extract and validate X-Tenant-ID header. Absent credentials are 401
-    // (unauthenticated), not 400 — the embedded UI's login gate keys on 401.
-    let tenant_id_raw = headers
-        .get("x-tenant-id")
-        .ok_or_else(|| AuthError::unauthorized("Missing X-Tenant-ID header"))?
-        .to_str()
-        .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?;
-
-    let tenant_id = validate_tenant_id(tenant_id_raw)?;
+    let tenant_id = required_tenant_id_header(headers)?;
 
     Ok((RequestCredentials::ApiKey(bearer), tenant_id, dataset_id))
 }
@@ -101,21 +109,8 @@ fn extract_auth_from_session(
     let token = super::session::session_token_from_headers(headers)
         .ok_or_else(|| AuthError::unauthorized("Missing Authorization header"))?;
 
-    let tenant_id_raw = headers
-        .get("x-tenant-id")
-        .ok_or_else(|| AuthError::unauthorized("Missing X-Tenant-ID header"))?
-        .to_str()
-        .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?;
-    let tenant_id = validate_tenant_id(tenant_id_raw)?;
-
-    let dataset_raw = headers
-        .get("x-dataset-id")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let dataset_id = match dataset_raw {
-        Some(id) => Some(validate_dataset_id(&id)?),
-        None => None,
-    };
+    let tenant_id = required_tenant_id_header(headers)?;
+    let dataset_id = dataset_id_header(headers)?;
 
     Ok((
         RequestCredentials::UserSession(token),
