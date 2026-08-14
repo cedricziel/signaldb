@@ -22,7 +22,6 @@ pub struct AuthContext {
 
 /// Error type for Flight client operations.
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub enum FlightClientError {
     #[error("Connection failed: {0}")]
     Connection(String),
@@ -30,6 +29,19 @@ pub enum FlightClientError {
     Query(String),
     #[error("Data decode failed: {0}")]
     Decode(String),
+}
+
+/// Insert a single metadata header on a Flight request, logging (rather than
+/// failing the request) if the value isn't valid ASCII metadata.
+fn insert_header(request: &mut tonic::Request<Ticket>, name: &'static str, value: String) {
+    match MetadataValue::try_from(value) {
+        Ok(value) => {
+            request.metadata_mut().insert(name, value);
+        }
+        Err(e) => {
+            tracing::warn!("Failed to set {name} header: {e}");
+        }
+    }
 }
 
 /// Flight client for SignalDB.
@@ -73,34 +85,13 @@ impl SignalDBFlightClient {
         // Add authentication headers if provided
         if let Some(ctx) = auth {
             if let Some(key) = &ctx.api_key {
-                match MetadataValue::try_from(format!("Bearer {key}")) {
-                    Ok(value) => {
-                        request.metadata_mut().insert("authorization", value);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to set authorization header: {e}");
-                    }
-                }
+                insert_header(&mut request, "authorization", format!("Bearer {key}"));
             }
             if let Some(tenant) = &ctx.tenant_id {
-                match MetadataValue::try_from(tenant.as_str()) {
-                    Ok(value) => {
-                        request.metadata_mut().insert("x-tenant-id", value);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to set x-tenant-id header: {e}");
-                    }
-                }
+                insert_header(&mut request, "x-tenant-id", tenant.clone());
             }
             if let Some(dataset) = &ctx.dataset_id {
-                match MetadataValue::try_from(dataset.as_str()) {
-                    Ok(value) => {
-                        request.metadata_mut().insert("x-dataset-id", value);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to set x-dataset-id header: {e}");
-                    }
-                }
+                insert_header(&mut request, "x-dataset-id", dataset.clone());
             }
         }
 
