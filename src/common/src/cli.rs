@@ -1,19 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Common CLI functionality shared across all SignalDB binaries
-#[allow(async_fn_in_trait)]
-pub trait SignalDbCli {
-    /// Get the service name for this binary
-    fn service_name() -> &'static str;
-
-    /// Get the service description
-    fn service_description() -> &'static str;
-
-    /// Execute the CLI command
-    async fn execute(self) -> anyhow::Result<()>;
-}
-
 /// Common CLI arguments shared across all binaries
 #[derive(Parser, Debug, Clone)]
 pub struct CommonArgs {

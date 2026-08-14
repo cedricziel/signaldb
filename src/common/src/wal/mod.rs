@@ -1102,15 +1102,12 @@ impl Wal {
             metrics.wal_entries_pending.add(1, &[]);
         }
 
-        // Add to buffer first for batching
-        {
+        // Add to buffer first for batching, checking the flush threshold
+        // under the same write-lock acquisition rather than re-locking to
+        // read the length back.
+        let should_flush = {
             let mut buffer = self.buffer.write().await;
             buffer.push_back((entry_id, operation, data, metadata));
-        }
-
-        // Check if we need to flush immediately
-        let should_flush = {
-            let buffer = self.buffer.read().await;
             buffer.len() >= self.config.max_buffer_entries
         };
 

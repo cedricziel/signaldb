@@ -1,4 +1,4 @@
-use crate::service_bootstrap::{ServiceBootstrap, ServiceType};
+use crate::service_bootstrap::{ServiceBootstrap, ServiceType, split_host_port};
 use arrow_flight::flight_service_client::FlightServiceClient;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -328,10 +328,7 @@ impl InMemoryFlightTransport {
         let mut services = Vec::new();
 
         for ingester in ingesters {
-            let parts: Vec<&str> = ingester.address.split(':').collect();
-            if parts.len() == 2
-                && let Ok(port) = parts[1].parse::<u16>()
-            {
+            if let Some((_, port)) = split_host_port(&ingester.address) {
                 let metadata = FlightServiceMetadata::new(
                     ingester.id,
                     ingester.service_type,
@@ -365,11 +362,9 @@ impl InMemoryFlightTransport {
             .find(|i| i.id == service_id)
             .ok_or("Service not found in catalog")?;
 
-        let parts: Vec<&str> = ingester.address.split(':').collect();
-        if parts.len() != 2 {
+        let Some((_, port)) = split_host_port(&ingester.address) else {
             return Err("Invalid service address format".into());
-        }
-        let port = parts[1].parse::<u16>()?;
+        };
 
         let service_metadata = FlightServiceMetadata::new(
             ingester.id,
@@ -599,10 +594,7 @@ impl InMemoryFlightTransport {
             let mut services = Vec::new();
 
             for ingester in ingesters {
-                let parts: Vec<&str> = ingester.address.split(':').collect();
-                if parts.len() == 2
-                    && let Ok(port) = parts[1].parse::<u16>()
-                {
+                if let Some((_, port)) = split_host_port(&ingester.address) {
                     let metadata = FlightServiceMetadata::new(
                         ingester.id,
                         ingester.service_type,

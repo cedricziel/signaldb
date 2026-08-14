@@ -8,6 +8,38 @@ use uuid::Uuid;
 use crate::catalog::{Catalog, Ingester};
 use crate::config::Configuration;
 
+/// Split a `host:port` address into its host and numeric port.
+///
+/// Returns `None` if the address has no `:port` suffix or the suffix isn't a
+/// valid `u16` (e.g. an IPv6 address without brackets). Callers that want a
+/// default port on `None` should check `addr.contains(':')` to distinguish
+/// "no port given" from "malformed port".
+/// Split `addr` into its host and the text after the last colon, treating a
+/// bracketed IPv6 literal (`[::1]:4317`) as one host token. Returns `None`
+/// if the host itself contains an un-bracketed colon — an IPv6 address
+/// without brackets, which is ambiguous to split at a single `:`.
+fn split_host_and_tail(addr: &str) -> Option<(&str, &str)> {
+    let (host, tail) = addr.rsplit_once(':')?;
+    let is_bracketed = host.starts_with('[') && host.ends_with(']');
+    if host.contains(':') && !is_bracketed {
+        return None;
+    }
+    Some((host, tail))
+}
+
+pub(crate) fn split_host_port(addr: &str) -> Option<(&str, u16)> {
+    let (host, port) = split_host_and_tail(addr)?;
+    let port = port.parse::<u16>().ok()?;
+    Some((host, port))
+}
+
+/// Strip the `[...]` brackets from an IPv6 host literal, if present.
+fn strip_brackets(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
 /// Service types that can be bootstrapped
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ServiceType {
@@ -345,21 +377,23 @@ impl ServiceBootstrap {
 
     /// Extract port from service address
     pub fn extract_port(&self) -> Result<u16> {
-        let parts: Vec<&str> = self.address.split(':').collect();
-        if parts.len() == 2 {
-            parts[1]
-                .parse::<u16>()
-                .map_err(|e| anyhow::anyhow!("Invalid port in address '{}': {}", self.address, e))
-        } else {
+        match split_host_port(&self.address) {
+            Some((_, port)) => Ok(port),
             // Default to Flight port if no port specified
-            Ok(50051)
+            None if !self.address.contains(':') => Ok(50051),
+            None => Err(anyhow::anyhow!(
+                "Invalid port in address '{}'",
+                self.address
+            )),
         }
     }
 
     /// Extract hostname from service address
     pub fn extract_hostname(&self) -> String {
-        let parts: Vec<&str> = self.address.split(':').collect();
-        parts[0].to_string()
+        let host = split_host_and_tail(&self.address)
+            .map(|(host, _)| host)
+            .unwrap_or(self.address.as_str());
+        strip_brackets(host).to_string()
     }
 
     /// Create a lightweight service bootstrap for tests.
@@ -469,6 +503,45 @@ mod tests {
     use super::*;
     use crate::config::{DatabaseConfig, DiscoveryConfig};
     use std::time::Duration;
+
+    #[test]
+    fn split_host_port_parses_valid_address() {
+        assert_eq!(split_host_port("localhost:4317"), Some(("localhost", 4317)));
+        assert_eq!(split_host_port("10.0.0.1:50051"), Some(("10.0.0.1", 50051)));
+    }
+
+    #[test]
+    fn split_host_port_rejects_missing_or_invalid_port() {
+        assert_eq!(split_host_port("localhost"), None);
+        assert_eq!(split_host_port("localhost:not-a-port"), None);
+    }
+
+    #[test]
+    fn split_host_port_handles_bracketed_ipv6() {
+        assert_eq!(split_host_port("[::1]:4317"), Some(("[::1]", 4317)));
+    }
+
+    #[test]
+    fn split_host_port_rejects_unbracketed_ipv6() {
+        // An IPv6 address without brackets is ambiguous to split at a
+        // single ':' — reject rather than silently truncating the host.
+        assert_eq!(split_host_port("2001:db8::1:4317"), None);
+    }
+
+    #[test]
+    fn strip_brackets_removes_ipv6_brackets_only_when_present() {
+        assert_eq!(strip_brackets("[::1]"), "::1");
+        assert_eq!(strip_brackets("localhost"), "localhost");
+    }
+
+    #[test]
+    fn split_host_and_tail_isolates_bracketed_ipv6_host() {
+        assert_eq!(split_host_and_tail("[::1]:4317"), Some(("[::1]", "4317")));
+        assert_eq!(
+            split_host_and_tail("localhost:4317"),
+            Some(("localhost", "4317"))
+        );
+    }
 
     #[test]
     fn test_ensure_data_directory() {
