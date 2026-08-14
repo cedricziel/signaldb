@@ -27,14 +27,6 @@ fn decode_json_vec_opt(json: Option<String>) -> Result<Option<Vec<String>>, sqlx
     json.map(decode_json_vec).transpose()
 }
 
-fn parse_api_key_scopes(value: Option<String>) -> Result<Option<Vec<String>>, sqlx::Error> {
-    value
-        .map(|json| {
-            serde_json::from_str(&json).map_err(|error| sqlx::Error::Decode(Box::new(error)))
-        })
-        .transpose()
-}
-
 /// Canonicalize an email address for identity comparison: trim whitespace
 /// and lowercase, so the `users.email` UNIQUE constraint applies to the
 /// canonical form identically on SQLite and PostgreSQL.
@@ -2059,7 +2051,7 @@ impl Catalog {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
                         dataset_id: r.get("dataset_id"),
-                        scopes: parse_api_key_scopes(r.get("scopes"))?,
+                        scopes: decode_json_vec_opt(r.get("scopes"))?,
                     })
                 })
                 .transpose()
@@ -2075,7 +2067,7 @@ impl Catalog {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
                         dataset_id: r.get("dataset_id"),
-                        scopes: parse_api_key_scopes(r.get("scopes"))?,
+                        scopes: decode_json_vec_opt(r.get("scopes"))?,
                     })
                 })
                 .transpose()
@@ -2404,7 +2396,7 @@ impl Catalog {
                             tenant_id: r.get("tenant_id"),
                             name: r.get("name"),
                             dataset_id: r.get("dataset_id"),
-                            scopes: parse_api_key_scopes(r.get("scopes"))?,
+                            scopes: decode_json_vec_opt(r.get("scopes"))?,
                             created_by_user_id: r.get("created_by_user_id"),
                             created_at: parse_rfc3339(r.get("created_at"))?,
                             revoked_at: revoked_at.map(|s| parse_rfc3339(&s)).transpose()?,
@@ -2427,7 +2419,7 @@ impl Catalog {
                             tenant_id: r.get("tenant_id"),
                             name: r.get("name"),
                             dataset_id: r.get("dataset_id"),
-                            scopes: parse_api_key_scopes(r.get("scopes"))?,
+                            scopes: decode_json_vec_opt(r.get("scopes"))?,
                             created_by_user_id: r.get("created_by_user_id"),
                             created_at: r.get("created_at"),
                             revoked_at: r.get("revoked_at"),
@@ -2456,7 +2448,7 @@ impl Catalog {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
                         dataset_id: r.get("dataset_id"),
-                        scopes: parse_api_key_scopes(r.get("scopes"))?,
+                        scopes: decode_json_vec_opt(r.get("scopes"))?,
                         created_by_user_id: r.get("created_by_user_id"),
                         created_at: parse_rfc3339(r.get("created_at"))?,
                         revoked_at: revoked_at.map(|s| parse_rfc3339(&s)).transpose()?,
@@ -2478,7 +2470,7 @@ impl Catalog {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
                         dataset_id: r.get("dataset_id"),
-                        scopes: parse_api_key_scopes(r.get("scopes"))?,
+                        scopes: decode_json_vec_opt(r.get("scopes"))?,
                         created_by_user_id: r.get("created_by_user_id"),
                         created_at: r.get("created_at"),
                         revoked_at: r.get("revoked_at"),
