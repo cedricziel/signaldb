@@ -5,7 +5,7 @@
 
 use super::oauth::hash_oauth_token;
 use super::{AuthError, TenantContext, TenantSource, UserContext, hash_session_token};
-use crate::catalog::{Catalog, MembershipRole};
+use crate::catalog::{Catalog, MembershipRole, UserRecord};
 use crate::config::{AuthConfig, TenantConfig};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -146,20 +146,7 @@ impl Authenticator {
             .await
             .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
             .ok_or_else(|| AuthError::unauthorized("Session user not found"))?;
-        let membership = self
-            .catalog
-            .get_tenant_membership(&user.id, tenant_id)
-            .await
-            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
-        let role = match membership {
-            Some(membership) => membership.role,
-            None if user.is_instance_admin => MembershipRole::Admin,
-            None => {
-                return Err(AuthError::forbidden(format!(
-                    "User is not a member of tenant '{tenant_id}'"
-                )));
-            }
-        };
+        let role = self.resolve_role(&user, tenant_id).await?;
 
         self.resolve_user_tenant(
             tenant_id,
@@ -170,6 +157,28 @@ impl Authenticator {
             Some(session.id),
         )
         .await
+    }
+
+    /// Resolve a user's role within a tenant: their explicit membership role,
+    /// or `Admin` for instance admins with no membership row. Instance admins
+    /// can act on any tenant without being explicitly added to it.
+    async fn resolve_role(
+        &self,
+        user: &UserRecord,
+        tenant_id: &str,
+    ) -> Result<MembershipRole, AuthError> {
+        let membership = self
+            .catalog
+            .get_tenant_membership(&user.id, tenant_id)
+            .await
+            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
+        match membership {
+            Some(membership) => Ok(membership.role),
+            None if user.is_instance_admin => Ok(MembershipRole::Admin),
+            None => Err(AuthError::forbidden(format!(
+                "User is not a member of tenant '{tenant_id}'"
+            ))),
+        }
     }
 
     /// Authenticate an opaque OAuth 2.1 access token (change: mcp-oauth-dcr).
@@ -219,21 +228,7 @@ impl Authenticator {
 
         // Tenant is fixed by the token; the user's role in that tenant still
         // gates what the token may do.
-        let membership = self
-            .catalog
-            .get_tenant_membership(&user.id, &record.tenant_id)
-            .await
-            .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
-        let role = match membership {
-            Some(membership) => membership.role,
-            None if user.is_instance_admin => MembershipRole::Admin,
-            None => {
-                return Err(AuthError::forbidden(format!(
-                    "Token user is not a member of tenant '{}'",
-                    record.tenant_id
-                )));
-            }
-        };
+        let role = self.resolve_role(&user, &record.tenant_id).await?;
 
         let context = self
             .resolve_user_tenant(
