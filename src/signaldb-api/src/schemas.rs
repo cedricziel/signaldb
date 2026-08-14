@@ -18,8 +18,18 @@ pub struct ApiError {
     pub message: String,
 }
 
+impl ApiError {
+    /// Create a new API error
+    pub fn new(error: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            message: message.into(),
+        }
+    }
+}
+
 /// Request body for creating a new tenant.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateTenantRequest {
     /// Unique tenant identifier.
     pub id: String,
@@ -31,7 +41,7 @@ pub struct CreateTenantRequest {
 }
 
 /// Request body for updating an existing tenant.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UpdateTenantRequest {
     /// Updated tenant name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,7 +77,7 @@ pub struct ListTenantsResponse {
 }
 
 /// Request body for creating a new API key.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateApiKeyRequest {
     /// Optional human-readable name for the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
