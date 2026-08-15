@@ -1,11 +1,11 @@
 import {
   bucketizeSeries,
-  compactCount,
   padBuckets,
   type VolumeBucket,
   type VolumeSeries,
 } from "../explore/SignalHistogram";
 import { axisLabelFormatter } from "../../lib/time";
+import { compactCount } from "../../lib/vizFormat";
 
 interface Props {
   series: VolumeSeries[];
@@ -40,9 +40,7 @@ function areaPath(
   const upper = (bucket: VolumeBucket) =>
     lower(bucket) + (bucket.counts[key] ?? 0);
 
-  const top = buckets.map(
-    (bucket, index) => `${x(index)},${y(upper(bucket))}`,
-  );
+  const top = buckets.map((bucket, index) => `${x(index)},${y(upper(bucket))}`);
   const bottom = buckets
     .map((bucket, index) => `${x(index)},${y(lower(bucket))}`)
     .reverse();

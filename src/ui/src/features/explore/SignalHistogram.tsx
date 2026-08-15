@@ -7,8 +7,10 @@
  * traces are two thin adapters over it rather than two copies of the same
  * rendering maths.
  */
-import { useMemo, useRef, useState, type CSSProperties } from "react";
+import { useMemo, useRef, useState } from "react";
+import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import { axisLabelFormatter, durationToSeconds } from "../../lib/time";
+import { compactCount } from "../../lib/vizFormat";
 import { barHeight, splitSegments, valueAtFraction, type Scale } from "./scale";
 
 /** A series of `[timestampMs, value]` points, ascending or not. */
@@ -69,29 +71,6 @@ export function padBuckets(
 const NUM = new Intl.NumberFormat();
 
 /**
- * Abbreviate a count for an axis gridline, where width is scarce.
- *
- * Deliberately not `Intl`'s `notation: "compact"`: that is locale-dependent
- * and in some locales (`de`, for one) does not abbreviate at all, which both
- * overflows the axis and makes the result untestable. One decimal below ten of
- * a unit (`1.5K`), none above it (`373K`).
- */
-export function compactCount(n: number): string {
-  const units: [number, string][] = [
-    [1e9, "B"],
-    [1e6, "M"],
-    [1e3, "K"],
-  ];
-  for (const [scale, suffix] of units) {
-    if (n >= scale) {
-      const v = n / scale;
-      return `${v < 10 ? Math.round(v * 10) / 10 : Math.round(v)}${suffix}`;
-    }
-  }
-  return String(Math.round(n));
-}
-
-/**
  * Every number the chart renders carries its unit — an axis gridline or a
  * tooltip row read on its own must not be ambiguous about what it counts.
  */
@@ -112,14 +91,6 @@ function bucketsFor(
   if (stepMs <= 0) return 0;
   const start = Math.floor(rangeMs.fromMs / stepMs) * stepMs;
   return Math.floor((rangeMs.toMs - start) / stepMs) + 1;
-}
-
-/** Where the tooltip sits, in coordinates relative to the chart root. */
-interface TipPos {
-  x: number;
-  y: number;
-  /** Past the horizontal midline the tooltip flips to the pointer's left. */
-  flipX: boolean;
 }
 
 interface Props {
@@ -161,25 +132,8 @@ export function SignalHistogram({
   onStepChange,
 }: Props) {
   const [active, setActive] = useState<number | null>(null);
-  const [tip, setTip] = useState<TipPos | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-
-  /** Track the pointer so the tooltip reads next to what it describes. */
-  const trackPointer = (e: { clientX: number; clientY: number }) => {
-    const rect = rootRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const x = e.clientX - rect.left;
-    setTip({ x, y: e.clientY - rect.top, flipX: x > rect.width / 2 });
-  };
-
-  /** Keyboard focus has no pointer: anchor under the column instead. */
-  const trackElement = (el: HTMLElement) => {
-    const rect = rootRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const box = el.getBoundingClientRect();
-    const x = box.left - rect.left + box.width / 2;
-    setTip({ x, y: box.bottom - rect.top, flipX: x > rect.width / 2 });
-  };
+  const pointer = useVizPointer(rootRef);
 
   const buckets = useMemo(() => {
     const raw = bucketizeSeries(series);
@@ -200,7 +154,7 @@ export function SignalHistogram({
   const activeBucket = active === null ? null : buckets[active];
 
   return (
-    <div className="svol" ref={rootRef}>
+    <div className="svol viz-host" ref={rootRef}>
       <div className="svol-plot" style={{ height }}>
         <div className="svol-yaxis" aria-hidden="true">
           <span className="svol-ymax" data-testid="svol-ymax">
@@ -230,13 +184,13 @@ export function SignalHistogram({
                 aria-describedby={active === i ? "svol-tip" : undefined}
                 onMouseEnter={(e) => {
                   setActive(i);
-                  trackPointer(e);
+                  pointer.track(e);
                 }}
-                onMouseMove={trackPointer}
+                onMouseMove={pointer.track}
                 onMouseLeave={() => setActive((a) => (a === i ? null : a))}
                 onFocus={(e) => {
                   setActive(i);
-                  trackElement(e.currentTarget);
+                  pointer.anchorTo(e.currentTarget);
                 }}
                 onBlur={() => setActive((a) => (a === i ? null : a))}
               >
@@ -296,42 +250,24 @@ export function SignalHistogram({
           {fmtAxis(buckets[buckets.length - 1]!.tMs)}
         </span>
       </div>
-      {activeBucket && tip && (
-        <div
-          className="svol-tip"
+      {activeBucket && pointer.anchor && (
+        <VizTooltip
           id="svol-tip"
-          role="status"
-          style={
-            {
-              left: `${tip.x}px`,
-              top: `${tip.y}px`,
-              transform: tip.flipX
-                ? "translate(calc(-100% - 14px), 12px)"
-                : "translate(14px, 12px)",
-              // Reserve the widest value the window can produce. Absolutely
-              // positioned, the tooltip's shrink-to-fit width is capped by the
-              // space left of the container edge, so a long value wrapped when
-              // hovering to the right; and sizing per-bucket would make it
-              // jitter as the pointer moves.
-              "--svol-val-ch": String(withUnit(max, unit).length),
-            } as CSSProperties
-          }
-        >
-          <div className="svol-tip-t">{fmtAxis(activeBucket.tMs)}</div>
-          {order
+          anchor={pointer.anchor}
+          host={pointer.host}
+          title={fmtAxis(activeBucket.tMs)}
+          rows={order
             .filter((key) => (activeBucket.counts[key] ?? 0) > 0)
-            .map((key) => (
-              <div className="svol-tip-row" key={key}>
-                <i style={{ background: colors[key] }} />
-                <span>{key}</span>
-                <b>{withUnit(activeBucket.counts[key] ?? 0, unit)}</b>
-              </div>
-            ))}
-          <div className="svol-tip-total">
-            <span>total</span>
-            <b>{withUnit(activeBucket.total, unit)}</b>
-          </div>
-        </div>
+            .map((key) => ({
+              swatch: colors[key],
+              label: key,
+              value: withUnit(activeBucket.counts[key] ?? 0, unit),
+            }))}
+          footer={{ label: "total", value: withUnit(activeBucket.total, unit) }}
+          // Reserve the widest value the window can produce, so the tooltip
+          // keeps one width for every bucket instead of jittering.
+          valueWidthCh={withUnit(max, unit).length}
+        />
       )}
     </div>
   );

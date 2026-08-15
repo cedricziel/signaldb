@@ -1,12 +1,12 @@
 ## 1. Shared primitive
 
-- [ ] 1.1 Failing tests for `components/VizTooltip.tsx`: renders title/rows/
+- [x] 1.1 Failing tests for `components/VizTooltip.tsx`: renders title/rows/
       footer with swatches, `role="tooltip"`, flips left past the host midline
       and up near the bottom, `pointer-events: none` class
-- [ ] 1.2 Implement `VizTooltip` + `useVizPointer(hostRef)` + `lib/vizFormat.ts`
+- [x] 1.2 Implement `VizTooltip` + `useVizPointer(hostRef)` + `lib/vizFormat.ts`
       (`formatTimestamp`, `formatValue`, `formatRange`; move `compactCount`
       from `SignalHistogram`)
-- [ ] 1.3 Failing test + refactor: `explore/SignalHistogram` renders its
+- [x] 1.3 Failing test + refactor: `explore/SignalHistogram` renders its
       tooltip through `VizTooltip` with unchanged content
 
 ## 2. Panels
