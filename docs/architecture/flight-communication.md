@@ -342,6 +342,15 @@ batches carry a `service_name` column), and the writer's metrics transforms
 substitute it when they re-derive `service_name` from `resource_json` —
 because the Iceberg `service_name` column is non-nullable and a missing
 attribute must not dead-letter the batch.
+Metric values that JSON cannot carry — NaN (Prometheus's staleness marker,
+`0/0` rates) and ±Inf — travel in the v1 `data_json` as the strings `"NaN"`,
+`"+Inf"`, `"-Inf"` (`common::flight::conversion::f64_to_json` /
+`json_to_f64`), never as `null`; the writer maps them back to the same
+non-finite doubles, and a data point with no value at all lands as NaN. This
+keeps the non-nullable `value` columns of `metrics_gauge`/`metrics_sum`
+satisfiable, so one such point can no longer make the writer reject a whole
+batch and pin its WAL entry forever (#1061). Histogram `explicit_bounds` keep
+a `+Inf` bound for the same reason.
 The writer's per-`do_put` "Received data" line is `DEBUG`; per-request
 handler lines on the acceptor are `DEBUG` too — steady-state `INFO` shows WAL
 batch commits, not individual requests.

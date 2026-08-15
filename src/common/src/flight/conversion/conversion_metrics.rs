@@ -25,7 +25,7 @@ use opentelemetry_proto::tonic::metrics::v1::{
 use std::collections::HashMap;
 
 use crate::flight::conversion::conversion_common::{
-    extract_resource_json, extract_value, json_value_to_any_value,
+    extract_resource_json, extract_value, f64_to_json, json_to_f64, json_value_to_any_value,
 };
 use crate::flight::schema::FlightSchemas;
 
@@ -269,11 +269,8 @@ fn extract_number_data_points(
         match &point.value {
             Some(value) => match value {
                 opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsDouble(v) => {
-                    if let Some(num) = serde_json::Number::from_f64(*v) {
-                        point_map.insert("value".to_string(), JsonValue::Number(num));
-                    } else {
-                        point_map.insert("value".to_string(), JsonValue::Null);
-                    }
+                    // NaN/±Inf are spelled out, never `null` (#1061).
+                    point_map.insert("value".to_string(), f64_to_json(*v));
                 }
                 opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsInt(v) => {
                     point_map.insert(
@@ -583,6 +580,9 @@ fn parse_number_data_points(
                         Some(number_data_point::Value::AsInt(val.as_i64().unwrap()))
                     } else if val.is_f64() {
                         Some(number_data_point::Value::AsDouble(val.as_f64().unwrap()))
+                    } else if let Some(v) = val.as_str().and(json_to_f64(val)) {
+                        // "NaN" / "+Inf" / "-Inf" sentinels (see f64_to_json).
+                        Some(number_data_point::Value::AsDouble(v))
                     } else if val.is_u64() {
                         let u_val = val.as_u64().unwrap();
                         if u_val <= i64::MAX as u64 {
@@ -666,17 +666,17 @@ fn parse_histogram_data_points(
 
                 // Extract count and sum
                 let count = point_map.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                let sum = point_map.get("sum").and_then(|v| v.as_f64());
+                let sum = point_map.get("sum").and_then(json_to_f64);
 
                 // Extract min/max
-                let min = point_map.get("min").and_then(|v| v.as_f64());
-                let max = point_map.get("max").and_then(|v| v.as_f64());
+                let min = point_map.get("min").and_then(json_to_f64);
+                let max = point_map.get("max").and_then(json_to_f64);
 
                 // Extract bucket boundaries and counts
                 let explicit_bounds = if let Some(serde_json::Value::Array(bounds_arr)) =
                     point_map.get("explicit_bounds")
                 {
-                    bounds_arr.iter().filter_map(|v| v.as_f64()).collect()
+                    bounds_arr.iter().filter_map(json_to_f64).collect()
                 } else {
                     vec![]
                 };
@@ -763,7 +763,7 @@ fn parse_exponential_histogram_data_points(
 
                 // Extract count, sum, and scale
                 let count = point_map.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                let sum = point_map.get("sum").and_then(|v| v.as_f64());
+                let sum = point_map.get("sum").and_then(json_to_f64);
                 let scale = point_map.get("scale").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                 let zero_count = point_map
                     .get("zero_count")
@@ -771,8 +771,8 @@ fn parse_exponential_histogram_data_points(
                     .unwrap_or(0);
 
                 // Extract min/max
-                let min = point_map.get("min").and_then(|v| v.as_f64());
-                let max = point_map.get("max").and_then(|v| v.as_f64());
+                let min = point_map.get("min").and_then(json_to_f64);
+                let max = point_map.get("max").and_then(json_to_f64);
 
                 // Extract positive and negative buckets
                 let positive = if let Some(serde_json::Value::Object(pos_map)) =
@@ -820,7 +820,7 @@ fn parse_exponential_histogram_data_points(
                 // Extract zero threshold
                 let zero_threshold = point_map
                     .get("zero_threshold")
-                    .and_then(|v| v.as_f64())
+                    .and_then(json_to_f64)
                     .unwrap_or(0.0);
 
                 // Extract attributes
@@ -900,7 +900,7 @@ fn parse_summary_data_points(
 
                 // Extract count and sum
                 let count = point_map.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                let sum = point_map.get("sum").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let sum = point_map.get("sum").and_then(json_to_f64).unwrap_or(0.0);
 
                 // Extract quantile values
                 let quantile_values = if let Some(serde_json::Value::Array(quantiles_arr)) =
@@ -910,10 +910,10 @@ fn parse_summary_data_points(
                             .filter_map(|q| {
                                 if let serde_json::Value::Object(q_map) = q {
                                     let quantile = q_map.get("quantile")
-                                        .and_then(|v| v.as_f64())
+                                        .and_then(json_to_f64)
                                         .unwrap_or(0.0);
                                     let value = q_map.get("value")
-                                        .and_then(|v| v.as_f64())
+                                        .and_then(json_to_f64)
                                         .unwrap_or(0.0);
 
                                     Some(opentelemetry_proto::tonic::metrics::v1::summary_data_point::ValueAtQuantile {
@@ -986,6 +986,8 @@ fn parse_exemplars(exemplars_val: &serde_json::Value) -> Vec<Exemplar> {
                         Some(exemplar::Value::AsInt(val.as_i64().unwrap()))
                     } else if val.is_f64() {
                         Some(exemplar::Value::AsDouble(val.as_f64().unwrap()))
+                    } else if let Some(v) = val.as_str().and(json_to_f64(val)) {
+                        Some(exemplar::Value::AsDouble(v))
                     } else if val.is_u64() {
                         let u_val = val.as_u64().unwrap();
                         if u_val <= i64::MAX as u64 {
@@ -1070,31 +1072,25 @@ fn extract_histogram_data_points(
             "count".to_string(),
             JsonValue::Number(serde_json::Number::from(point.count)),
         );
-        if let Some(sum) = point.sum
-            && let Some(num) = serde_json::Number::from_f64(sum)
-        {
-            point_map.insert("sum".to_string(), JsonValue::Number(num));
+        if let Some(sum) = point.sum {
+            point_map.insert("sum".to_string(), f64_to_json(sum));
         }
 
         // Add min/max if present
-        if let Some(min) = point.min
-            && let Some(num) = serde_json::Number::from_f64(min)
-        {
-            point_map.insert("min".to_string(), JsonValue::Number(num));
+        if let Some(min) = point.min {
+            point_map.insert("min".to_string(), f64_to_json(min));
         }
 
-        if let Some(max) = point.max
-            && let Some(num) = serde_json::Number::from_f64(max)
-        {
-            point_map.insert("max".to_string(), JsonValue::Number(num));
+        if let Some(max) = point.max {
+            point_map.insert("max".to_string(), f64_to_json(max));
         }
 
         // Add bucket boundaries and counts
         let mut bounds = Vec::new();
         for bound in &point.explicit_bounds {
-            if let Some(num) = serde_json::Number::from_f64(*bound) {
-                bounds.push(JsonValue::Number(num));
-            }
+            // A `+Inf` upper bound is common (Prometheus-style histograms);
+            // dropping it would misalign the bucket counts.
+            bounds.push(f64_to_json(*bound));
         }
         point_map.insert("explicit_bounds".to_string(), JsonValue::Array(bounds));
 
@@ -1153,10 +1149,8 @@ fn extract_exponential_histogram_data_points(
             "count".to_string(),
             JsonValue::Number(serde_json::Number::from(point.count)),
         );
-        if let Some(sum) = point.sum
-            && let Some(num) = serde_json::Number::from_f64(sum)
-        {
-            point_map.insert("sum".to_string(), JsonValue::Number(num));
+        if let Some(sum) = point.sum {
+            point_map.insert("sum".to_string(), f64_to_json(sum));
         }
         point_map.insert(
             "scale".to_string(),
@@ -1168,16 +1162,12 @@ fn extract_exponential_histogram_data_points(
         );
 
         // Add min/max if present
-        if let Some(min) = point.min
-            && let Some(num) = serde_json::Number::from_f64(min)
-        {
-            point_map.insert("min".to_string(), JsonValue::Number(num));
+        if let Some(min) = point.min {
+            point_map.insert("min".to_string(), f64_to_json(min));
         }
 
-        if let Some(max) = point.max
-            && let Some(num) = serde_json::Number::from_f64(max)
-        {
-            point_map.insert("max".to_string(), JsonValue::Number(num));
+        if let Some(max) = point.max {
+            point_map.insert("max".to_string(), f64_to_json(max));
         }
 
         // Add positive and negative buckets
@@ -1216,10 +1206,7 @@ fn extract_exponential_histogram_data_points(
         // Add zero threshold
         point_map.insert(
             "zero_threshold".to_string(),
-            JsonValue::Number(
-                serde_json::Number::from_f64(point.zero_threshold)
-                    .unwrap_or(serde_json::Number::from(0)),
-            ),
+            f64_to_json(point.zero_threshold),
         );
 
         // Add attributes
@@ -1271,26 +1258,14 @@ fn extract_summary_data_points(
             "count".to_string(),
             JsonValue::Number(serde_json::Number::from(point.count)),
         );
-        if let Some(num) = serde_json::Number::from_f64(point.sum) {
-            point_map.insert("sum".to_string(), JsonValue::Number(num));
-        }
+        point_map.insert("sum".to_string(), f64_to_json(point.sum));
 
         // Add quantile values
         let mut quantiles = Vec::new();
         for q in &point.quantile_values {
             let mut q_map = Map::new();
-            q_map.insert(
-                "quantile".to_string(),
-                JsonValue::Number(
-                    serde_json::Number::from_f64(q.quantile).unwrap_or(serde_json::Number::from(0)),
-                ),
-            );
-            q_map.insert(
-                "value".to_string(),
-                JsonValue::Number(
-                    serde_json::Number::from_f64(q.value).unwrap_or(serde_json::Number::from(0)),
-                ),
-            );
+            q_map.insert("quantile".to_string(), f64_to_json(q.quantile));
+            q_map.insert("value".to_string(), f64_to_json(q.value));
             quantiles.push(JsonValue::Object(q_map));
         }
         point_map.insert("quantile_values".to_string(), JsonValue::Array(quantiles));
@@ -1333,11 +1308,7 @@ fn extract_exemplars(
         match &exemplar.value {
             Some(value) => match value {
                 opentelemetry_proto::tonic::metrics::v1::exemplar::Value::AsDouble(v) => {
-                    if let Some(num) = serde_json::Number::from_f64(*v) {
-                        exemplar_map.insert("value".to_string(), JsonValue::Number(num));
-                    } else {
-                        exemplar_map.insert("value".to_string(), JsonValue::Null);
-                    }
+                    exemplar_map.insert("value".to_string(), f64_to_json(*v));
                 }
                 opentelemetry_proto::tonic::metrics::v1::exemplar::Value::AsInt(v) => {
                     exemplar_map.insert(
@@ -1710,5 +1681,97 @@ mod tests {
         } else {
             panic!("Expected histogram data");
         }
+    }
+
+    /// NaN and ±Inf are ordinary metric values (Prometheus staleness marker,
+    /// `0/0` rates, unbounded divisions) but JSON cannot carry them. They must
+    /// survive the v1 wire format as explicit sentinels and round-trip back
+    /// to the same non-finite double — never collapse to `null`, which the
+    /// writer's non-nullable `value` column then rejects, poisoning the WAL
+    /// entry forever (#1061).
+    #[test]
+    fn non_finite_number_values_round_trip_through_arrow() {
+        fn point(v: f64) -> NumberDataPoint {
+            NumberDataPoint {
+                start_time_unix_nano: 1,
+                time_unix_nano: 2,
+                value: Some(number_data_point::Value::AsDouble(v)),
+                ..Default::default()
+            }
+        }
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource::default()),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![
+                        Metric {
+                            name: "g".into(),
+                            data: Some(Data::Gauge(Gauge {
+                                data_points: vec![
+                                    point(f64::NAN),
+                                    point(f64::INFINITY),
+                                    point(f64::NEG_INFINITY),
+                                    point(1.5),
+                                ],
+                            })),
+                            ..Default::default()
+                        },
+                        Metric {
+                            name: "s".into(),
+                            data: Some(Data::Sum(Sum {
+                                data_points: vec![point(f64::NAN)],
+                                aggregation_temporality: 2,
+                                is_monotonic: true,
+                            })),
+                            ..Default::default()
+                        },
+                    ],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let batch = otlp_metrics_to_arrow(&request).expect("convert");
+        let data_json = batch
+            .column_by_name("data_json")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        // The wire format spells them out; nothing is null.
+        assert!(
+            !data_json.value(0).contains("null"),
+            "{}",
+            data_json.value(0)
+        );
+        assert!(data_json.value(0).contains("\"NaN\""));
+        assert!(data_json.value(0).contains("\"+Inf\""));
+        assert!(data_json.value(0).contains("\"-Inf\""));
+
+        let back = arrow_to_otlp_metrics(&batch);
+        let mut values = Vec::new();
+        for rm in &back.resource_metrics {
+            for sm in &rm.scope_metrics {
+                for m in &sm.metrics {
+                    let points = match &m.data {
+                        Some(Data::Gauge(g)) => &g.data_points,
+                        Some(Data::Sum(s)) => &s.data_points,
+                        _ => continue,
+                    };
+                    for p in points {
+                        match p.value {
+                            Some(number_data_point::Value::AsDouble(v)) => values.push(v),
+                            other => panic!("unexpected value {other:?}"),
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(values.len(), 5);
+        assert_eq!(values.iter().filter(|v| v.is_nan()).count(), 2);
+        assert!(values.contains(&f64::INFINITY));
+        assert!(values.contains(&f64::NEG_INFINITY));
+        assert!(values.contains(&1.5));
     }
 }

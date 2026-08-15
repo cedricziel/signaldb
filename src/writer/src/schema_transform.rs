@@ -1105,12 +1105,21 @@ fn json_to_i32(value: Option<&serde_json::Value>) -> Option<i32> {
     })
 }
 
+/// Numeric field of a v1 data point. Understands the `"NaN"` / `"+Inf"` /
+/// `"-Inf"` sentinels the acceptor writes for non-finite doubles
+/// (`common::flight::conversion::f64_to_json`), which JSON cannot carry as
+/// numbers.
 fn json_to_f64(value: Option<&serde_json::Value>) -> Option<f64> {
-    value.and_then(|v| {
-        v.as_f64()
-            .or_else(|| v.as_i64().map(|n| n as f64))
-            .or_else(|| v.as_u64().map(|n| n as f64))
-    })
+    value.and_then(common::flight::conversion::json_to_f64)
+}
+
+/// The `value` column of `metrics_gauge` / `metrics_sum` is non-nullable. A
+/// point with no value (absent or `null`) is stored as NaN — the honest "no
+/// number here" that Float64 can express — instead of leaving a null that
+/// makes the whole batch fail `RecordBatch::try_new` and pins the WAL entry
+/// forever (#1061).
+fn point_value(point: &serde_json::Value) -> f64 {
+    json_to_f64(point.get("value")).unwrap_or(f64::NAN)
 }
 
 fn serialize_json(value: Option<&serde_json::Value>) -> Option<String> {
@@ -1311,7 +1320,7 @@ pub fn transform_metrics_gauge_v1_to_iceberg(
             metric_names.push(metric_name.clone());
             metric_descriptions.push(metric_description.clone());
             metric_units.push(metric_unit.clone());
-            values.push(json_to_f64(point.get("value")));
+            values.push(Some(point_value(&point)));
             flags.push(json_to_i32(point.get("flags")));
             resource_schema_urls.push(resource_context.resource_schema_url.clone());
             resource_attributes.push(resource_context.resource_attributes.clone());
@@ -1425,7 +1434,7 @@ pub fn transform_metrics_sum_v1_to_iceberg(
             metric_names.push(metric_name.clone());
             metric_descriptions.push(metric_description.clone());
             metric_units.push(metric_unit.clone());
-            values.push(json_to_f64(point.get("value")));
+            values.push(Some(point_value(&point)));
             flags.push(json_to_i32(point.get("flags")));
             aggregation_temporalities.push(aggregation_temporality);
             is_monotonics.push(is_monotonic);
@@ -2268,6 +2277,14 @@ mod tests {
     /// A minimal v1 metrics batch (as the acceptor produces it) with one
     /// gauge/sum data point and the given resource JSON.
     fn metrics_v1_batch(resource_json: Option<&str>) -> RecordBatch {
+        metrics_v1_batch_with_points(
+            resource_json,
+            r#"[{"time_unix_nano":1700000001000000000,"start_time_unix_nano":1700000000000000000,"value":0.5,"attributes":{}}]"#,
+        )
+    }
+
+    /// Like `metrics_v1_batch`, with the gauge/sum `data_json` points given.
+    fn metrics_v1_batch_with_points(resource_json: Option<&str>, data_json: &str) -> RecordBatch {
         use datafusion::arrow::array::{BooleanArray, Int32Array};
         let schema = Arc::new(Schema::new(vec![
             Field::new("name", DataType::Utf8, false),
@@ -2295,14 +2312,57 @@ mod tests {
                 Arc::new(StringArray::from(vec![resource_json])),
                 Arc::new(StringArray::from(vec![Some(r#"{"name":"hostmetrics"}"#)])),
                 Arc::new(StringArray::from(vec!["gauge"])),
-                Arc::new(StringArray::from(vec![
-                    r#"[{"time_unix_nano":1700000001000000000,"start_time_unix_nano":1700000000000000000,"value":0.5,"attributes":{}}]"#,
-                ])),
+                Arc::new(StringArray::from(vec![data_json])),
                 Arc::new(Int32Array::from(vec![Some(2)])),
                 Arc::new(BooleanArray::from(vec![Some(false)])),
             ],
         )
         .unwrap()
+    }
+
+    /// The v1 wire format spells NaN/±Inf out as strings (see
+    /// `common::flight::conversion::f64_to_json`); the transforms must read
+    /// them back into the non-nullable Float64 columns instead of leaving a
+    /// null that makes `RecordBatch::try_new` reject the whole batch — the
+    /// failure that pinned hive's metrics WAL (#1061). A point with no value
+    /// at all is stored as NaN for the same reason: one bad point must never
+    /// discard the batch.
+    #[test]
+    fn non_finite_and_missing_metric_values_do_not_poison_the_batch() {
+        use datafusion::arrow::array::Float64Array;
+        fn values_of(batch: &RecordBatch, col: &str) -> Vec<f64> {
+            batch
+                .column_by_name(col)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap()
+                .iter()
+                .map(|v| v.expect("no nulls in a non-nullable value column"))
+                .collect()
+        }
+        let points = r#"[
+            {"time_unix_nano":1700000001000000000,"start_time_unix_nano":1700000000000000000,"value":"NaN","attributes":{}},
+            {"time_unix_nano":1700000002000000000,"start_time_unix_nano":1700000000000000000,"value":"+Inf","attributes":{}},
+            {"time_unix_nano":1700000003000000000,"start_time_unix_nano":1700000000000000000,"value":"-Inf","attributes":{}},
+            {"time_unix_nano":1700000004000000000,"start_time_unix_nano":1700000000000000000,"value":null,"attributes":{}},
+            {"time_unix_nano":1700000005000000000,"start_time_unix_nano":1700000000000000000,"attributes":{}},
+            {"time_unix_nano":1700000006000000000,"start_time_unix_nano":1700000000000000000,"value":2.5,"attributes":{}}
+        ]"#;
+        let batch = metrics_v1_batch_with_points(Some(r#"{"service.name":"x"}"#), points);
+        let gauge = transform_metrics_gauge_v1_to_iceberg(batch.clone(), &[]).expect("gauge");
+        let v = values_of(&gauge, "value");
+        assert_eq!(v.len(), 6);
+        assert!(v[0].is_nan());
+        assert_eq!(v[1], f64::INFINITY);
+        assert_eq!(v[2], f64::NEG_INFINITY);
+        assert!(v[3].is_nan(), "null value → NaN, not a rejected batch");
+        assert!(v[4].is_nan(), "absent value → NaN, not a rejected batch");
+        assert_eq!(v[5], 2.5);
+        let sum = transform_metrics_sum_v1_to_iceberg(batch, &[]).expect("sum");
+        let v = values_of(&sum, "value");
+        assert!(v[0].is_nan() && v[3].is_nan() && v[4].is_nan());
+        assert_eq!(v[1], f64::INFINITY);
     }
 
     /// OTLP allows a resource without `service.name` (an OTel Collector

@@ -84,7 +84,12 @@ impl RateHistAcc {
 pub(crate) fn parse_f64_array(raw: &str) -> Option<Vec<f64>> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     let array = value.as_array()?;
-    array.iter().map(|v| v.as_f64()).collect()
+    // Bounds may carry the acceptor's non-finite sentinels ("+Inf" for a
+    // Prometheus-style overflow bucket) — see common::flight::conversion.
+    array
+        .iter()
+        .map(common::flight::conversion::json_to_f64)
+        .collect()
 }
 
 /// Parses `explicit_bounds` via [`parse_f64_array`], memoizing on the raw
@@ -247,6 +252,10 @@ mod tests {
     fn parse_f64_array_handles_json_and_junk() {
         assert_eq!(parse_f64_array("[1, 2.5, 3]"), Some(vec![1.0, 2.5, 3.0]));
         assert_eq!(parse_f64_array("[]"), Some(vec![]));
+        assert_eq!(
+            parse_f64_array(r#"[1, 2.5, "+Inf"]"#),
+            Some(vec![1.0, 2.5, f64::INFINITY])
+        );
         assert_eq!(parse_f64_array("not json"), None);
         assert_eq!(parse_f64_array(r#"{"a":1}"#), None);
     }
