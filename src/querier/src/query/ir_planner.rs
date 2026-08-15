@@ -2879,6 +2879,98 @@ mod tests {
         assert_eq!(groups, vec![("hive".into(), 2), ("other".into(), 1)]);
     }
 
+    /// The coercing wrapper must keep offering filters over un-coerced
+    /// columns to the inner provider (that is what keeps timestamp partition
+    /// pruning alive), while a filter over a coerced column stays above it —
+    /// the inner table would evaluate it against the wrong type.
+    #[test]
+    fn coerced_provider_pushes_down_only_uncoerced_filters() {
+        /// A provider that accepts every filter it is offered, and records
+        /// what it was offered.
+        #[derive(Debug)]
+        struct Recording {
+            schema: SchemaRef,
+            offered: std::sync::Mutex<Vec<String>>,
+        }
+        #[async_trait::async_trait]
+        impl TableProvider for Recording {
+            fn schema(&self) -> SchemaRef {
+                Arc::clone(&self.schema)
+            }
+            fn table_type(&self) -> datafusion::datasource::TableType {
+                datafusion::datasource::TableType::Base
+            }
+            fn supports_filters_pushdown(
+                &self,
+                filters: &[&Expr],
+            ) -> datafusion::error::Result<Vec<TableProviderFilterPushDown>> {
+                self.offered
+                    .lock()
+                    .unwrap()
+                    .extend(filters.iter().map(|f| f.to_string()));
+                Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+            }
+            async fn scan(
+                &self,
+                _state: &dyn datafusion::catalog::Session,
+                _projection: Option<&Vec<usize>>,
+                _filters: &[Expr],
+                _limit: Option<usize>,
+            ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+                unreachable!("not scanned in this test")
+            }
+        }
+        let json_schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("resource_attributes", DataType::Utf8, true),
+        ]));
+        let inner = Arc::new(Recording {
+            schema: json_schema,
+            offered: std::sync::Mutex::new(Vec::new()),
+        });
+        let map_type = map_field_named("resource_attributes").data_type().clone();
+        let wrapped = CoercedTableProvider::wrap(
+            inner.clone(),
+            &["timestamp", "resource_attributes"],
+            &[
+                Some(DataType::Timestamp(TimeUnit::Nanosecond, None)),
+                Some(map_type.clone()),
+            ],
+        );
+        assert_eq!(
+            wrapped
+                .schema()
+                .field_with_name("resource_attributes")
+                .unwrap()
+                .data_type(),
+            &map_type,
+            "the wrapper presents the coerced type"
+        );
+
+        let ts_filter = col("timestamp").gt(lit(ScalarValue::TimestampNanosecond(Some(5), None)));
+        let attr_filter = get_field(col("resource_attributes"), "host.name").eq(lit("hive"));
+        let support = wrapped
+            .supports_filters_pushdown(&[&ts_filter, &attr_filter])
+            .unwrap();
+        assert_eq!(
+            support,
+            vec![
+                TableProviderFilterPushDown::Exact,
+                TableProviderFilterPushDown::Unsupported
+            ]
+        );
+        let offered = inner.offered.lock().unwrap().clone();
+        assert_eq!(
+            offered,
+            vec![ts_filter.to_string()],
+            "only the timestamp filter reached the inner provider"
+        );
+    }
+
     /// A metrics document still executes when only one of the two tables
     /// exists — e.g. a dataset that has only ever received gauge metrics.
     #[tokio::test]
