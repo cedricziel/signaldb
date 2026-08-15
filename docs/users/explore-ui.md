@@ -511,3 +511,9 @@ fallback.) Contributor detail lives in the `frontend-instrumentation` skill.
 See [src/ui/README.md](https://github.com/cedricziel/signaldb/blob/main/src/ui/README.md): `pnpm ui:dev` runs a Vite
 dev server with hot reload that proxies API calls to any live SignalDB
 instance (local or remote) with credentials injected from `.env.local`.
+
+The UI talks to the API only through the generated TypeScript client in
+`src/ui/src/api/gen/` (regenerated with `cargo xtask generate` whenever the
+OpenAPI document changes); it covers every router endpoint, including the
+[schema registry](schema-registry.md) operations the semantic attribute labels
+and the Schema hub are built on.

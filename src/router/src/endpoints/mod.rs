@@ -9,6 +9,7 @@ pub mod ops;
 pub mod promql;
 pub mod pyroscope;
 pub mod query;
+pub mod schema;
 pub mod session;
 pub mod tempo;
 pub mod tenant;

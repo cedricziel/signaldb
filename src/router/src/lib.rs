@@ -9,6 +9,7 @@ use common::auth::{Authenticator, TenantContext, admin_auth_middleware, auth_mid
 use common::catalog::Catalog;
 use common::config::Configuration;
 use common::ratelimit::TenantRateLimiter;
+use common::schema_registry::SchemaResolver;
 use std::sync::Arc;
 
 pub mod cli;
@@ -30,6 +31,13 @@ pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
     fn service_registry(&self) -> &discovery::ServiceRegistry;
     fn config(&self) -> &Configuration;
     fn authenticator(&self) -> &Arc<Authenticator>;
+    /// The schema-registry resolver. The default builds a fresh (uncached)
+    /// resolver over the catalog, which is fine for tests; the app state
+    /// overrides it with a shared instance whose per-tenant index persists
+    /// across requests.
+    fn schema_resolver(&self) -> SchemaResolver {
+        SchemaResolver::new(self.catalog().clone())
+    }
 }
 
 /// Concrete [`RouterState`] holding the router's shared handles.
@@ -39,6 +47,7 @@ pub struct RouterAppState {
     service_registry: discovery::ServiceRegistry,
     config: Configuration,
     authenticator: Arc<Authenticator>,
+    schema_resolver: SchemaResolver,
 }
 
 impl std::fmt::Debug for RouterAppState {
@@ -64,6 +73,7 @@ impl RouterAppState {
         );
 
         Self {
+            schema_resolver: SchemaResolver::new(catalog.clone()),
             catalog,
             service_registry,
             config,
@@ -87,6 +97,7 @@ impl RouterAppState {
         );
 
         Self {
+            schema_resolver: SchemaResolver::new(catalog.clone()),
             catalog,
             service_registry,
             config,
@@ -110,6 +121,10 @@ impl RouterState for RouterAppState {
 
     fn authenticator(&self) -> &Arc<Authenticator> {
         &self.authenticator
+    }
+
+    fn schema_resolver(&self) -> SchemaResolver {
+        self.schema_resolver.clone()
     }
 }
 
@@ -303,6 +318,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
             "/api/v1",
             endpoints::tenant::router()
                 .nest("/manage", endpoints::management::router())
+                .nest("/schema", endpoints::schema::router())
                 .route("/whoami", get(endpoints::session::whoami::<S>))
                 .merge(endpoints::query::router())
                 .layer(query_rate_layer)

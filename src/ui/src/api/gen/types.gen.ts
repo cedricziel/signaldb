@@ -54,6 +54,61 @@ export type Attribute = {
 };
 
 /**
+ * A resolved attribute definition (one per `id` in the registry).
+ */
+export type AttributeDef = {
+    brief: string;
+    deprecated?: null | DeprecatedInfo;
+    enum_members?: Array<EnumMember>;
+    examples?: Array<unknown>;
+    group_display_name?: string | null;
+    group_id: string;
+    /**
+     * Wire key (`k8s.pod.uid`).
+     */
+    key: string;
+    note?: string | null;
+    requirement_level?: string | null;
+    stability?: string | null;
+    /**
+     * Canonical type name (`string`, `int[]`, `template[string]`, `enum`).
+     */
+    type: string;
+};
+
+/**
+ * A resolved attribute definition tagged with provenance.
+ */
+export type AttributeHit = AttributeDef & {
+    /**
+     * Entities (from any visible registry) in which this key plays a role,
+     * as `namespace/entity`-qualified roles.
+     */
+    entity_roles?: Array<QualifiedEntityRole>;
+    namespace: string;
+    source: RegistrySource;
+    version: string;
+};
+
+/**
+ * Every definition of one attribute key across the visible registries, in
+ * precedence order; `primary` is the first.
+ */
+export type AttributeResolution = {
+    hits: Array<AttributeHit>;
+    key: string;
+    primary?: null | AttributeHit;
+};
+
+export type AttributeSearchResponse = {
+    hits: Array<AttributeHit>;
+    /**
+     * Present when `keys=` was given: one resolution per requested key.
+     */
+    resolutions?: Array<AttributeResolution>;
+};
+
+/**
  * Context the consent screen renders: the requesting client and the tenants
  * the signed-in user may grant.
  */
@@ -265,6 +320,88 @@ export type DatasetResponse = {
      * Tenant that owns this dataset.
      */
     tenant_id: string;
+};
+
+/**
+ * Deprecation info in resolved form.
+ */
+export type DeprecatedInfo = {
+    note?: string | null;
+    reason?: string | null;
+    renamed_to?: string | null;
+};
+
+/**
+ * An attribute referenced by an entity, with its role.
+ */
+export type EntityAttribute = {
+    key: string;
+    requirement_level?: string | null;
+    role: Role;
+};
+
+/**
+ * A resolved entity type.
+ */
+export type EntityDef = {
+    brief: string;
+    deprecated?: null | DeprecatedInfo;
+    descriptive: Array<EntityAttribute>;
+    /**
+     * Entity this one extends (bare name), if any.
+     */
+    extends?: string | null;
+    group_id: string;
+    identifying: Array<EntityAttribute>;
+    /**
+     * Entity type name (`k8s.pod`).
+     */
+    name: string;
+    note?: string | null;
+    stability?: string | null;
+};
+
+/**
+ * A resolved entity definition tagged with provenance.
+ */
+export type EntityHit = EntityDef & {
+    /**
+     * `namespace/entity` names of entities extending this one.
+     */
+    extended_by?: Array<string>;
+    /**
+     * Metric names associated with this entity (from every visible registry).
+     */
+    metrics?: Array<string>;
+    namespace: string;
+    source: RegistrySource;
+    version: string;
+};
+
+export type EntityResolution = {
+    hits: Array<EntityHit>;
+    key: string;
+    primary?: null | EntityHit;
+};
+
+export type EntitySearchResponse = {
+    hits: Array<EntityHit>;
+};
+
+/**
+ * One member of an enum attribute type.
+ */
+export type EnumMember = {
+    [key: string]: unknown;
+} & {
+    brief?: string | null;
+    deprecated?: {
+        [key: string]: unknown;
+    } | null;
+    id: string;
+    note?: string | null;
+    stability?: string | null;
+    value: unknown;
 };
 
 /**
@@ -514,6 +651,52 @@ export type MembershipResponse = {
 export type MembershipRole = 'admin' | 'member' | 'viewer';
 
 /**
+ * An attribute declared on a metric.
+ */
+export type MetricAttribute = {
+    key: string;
+    requirement_level?: string | null;
+};
+
+/**
+ * A resolved metric definition.
+ */
+export type MetricDef = {
+    attributes: Array<MetricAttribute>;
+    brief: string;
+    deprecated?: null | DeprecatedInfo;
+    /**
+     * Entity type names this metric describes.
+     */
+    entity_associations: Array<string>;
+    group_id: string;
+    instrument: string;
+    name: string;
+    note?: string | null;
+    stability?: string | null;
+    unit: string;
+};
+
+/**
+ * A resolved metric definition tagged with provenance.
+ */
+export type MetricHit = MetricDef & {
+    namespace: string;
+    source: RegistrySource;
+    version: string;
+};
+
+export type MetricResolution = {
+    hits: Array<MetricHit>;
+    key: string;
+    primary?: null | MetricHit;
+};
+
+export type MetricSearchResponse = {
+    hits: Array<MetricHit>;
+};
+
+/**
  * Summary of a stored profile linked to a trace, without the bulky
  * stack/sample payloads.
  */
@@ -525,6 +708,15 @@ export type ProfileSummary = {
     serviceName: string;
     spanID?: string | null;
     timeUnixNano: string;
+};
+
+/**
+ * An entity role qualified by the registry that declares it.
+ */
+export type QualifiedEntityRole = {
+    entity: string;
+    namespace: string;
+    role: Role;
 };
 
 /**
@@ -595,6 +787,44 @@ export type QueryRange = {
     to: string;
 };
 
+export type RegistryListResponse = {
+    registries: Array<RegistrySummary>;
+};
+
+/**
+ * A registry with its document (the uploaded Weaver-model file, verbatim).
+ */
+export type RegistryResponse = RegistrySummary & {
+    /**
+     * The registry document in the OpenTelemetry Weaver semantic-convention
+     * model (`name`, `version`, `schema_url`, `dependencies`, `groups`).
+     */
+    document: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * Where a registry comes from.
+ */
+export type RegistrySource = 'bundled' | 'custom' | 'remote';
+
+/**
+ * Registry list entry.
+ */
+export type RegistrySummary = {
+    attribute_count: number;
+    description?: string | null;
+    entity_count: number;
+    metric_count: number;
+    namespace: string;
+    read_only: boolean;
+    schema_url?: string | null;
+    source: RegistrySource;
+    updated_at?: string | null;
+    version: string;
+};
+
 /**
  * The resolved absolute time window, echoed for reproducibility/replay.
  */
@@ -625,6 +855,22 @@ export type ResultSeries = {
      * `[t_ns, value]` points.
      */
     points: Array<Array<unknown>>;
+};
+
+/**
+ * Role of an attribute within an entity.
+ */
+export type Role = 'identifying' | 'descriptive';
+
+/**
+ * Error body for the schema API.
+ */
+export type SchemaError = {
+    error: string;
+    /**
+     * Validation errors with document paths (422 only).
+     */
+    errors?: Array<ValidationError>;
 };
 
 /**
@@ -828,6 +1074,29 @@ export type UserResponse = {
      * Whether the user is an instance administrator.
      */
     instance_admin: boolean;
+};
+
+/**
+ * A validation failure at a location in the document.
+ */
+export type ValidationError = {
+    message: string;
+    /**
+     * Path into the document (`groups[3].attributes[1].ref`).
+     */
+    path: string;
+};
+
+/**
+ * Outcome of validating a document without storing it.
+ */
+export type ValidationReport = {
+    attribute_count: number;
+    entity_count: number;
+    errors: Array<ValidationError>;
+    metric_count: number;
+    namespace: string;
+    version: string;
 };
 
 /**
@@ -1873,6 +2142,446 @@ export type QueryIrResponses = {
 };
 
 export type QueryIrResponse2 = QueryIrResponses[keyof QueryIrResponses];
+
+export type SchemaSearchAttributesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Name prefix (empty lists from the top).
+         */
+        prefix?: string;
+        /**
+         * Maximum hits (default 50, max 200).
+         */
+        limit?: number | null;
+        /**
+         * Comma-separated exact keys to resolve in one call (attributes only).
+         */
+        keys?: string | null;
+    };
+    url: '/api/v1/schema/attributes';
+};
+
+export type SchemaSearchAttributesErrors = {
+    /**
+     * Missing schema:read scope
+     */
+    403: SchemaError;
+};
+
+export type SchemaSearchAttributesError = SchemaSearchAttributesErrors[keyof SchemaSearchAttributesErrors];
+
+export type SchemaSearchAttributesResponses = {
+    /**
+     * Prefix hits (and per-key resolutions when keys= is given)
+     */
+    200: AttributeSearchResponse;
+};
+
+export type SchemaSearchAttributesResponse = SchemaSearchAttributesResponses[keyof SchemaSearchAttributesResponses];
+
+export type SchemaResolveAttributeData = {
+    body?: never;
+    path: {
+        /**
+         * Attribute wire key, e.g. k8s.pod.uid
+         */
+        key: string;
+    };
+    query?: never;
+    url: '/api/v1/schema/attributes/{key}';
+};
+
+export type SchemaResolveAttributeErrors = {
+    /**
+     * Missing schema:read scope
+     */
+    403: SchemaError;
+};
+
+export type SchemaResolveAttributeError = SchemaResolveAttributeErrors[keyof SchemaResolveAttributeErrors];
+
+export type SchemaResolveAttributeResponses = {
+    /**
+     * Every definition of the key across visible registries (empty when unknown)
+     */
+    200: AttributeResolution;
+};
+
+export type SchemaResolveAttributeResponse = SchemaResolveAttributeResponses[keyof SchemaResolveAttributeResponses];
+
+export type SchemaSearchEntitiesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Name prefix (empty lists from the top).
+         */
+        prefix?: string;
+        /**
+         * Maximum hits (default 50, max 200).
+         */
+        limit?: number | null;
+        /**
+         * Comma-separated exact keys to resolve in one call (attributes only).
+         */
+        keys?: string | null;
+    };
+    url: '/api/v1/schema/entities';
+};
+
+export type SchemaSearchEntitiesErrors = {
+    /**
+     * Missing schema:read scope
+     */
+    403: SchemaError;
+};
+
+export type SchemaSearchEntitiesError = SchemaSearchEntitiesErrors[keyof SchemaSearchEntitiesErrors];
+
+export type SchemaSearchEntitiesResponses = {
+    /**
+     * Entity types whose name starts with the prefix
+     */
+    200: EntitySearchResponse;
+};
+
+export type SchemaSearchEntitiesResponse = SchemaSearchEntitiesResponses[keyof SchemaSearchEntitiesResponses];
+
+export type SchemaResolveEntityData = {
+    body?: never;
+    path: {
+        /**
+         * Entity type name, e.g. k8s.pod
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/schema/entities/{name}';
+};
+
+export type SchemaResolveEntityErrors = {
+    /**
+     * Missing schema:read scope
+     */
+    403: SchemaError;
+};
+
+export type SchemaResolveEntityError = SchemaResolveEntityErrors[keyof SchemaResolveEntityErrors];
+
+export type SchemaResolveEntityResponses = {
+    /**
+     * Every definition of the entity across visible registries (empty when unknown)
+     */
+    200: EntityResolution;
+};
+
+export type SchemaResolveEntityResponse = SchemaResolveEntityResponses[keyof SchemaResolveEntityResponses];
+
+export type SchemaSearchMetricsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Name prefix (empty lists from the top).
+         */
+        prefix?: string;
+        /**
+         * Maximum hits (default 50, max 200).
+         */
+        limit?: number | null;
+        /**
+         * Comma-separated exact keys to resolve in one call (attributes only).
+         */
+        keys?: string | null;
+    };
+    url: '/api/v1/schema/metrics';
+};
+
+export type SchemaSearchMetricsErrors = {
+    /**
+     * Missing schema:read scope
+     */
+    403: SchemaError;
+};
+
+export type SchemaSearchMetricsError = SchemaSearchMetricsErrors[keyof SchemaSearchMetricsErrors];
+
+export type SchemaSearchMetricsResponses = {
+    /**
+     * Metrics whose name starts with the prefix
+     */
+    200: MetricSearchResponse;
+};
+
+export type SchemaSearchMetricsResponse = SchemaSearchMetricsResponses[keyof SchemaSearchMetricsResponses];
+
+export type SchemaResolveMetricData = {
+    body?: never;
+    path: {
+        /**
+         * Metric name, e.g. k8s.pod.cpu.time
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/schema/metrics/{name}';
+};
+
+export type SchemaResolveMetricErrors = {
+    /**
+     * Missing schema:read scope
+     */
+    403: SchemaError;
+};
+
+export type SchemaResolveMetricError = SchemaResolveMetricErrors[keyof SchemaResolveMetricErrors];
+
+export type SchemaResolveMetricResponses = {
+    /**
+     * Every definition of the metric across visible registries (empty when unknown)
+     */
+    200: MetricResolution;
+};
+
+export type SchemaResolveMetricResponse = SchemaResolveMetricResponses[keyof SchemaResolveMetricResponses];
+
+export type SchemaListRegistriesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/schema/registries';
+};
+
+export type SchemaListRegistriesErrors = {
+    /**
+     * Missing schema:read scope
+     */
+    403: SchemaError;
+};
+
+export type SchemaListRegistriesError = SchemaListRegistriesErrors[keyof SchemaListRegistriesErrors];
+
+export type SchemaListRegistriesResponses = {
+    /**
+     * Registries visible to the tenant, precedence order
+     */
+    200: RegistryListResponse;
+};
+
+export type SchemaListRegistriesResponse = SchemaListRegistriesResponses[keyof SchemaListRegistriesResponses];
+
+export type SchemaCreateRegistryData = {
+    /**
+     * Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type
+     */
+    body: {
+        [key: string]: unknown;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/schema/registries';
+};
+
+export type SchemaCreateRegistryErrors = {
+    /**
+     * Unparseable document
+     */
+    400: SchemaError;
+    /**
+     * Missing schema:write scope
+     */
+    403: SchemaError;
+    /**
+     * Registry already exists
+     */
+    409: SchemaError;
+    /**
+     * Invalid document (errors carry paths)
+     */
+    422: SchemaError;
+};
+
+export type SchemaCreateRegistryError = SchemaCreateRegistryErrors[keyof SchemaCreateRegistryErrors];
+
+export type SchemaCreateRegistryResponses = {
+    /**
+     * Registry created
+     */
+    201: RegistrySummary;
+};
+
+export type SchemaCreateRegistryResponse = SchemaCreateRegistryResponses[keyof SchemaCreateRegistryResponses];
+
+export type SchemaDeleteRegistryData = {
+    body?: never;
+    path: {
+        /**
+         * Registry namespace
+         */
+        namespace: string;
+        /**
+         * Registry version
+         */
+        version: string;
+    };
+    query?: never;
+    url: '/api/v1/schema/registries/{namespace}/{version}';
+};
+
+export type SchemaDeleteRegistryErrors = {
+    /**
+     * Missing schema:write scope
+     */
+    403: SchemaError;
+    /**
+     * No such custom registry
+     */
+    404: SchemaError;
+    /**
+     * Registry is bundled and read-only
+     */
+    409: SchemaError;
+};
+
+export type SchemaDeleteRegistryError = SchemaDeleteRegistryErrors[keyof SchemaDeleteRegistryErrors];
+
+export type SchemaDeleteRegistryResponses = {
+    /**
+     * Registry deleted
+     */
+    204: void;
+};
+
+export type SchemaDeleteRegistryResponse = SchemaDeleteRegistryResponses[keyof SchemaDeleteRegistryResponses];
+
+export type SchemaGetRegistryData = {
+    body?: never;
+    path: {
+        /**
+         * Registry namespace
+         */
+        namespace: string;
+        /**
+         * Registry version
+         */
+        version: string;
+    };
+    query?: never;
+    url: '/api/v1/schema/registries/{namespace}/{version}';
+};
+
+export type SchemaGetRegistryErrors = {
+    /**
+     * Missing schema:read scope
+     */
+    403: SchemaError;
+    /**
+     * No such registry visible to the tenant
+     */
+    404: SchemaError;
+};
+
+export type SchemaGetRegistryError = SchemaGetRegistryErrors[keyof SchemaGetRegistryErrors];
+
+export type SchemaGetRegistryResponses = {
+    /**
+     * Registry summary and document
+     */
+    200: RegistryResponse;
+};
+
+export type SchemaGetRegistryResponse = SchemaGetRegistryResponses[keyof SchemaGetRegistryResponses];
+
+export type SchemaReplaceRegistryData = {
+    /**
+     * Replacement registry document; its name/version must match the path
+     */
+    body: {
+        [key: string]: unknown;
+    };
+    path: {
+        /**
+         * Registry namespace
+         */
+        namespace: string;
+        /**
+         * Registry version
+         */
+        version: string;
+    };
+    query?: never;
+    url: '/api/v1/schema/registries/{namespace}/{version}';
+};
+
+export type SchemaReplaceRegistryErrors = {
+    /**
+     * Unparseable document
+     */
+    400: SchemaError;
+    /**
+     * Missing schema:write scope
+     */
+    403: SchemaError;
+    /**
+     * No such custom registry
+     */
+    404: SchemaError;
+    /**
+     * Registry is bundled and read-only
+     */
+    409: SchemaError;
+    /**
+     * Invalid document or identity mismatch
+     */
+    422: SchemaError;
+};
+
+export type SchemaReplaceRegistryError = SchemaReplaceRegistryErrors[keyof SchemaReplaceRegistryErrors];
+
+export type SchemaReplaceRegistryResponses = {
+    /**
+     * Registry replaced
+     */
+    200: RegistrySummary;
+};
+
+export type SchemaReplaceRegistryResponse = SchemaReplaceRegistryResponses[keyof SchemaReplaceRegistryResponses];
+
+export type SchemaValidateRegistryData = {
+    /**
+     * Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored
+     */
+    body: {
+        [key: string]: unknown;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/schema/registries:validate';
+};
+
+export type SchemaValidateRegistryErrors = {
+    /**
+     * Unparseable document
+     */
+    400: SchemaError;
+    /**
+     * Missing schema:write scope
+     */
+    403: SchemaError;
+};
+
+export type SchemaValidateRegistryError = SchemaValidateRegistryErrors[keyof SchemaValidateRegistryErrors];
+
+export type SchemaValidateRegistryResponses = {
+    /**
+     * Validation outcome (errors with paths, or resulting counts)
+     */
+    200: ValidationReport;
+};
+
+export type SchemaValidateRegistryResponse = SchemaValidateRegistryResponses[keyof SchemaValidateRegistryResponses];
 
 export type WhoamiData = {
     body?: never;

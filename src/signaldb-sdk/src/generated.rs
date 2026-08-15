@@ -180,6 +180,264 @@ pub mod types {
             Default::default()
         }
     }
+    ///A resolved attribute definition (one per `id` in the registry).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A resolved attribute definition (one per `id` in the registry).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "brief",
+    ///    "group_id",
+    ///    "key",
+    ///    "type"
+    ///  ],
+    ///  "properties": {
+    ///    "brief": {
+    ///      "type": "string"
+    ///    },
+    ///    "deprecated": {
+    ///      "$ref": "#/components/schemas/DeprecatedInfo"
+    ///    },
+    ///    "enum_members": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/EnumMember"
+    ///      }
+    ///    },
+    ///    "examples": {
+    ///      "type": "array",
+    ///      "items": {}
+    ///    },
+    ///    "group_display_name": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "group_id": {
+    ///      "type": "string"
+    ///    },
+    ///    "key": {
+    ///      "description": "Wire key (`k8s.pod.uid`).",
+    ///      "type": "string"
+    ///    },
+    ///    "note": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "requirement_level": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "stability": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "type": {
+    ///      "description": "Canonical type name (`string`, `int[]`, `template[string]`, `enum`).",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AttributeDef {
+        pub brief: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub deprecated: ::std::option::Option<DeprecatedInfo>,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub enum_members: ::std::vec::Vec<EnumMember>,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub examples: ::std::vec::Vec<::serde_json::Value>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub group_display_name: ::std::option::Option<::std::string::String>,
+        pub group_id: ::std::string::String,
+        ///Wire key (`k8s.pod.uid`).
+        pub key: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub note: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub requirement_level: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub stability: ::std::option::Option<::std::string::String>,
+        ///Canonical type name (`string`, `int[]`, `template[string]`, `enum`).
+        #[serde(rename = "type")]
+        pub type_: ::std::string::String,
+    }
+    impl AttributeDef {
+        pub fn builder() -> builder::AttributeDef {
+            Default::default()
+        }
+    }
+    ///A resolved attribute definition tagged with provenance.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A resolved attribute definition tagged with provenance.",
+    ///  "allOf": [
+    ///    {
+    ///      "$ref": "#/components/schemas/AttributeDef"
+    ///    },
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "namespace",
+    ///        "source",
+    ///        "version"
+    ///      ],
+    ///      "properties": {
+    ///        "entity_roles": {
+    ///          "description": "Entities (from any visible registry) in which this key plays a role,\nas `namespace/entity`-qualified roles.",
+    ///          "type": "array",
+    ///          "items": {
+    ///            "$ref": "#/components/schemas/QualifiedEntityRole"
+    ///          }
+    ///        },
+    ///        "namespace": {
+    ///          "type": "string"
+    ///        },
+    ///        "source": {
+    ///          "$ref": "#/components/schemas/RegistrySource"
+    ///        },
+    ///        "version": {
+    ///          "type": "string"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AttributeHit {
+        pub brief: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub deprecated: ::std::option::Option<DeprecatedInfo>,
+        /**Entities (from any visible registry) in which this key plays a role,
+        as `namespace/entity`-qualified roles.*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub entity_roles: ::std::vec::Vec<QualifiedEntityRole>,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub enum_members: ::std::vec::Vec<EnumMember>,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub examples: ::std::vec::Vec<::serde_json::Value>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub group_display_name: ::std::option::Option<::std::string::String>,
+        pub group_id: ::std::string::String,
+        ///Wire key (`k8s.pod.uid`).
+        pub key: ::std::string::String,
+        pub namespace: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub note: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub requirement_level: ::std::option::Option<::std::string::String>,
+        pub source: RegistrySource,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub stability: ::std::option::Option<::std::string::String>,
+        ///Canonical type name (`string`, `int[]`, `template[string]`, `enum`).
+        #[serde(rename = "type")]
+        pub type_: ::std::string::String,
+        pub version: ::std::string::String,
+    }
+    impl AttributeHit {
+        pub fn builder() -> builder::AttributeHit {
+            Default::default()
+        }
+    }
+    /**Every definition of one attribute key across the visible registries, in
+    precedence order; `primary` is the first.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Every definition of one attribute key across the visible registries, in\nprecedence order; `primary` is the first.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "hits",
+    ///    "key"
+    ///  ],
+    ///  "properties": {
+    ///    "hits": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/AttributeHit"
+    ///      }
+    ///    },
+    ///    "key": {
+    ///      "type": "string"
+    ///    },
+    ///    "primary": {
+    ///      "$ref": "#/components/schemas/AttributeHit"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AttributeResolution {
+        pub hits: ::std::vec::Vec<AttributeHit>,
+        pub key: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub primary: ::std::option::Option<AttributeHit>,
+    }
+    impl AttributeResolution {
+        pub fn builder() -> builder::AttributeResolution {
+            Default::default()
+        }
+    }
+    ///`AttributeSearchResponse`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "hits"
+    ///  ],
+    ///  "properties": {
+    ///    "hits": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/AttributeHit"
+    ///      }
+    ///    },
+    ///    "resolutions": {
+    ///      "description": "Present when `keys=` was given: one resolution per requested key.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/AttributeResolution"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AttributeSearchResponse {
+        pub hits: ::std::vec::Vec<AttributeHit>,
+        ///Present when `keys=` was given: one resolution per requested key.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub resolutions: ::std::vec::Vec<AttributeResolution>,
+    }
+    impl AttributeSearchResponse {
+        pub fn builder() -> builder::AttributeSearchResponse {
+            Default::default()
+        }
+    }
     /**Context the consent screen renders: the requesting client and the tenants
     the signed-in user may grant.*/
     ///
@@ -713,6 +971,409 @@ pub mod types {
     }
     impl DatasetResponse {
         pub fn builder() -> builder::DatasetResponse {
+            Default::default()
+        }
+    }
+    ///Deprecation info in resolved form.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Deprecation info in resolved form.",
+    ///  "type": "object",
+    ///  "properties": {
+    ///    "note": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "reason": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "renamed_to": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct DeprecatedInfo {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub note: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub reason: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub renamed_to: ::std::option::Option<::std::string::String>,
+    }
+    impl ::std::default::Default for DeprecatedInfo {
+        fn default() -> Self {
+            Self {
+                note: Default::default(),
+                reason: Default::default(),
+                renamed_to: Default::default(),
+            }
+        }
+    }
+    impl DeprecatedInfo {
+        pub fn builder() -> builder::DeprecatedInfo {
+            Default::default()
+        }
+    }
+    ///An attribute referenced by an entity, with its role.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An attribute referenced by an entity, with its role.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "key",
+    ///    "role"
+    ///  ],
+    ///  "properties": {
+    ///    "key": {
+    ///      "type": "string"
+    ///    },
+    ///    "requirement_level": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "role": {
+    ///      "$ref": "#/components/schemas/Role"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EntityAttribute {
+        pub key: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub requirement_level: ::std::option::Option<::std::string::String>,
+        pub role: Role,
+    }
+    impl EntityAttribute {
+        pub fn builder() -> builder::EntityAttribute {
+            Default::default()
+        }
+    }
+    ///A resolved entity type.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A resolved entity type.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "brief",
+    ///    "descriptive",
+    ///    "group_id",
+    ///    "identifying",
+    ///    "name"
+    ///  ],
+    ///  "properties": {
+    ///    "brief": {
+    ///      "type": "string"
+    ///    },
+    ///    "deprecated": {
+    ///      "$ref": "#/components/schemas/DeprecatedInfo"
+    ///    },
+    ///    "descriptive": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/EntityAttribute"
+    ///      }
+    ///    },
+    ///    "extends": {
+    ///      "description": "Entity this one extends (bare name), if any.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "group_id": {
+    ///      "type": "string"
+    ///    },
+    ///    "identifying": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/EntityAttribute"
+    ///      }
+    ///    },
+    ///    "name": {
+    ///      "description": "Entity type name (`k8s.pod`).",
+    ///      "type": "string"
+    ///    },
+    ///    "note": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "stability": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EntityDef {
+        pub brief: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub deprecated: ::std::option::Option<DeprecatedInfo>,
+        pub descriptive: ::std::vec::Vec<EntityAttribute>,
+        ///Entity this one extends (bare name), if any.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub extends: ::std::option::Option<::std::string::String>,
+        pub group_id: ::std::string::String,
+        pub identifying: ::std::vec::Vec<EntityAttribute>,
+        ///Entity type name (`k8s.pod`).
+        pub name: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub note: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub stability: ::std::option::Option<::std::string::String>,
+    }
+    impl EntityDef {
+        pub fn builder() -> builder::EntityDef {
+            Default::default()
+        }
+    }
+    ///A resolved entity definition tagged with provenance.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A resolved entity definition tagged with provenance.",
+    ///  "allOf": [
+    ///    {
+    ///      "$ref": "#/components/schemas/EntityDef"
+    ///    },
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "namespace",
+    ///        "source",
+    ///        "version"
+    ///      ],
+    ///      "properties": {
+    ///        "extended_by": {
+    ///          "description": "`namespace/entity` names of entities extending this one.",
+    ///          "type": "array",
+    ///          "items": {
+    ///            "type": "string"
+    ///          }
+    ///        },
+    ///        "metrics": {
+    ///          "description": "Metric names associated with this entity (from every visible registry).",
+    ///          "type": "array",
+    ///          "items": {
+    ///            "type": "string"
+    ///          }
+    ///        },
+    ///        "namespace": {
+    ///          "type": "string"
+    ///        },
+    ///        "source": {
+    ///          "$ref": "#/components/schemas/RegistrySource"
+    ///        },
+    ///        "version": {
+    ///          "type": "string"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EntityHit {
+        pub brief: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub deprecated: ::std::option::Option<DeprecatedInfo>,
+        pub descriptive: ::std::vec::Vec<EntityAttribute>,
+        ///`namespace/entity` names of entities extending this one.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub extended_by: ::std::vec::Vec<::std::string::String>,
+        ///Entity this one extends (bare name), if any.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub extends: ::std::option::Option<::std::string::String>,
+        pub group_id: ::std::string::String,
+        pub identifying: ::std::vec::Vec<EntityAttribute>,
+        ///Metric names associated with this entity (from every visible registry).
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub metrics: ::std::vec::Vec<::std::string::String>,
+        ///Entity type name (`k8s.pod`).
+        pub name: ::std::string::String,
+        pub namespace: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub note: ::std::option::Option<::std::string::String>,
+        pub source: RegistrySource,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub stability: ::std::option::Option<::std::string::String>,
+        pub version: ::std::string::String,
+    }
+    impl EntityHit {
+        pub fn builder() -> builder::EntityHit {
+            Default::default()
+        }
+    }
+    ///`EntityResolution`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "hits",
+    ///    "key"
+    ///  ],
+    ///  "properties": {
+    ///    "hits": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/EntityHit"
+    ///      }
+    ///    },
+    ///    "key": {
+    ///      "type": "string"
+    ///    },
+    ///    "primary": {
+    ///      "$ref": "#/components/schemas/EntityHit"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EntityResolution {
+        pub hits: ::std::vec::Vec<EntityHit>,
+        pub key: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub primary: ::std::option::Option<EntityHit>,
+    }
+    impl EntityResolution {
+        pub fn builder() -> builder::EntityResolution {
+            Default::default()
+        }
+    }
+    ///`EntitySearchResponse`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "hits"
+    ///  ],
+    ///  "properties": {
+    ///    "hits": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/EntityHit"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EntitySearchResponse {
+        pub hits: ::std::vec::Vec<EntityHit>,
+    }
+    impl EntitySearchResponse {
+        pub fn builder() -> builder::EntitySearchResponse {
+            Default::default()
+        }
+    }
+    ///One member of an enum attribute type.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One member of an enum attribute type.",
+    ///  "allOf": [
+    ///    {
+    ///      "type": "object"
+    ///    },
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "id",
+    ///        "value"
+    ///      ],
+    ///      "properties": {
+    ///        "brief": {
+    ///          "type": [
+    ///            "string",
+    ///            "null"
+    ///          ]
+    ///        },
+    ///        "deprecated": {
+    ///          "type": [
+    ///            "object",
+    ///            "null"
+    ///          ]
+    ///        },
+    ///        "id": {
+    ///          "type": "string"
+    ///        },
+    ///        "note": {
+    ///          "type": [
+    ///            "string",
+    ///            "null"
+    ///          ]
+    ///        },
+    ///        "stability": {
+    ///          "type": [
+    ///            "string",
+    ///            "null"
+    ///          ]
+    ///        },
+    ///        "value": {}
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EnumMember {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub brief: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub deprecated:
+            ::std::option::Option<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+        pub id: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub note: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub stability: ::std::option::Option<::std::string::String>,
+        pub value: ::serde_json::Value,
+    }
+    impl EnumMember {
+        pub fn builder() -> builder::EnumMember {
             Default::default()
         }
     }
@@ -2035,6 +2696,258 @@ pub mod types {
             value.parse()
         }
     }
+    ///An attribute declared on a metric.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An attribute declared on a metric.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "key"
+    ///  ],
+    ///  "properties": {
+    ///    "key": {
+    ///      "type": "string"
+    ///    },
+    ///    "requirement_level": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct MetricAttribute {
+        pub key: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub requirement_level: ::std::option::Option<::std::string::String>,
+    }
+    impl MetricAttribute {
+        pub fn builder() -> builder::MetricAttribute {
+            Default::default()
+        }
+    }
+    ///A resolved metric definition.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A resolved metric definition.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "attributes",
+    ///    "brief",
+    ///    "entity_associations",
+    ///    "group_id",
+    ///    "instrument",
+    ///    "name",
+    ///    "unit"
+    ///  ],
+    ///  "properties": {
+    ///    "attributes": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/MetricAttribute"
+    ///      }
+    ///    },
+    ///    "brief": {
+    ///      "type": "string"
+    ///    },
+    ///    "deprecated": {
+    ///      "$ref": "#/components/schemas/DeprecatedInfo"
+    ///    },
+    ///    "entity_associations": {
+    ///      "description": "Entity type names this metric describes.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "group_id": {
+    ///      "type": "string"
+    ///    },
+    ///    "instrument": {
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "type": "string"
+    ///    },
+    ///    "note": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "stability": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "unit": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct MetricDef {
+        pub attributes: ::std::vec::Vec<MetricAttribute>,
+        pub brief: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub deprecated: ::std::option::Option<DeprecatedInfo>,
+        ///Entity type names this metric describes.
+        pub entity_associations: ::std::vec::Vec<::std::string::String>,
+        pub group_id: ::std::string::String,
+        pub instrument: ::std::string::String,
+        pub name: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub note: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub stability: ::std::option::Option<::std::string::String>,
+        pub unit: ::std::string::String,
+    }
+    impl MetricDef {
+        pub fn builder() -> builder::MetricDef {
+            Default::default()
+        }
+    }
+    ///A resolved metric definition tagged with provenance.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A resolved metric definition tagged with provenance.",
+    ///  "allOf": [
+    ///    {
+    ///      "$ref": "#/components/schemas/MetricDef"
+    ///    },
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "namespace",
+    ///        "source",
+    ///        "version"
+    ///      ],
+    ///      "properties": {
+    ///        "namespace": {
+    ///          "type": "string"
+    ///        },
+    ///        "source": {
+    ///          "$ref": "#/components/schemas/RegistrySource"
+    ///        },
+    ///        "version": {
+    ///          "type": "string"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct MetricHit {
+        pub attributes: ::std::vec::Vec<MetricAttribute>,
+        pub brief: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub deprecated: ::std::option::Option<DeprecatedInfo>,
+        ///Entity type names this metric describes.
+        pub entity_associations: ::std::vec::Vec<::std::string::String>,
+        pub group_id: ::std::string::String,
+        pub instrument: ::std::string::String,
+        pub name: ::std::string::String,
+        pub namespace: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub note: ::std::option::Option<::std::string::String>,
+        pub source: RegistrySource,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub stability: ::std::option::Option<::std::string::String>,
+        pub unit: ::std::string::String,
+        pub version: ::std::string::String,
+    }
+    impl MetricHit {
+        pub fn builder() -> builder::MetricHit {
+            Default::default()
+        }
+    }
+    ///`MetricResolution`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "hits",
+    ///    "key"
+    ///  ],
+    ///  "properties": {
+    ///    "hits": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/MetricHit"
+    ///      }
+    ///    },
+    ///    "key": {
+    ///      "type": "string"
+    ///    },
+    ///    "primary": {
+    ///      "$ref": "#/components/schemas/MetricHit"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct MetricResolution {
+        pub hits: ::std::vec::Vec<MetricHit>,
+        pub key: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub primary: ::std::option::Option<MetricHit>,
+    }
+    impl MetricResolution {
+        pub fn builder() -> builder::MetricResolution {
+            Default::default()
+        }
+    }
+    ///`MetricSearchResponse`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "hits"
+    ///  ],
+    ///  "properties": {
+    ///    "hits": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/MetricHit"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct MetricSearchResponse {
+        pub hits: ::std::vec::Vec<MetricHit>,
+    }
+    impl MetricSearchResponse {
+        pub fn builder() -> builder::MetricSearchResponse {
+            Default::default()
+        }
+    }
     /**Summary of a stored profile linked to a trace, without the bulky
     stack/sample payloads.*/
     ///
@@ -2104,6 +3017,44 @@ pub mod types {
     }
     impl ProfileSummary {
         pub fn builder() -> builder::ProfileSummary {
+            Default::default()
+        }
+    }
+    ///An entity role qualified by the registry that declares it.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An entity role qualified by the registry that declares it.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "entity",
+    ///    "namespace",
+    ///    "role"
+    ///  ],
+    ///  "properties": {
+    ///    "entity": {
+    ///      "type": "string"
+    ///    },
+    ///    "namespace": {
+    ///      "type": "string"
+    ///    },
+    ///    "role": {
+    ///      "$ref": "#/components/schemas/Role"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct QualifiedEntityRole {
+        pub entity: ::std::string::String,
+        pub namespace: ::std::string::String,
+        pub role: Role,
+    }
+    impl QualifiedEntityRole {
+        pub fn builder() -> builder::QualifiedEntityRole {
             Default::default()
         }
     }
@@ -2317,6 +3268,250 @@ pub mod types {
             Default::default()
         }
     }
+    ///`RegistryListResponse`
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "type": "object",
+    ///  "required": [
+    ///    "registries"
+    ///  ],
+    ///  "properties": {
+    ///    "registries": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/RegistrySummary"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct RegistryListResponse {
+        pub registries: ::std::vec::Vec<RegistrySummary>,
+    }
+    impl RegistryListResponse {
+        pub fn builder() -> builder::RegistryListResponse {
+            Default::default()
+        }
+    }
+    ///A registry with its document (the uploaded Weaver-model file, verbatim).
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A registry with its document (the uploaded Weaver-model file, verbatim).",
+    ///  "allOf": [
+    ///    {
+    ///      "$ref": "#/components/schemas/RegistrySummary"
+    ///    },
+    ///    {
+    ///      "type": "object",
+    ///      "required": [
+    ///        "document"
+    ///      ],
+    ///      "properties": {
+    ///        "document": {
+    ///          "description": "The registry document in the OpenTelemetry Weaver semantic-convention\nmodel (`name`, `version`, `schema_url`, `dependencies`, `groups`).",
+    ///          "type": "object"
+    ///        }
+    ///      }
+    ///    }
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct RegistryResponse {
+        pub attribute_count: u64,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        /**The registry document in the OpenTelemetry Weaver semantic-convention
+        model (`name`, `version`, `schema_url`, `dependencies`, `groups`).*/
+        pub document: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+        pub entity_count: u64,
+        pub metric_count: u64,
+        pub namespace: ::std::string::String,
+        pub read_only: bool,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub schema_url: ::std::option::Option<::std::string::String>,
+        pub source: RegistrySource,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub updated_at: ::std::option::Option<::std::string::String>,
+        pub version: ::std::string::String,
+    }
+    impl RegistryResponse {
+        pub fn builder() -> builder::RegistryResponse {
+            Default::default()
+        }
+    }
+    ///Where a registry comes from.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Where a registry comes from.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "bundled",
+    ///    "custom",
+    ///    "remote"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum RegistrySource {
+        #[serde(rename = "bundled")]
+        Bundled,
+        #[serde(rename = "custom")]
+        Custom,
+        #[serde(rename = "remote")]
+        Remote,
+    }
+    impl ::std::fmt::Display for RegistrySource {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Bundled => f.write_str("bundled"),
+                Self::Custom => f.write_str("custom"),
+                Self::Remote => f.write_str("remote"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for RegistrySource {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "bundled" => Ok(Self::Bundled),
+                "custom" => Ok(Self::Custom),
+                "remote" => Ok(Self::Remote),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for RegistrySource {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for RegistrySource {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for RegistrySource {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///Registry list entry.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Registry list entry.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "attribute_count",
+    ///    "entity_count",
+    ///    "metric_count",
+    ///    "namespace",
+    ///    "read_only",
+    ///    "source",
+    ///    "version"
+    ///  ],
+    ///  "properties": {
+    ///    "attribute_count": {
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "description": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "entity_count": {
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "metric_count": {
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "namespace": {
+    ///      "type": "string"
+    ///    },
+    ///    "read_only": {
+    ///      "type": "boolean"
+    ///    },
+    ///    "schema_url": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "source": {
+    ///      "$ref": "#/components/schemas/RegistrySource"
+    ///    },
+    ///    "updated_at": {
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "version": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct RegistrySummary {
+        pub attribute_count: u64,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        pub entity_count: u64,
+        pub metric_count: u64,
+        pub namespace: ::std::string::String,
+        pub read_only: bool,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub schema_url: ::std::option::Option<::std::string::String>,
+        pub source: RegistrySource,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub updated_at: ::std::option::Option<::std::string::String>,
+        pub version: ::std::string::String,
+    }
+    impl RegistrySummary {
+        pub fn builder() -> builder::RegistrySummary {
+            Default::default()
+        }
+    }
     ///The resolved absolute time window, echoed for reproducibility/replay.
     ///
     /// <details><summary>JSON schema</summary>
@@ -2427,6 +3622,117 @@ pub mod types {
     }
     impl ResultSeries {
         pub fn builder() -> builder::ResultSeries {
+            Default::default()
+        }
+    }
+    ///Role of an attribute within an entity.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Role of an attribute within an entity.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "identifying",
+    ///    "descriptive"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum Role {
+        #[serde(rename = "identifying")]
+        Identifying,
+        #[serde(rename = "descriptive")]
+        Descriptive,
+    }
+    impl ::std::fmt::Display for Role {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Identifying => f.write_str("identifying"),
+                Self::Descriptive => f.write_str("descriptive"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for Role {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "identifying" => Ok(Self::Identifying),
+                "descriptive" => Ok(Self::Descriptive),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for Role {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for Role {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for Role {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///Error body for the schema API.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Error body for the schema API.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "error"
+    ///  ],
+    ///  "properties": {
+    ///    "error": {
+    ///      "type": "string"
+    ///    },
+    ///    "errors": {
+    ///      "description": "Validation errors with document paths (422 only).",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ValidationError"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SchemaError {
+        pub error: ::std::string::String,
+        ///Validation errors with document paths (422 only).
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub errors: ::std::vec::Vec<ValidationError>,
+    }
+    impl SchemaError {
+        pub fn builder() -> builder::SchemaError {
             Default::default()
         }
     }
@@ -3096,6 +4402,100 @@ pub mod types {
             Default::default()
         }
     }
+    ///A validation failure at a location in the document.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A validation failure at a location in the document.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "message",
+    ///    "path"
+    ///  ],
+    ///  "properties": {
+    ///    "message": {
+    ///      "type": "string"
+    ///    },
+    ///    "path": {
+    ///      "description": "Path into the document (`groups[3].attributes[1].ref`).",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ValidationError {
+        pub message: ::std::string::String,
+        ///Path into the document (`groups[3].attributes[1].ref`).
+        pub path: ::std::string::String,
+    }
+    impl ValidationError {
+        pub fn builder() -> builder::ValidationError {
+            Default::default()
+        }
+    }
+    ///Outcome of validating a document without storing it.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Outcome of validating a document without storing it.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "attribute_count",
+    ///    "entity_count",
+    ///    "errors",
+    ///    "metric_count",
+    ///    "namespace",
+    ///    "version"
+    ///  ],
+    ///  "properties": {
+    ///    "attribute_count": {
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "entity_count": {
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "errors": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ValidationError"
+    ///      }
+    ///    },
+    ///    "metric_count": {
+    ///      "type": "integer",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "namespace": {
+    ///      "type": "string"
+    ///    },
+    ///    "version": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ValidationReport {
+        pub attribute_count: u64,
+        pub entity_count: u64,
+        pub errors: ::std::vec::Vec<ValidationError>,
+        pub metric_count: u64,
+        pub namespace: ::std::string::String,
+        pub version: ::std::string::String,
+    }
+    impl ValidationReport {
+        pub fn builder() -> builder::ValidationReport {
+            Default::default()
+        }
+    }
     ///The non-null identity contract shared by generated clients.
     ///
     /// <details><summary>JSON schema</summary>
@@ -3404,6 +4804,589 @@ pub mod types {
                 Self {
                     key: Ok(value.key),
                     value: Ok(value.value),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct AttributeDef {
+            brief: ::std::result::Result<::std::string::String, ::std::string::String>,
+            deprecated: ::std::result::Result<
+                ::std::option::Option<super::DeprecatedInfo>,
+                ::std::string::String,
+            >,
+            enum_members:
+                ::std::result::Result<::std::vec::Vec<super::EnumMember>, ::std::string::String>,
+            examples:
+                ::std::result::Result<::std::vec::Vec<::serde_json::Value>, ::std::string::String>,
+            group_display_name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            group_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            key: ::std::result::Result<::std::string::String, ::std::string::String>,
+            note: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            requirement_level: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            stability: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            type_: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for AttributeDef {
+            fn default() -> Self {
+                Self {
+                    brief: Err("no value supplied for brief".to_string()),
+                    deprecated: Ok(Default::default()),
+                    enum_members: Ok(Default::default()),
+                    examples: Ok(Default::default()),
+                    group_display_name: Ok(Default::default()),
+                    group_id: Err("no value supplied for group_id".to_string()),
+                    key: Err("no value supplied for key".to_string()),
+                    note: Ok(Default::default()),
+                    requirement_level: Ok(Default::default()),
+                    stability: Ok(Default::default()),
+                    type_: Err("no value supplied for type_".to_string()),
+                }
+            }
+        }
+        impl AttributeDef {
+            pub fn brief<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.brief = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for brief: {e}"));
+                self
+            }
+            pub fn deprecated<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::DeprecatedInfo>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.deprecated = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for deprecated: {e}"));
+                self
+            }
+            pub fn enum_members<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EnumMember>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.enum_members = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for enum_members: {e}"));
+                self
+            }
+            pub fn examples<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::serde_json::Value>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.examples = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for examples: {e}"));
+                self
+            }
+            pub fn group_display_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.group_display_name = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for group_display_name: {e}")
+                });
+                self
+            }
+            pub fn group_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.group_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for group_id: {e}"));
+                self
+            }
+            pub fn key<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.key = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for key: {e}"));
+                self
+            }
+            pub fn note<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.note = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for note: {e}"));
+                self
+            }
+            pub fn requirement_level<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.requirement_level = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for requirement_level: {e}")
+                });
+                self
+            }
+            pub fn stability<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.stability = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for stability: {e}"));
+                self
+            }
+            pub fn type_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.type_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for type_: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AttributeDef> for super::AttributeDef {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AttributeDef,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    brief: value.brief?,
+                    deprecated: value.deprecated?,
+                    enum_members: value.enum_members?,
+                    examples: value.examples?,
+                    group_display_name: value.group_display_name?,
+                    group_id: value.group_id?,
+                    key: value.key?,
+                    note: value.note?,
+                    requirement_level: value.requirement_level?,
+                    stability: value.stability?,
+                    type_: value.type_?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AttributeDef> for AttributeDef {
+            fn from(value: super::AttributeDef) -> Self {
+                Self {
+                    brief: Ok(value.brief),
+                    deprecated: Ok(value.deprecated),
+                    enum_members: Ok(value.enum_members),
+                    examples: Ok(value.examples),
+                    group_display_name: Ok(value.group_display_name),
+                    group_id: Ok(value.group_id),
+                    key: Ok(value.key),
+                    note: Ok(value.note),
+                    requirement_level: Ok(value.requirement_level),
+                    stability: Ok(value.stability),
+                    type_: Ok(value.type_),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct AttributeHit {
+            brief: ::std::result::Result<::std::string::String, ::std::string::String>,
+            deprecated: ::std::result::Result<
+                ::std::option::Option<super::DeprecatedInfo>,
+                ::std::string::String,
+            >,
+            entity_roles: ::std::result::Result<
+                ::std::vec::Vec<super::QualifiedEntityRole>,
+                ::std::string::String,
+            >,
+            enum_members:
+                ::std::result::Result<::std::vec::Vec<super::EnumMember>, ::std::string::String>,
+            examples:
+                ::std::result::Result<::std::vec::Vec<::serde_json::Value>, ::std::string::String>,
+            group_display_name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            group_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            key: ::std::result::Result<::std::string::String, ::std::string::String>,
+            namespace: ::std::result::Result<::std::string::String, ::std::string::String>,
+            note: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            requirement_level: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            source: ::std::result::Result<super::RegistrySource, ::std::string::String>,
+            stability: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            type_: ::std::result::Result<::std::string::String, ::std::string::String>,
+            version: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for AttributeHit {
+            fn default() -> Self {
+                Self {
+                    brief: Err("no value supplied for brief".to_string()),
+                    deprecated: Ok(Default::default()),
+                    entity_roles: Ok(Default::default()),
+                    enum_members: Ok(Default::default()),
+                    examples: Ok(Default::default()),
+                    group_display_name: Ok(Default::default()),
+                    group_id: Err("no value supplied for group_id".to_string()),
+                    key: Err("no value supplied for key".to_string()),
+                    namespace: Err("no value supplied for namespace".to_string()),
+                    note: Ok(Default::default()),
+                    requirement_level: Ok(Default::default()),
+                    source: Err("no value supplied for source".to_string()),
+                    stability: Ok(Default::default()),
+                    type_: Err("no value supplied for type_".to_string()),
+                    version: Err("no value supplied for version".to_string()),
+                }
+            }
+        }
+        impl AttributeHit {
+            pub fn brief<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.brief = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for brief: {e}"));
+                self
+            }
+            pub fn deprecated<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::DeprecatedInfo>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.deprecated = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for deprecated: {e}"));
+                self
+            }
+            pub fn entity_roles<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::QualifiedEntityRole>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.entity_roles = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for entity_roles: {e}"));
+                self
+            }
+            pub fn enum_members<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EnumMember>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.enum_members = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for enum_members: {e}"));
+                self
+            }
+            pub fn examples<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::serde_json::Value>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.examples = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for examples: {e}"));
+                self
+            }
+            pub fn group_display_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.group_display_name = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for group_display_name: {e}")
+                });
+                self
+            }
+            pub fn group_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.group_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for group_id: {e}"));
+                self
+            }
+            pub fn key<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.key = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for key: {e}"));
+                self
+            }
+            pub fn namespace<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.namespace = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for namespace: {e}"));
+                self
+            }
+            pub fn note<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.note = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for note: {e}"));
+                self
+            }
+            pub fn requirement_level<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.requirement_level = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for requirement_level: {e}")
+                });
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::RegistrySource>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn stability<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.stability = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for stability: {e}"));
+                self
+            }
+            pub fn type_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.type_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for type_: {e}"));
+                self
+            }
+            pub fn version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.version = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for version: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AttributeHit> for super::AttributeHit {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AttributeHit,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    brief: value.brief?,
+                    deprecated: value.deprecated?,
+                    entity_roles: value.entity_roles?,
+                    enum_members: value.enum_members?,
+                    examples: value.examples?,
+                    group_display_name: value.group_display_name?,
+                    group_id: value.group_id?,
+                    key: value.key?,
+                    namespace: value.namespace?,
+                    note: value.note?,
+                    requirement_level: value.requirement_level?,
+                    source: value.source?,
+                    stability: value.stability?,
+                    type_: value.type_?,
+                    version: value.version?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AttributeHit> for AttributeHit {
+            fn from(value: super::AttributeHit) -> Self {
+                Self {
+                    brief: Ok(value.brief),
+                    deprecated: Ok(value.deprecated),
+                    entity_roles: Ok(value.entity_roles),
+                    enum_members: Ok(value.enum_members),
+                    examples: Ok(value.examples),
+                    group_display_name: Ok(value.group_display_name),
+                    group_id: Ok(value.group_id),
+                    key: Ok(value.key),
+                    namespace: Ok(value.namespace),
+                    note: Ok(value.note),
+                    requirement_level: Ok(value.requirement_level),
+                    source: Ok(value.source),
+                    stability: Ok(value.stability),
+                    type_: Ok(value.type_),
+                    version: Ok(value.version),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct AttributeResolution {
+            hits:
+                ::std::result::Result<::std::vec::Vec<super::AttributeHit>, ::std::string::String>,
+            key: ::std::result::Result<::std::string::String, ::std::string::String>,
+            primary: ::std::result::Result<
+                ::std::option::Option<super::AttributeHit>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for AttributeResolution {
+            fn default() -> Self {
+                Self {
+                    hits: Err("no value supplied for hits".to_string()),
+                    key: Err("no value supplied for key".to_string()),
+                    primary: Ok(Default::default()),
+                }
+            }
+        }
+        impl AttributeResolution {
+            pub fn hits<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::AttributeHit>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.hits = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for hits: {e}"));
+                self
+            }
+            pub fn key<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.key = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for key: {e}"));
+                self
+            }
+            pub fn primary<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::AttributeHit>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.primary = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for primary: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AttributeResolution> for super::AttributeResolution {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AttributeResolution,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    hits: value.hits?,
+                    key: value.key?,
+                    primary: value.primary?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AttributeResolution> for AttributeResolution {
+            fn from(value: super::AttributeResolution) -> Self {
+                Self {
+                    hits: Ok(value.hits),
+                    key: Ok(value.key),
+                    primary: Ok(value.primary),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct AttributeSearchResponse {
+            hits:
+                ::std::result::Result<::std::vec::Vec<super::AttributeHit>, ::std::string::String>,
+            resolutions: ::std::result::Result<
+                ::std::vec::Vec<super::AttributeResolution>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for AttributeSearchResponse {
+            fn default() -> Self {
+                Self {
+                    hits: Err("no value supplied for hits".to_string()),
+                    resolutions: Ok(Default::default()),
+                }
+            }
+        }
+        impl AttributeSearchResponse {
+            pub fn hits<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::AttributeHit>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.hits = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for hits: {e}"));
+                self
+            }
+            pub fn resolutions<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::AttributeResolution>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.resolutions = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for resolutions: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AttributeSearchResponse> for super::AttributeSearchResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AttributeSearchResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    hits: value.hits?,
+                    resolutions: value.resolutions?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AttributeSearchResponse> for AttributeSearchResponse {
+            fn from(value: super::AttributeSearchResponse) -> Self {
+                Self {
+                    hits: Ok(value.hits),
+                    resolutions: Ok(value.resolutions),
                 }
             }
         }
@@ -4224,6 +6207,807 @@ pub mod types {
                     id: Ok(value.id),
                     name: Ok(value.name),
                     tenant_id: Ok(value.tenant_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct DeprecatedInfo {
+            note: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            reason: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            renamed_to: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for DeprecatedInfo {
+            fn default() -> Self {
+                Self {
+                    note: Ok(Default::default()),
+                    reason: Ok(Default::default()),
+                    renamed_to: Ok(Default::default()),
+                }
+            }
+        }
+        impl DeprecatedInfo {
+            pub fn note<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.note = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for note: {e}"));
+                self
+            }
+            pub fn reason<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.reason = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for reason: {e}"));
+                self
+            }
+            pub fn renamed_to<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.renamed_to = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for renamed_to: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<DeprecatedInfo> for super::DeprecatedInfo {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: DeprecatedInfo,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    note: value.note?,
+                    reason: value.reason?,
+                    renamed_to: value.renamed_to?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::DeprecatedInfo> for DeprecatedInfo {
+            fn from(value: super::DeprecatedInfo) -> Self {
+                Self {
+                    note: Ok(value.note),
+                    reason: Ok(value.reason),
+                    renamed_to: Ok(value.renamed_to),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EntityAttribute {
+            key: ::std::result::Result<::std::string::String, ::std::string::String>,
+            requirement_level: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            role: ::std::result::Result<super::Role, ::std::string::String>,
+        }
+        impl ::std::default::Default for EntityAttribute {
+            fn default() -> Self {
+                Self {
+                    key: Err("no value supplied for key".to_string()),
+                    requirement_level: Ok(Default::default()),
+                    role: Err("no value supplied for role".to_string()),
+                }
+            }
+        }
+        impl EntityAttribute {
+            pub fn key<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.key = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for key: {e}"));
+                self
+            }
+            pub fn requirement_level<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.requirement_level = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for requirement_level: {e}")
+                });
+                self
+            }
+            pub fn role<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::Role>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.role = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for role: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EntityAttribute> for super::EntityAttribute {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EntityAttribute,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    key: value.key?,
+                    requirement_level: value.requirement_level?,
+                    role: value.role?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EntityAttribute> for EntityAttribute {
+            fn from(value: super::EntityAttribute) -> Self {
+                Self {
+                    key: Ok(value.key),
+                    requirement_level: Ok(value.requirement_level),
+                    role: Ok(value.role),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EntityDef {
+            brief: ::std::result::Result<::std::string::String, ::std::string::String>,
+            deprecated: ::std::result::Result<
+                ::std::option::Option<super::DeprecatedInfo>,
+                ::std::string::String,
+            >,
+            descriptive: ::std::result::Result<
+                ::std::vec::Vec<super::EntityAttribute>,
+                ::std::string::String,
+            >,
+            extends: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            group_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            identifying: ::std::result::Result<
+                ::std::vec::Vec<super::EntityAttribute>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            note: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            stability: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for EntityDef {
+            fn default() -> Self {
+                Self {
+                    brief: Err("no value supplied for brief".to_string()),
+                    deprecated: Ok(Default::default()),
+                    descriptive: Err("no value supplied for descriptive".to_string()),
+                    extends: Ok(Default::default()),
+                    group_id: Err("no value supplied for group_id".to_string()),
+                    identifying: Err("no value supplied for identifying".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    note: Ok(Default::default()),
+                    stability: Ok(Default::default()),
+                }
+            }
+        }
+        impl EntityDef {
+            pub fn brief<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.brief = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for brief: {e}"));
+                self
+            }
+            pub fn deprecated<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::DeprecatedInfo>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.deprecated = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for deprecated: {e}"));
+                self
+            }
+            pub fn descriptive<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EntityAttribute>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.descriptive = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for descriptive: {e}"));
+                self
+            }
+            pub fn extends<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.extends = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for extends: {e}"));
+                self
+            }
+            pub fn group_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.group_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for group_id: {e}"));
+                self
+            }
+            pub fn identifying<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EntityAttribute>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.identifying = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for identifying: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn note<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.note = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for note: {e}"));
+                self
+            }
+            pub fn stability<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.stability = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for stability: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EntityDef> for super::EntityDef {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EntityDef,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    brief: value.brief?,
+                    deprecated: value.deprecated?,
+                    descriptive: value.descriptive?,
+                    extends: value.extends?,
+                    group_id: value.group_id?,
+                    identifying: value.identifying?,
+                    name: value.name?,
+                    note: value.note?,
+                    stability: value.stability?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EntityDef> for EntityDef {
+            fn from(value: super::EntityDef) -> Self {
+                Self {
+                    brief: Ok(value.brief),
+                    deprecated: Ok(value.deprecated),
+                    descriptive: Ok(value.descriptive),
+                    extends: Ok(value.extends),
+                    group_id: Ok(value.group_id),
+                    identifying: Ok(value.identifying),
+                    name: Ok(value.name),
+                    note: Ok(value.note),
+                    stability: Ok(value.stability),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EntityHit {
+            brief: ::std::result::Result<::std::string::String, ::std::string::String>,
+            deprecated: ::std::result::Result<
+                ::std::option::Option<super::DeprecatedInfo>,
+                ::std::string::String,
+            >,
+            descriptive: ::std::result::Result<
+                ::std::vec::Vec<super::EntityAttribute>,
+                ::std::string::String,
+            >,
+            extended_by: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            extends: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            group_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            identifying: ::std::result::Result<
+                ::std::vec::Vec<super::EntityAttribute>,
+                ::std::string::String,
+            >,
+            metrics: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            namespace: ::std::result::Result<::std::string::String, ::std::string::String>,
+            note: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            source: ::std::result::Result<super::RegistrySource, ::std::string::String>,
+            stability: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            version: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for EntityHit {
+            fn default() -> Self {
+                Self {
+                    brief: Err("no value supplied for brief".to_string()),
+                    deprecated: Ok(Default::default()),
+                    descriptive: Err("no value supplied for descriptive".to_string()),
+                    extended_by: Ok(Default::default()),
+                    extends: Ok(Default::default()),
+                    group_id: Err("no value supplied for group_id".to_string()),
+                    identifying: Err("no value supplied for identifying".to_string()),
+                    metrics: Ok(Default::default()),
+                    name: Err("no value supplied for name".to_string()),
+                    namespace: Err("no value supplied for namespace".to_string()),
+                    note: Ok(Default::default()),
+                    source: Err("no value supplied for source".to_string()),
+                    stability: Ok(Default::default()),
+                    version: Err("no value supplied for version".to_string()),
+                }
+            }
+        }
+        impl EntityHit {
+            pub fn brief<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.brief = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for brief: {e}"));
+                self
+            }
+            pub fn deprecated<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::DeprecatedInfo>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.deprecated = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for deprecated: {e}"));
+                self
+            }
+            pub fn descriptive<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EntityAttribute>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.descriptive = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for descriptive: {e}"));
+                self
+            }
+            pub fn extended_by<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.extended_by = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for extended_by: {e}"));
+                self
+            }
+            pub fn extends<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.extends = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for extends: {e}"));
+                self
+            }
+            pub fn group_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.group_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for group_id: {e}"));
+                self
+            }
+            pub fn identifying<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EntityAttribute>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.identifying = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for identifying: {e}"));
+                self
+            }
+            pub fn metrics<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.metrics = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for metrics: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn namespace<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.namespace = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for namespace: {e}"));
+                self
+            }
+            pub fn note<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.note = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for note: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::RegistrySource>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn stability<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.stability = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for stability: {e}"));
+                self
+            }
+            pub fn version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.version = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for version: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EntityHit> for super::EntityHit {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EntityHit,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    brief: value.brief?,
+                    deprecated: value.deprecated?,
+                    descriptive: value.descriptive?,
+                    extended_by: value.extended_by?,
+                    extends: value.extends?,
+                    group_id: value.group_id?,
+                    identifying: value.identifying?,
+                    metrics: value.metrics?,
+                    name: value.name?,
+                    namespace: value.namespace?,
+                    note: value.note?,
+                    source: value.source?,
+                    stability: value.stability?,
+                    version: value.version?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EntityHit> for EntityHit {
+            fn from(value: super::EntityHit) -> Self {
+                Self {
+                    brief: Ok(value.brief),
+                    deprecated: Ok(value.deprecated),
+                    descriptive: Ok(value.descriptive),
+                    extended_by: Ok(value.extended_by),
+                    extends: Ok(value.extends),
+                    group_id: Ok(value.group_id),
+                    identifying: Ok(value.identifying),
+                    metrics: Ok(value.metrics),
+                    name: Ok(value.name),
+                    namespace: Ok(value.namespace),
+                    note: Ok(value.note),
+                    source: Ok(value.source),
+                    stability: Ok(value.stability),
+                    version: Ok(value.version),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EntityResolution {
+            hits: ::std::result::Result<::std::vec::Vec<super::EntityHit>, ::std::string::String>,
+            key: ::std::result::Result<::std::string::String, ::std::string::String>,
+            primary: ::std::result::Result<
+                ::std::option::Option<super::EntityHit>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for EntityResolution {
+            fn default() -> Self {
+                Self {
+                    hits: Err("no value supplied for hits".to_string()),
+                    key: Err("no value supplied for key".to_string()),
+                    primary: Ok(Default::default()),
+                }
+            }
+        }
+        impl EntityResolution {
+            pub fn hits<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EntityHit>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.hits = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for hits: {e}"));
+                self
+            }
+            pub fn key<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.key = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for key: {e}"));
+                self
+            }
+            pub fn primary<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::EntityHit>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.primary = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for primary: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EntityResolution> for super::EntityResolution {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EntityResolution,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    hits: value.hits?,
+                    key: value.key?,
+                    primary: value.primary?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EntityResolution> for EntityResolution {
+            fn from(value: super::EntityResolution) -> Self {
+                Self {
+                    hits: Ok(value.hits),
+                    key: Ok(value.key),
+                    primary: Ok(value.primary),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EntitySearchResponse {
+            hits: ::std::result::Result<::std::vec::Vec<super::EntityHit>, ::std::string::String>,
+        }
+        impl ::std::default::Default for EntitySearchResponse {
+            fn default() -> Self {
+                Self {
+                    hits: Err("no value supplied for hits".to_string()),
+                }
+            }
+        }
+        impl EntitySearchResponse {
+            pub fn hits<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EntityHit>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.hits = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for hits: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EntitySearchResponse> for super::EntitySearchResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EntitySearchResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self { hits: value.hits? })
+            }
+        }
+        impl ::std::convert::From<super::EntitySearchResponse> for EntitySearchResponse {
+            fn from(value: super::EntitySearchResponse) -> Self {
+                Self {
+                    hits: Ok(value.hits),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EnumMember {
+            brief: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            deprecated: ::std::result::Result<
+                ::std::option::Option<
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
+                ::std::string::String,
+            >,
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            note: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            stability: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            value: ::std::result::Result<::serde_json::Value, ::std::string::String>,
+        }
+        impl ::std::default::Default for EnumMember {
+            fn default() -> Self {
+                Self {
+                    brief: Ok(Default::default()),
+                    deprecated: Ok(Default::default()),
+                    id: Err("no value supplied for id".to_string()),
+                    note: Ok(Default::default()),
+                    stability: Ok(Default::default()),
+                    value: Err("no value supplied for value".to_string()),
+                }
+            }
+        }
+        impl EnumMember {
+            pub fn brief<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.brief = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for brief: {e}"));
+                self
+            }
+            pub fn deprecated<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<
+                            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                        >,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.deprecated = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for deprecated: {e}"));
+                self
+            }
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn note<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.note = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for note: {e}"));
+                self
+            }
+            pub fn stability<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.stability = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for stability: {e}"));
+                self
+            }
+            pub fn value<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::serde_json::Value>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.value = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for value: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EnumMember> for super::EnumMember {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EnumMember,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    brief: value.brief?,
+                    deprecated: value.deprecated?,
+                    id: value.id?,
+                    note: value.note?,
+                    stability: value.stability?,
+                    value: value.value?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EnumMember> for EnumMember {
+            fn from(value: super::EnumMember) -> Self {
+                Self {
+                    brief: Ok(value.brief),
+                    deprecated: Ok(value.deprecated),
+                    id: Ok(value.id),
+                    note: Ok(value.note),
+                    stability: Ok(value.stability),
+                    value: Ok(value.value),
                 }
             }
         }
@@ -5835,6 +8619,580 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct MetricAttribute {
+            key: ::std::result::Result<::std::string::String, ::std::string::String>,
+            requirement_level: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for MetricAttribute {
+            fn default() -> Self {
+                Self {
+                    key: Err("no value supplied for key".to_string()),
+                    requirement_level: Ok(Default::default()),
+                }
+            }
+        }
+        impl MetricAttribute {
+            pub fn key<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.key = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for key: {e}"));
+                self
+            }
+            pub fn requirement_level<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.requirement_level = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for requirement_level: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<MetricAttribute> for super::MetricAttribute {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: MetricAttribute,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    key: value.key?,
+                    requirement_level: value.requirement_level?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::MetricAttribute> for MetricAttribute {
+            fn from(value: super::MetricAttribute) -> Self {
+                Self {
+                    key: Ok(value.key),
+                    requirement_level: Ok(value.requirement_level),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct MetricDef {
+            attributes: ::std::result::Result<
+                ::std::vec::Vec<super::MetricAttribute>,
+                ::std::string::String,
+            >,
+            brief: ::std::result::Result<::std::string::String, ::std::string::String>,
+            deprecated: ::std::result::Result<
+                ::std::option::Option<super::DeprecatedInfo>,
+                ::std::string::String,
+            >,
+            entity_associations: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            group_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            instrument: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            note: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            stability: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            unit: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for MetricDef {
+            fn default() -> Self {
+                Self {
+                    attributes: Err("no value supplied for attributes".to_string()),
+                    brief: Err("no value supplied for brief".to_string()),
+                    deprecated: Ok(Default::default()),
+                    entity_associations: Err(
+                        "no value supplied for entity_associations".to_string()
+                    ),
+                    group_id: Err("no value supplied for group_id".to_string()),
+                    instrument: Err("no value supplied for instrument".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    note: Ok(Default::default()),
+                    stability: Ok(Default::default()),
+                    unit: Err("no value supplied for unit".to_string()),
+                }
+            }
+        }
+        impl MetricDef {
+            pub fn attributes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::MetricAttribute>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.attributes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for attributes: {e}"));
+                self
+            }
+            pub fn brief<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.brief = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for brief: {e}"));
+                self
+            }
+            pub fn deprecated<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::DeprecatedInfo>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.deprecated = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for deprecated: {e}"));
+                self
+            }
+            pub fn entity_associations<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.entity_associations = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for entity_associations: {e}")
+                });
+                self
+            }
+            pub fn group_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.group_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for group_id: {e}"));
+                self
+            }
+            pub fn instrument<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.instrument = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for instrument: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn note<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.note = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for note: {e}"));
+                self
+            }
+            pub fn stability<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.stability = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for stability: {e}"));
+                self
+            }
+            pub fn unit<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.unit = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for unit: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<MetricDef> for super::MetricDef {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: MetricDef,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    attributes: value.attributes?,
+                    brief: value.brief?,
+                    deprecated: value.deprecated?,
+                    entity_associations: value.entity_associations?,
+                    group_id: value.group_id?,
+                    instrument: value.instrument?,
+                    name: value.name?,
+                    note: value.note?,
+                    stability: value.stability?,
+                    unit: value.unit?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::MetricDef> for MetricDef {
+            fn from(value: super::MetricDef) -> Self {
+                Self {
+                    attributes: Ok(value.attributes),
+                    brief: Ok(value.brief),
+                    deprecated: Ok(value.deprecated),
+                    entity_associations: Ok(value.entity_associations),
+                    group_id: Ok(value.group_id),
+                    instrument: Ok(value.instrument),
+                    name: Ok(value.name),
+                    note: Ok(value.note),
+                    stability: Ok(value.stability),
+                    unit: Ok(value.unit),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct MetricHit {
+            attributes: ::std::result::Result<
+                ::std::vec::Vec<super::MetricAttribute>,
+                ::std::string::String,
+            >,
+            brief: ::std::result::Result<::std::string::String, ::std::string::String>,
+            deprecated: ::std::result::Result<
+                ::std::option::Option<super::DeprecatedInfo>,
+                ::std::string::String,
+            >,
+            entity_associations: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            group_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            instrument: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            namespace: ::std::result::Result<::std::string::String, ::std::string::String>,
+            note: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            source: ::std::result::Result<super::RegistrySource, ::std::string::String>,
+            stability: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            unit: ::std::result::Result<::std::string::String, ::std::string::String>,
+            version: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for MetricHit {
+            fn default() -> Self {
+                Self {
+                    attributes: Err("no value supplied for attributes".to_string()),
+                    brief: Err("no value supplied for brief".to_string()),
+                    deprecated: Ok(Default::default()),
+                    entity_associations: Err(
+                        "no value supplied for entity_associations".to_string()
+                    ),
+                    group_id: Err("no value supplied for group_id".to_string()),
+                    instrument: Err("no value supplied for instrument".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    namespace: Err("no value supplied for namespace".to_string()),
+                    note: Ok(Default::default()),
+                    source: Err("no value supplied for source".to_string()),
+                    stability: Ok(Default::default()),
+                    unit: Err("no value supplied for unit".to_string()),
+                    version: Err("no value supplied for version".to_string()),
+                }
+            }
+        }
+        impl MetricHit {
+            pub fn attributes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::MetricAttribute>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.attributes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for attributes: {e}"));
+                self
+            }
+            pub fn brief<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.brief = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for brief: {e}"));
+                self
+            }
+            pub fn deprecated<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::DeprecatedInfo>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.deprecated = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for deprecated: {e}"));
+                self
+            }
+            pub fn entity_associations<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.entity_associations = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for entity_associations: {e}")
+                });
+                self
+            }
+            pub fn group_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.group_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for group_id: {e}"));
+                self
+            }
+            pub fn instrument<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.instrument = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for instrument: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn namespace<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.namespace = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for namespace: {e}"));
+                self
+            }
+            pub fn note<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.note = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for note: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::RegistrySource>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn stability<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.stability = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for stability: {e}"));
+                self
+            }
+            pub fn unit<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.unit = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for unit: {e}"));
+                self
+            }
+            pub fn version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.version = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for version: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<MetricHit> for super::MetricHit {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: MetricHit,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    attributes: value.attributes?,
+                    brief: value.brief?,
+                    deprecated: value.deprecated?,
+                    entity_associations: value.entity_associations?,
+                    group_id: value.group_id?,
+                    instrument: value.instrument?,
+                    name: value.name?,
+                    namespace: value.namespace?,
+                    note: value.note?,
+                    source: value.source?,
+                    stability: value.stability?,
+                    unit: value.unit?,
+                    version: value.version?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::MetricHit> for MetricHit {
+            fn from(value: super::MetricHit) -> Self {
+                Self {
+                    attributes: Ok(value.attributes),
+                    brief: Ok(value.brief),
+                    deprecated: Ok(value.deprecated),
+                    entity_associations: Ok(value.entity_associations),
+                    group_id: Ok(value.group_id),
+                    instrument: Ok(value.instrument),
+                    name: Ok(value.name),
+                    namespace: Ok(value.namespace),
+                    note: Ok(value.note),
+                    source: Ok(value.source),
+                    stability: Ok(value.stability),
+                    unit: Ok(value.unit),
+                    version: Ok(value.version),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct MetricResolution {
+            hits: ::std::result::Result<::std::vec::Vec<super::MetricHit>, ::std::string::String>,
+            key: ::std::result::Result<::std::string::String, ::std::string::String>,
+            primary: ::std::result::Result<
+                ::std::option::Option<super::MetricHit>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for MetricResolution {
+            fn default() -> Self {
+                Self {
+                    hits: Err("no value supplied for hits".to_string()),
+                    key: Err("no value supplied for key".to_string()),
+                    primary: Ok(Default::default()),
+                }
+            }
+        }
+        impl MetricResolution {
+            pub fn hits<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::MetricHit>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.hits = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for hits: {e}"));
+                self
+            }
+            pub fn key<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.key = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for key: {e}"));
+                self
+            }
+            pub fn primary<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::MetricHit>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.primary = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for primary: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<MetricResolution> for super::MetricResolution {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: MetricResolution,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    hits: value.hits?,
+                    key: value.key?,
+                    primary: value.primary?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::MetricResolution> for MetricResolution {
+            fn from(value: super::MetricResolution) -> Self {
+                Self {
+                    hits: Ok(value.hits),
+                    key: Ok(value.key),
+                    primary: Ok(value.primary),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct MetricSearchResponse {
+            hits: ::std::result::Result<::std::vec::Vec<super::MetricHit>, ::std::string::String>,
+        }
+        impl ::std::default::Default for MetricSearchResponse {
+            fn default() -> Self {
+                Self {
+                    hits: Err("no value supplied for hits".to_string()),
+                }
+            }
+        }
+        impl MetricSearchResponse {
+            pub fn hits<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::MetricHit>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.hits = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for hits: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<MetricSearchResponse> for super::MetricSearchResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: MetricSearchResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self { hits: value.hits? })
+            }
+        }
+        impl ::std::convert::From<super::MetricSearchResponse> for MetricSearchResponse {
+            fn from(value: super::MetricSearchResponse) -> Self {
+                Self {
+                    hits: Ok(value.hits),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ProfileSummary {
             duration_nano: ::std::result::Result<::std::string::String, ::std::string::String>,
             profile_id: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -5958,6 +9316,74 @@ pub mod types {
                     service_name: Ok(value.service_name),
                     span_id: Ok(value.span_id),
                     time_unix_nano: Ok(value.time_unix_nano),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct QualifiedEntityRole {
+            entity: ::std::result::Result<::std::string::String, ::std::string::String>,
+            namespace: ::std::result::Result<::std::string::String, ::std::string::String>,
+            role: ::std::result::Result<super::Role, ::std::string::String>,
+        }
+        impl ::std::default::Default for QualifiedEntityRole {
+            fn default() -> Self {
+                Self {
+                    entity: Err("no value supplied for entity".to_string()),
+                    namespace: Err("no value supplied for namespace".to_string()),
+                    role: Err("no value supplied for role".to_string()),
+                }
+            }
+        }
+        impl QualifiedEntityRole {
+            pub fn entity<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.entity = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for entity: {e}"));
+                self
+            }
+            pub fn namespace<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.namespace = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for namespace: {e}"));
+                self
+            }
+            pub fn role<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::Role>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.role = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for role: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<QualifiedEntityRole> for super::QualifiedEntityRole {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: QualifiedEntityRole,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    entity: value.entity?,
+                    namespace: value.namespace?,
+                    role: value.role?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::QualifiedEntityRole> for QualifiedEntityRole {
+            fn from(value: super::QualifiedEntityRole) -> Self {
+                Self {
+                    entity: Ok(value.entity),
+                    namespace: Ok(value.namespace),
+                    role: Ok(value.role),
                 }
             }
         }
@@ -6287,6 +9713,418 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct RegistryListResponse {
+            registries: ::std::result::Result<
+                ::std::vec::Vec<super::RegistrySummary>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for RegistryListResponse {
+            fn default() -> Self {
+                Self {
+                    registries: Err("no value supplied for registries".to_string()),
+                }
+            }
+        }
+        impl RegistryListResponse {
+            pub fn registries<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::RegistrySummary>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.registries = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for registries: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<RegistryListResponse> for super::RegistryListResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: RegistryListResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    registries: value.registries?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::RegistryListResponse> for RegistryListResponse {
+            fn from(value: super::RegistryListResponse) -> Self {
+                Self {
+                    registries: Ok(value.registries),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct RegistryResponse {
+            attribute_count: ::std::result::Result<u64, ::std::string::String>,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            document: ::std::result::Result<
+                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                ::std::string::String,
+            >,
+            entity_count: ::std::result::Result<u64, ::std::string::String>,
+            metric_count: ::std::result::Result<u64, ::std::string::String>,
+            namespace: ::std::result::Result<::std::string::String, ::std::string::String>,
+            read_only: ::std::result::Result<bool, ::std::string::String>,
+            schema_url: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            source: ::std::result::Result<super::RegistrySource, ::std::string::String>,
+            updated_at: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            version: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for RegistryResponse {
+            fn default() -> Self {
+                Self {
+                    attribute_count: Err("no value supplied for attribute_count".to_string()),
+                    description: Ok(Default::default()),
+                    document: Err("no value supplied for document".to_string()),
+                    entity_count: Err("no value supplied for entity_count".to_string()),
+                    metric_count: Err("no value supplied for metric_count".to_string()),
+                    namespace: Err("no value supplied for namespace".to_string()),
+                    read_only: Err("no value supplied for read_only".to_string()),
+                    schema_url: Ok(Default::default()),
+                    source: Err("no value supplied for source".to_string()),
+                    updated_at: Ok(Default::default()),
+                    version: Err("no value supplied for version".to_string()),
+                }
+            }
+        }
+        impl RegistryResponse {
+            pub fn attribute_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.attribute_count = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for attribute_count: {e}")
+                });
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn document<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.document = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for document: {e}"));
+                self
+            }
+            pub fn entity_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.entity_count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for entity_count: {e}"));
+                self
+            }
+            pub fn metric_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.metric_count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for metric_count: {e}"));
+                self
+            }
+            pub fn namespace<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.namespace = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for namespace: {e}"));
+                self
+            }
+            pub fn read_only<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.read_only = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for read_only: {e}"));
+                self
+            }
+            pub fn schema_url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.schema_url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for schema_url: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::RegistrySource>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn updated_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.updated_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
+                self
+            }
+            pub fn version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.version = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for version: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<RegistryResponse> for super::RegistryResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: RegistryResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    attribute_count: value.attribute_count?,
+                    description: value.description?,
+                    document: value.document?,
+                    entity_count: value.entity_count?,
+                    metric_count: value.metric_count?,
+                    namespace: value.namespace?,
+                    read_only: value.read_only?,
+                    schema_url: value.schema_url?,
+                    source: value.source?,
+                    updated_at: value.updated_at?,
+                    version: value.version?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::RegistryResponse> for RegistryResponse {
+            fn from(value: super::RegistryResponse) -> Self {
+                Self {
+                    attribute_count: Ok(value.attribute_count),
+                    description: Ok(value.description),
+                    document: Ok(value.document),
+                    entity_count: Ok(value.entity_count),
+                    metric_count: Ok(value.metric_count),
+                    namespace: Ok(value.namespace),
+                    read_only: Ok(value.read_only),
+                    schema_url: Ok(value.schema_url),
+                    source: Ok(value.source),
+                    updated_at: Ok(value.updated_at),
+                    version: Ok(value.version),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct RegistrySummary {
+            attribute_count: ::std::result::Result<u64, ::std::string::String>,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            entity_count: ::std::result::Result<u64, ::std::string::String>,
+            metric_count: ::std::result::Result<u64, ::std::string::String>,
+            namespace: ::std::result::Result<::std::string::String, ::std::string::String>,
+            read_only: ::std::result::Result<bool, ::std::string::String>,
+            schema_url: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            source: ::std::result::Result<super::RegistrySource, ::std::string::String>,
+            updated_at: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            version: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for RegistrySummary {
+            fn default() -> Self {
+                Self {
+                    attribute_count: Err("no value supplied for attribute_count".to_string()),
+                    description: Ok(Default::default()),
+                    entity_count: Err("no value supplied for entity_count".to_string()),
+                    metric_count: Err("no value supplied for metric_count".to_string()),
+                    namespace: Err("no value supplied for namespace".to_string()),
+                    read_only: Err("no value supplied for read_only".to_string()),
+                    schema_url: Ok(Default::default()),
+                    source: Err("no value supplied for source".to_string()),
+                    updated_at: Ok(Default::default()),
+                    version: Err("no value supplied for version".to_string()),
+                }
+            }
+        }
+        impl RegistrySummary {
+            pub fn attribute_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.attribute_count = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for attribute_count: {e}")
+                });
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn entity_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.entity_count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for entity_count: {e}"));
+                self
+            }
+            pub fn metric_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.metric_count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for metric_count: {e}"));
+                self
+            }
+            pub fn namespace<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.namespace = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for namespace: {e}"));
+                self
+            }
+            pub fn read_only<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.read_only = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for read_only: {e}"));
+                self
+            }
+            pub fn schema_url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.schema_url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for schema_url: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::RegistrySource>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn updated_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.updated_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
+                self
+            }
+            pub fn version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.version = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for version: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<RegistrySummary> for super::RegistrySummary {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: RegistrySummary,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    attribute_count: value.attribute_count?,
+                    description: value.description?,
+                    entity_count: value.entity_count?,
+                    metric_count: value.metric_count?,
+                    namespace: value.namespace?,
+                    read_only: value.read_only?,
+                    schema_url: value.schema_url?,
+                    source: value.source?,
+                    updated_at: value.updated_at?,
+                    version: value.version?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::RegistrySummary> for RegistrySummary {
+            fn from(value: super::RegistrySummary) -> Self {
+                Self {
+                    attribute_count: Ok(value.attribute_count),
+                    description: Ok(value.description),
+                    entity_count: Ok(value.entity_count),
+                    metric_count: Ok(value.metric_count),
+                    namespace: Ok(value.namespace),
+                    read_only: Ok(value.read_only),
+                    schema_url: Ok(value.schema_url),
+                    source: Ok(value.source),
+                    updated_at: Ok(value.updated_at),
+                    version: Ok(value.version),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ResolvedWindow {
             end_ns: ::std::result::Result<i64, ::std::string::String>,
             start_ns: ::std::result::Result<i64, ::std::string::String>,
@@ -6453,6 +10291,63 @@ pub mod types {
                 Self {
                     labels: Ok(value.labels),
                     points: Ok(value.points),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct SchemaError {
+            error: ::std::result::Result<::std::string::String, ::std::string::String>,
+            errors: ::std::result::Result<
+                ::std::vec::Vec<super::ValidationError>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for SchemaError {
+            fn default() -> Self {
+                Self {
+                    error: Err("no value supplied for error".to_string()),
+                    errors: Ok(Default::default()),
+                }
+            }
+        }
+        impl SchemaError {
+            pub fn error<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error: {e}"));
+                self
+            }
+            pub fn errors<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ValidationError>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.errors = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for errors: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SchemaError> for super::SchemaError {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SchemaError,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    error: value.error?,
+                    errors: value.errors?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SchemaError> for SchemaError {
+            fn from(value: super::SchemaError) -> Self {
+                Self {
+                    error: Ok(value.error),
+                    errors: Ok(value.errors),
                 }
             }
         }
@@ -7418,6 +11313,173 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct ValidationError {
+            message: ::std::result::Result<::std::string::String, ::std::string::String>,
+            path: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ValidationError {
+            fn default() -> Self {
+                Self {
+                    message: Err("no value supplied for message".to_string()),
+                    path: Err("no value supplied for path".to_string()),
+                }
+            }
+        }
+        impl ValidationError {
+            pub fn message<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.message = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for message: {e}"));
+                self
+            }
+            pub fn path<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.path = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for path: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ValidationError> for super::ValidationError {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ValidationError,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    message: value.message?,
+                    path: value.path?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ValidationError> for ValidationError {
+            fn from(value: super::ValidationError) -> Self {
+                Self {
+                    message: Ok(value.message),
+                    path: Ok(value.path),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ValidationReport {
+            attribute_count: ::std::result::Result<u64, ::std::string::String>,
+            entity_count: ::std::result::Result<u64, ::std::string::String>,
+            errors: ::std::result::Result<
+                ::std::vec::Vec<super::ValidationError>,
+                ::std::string::String,
+            >,
+            metric_count: ::std::result::Result<u64, ::std::string::String>,
+            namespace: ::std::result::Result<::std::string::String, ::std::string::String>,
+            version: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ValidationReport {
+            fn default() -> Self {
+                Self {
+                    attribute_count: Err("no value supplied for attribute_count".to_string()),
+                    entity_count: Err("no value supplied for entity_count".to_string()),
+                    errors: Err("no value supplied for errors".to_string()),
+                    metric_count: Err("no value supplied for metric_count".to_string()),
+                    namespace: Err("no value supplied for namespace".to_string()),
+                    version: Err("no value supplied for version".to_string()),
+                }
+            }
+        }
+        impl ValidationReport {
+            pub fn attribute_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.attribute_count = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for attribute_count: {e}")
+                });
+                self
+            }
+            pub fn entity_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.entity_count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for entity_count: {e}"));
+                self
+            }
+            pub fn errors<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ValidationError>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.errors = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for errors: {e}"));
+                self
+            }
+            pub fn metric_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.metric_count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for metric_count: {e}"));
+                self
+            }
+            pub fn namespace<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.namespace = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for namespace: {e}"));
+                self
+            }
+            pub fn version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.version = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for version: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ValidationReport> for super::ValidationReport {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ValidationReport,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    attribute_count: value.attribute_count?,
+                    entity_count: value.entity_count?,
+                    errors: value.errors?,
+                    metric_count: value.metric_count?,
+                    namespace: value.namespace?,
+                    version: value.version?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ValidationReport> for ValidationReport {
+            fn from(value: super::ValidationReport) -> Self {
+                Self {
+                    attribute_count: Ok(value.attribute_count),
+                    entity_count: Ok(value.entity_count),
+                    errors: Ok(value.errors),
+                    metric_count: Ok(value.metric_count),
+                    namespace: Ok(value.namespace),
+                    version: Ok(value.version),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct WhoamiIdentityResponse {
             dataset: ::std::result::Result<::std::string::String, ::std::string::String>,
             tenant: ::std::result::Result<super::WhoamiTenant, ::std::string::String>,
@@ -8039,6 +12101,179 @@ impl Client {
     ```*/
     pub fn query_ir(&self) -> builder::QueryIr<'_> {
         builder::QueryIr::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/schema/attributes`
+
+    Arguments:
+    - `keys`: Comma-separated exact keys to resolve in one call (attributes only).
+    - `limit`: Maximum hits (default 50, max 200).
+    - `prefix`: Name prefix (empty lists from the top).
+    ```ignore
+    let response = client.schema_search_attributes()
+        .keys(keys)
+        .limit(limit)
+        .prefix(prefix)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_search_attributes(&self) -> builder::SchemaSearchAttributes<'_> {
+        builder::SchemaSearchAttributes::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/schema/attributes/{key}`
+
+    Arguments:
+    - `key`: Attribute wire key, e.g. k8s.pod.uid
+    ```ignore
+    let response = client.schema_resolve_attribute()
+        .key(key)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_resolve_attribute(&self) -> builder::SchemaResolveAttribute<'_> {
+        builder::SchemaResolveAttribute::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/schema/entities`
+
+    Arguments:
+    - `keys`: Comma-separated exact keys to resolve in one call (attributes only).
+    - `limit`: Maximum hits (default 50, max 200).
+    - `prefix`: Name prefix (empty lists from the top).
+    ```ignore
+    let response = client.schema_search_entities()
+        .keys(keys)
+        .limit(limit)
+        .prefix(prefix)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_search_entities(&self) -> builder::SchemaSearchEntities<'_> {
+        builder::SchemaSearchEntities::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/schema/entities/{name}`
+
+    Arguments:
+    - `name`: Entity type name, e.g. k8s.pod
+    ```ignore
+    let response = client.schema_resolve_entity()
+        .name(name)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_resolve_entity(&self) -> builder::SchemaResolveEntity<'_> {
+        builder::SchemaResolveEntity::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/schema/metrics`
+
+    Arguments:
+    - `keys`: Comma-separated exact keys to resolve in one call (attributes only).
+    - `limit`: Maximum hits (default 50, max 200).
+    - `prefix`: Name prefix (empty lists from the top).
+    ```ignore
+    let response = client.schema_search_metrics()
+        .keys(keys)
+        .limit(limit)
+        .prefix(prefix)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_search_metrics(&self) -> builder::SchemaSearchMetrics<'_> {
+        builder::SchemaSearchMetrics::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/schema/metrics/{name}`
+
+    Arguments:
+    - `name`: Metric name, e.g. k8s.pod.cpu.time
+    ```ignore
+    let response = client.schema_resolve_metric()
+        .name(name)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_resolve_metric(&self) -> builder::SchemaResolveMetric<'_> {
+        builder::SchemaResolveMetric::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/schema/registries`
+
+    ```ignore
+    let response = client.schema_list_registries()
+        .send()
+        .await;
+    ```*/
+    pub fn schema_list_registries(&self) -> builder::SchemaListRegistries<'_> {
+        builder::SchemaListRegistries::new(self)
+    }
+    /**Sends a `POST` request to `/api/v1/schema/registries`
+
+    Arguments:
+    - `body`: Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type
+    ```ignore
+    let response = client.schema_create_registry()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_create_registry(&self) -> builder::SchemaCreateRegistry<'_> {
+        builder::SchemaCreateRegistry::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/schema/registries/{namespace}/{version}`
+
+    Arguments:
+    - `namespace`: Registry namespace
+    - `version`: Registry version
+    ```ignore
+    let response = client.schema_get_registry()
+        .namespace(namespace)
+        .version(version)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_get_registry(&self) -> builder::SchemaGetRegistry<'_> {
+        builder::SchemaGetRegistry::new(self)
+    }
+    /**Sends a `PUT` request to `/api/v1/schema/registries/{namespace}/{version}`
+
+    Arguments:
+    - `namespace`: Registry namespace
+    - `version`: Registry version
+    - `body`: Replacement registry document; its name/version must match the path
+    ```ignore
+    let response = client.schema_replace_registry()
+        .namespace(namespace)
+        .version(version)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_replace_registry(&self) -> builder::SchemaReplaceRegistry<'_> {
+        builder::SchemaReplaceRegistry::new(self)
+    }
+    /**Sends a `DELETE` request to `/api/v1/schema/registries/{namespace}/{version}`
+
+    Arguments:
+    - `namespace`: Registry namespace
+    - `version`: Registry version
+    ```ignore
+    let response = client.schema_delete_registry()
+        .namespace(namespace)
+        .version(version)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_delete_registry(&self) -> builder::SchemaDeleteRegistry<'_> {
+        builder::SchemaDeleteRegistry::new(self)
+    }
+    /**Sends a `POST` request to `/api/v1/schema/registries:validate`
+
+    Arguments:
+    - `body`: Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored
+    ```ignore
+    let response = client.schema_validate_registry()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn schema_validate_registry(&self) -> builder::SchemaValidateRegistry<'_> {
+        builder::SchemaValidateRegistry::new(self)
     }
     /**GET /api/v1/whoami
 
@@ -10691,6 +14926,967 @@ pub mod builder {
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_search_attributes`]
+
+    [`Client::schema_search_attributes`]: super::Client::schema_search_attributes*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaSearchAttributes<'a> {
+        client: &'a super::Client,
+        keys: Result<Option<::std::string::String>, String>,
+        limit: Result<Option<u64>, String>,
+        prefix: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> SchemaSearchAttributes<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                keys: Ok(None),
+                limit: Ok(None),
+                prefix: Ok(None),
+            }
+        }
+        pub fn keys<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.keys = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for keys failed".to_string()
+            });
+            self
+        }
+        pub fn limit<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<u64>,
+        {
+            self.limit = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `u64` for limit failed".to_string());
+            self
+        }
+        pub fn prefix<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.prefix = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for prefix failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/schema/attributes`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::AttributeSearchResponse>, Error<types::SchemaError>>
+        {
+            let Self {
+                client,
+                keys,
+                limit,
+                prefix,
+            } = self;
+            let keys = keys.map_err(Error::InvalidRequest)?;
+            let limit = limit.map_err(Error::InvalidRequest)?;
+            let prefix = prefix.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/schema/attributes", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("keys", &keys))
+                .query(&progenitor_client::QueryParam::new("limit", &limit))
+                .query(&progenitor_client::QueryParam::new("prefix", &prefix))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_search_attributes",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_resolve_attribute`]
+
+    [`Client::schema_resolve_attribute`]: super::Client::schema_resolve_attribute*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaResolveAttribute<'a> {
+        client: &'a super::Client,
+        key: Result<::std::string::String, String>,
+    }
+    impl<'a> SchemaResolveAttribute<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                key: Err("key was not initialized".to_string()),
+            }
+        }
+        pub fn key<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.key = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for key failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/schema/attributes/{key}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::AttributeResolution>, Error<types::SchemaError>> {
+            let Self { client, key } = self;
+            let key = key.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/schema/attributes/{}",
+                client.baseurl,
+                encode_path(&key.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_resolve_attribute",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_search_entities`]
+
+    [`Client::schema_search_entities`]: super::Client::schema_search_entities*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaSearchEntities<'a> {
+        client: &'a super::Client,
+        keys: Result<Option<::std::string::String>, String>,
+        limit: Result<Option<u64>, String>,
+        prefix: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> SchemaSearchEntities<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                keys: Ok(None),
+                limit: Ok(None),
+                prefix: Ok(None),
+            }
+        }
+        pub fn keys<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.keys = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for keys failed".to_string()
+            });
+            self
+        }
+        pub fn limit<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<u64>,
+        {
+            self.limit = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `u64` for limit failed".to_string());
+            self
+        }
+        pub fn prefix<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.prefix = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for prefix failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/schema/entities`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::EntitySearchResponse>, Error<types::SchemaError>> {
+            let Self {
+                client,
+                keys,
+                limit,
+                prefix,
+            } = self;
+            let keys = keys.map_err(Error::InvalidRequest)?;
+            let limit = limit.map_err(Error::InvalidRequest)?;
+            let prefix = prefix.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/schema/entities", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("keys", &keys))
+                .query(&progenitor_client::QueryParam::new("limit", &limit))
+                .query(&progenitor_client::QueryParam::new("prefix", &prefix))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_search_entities",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_resolve_entity`]
+
+    [`Client::schema_resolve_entity`]: super::Client::schema_resolve_entity*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaResolveEntity<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+    }
+    impl<'a> SchemaResolveEntity<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/schema/entities/{name}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::EntityResolution>, Error<types::SchemaError>> {
+            let Self { client, name } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/schema/entities/{}",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_resolve_entity",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_search_metrics`]
+
+    [`Client::schema_search_metrics`]: super::Client::schema_search_metrics*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaSearchMetrics<'a> {
+        client: &'a super::Client,
+        keys: Result<Option<::std::string::String>, String>,
+        limit: Result<Option<u64>, String>,
+        prefix: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> SchemaSearchMetrics<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                keys: Ok(None),
+                limit: Ok(None),
+                prefix: Ok(None),
+            }
+        }
+        pub fn keys<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.keys = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for keys failed".to_string()
+            });
+            self
+        }
+        pub fn limit<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<u64>,
+        {
+            self.limit = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `u64` for limit failed".to_string());
+            self
+        }
+        pub fn prefix<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.prefix = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for prefix failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/schema/metrics`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::MetricSearchResponse>, Error<types::SchemaError>> {
+            let Self {
+                client,
+                keys,
+                limit,
+                prefix,
+            } = self;
+            let keys = keys.map_err(Error::InvalidRequest)?;
+            let limit = limit.map_err(Error::InvalidRequest)?;
+            let prefix = prefix.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/schema/metrics", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .query(&progenitor_client::QueryParam::new("keys", &keys))
+                .query(&progenitor_client::QueryParam::new("limit", &limit))
+                .query(&progenitor_client::QueryParam::new("prefix", &prefix))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_search_metrics",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_resolve_metric`]
+
+    [`Client::schema_resolve_metric`]: super::Client::schema_resolve_metric*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaResolveMetric<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+    }
+    impl<'a> SchemaResolveMetric<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/schema/metrics/{name}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::MetricResolution>, Error<types::SchemaError>> {
+            let Self { client, name } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/schema/metrics/{}",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_resolve_metric",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_list_registries`]
+
+    [`Client::schema_list_registries`]: super::Client::schema_list_registries*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaListRegistries<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> SchemaListRegistries<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/schema/registries`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::RegistryListResponse>, Error<types::SchemaError>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/schema/registries", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_list_registries",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_create_registry`]
+
+    [`Client::schema_create_registry`]: super::Client::schema_create_registry*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaCreateRegistry<'a> {
+        client: &'a super::Client,
+        body: Result<::serde_json::Map<::std::string::String, ::serde_json::Value>, String>,
+    }
+    impl<'a> SchemaCreateRegistry<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Err("body was not initialized".to_string()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+        {
+            self.body = value
+                .try_into()
+                .map_err(|_| {
+                    "conversion to `:: serde_json :: Map < :: std :: string :: String , :: serde_json :: Value >` for body failed"
+                        .to_string()
+                });
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/schema/registries`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::RegistrySummary>, Error<types::SchemaError>> {
+            let Self { client, body } = self;
+            let body = body.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/schema/registries", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_create_registry",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_get_registry`]
+
+    [`Client::schema_get_registry`]: super::Client::schema_get_registry*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaGetRegistry<'a> {
+        client: &'a super::Client,
+        namespace: Result<::std::string::String, String>,
+        version: Result<::std::string::String, String>,
+    }
+    impl<'a> SchemaGetRegistry<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                namespace: Err("namespace was not initialized".to_string()),
+                version: Err("version was not initialized".to_string()),
+            }
+        }
+        pub fn namespace<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.namespace = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for namespace failed".to_string()
+            });
+            self
+        }
+        pub fn version<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.version = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for version failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/schema/registries/{namespace}/{version}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::RegistryResponse>, Error<types::SchemaError>> {
+            let Self {
+                client,
+                namespace,
+                version,
+            } = self;
+            let namespace = namespace.map_err(Error::InvalidRequest)?;
+            let version = version.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/schema/registries/{}/{}",
+                client.baseurl,
+                encode_path(&namespace.to_string()),
+                encode_path(&version.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_get_registry",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_replace_registry`]
+
+    [`Client::schema_replace_registry`]: super::Client::schema_replace_registry*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaReplaceRegistry<'a> {
+        client: &'a super::Client,
+        namespace: Result<::std::string::String, String>,
+        version: Result<::std::string::String, String>,
+        body: Result<::serde_json::Map<::std::string::String, ::serde_json::Value>, String>,
+    }
+    impl<'a> SchemaReplaceRegistry<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                namespace: Err("namespace was not initialized".to_string()),
+                version: Err("version was not initialized".to_string()),
+                body: Err("body was not initialized".to_string()),
+            }
+        }
+        pub fn namespace<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.namespace = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for namespace failed".to_string()
+            });
+            self
+        }
+        pub fn version<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.version = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for version failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+        {
+            self.body = value
+                .try_into()
+                .map_err(|_| {
+                    "conversion to `:: serde_json :: Map < :: std :: string :: String , :: serde_json :: Value >` for body failed"
+                        .to_string()
+                });
+            self
+        }
+        ///Sends a `PUT` request to `/api/v1/schema/registries/{namespace}/{version}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::RegistrySummary>, Error<types::SchemaError>> {
+            let Self {
+                client,
+                namespace,
+                version,
+                body,
+            } = self;
+            let namespace = namespace.map_err(Error::InvalidRequest)?;
+            let version = version.map_err(Error::InvalidRequest)?;
+            let body = body.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/schema/registries/{}/{}",
+                client.baseurl,
+                encode_path(&namespace.to_string()),
+                encode_path(&version.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .put(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_replace_registry",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_delete_registry`]
+
+    [`Client::schema_delete_registry`]: super::Client::schema_delete_registry*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaDeleteRegistry<'a> {
+        client: &'a super::Client,
+        namespace: Result<::std::string::String, String>,
+        version: Result<::std::string::String, String>,
+    }
+    impl<'a> SchemaDeleteRegistry<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                namespace: Err("namespace was not initialized".to_string()),
+                version: Err("version was not initialized".to_string()),
+            }
+        }
+        pub fn namespace<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.namespace = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for namespace failed".to_string()
+            });
+            self
+        }
+        pub fn version<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.version = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for version failed".to_string()
+            });
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/schema/registries/{namespace}/{version}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::SchemaError>> {
+            let Self {
+                client,
+                namespace,
+                version,
+            } = self;
+            let namespace = namespace.map_err(Error::InvalidRequest)?;
+            let version = version.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/schema/registries/{}/{}",
+                client.baseurl,
+                encode_path(&namespace.to_string()),
+                encode_path(&version.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_delete_registry",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::schema_validate_registry`]
+
+    [`Client::schema_validate_registry`]: super::Client::schema_validate_registry*/
+    #[derive(Debug, Clone)]
+    pub struct SchemaValidateRegistry<'a> {
+        client: &'a super::Client,
+        body: Result<::serde_json::Map<::std::string::String, ::serde_json::Value>, String>,
+    }
+    impl<'a> SchemaValidateRegistry<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Err("body was not initialized".to_string()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+        {
+            self.body = value
+                .try_into()
+                .map_err(|_| {
+                    "conversion to `:: serde_json :: Map < :: std :: string :: String , :: serde_json :: Value >` for body failed"
+                        .to_string()
+                });
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/schema/registries:validate`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ValidationReport>, Error<types::SchemaError>> {
+            let Self { client, body } = self;
+            let body = body.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/schema/registries:validate", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "schema_validate_registry",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

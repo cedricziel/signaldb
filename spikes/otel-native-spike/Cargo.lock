@@ -4806,6 +4806,7 @@ dependencies = [
  "serde_json",
  "serde_norway",
  "thiserror",
+ "utoipa",
 ]
 
 [[package]]

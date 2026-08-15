@@ -31,7 +31,7 @@ pub use store::{StoreError, StoredRegistry};
 use crate::catalog::Catalog;
 
 /// Where a registry comes from.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistrySource {
     Bundled,
@@ -94,7 +94,7 @@ pub fn is_bundled(namespace: &str) -> bool {
 }
 
 /// Registry list entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct RegistrySummary {
     pub namespace: String,
     pub version: String,
@@ -112,7 +112,7 @@ pub struct RegistrySummary {
 }
 
 /// Outcome of validating a document without storing it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct ValidationReport {
     pub namespace: String,
     pub version: String,
@@ -123,7 +123,7 @@ pub struct ValidationReport {
 }
 
 /// A resolved attribute definition tagged with provenance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct AttributeHit {
     pub namespace: String,
     pub version: String,
@@ -137,7 +137,7 @@ pub struct AttributeHit {
 }
 
 /// An entity role qualified by the registry that declares it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct QualifiedEntityRole {
     pub namespace: String,
     pub entity: String,
@@ -145,7 +145,7 @@ pub struct QualifiedEntityRole {
 }
 
 /// A resolved entity definition tagged with provenance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct EntityHit {
     pub namespace: String,
     pub version: String,
@@ -161,7 +161,7 @@ pub struct EntityHit {
 }
 
 /// A resolved metric definition tagged with provenance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct MetricHit {
     pub namespace: String,
     pub version: String,

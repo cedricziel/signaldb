@@ -183,7 +183,7 @@ pub const KNOWN_TYPES: [&str; 17] = [
 ];
 
 /// One member of an enum attribute type.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct EnumMember {
     pub id: String,
     pub value: serde_json::Value,
@@ -194,8 +194,10 @@ pub struct EnumMember {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stability: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
     pub deprecated: Option<Deprecated>,
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schema(value_type = Object)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
@@ -238,7 +240,7 @@ impl RequirementLevel {
 }
 
 /// Role of an attribute within an entity.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Identifying,

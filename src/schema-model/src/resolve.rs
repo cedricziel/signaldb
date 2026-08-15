@@ -11,7 +11,9 @@ use crate::model::{
 };
 
 /// A validation failure at a location in the document.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, thiserror::Error)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, thiserror::Error, utoipa::ToSchema,
+)]
 #[error("{path}: {message}")]
 pub struct ValidationError {
     /// Path into the document (`groups[3].attributes[1].ref`).
@@ -20,7 +22,7 @@ pub struct ValidationError {
 }
 
 /// Deprecation info in resolved form.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 pub struct DeprecatedInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -53,7 +55,7 @@ impl From<&Deprecated> for DeprecatedInfo {
 }
 
 /// A resolved attribute definition (one per `id` in the registry).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct AttributeDef {
     /// Wire key (`k8s.pod.uid`).
     pub key: String,
@@ -78,7 +80,7 @@ pub struct AttributeDef {
 }
 
 /// An attribute referenced by an entity, with its role.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct EntityAttribute {
     pub key: String,
     pub role: Role,
@@ -87,7 +89,7 @@ pub struct EntityAttribute {
 }
 
 /// A resolved entity type.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct EntityDef {
     /// Entity type name (`k8s.pod`).
     pub name: String,
@@ -107,7 +109,7 @@ pub struct EntityDef {
 }
 
 /// An attribute declared on a metric.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct MetricAttribute {
     pub key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,7 +117,7 @@ pub struct MetricAttribute {
 }
 
 /// A resolved metric definition.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct MetricDef {
     pub name: String,
     pub group_id: String,
@@ -134,7 +136,7 @@ pub struct MetricDef {
 }
 
 /// An entity in which an attribute plays a role (reverse index entry).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct EntityRole {
     pub entity: String,
     pub role: Role,
@@ -143,7 +145,7 @@ pub struct EntityRole {
 /// A registry after resolution: flat definitions keyed by bare wire name plus
 /// reverse indexes. Everything is serializable so `common`'s build script can
 /// snapshot the bundled registries.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, utoipa::ToSchema)]
 pub struct ResolvedRegistry {
     pub namespace: String,
     pub version: String,

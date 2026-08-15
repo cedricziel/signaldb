@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 common.workspace = true
+schema-model = { path = "../schema-model" }
 signaldb-api.workspace = true
 logql.workspace = true
 loki-api.workspace = true

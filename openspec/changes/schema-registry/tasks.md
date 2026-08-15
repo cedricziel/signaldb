@@ -73,16 +73,16 @@
       next request with the key reflects the change; catalog
       `update_api_key_scopes`; implement
 
-- [ ] 5.1 Failing router tests for `/api/v1/schema/registries` (list, create
+- [x] 5.1 Failing router tests for `/api/v1/schema/registries` (list, create
       JSON+YAML, get, replace, delete; 409 on bundled; 422 with error paths;
       403 for non-admin session, for keys lacking `schema:write`, and for
       ingest-only keys on read endpoints; tenant scoping)
-- [ ] 5.1b Failing router tests for `registries:validate` (errors with paths;
+- [x] 5.1b Failing router tests for `registries:validate` (errors with paths;
       counts; nothing stored) and list counts; implement
-- [ ] 5.2 Failing router tests for resolve/search endpoints (attributes,
+- [x] 5.2 Failing router tests for resolve/search endpoints (attributes,
       entities, metrics; `?keys=` batch form; `?prefix=&limit=`)
-- [ ] 5.3 Implement handlers with utoipa annotations; make 5.1–5.2 pass
-- [ ] 5.4 Update the OpenAPI document; `cargo xtask generate` to regenerate the
+- [x] 5.3 Implement handlers with utoipa annotations; make 5.1–5.2 pass
+- [x] 5.4 Update the OpenAPI document; `cargo xtask generate` to regenerate the
       Rust SDK (`src/signaldb-sdk`) and TS client (`src/ui/src/api/gen`); make
       the parity gate pass
 
