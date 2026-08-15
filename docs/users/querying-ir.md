@@ -387,7 +387,11 @@ result, same as `series`.
 
 `metrics` scans `metrics_gauge` and `metrics_sum` (unioned) — a scalar
 `value` per point, filtered/grouped/aggregated the same way as any other
-source. `metrics_histogram` is a separate source (see [Histograms](#histograms))
+source. The two tables need not agree on every column's physical type: a
+dataset whose `metrics_sum` predates the typed-attribute change (attribute
+containers stored as JSON strings) while `metrics_gauge` stores maps is
+reconciled before the union, so grouping by any resource attribute
+(`host.name`, `k8s.pod.name`, …) works across both. `metrics_histogram` is a separate source (see [Histograms](#histograms))
 since its row shape — a whole bucketed histogram per point, not a scalar
 value — has no equivalent in the generic `where`/`aggregate` pipeline.
 
