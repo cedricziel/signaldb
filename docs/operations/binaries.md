@@ -51,6 +51,13 @@ code; two (`signaldb`, `signaldb-cli`) is what the images and archives need.
 
 ## CPU baseline
 
+Every build of `common` runs a build script that embeds the bundled schema
+registries: it parses `vendor/otel-semconv/` (the OpenTelemetry semantic
+conventions at the self-monitoring pin) and `otel/registry/` and bakes the
+resolved definitions into the binary, so the Dockerfile copies both trees
+into the source builder alongside `src/`. A missing or drifted vendor tree
+fails the build rather than the process at runtime.
+
 Release builds are compiled with CPU target features enabled
 (`.cargo/config.toml`): `aes`, `sse2`, `ssse3`, `sse4.1`, `sse4.2` on x86-64
 and `aes`, `neon` on aarch64. This hardware-accelerates the hash paths used by

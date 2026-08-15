@@ -155,3 +155,56 @@ async fn test_shard_operations() {
         .expect("Failed to list shard owners");
     assert_eq!(owners.len(), 1);
 }
+
+/// Custom schema registries persist and round-trip on Postgres exactly as on
+/// SQLite (the in-memory suite lives in tests/schema_registry.rs).
+#[tokio::test]
+async fn schema_registry_round_trips_on_postgres() {
+    use common::schema_registry::{RegistrySource, SchemaResolver};
+    use schema_model::RegistryDocument;
+
+    let container = Postgres::default()
+        .start()
+        .await
+        .expect("Failed to start database");
+    let port = container.get_host_port_ipv4(5432).await.unwrap();
+    let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let catalog = connect_catalog_with_retry(&dsn).await;
+
+    let doc =
+        RegistryDocument::from_yaml(include_str!("../../schema-model/tests/fixtures/acme.yaml"))
+            .expect("acme parses");
+    let resolver = SchemaResolver::new(catalog.clone());
+    let created = resolver.create("t1", &doc).await.expect("create");
+    assert_eq!(created.source, RegistrySource::Custom);
+    assert_eq!(created.entity_count, 2);
+
+    let (summary, stored) = resolver
+        .get("t1", "acme", "1.0.0")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert_eq!(stored, doc);
+    assert!(summary.updated_at.is_some());
+
+    let mut edited = doc.clone();
+    edited.description = Some("edited".into());
+    resolver
+        .replace("t1", "acme", "1.0.0", &edited)
+        .await
+        .expect("replace");
+    let fresh = SchemaResolver::new(catalog);
+    let res = fresh
+        .resolve_attribute("t1", "acme.order.id")
+        .await
+        .expect("resolve");
+    assert_eq!(res.hits.len(), 1);
+    assert!(fresh.delete("t1", "acme", "1.0.0").await.expect("delete"));
+    assert!(
+        fresh
+            .get("t2", "acme", "1.0.0")
+            .await
+            .expect("get")
+            .is_none()
+    );
+}

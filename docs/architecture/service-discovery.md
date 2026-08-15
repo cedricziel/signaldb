@@ -81,7 +81,11 @@ ADR), the `compactor_leases` table, and the advisory
 `attribute_stats` table (per-attribute-key presence and cardinality written
 by the compactor's analyzer, plus query-demand hit counters flushed
 periodically by the querier, and a `promote_streak` hysteresis column for
-the auto-promotion decision pass — see the attribute-explorability ADR).
+the auto-promotion decision pass — see the attribute-explorability ADR), and
+the `schema_registries` table (tenant-scoped custom semantic-convention
+registries — the uploaded Weaver-model document and its cached resolution;
+the bundled `otel`/`signaldb` registries are embedded in the binary, not
+stored here).
 
 ## Service Roles and Discovery
 

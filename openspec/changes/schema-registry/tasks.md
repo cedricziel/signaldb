@@ -35,26 +35,26 @@
 
 ## 3. Bundled registries in `common`
 
-- [ ] 3.1 Failing test: `SchemaResolver::bundled()` lists `otel@1.43.0` and
+- [x] 3.1 Failing test: `SchemaResolver::bundled()` lists `otel@1.43.0` and
       `signaldb@<version>` with `source: bundled` and resolves `k8s.pod.uid`,
       `k8s.pod`, `k8s.pod.cpu.time`, `signaldb.tenant.id`
-- [ ] 3.2 `common/build.rs` (or `include_dir!` fallback per design D2) parses
+- [x] 3.2 `common/build.rs` (or `include_dir!` fallback per design D2) parses
       vendored model + `otel/registry/` into an embedded snapshot; load it into
       the bundled index at startup; make 3.1 pass
-- [ ] 3.3 Failing test: bundled index rejects mutation (`ReadOnlyRegistry`)
+- [x] 3.3 Failing test: bundled index rejects mutation (`ReadOnlyRegistry`)
 
 ## 4. Custom registries in the catalog
 
-- [ ] 4.1 Failing catalog tests (SQLite + Postgres via existing test harness):
+- [x] 4.1 Failing catalog tests (SQLite + Postgres via existing test harness):
       create/get/replace/delete `schema_registries` with flattened rows,
       replace is transactional, tenant isolation, reserved namespaces refused
-- [ ] 4.2 Add DDL for `schema_registries`, `schema_attributes`,
+- [x] 4.2 Add DDL for `schema_registries`, `schema_attributes`,
       `schema_entities`, `schema_metrics` to catalog bootstrap (both dialects)
       and implement the repository; make 4.1 pass
-- [ ] 4.3 Failing tests for `SchemaResolver` with a tenant: precedence custom →
+- [x] 4.3 Failing tests for `SchemaResolver` with a tenant: precedence custom →
       signaldb → otel, alternatives never dropped, prefix search cap, empty
       result for unknown key, cache invalidation on write
-- [ ] 4.4 Implement per-tenant lazy index + invalidation; make 4.3 pass
+- [x] 4.4 Implement per-tenant lazy index + invalidation; make 4.3 pass
 
 ## 5. HTTP API (router)
 
