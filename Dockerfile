@@ -82,14 +82,13 @@ COPY tests-integration/Cargo.toml tests-integration/
 COPY xtask/Cargo.toml xtask/
 
 # Create dummy source files to build dependencies
-RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs && \
-    mkdir -p src/router/src && echo "fn main() {}" > src/router/src/main.rs && \
-    mkdir -p src/writer/src && echo "fn main() {}" > src/writer/src/main.rs && \
+RUN mkdir -p src/acceptor/src && echo "pub fn dummy() {}" > src/acceptor/src/lib.rs && \
+    mkdir -p src/router/src && echo "pub fn dummy() {}" > src/router/src/lib.rs && \
+    mkdir -p src/writer/src && echo "pub fn dummy() {}" > src/writer/src/lib.rs && \
     mkdir -p src/writer/benches && echo "fn main() {}" > src/writer/benches/iceberg_benchmarks.rs && \
     echo "fn main() {}" > src/writer/benches/connection_pool_benchmarks.rs && \
-    mkdir -p src/querier/src && echo "fn main() {}" > src/querier/src/main.rs && \
-    mkdir -p src/compactor/src && echo "fn main() {}" > src/compactor/src/main.rs && \
-    echo "pub fn dummy() {}" > src/compactor/src/lib.rs && \
+    mkdir -p src/querier/src && echo "pub fn dummy() {}" > src/querier/src/lib.rs && \
+    mkdir -p src/compactor/src && echo "pub fn dummy() {}" > src/compactor/src/lib.rs && \
     mkdir -p src/common/src && echo "pub fn dummy() {}" > src/common/src/lib.rs && \
     mkdir -p src/logql/src && echo "pub fn dummy() {}" > src/logql/src/lib.rs && \
     mkdir -p src/loki-api/src && echo "pub fn dummy() {}" > src/loki-api/src/lib.rs && \
@@ -100,12 +99,12 @@ RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs 
     mkdir -p src/signaldb-api/src && echo "pub fn dummy() {}" > src/signaldb-api/src/lib.rs && \
     mkdir -p src/signaldb-sdk/src && echo "pub fn dummy() {}" > src/signaldb-sdk/src/lib.rs && \
     mkdir -p src/signaldb-cli/src && echo "fn main() {}" > src/signaldb-cli/src/main.rs && \
-    mkdir -p src/mcp-server/src && echo "pub fn dummy() {}" > src/mcp-server/src/lib.rs && echo "fn main() {}" > src/mcp-server/src/main.rs && \
+    mkdir -p src/mcp-server/src && echo "pub fn dummy() {}" > src/mcp-server/src/lib.rs && \
     mkdir -p src/signal-producer/src && echo "fn main() {}" > src/signal-producer/src/main.rs && \
     mkdir -p tests-integration/src && echo "pub fn dummy() {}" > tests-integration/src/lib.rs && \
     mkdir -p xtask/src && echo "fn main() {}" > xtask/src/main.rs
 
-# Service binaries run with jemalloc: musl's allocator degrades badly under
+# The server binary runs with jemalloc: musl's allocator degrades badly under
 # multithreaded Arrow allocation churn (signaldb-cli stays on the default).
 #
 # jemalloc-profiling (heap self-profiling) is deliberately NOT enabled here.
@@ -116,18 +115,12 @@ RUN mkdir -p src/acceptor/src && echo "fn main() {}" > src/acceptor/src/main.rs 
 # MALLOC_CONF=prof:true makes jemalloc walk a stack. Heap profiling lives in
 # the separate glibc image instead (see the monolithic-glibc-profiling stage
 # below and docs/users/profiles.md); these musl images do CPU profiling only.
-ARG CARGO_FEATURES="acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc"
+ARG CARGO_FEATURES="signaldb-bin/jemalloc"
 
 # Build dependencies only (this layer will be cached)
 RUN cargo build --release --features "${CARGO_FEATURES}" \
-    --bin signaldb-acceptor \
-    --bin signaldb-router \
-    --bin signaldb-writer \
-    --bin signaldb-querier \
-    --bin signaldb-compactor \
     --bin signaldb \
-    --bin signaldb-cli \
-    --bin signaldb-mcp
+    --bin signaldb-cli
 
 # Remove dummy files and build artifacts (keep cached dependencies)
 RUN rm -rf src/*/src src/*/benches && \
@@ -139,26 +132,15 @@ COPY api/ api/
 COPY opentelemetry-proto/ opentelemetry-proto/
 COPY src/ src/
 
-# Build all service binaries in release mode
+# Build the server binary (all services live in `signaldb`; a service is
+# selected with a subcommand, e.g. `signaldb router`) and the CLI
 RUN cargo build --release --features "${CARGO_FEATURES}" \
-    --bin signaldb-acceptor \
-    --bin signaldb-router \
-    --bin signaldb-writer \
-    --bin signaldb-querier \
-    --bin signaldb-compactor \
     --bin signaldb \
-    --bin signaldb-cli \
-    --bin signaldb-mcp
+    --bin signaldb-cli
 
 # Keep symbol tables for pprof-rs self-profiling while removing DWARF sections.
-RUN strip --strip-debug target/release/signaldb-acceptor && \
-    strip --strip-debug target/release/signaldb-router && \
-    strip --strip-debug target/release/signaldb-writer && \
-    strip --strip-debug target/release/signaldb-querier && \
-    strip --strip-debug target/release/signaldb-compactor && \
-    strip --strip-debug target/release/signaldb && \
-    strip --strip-debug target/release/signaldb-cli && \
-    strip --strip-debug target/release/signaldb-mcp
+RUN strip --strip-debug target/release/signaldb && \
+    strip --strip-debug target/release/signaldb-cli
 
 # Prebuilt-binary path - CI builds static musl binaries on the host runner
 # (where sccache/rust-cache make rebuilds incremental) and stages them in
@@ -193,51 +175,55 @@ WORKDIR /data
 # Service-specific stages
 # ============================================================================
 
+# Per-service images all ship the same `signaldb` binary; only the entrypoint's
+# service subcommand differs, so the binary layer is shared between them.
+# Arguments given to the container append to the service's own arguments.
+
 # Acceptor service - OTLP ingestion endpoint
 FROM runtime-base AS acceptor
 
-COPY --from=builder /build/target/release/signaldb-acceptor /usr/local/bin/signaldb-acceptor
+COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
 
 USER signaldb
 EXPOSE 4317 4318
-ENTRYPOINT ["/usr/local/bin/signaldb-acceptor"]
+ENTRYPOINT ["/usr/local/bin/signaldb", "acceptor"]
 
 # Router service - HTTP API and Flight endpoint
 FROM runtime-base AS router
 
-COPY --from=builder /build/target/release/signaldb-router /usr/local/bin/signaldb-router
+COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
 COPY --from=ui-builder /build/src/ui/dist /usr/share/signaldb/ui
 ENV SIGNALDB_UI_DIR=/usr/share/signaldb/ui
 
 USER signaldb
 EXPOSE 50053 3001
-ENTRYPOINT ["/usr/local/bin/signaldb-router"]
+ENTRYPOINT ["/usr/local/bin/signaldb", "router"]
 
 # Writer service - Data persistence and storage
 FROM runtime-base AS writer
 
-COPY --from=builder /build/target/release/signaldb-writer /usr/local/bin/signaldb-writer
+COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
 
 USER signaldb
 EXPOSE 50051
-ENTRYPOINT ["/usr/local/bin/signaldb-writer"]
+ENTRYPOINT ["/usr/local/bin/signaldb", "writer"]
 
 # Querier service - Query execution engine
 FROM runtime-base AS querier
 
-COPY --from=builder /build/target/release/signaldb-querier /usr/local/bin/signaldb-querier
+COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
 
 USER signaldb
 EXPOSE 50054
-ENTRYPOINT ["/usr/local/bin/signaldb-querier"]
+ENTRYPOINT ["/usr/local/bin/signaldb", "querier"]
 
 # Compactor service - Table compaction and maintenance
 FROM runtime-base AS compactor
 
-COPY --from=builder /build/target/release/signaldb-compactor /usr/local/bin/signaldb-compactor
+COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
 
 USER signaldb
-ENTRYPOINT ["/usr/local/bin/signaldb-compactor"]
+ENTRYPOINT ["/usr/local/bin/signaldb", "compactor"]
 
 # Monolithic service - all services in one binary; also ships the CLI so
 # operators can bootstrap users against the catalog from inside the container
@@ -252,16 +238,16 @@ USER signaldb
 EXPOSE 4317 4318 50051 50053 3000
 ENTRYPOINT ["/usr/local/bin/signaldb"]
 
-# MCP server - standalone sidecar exposing SignalDB over the Model Context
-# Protocol. SDK-only, so this is a tiny image; run it pointing at a router via
+# MCP server - sidecar exposing SignalDB over the Model Context Protocol. Same
+# binary as every other image (`signaldb mcp`); run it pointing at a router via
 # SIGNALDB__MCP__ROUTER_URL.
 FROM runtime-base AS mcp
 
-COPY --from=builder /build/target/release/signaldb-mcp /usr/local/bin/signaldb-mcp
+COPY --from=builder /build/target/release/signaldb /usr/local/bin/signaldb
 
 USER signaldb
 EXPOSE 8228
-ENTRYPOINT ["/usr/local/bin/signaldb-mcp"]
+ENTRYPOINT ["/usr/local/bin/signaldb", "mcp"]
 
 # ============================================================================
 # glibc heap-profiling variant (monolithic only)

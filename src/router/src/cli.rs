@@ -1,35 +1,30 @@
+use crate::{RouterAppState, RouterState, create_flight_service, create_router};
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use router::{RouterAppState, RouterState, create_flight_service, create_router};
 use std::net::SocketAddr;
 use tokio::sync::oneshot;
 use tonic::transport::Server;
 
-#[derive(Parser)]
-#[command(name = "signaldb-router")]
-#[command(about = "SignalDB Router Service - routes queries and provides HTTP/Flight APIs")]
-#[command(version)]
-struct Cli {
-    #[command(flatten)]
-    common: CommonArgs,
-
+/// Command-line arguments of the `router` subcommand (`signaldb router`).
+#[derive(clap::Args, Debug)]
+pub struct Args {
     #[command(subcommand)]
-    command: Option<RouterCommands>,
+    pub command: Option<RouterCommands>,
 
     #[arg(long, help = "Arrow Flight server port", default_value = "50053")]
-    flight_port: u16,
+    pub flight_port: u16,
 
     #[arg(long, help = "HTTP API server port", default_value = "3000")]
-    http_port: u16,
+    pub http_port: u16,
 
     #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
-    bind: String,
+    pub bind: String,
 }
 
-#[derive(Subcommand)]
-enum RouterCommands {
+#[derive(Subcommand, Debug)]
+pub enum RouterCommands {
     #[command(flatten)]
     Common(CommonCommands),
 }
@@ -40,26 +35,16 @@ impl Default for RouterCommands {
     }
 }
 
-// jemalloc as global allocator: the Linux release/Docker builds enable the
-// `jemalloc` feature because musl's (and to a lesser degree glibc's)
-// allocator degrades under multithreaded Arrow allocation churn.
-// `jemalloc-profiling` implies it and adds heap self-profiling.
-#[cfg(feature = "jemalloc")]
-#[global_allocator]
-static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
-
+/// Run the `router` service with the shared options and its own arguments.
+pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
     // Load application configuration
-    let config = utils::load_config(cli.common.config.as_ref())?;
+    let config = utils::load_config(common.config.as_ref())?;
     // Standalone services need shared discovery/catalog backends; the
     // in-memory defaults only make sense in monolithic mode (issue #554).
     config.validate_for_distributed("router")?;
 
     // Handle common commands that don't require starting the service
-    let command = cli.command.unwrap_or_default();
+    let command = args.command.unwrap_or_default();
     let RouterCommands::Common(ref common_cmd) = command;
     if utils::handle_common_command(common_cmd, &config).await? {
         return Ok(()); // Command handled, exit early
@@ -72,7 +57,7 @@ async fn main() -> Result<()> {
             Ok(t) => (t, None),
             Err(e) => (None, Some(e)),
         };
-    utils::init_logging(&cli.common, telemetry.as_ref());
+    utils::init_logging(common, telemetry.as_ref());
     if let Some(e) = telemetry_error {
         tracing::warn!(error = %e, "Self-monitoring init failed, continuing without it");
     } else if let Some(ref t) = telemetry {
@@ -94,12 +79,12 @@ async fn main() -> Result<()> {
     tracing::info!("Starting SignalDB Router Service");
 
     // Use CLI-provided ports or defaults
-    let bind_ip = cli
+    let bind_ip = args
         .bind
         .parse::<std::net::IpAddr>()
         .context("Invalid bind address")?;
-    let flight_addr = SocketAddr::new(bind_ip, cli.flight_port);
-    let http_addr = SocketAddr::new(bind_ip, cli.http_port);
+    let flight_addr = SocketAddr::new(bind_ip, args.flight_port);
+    let http_addr = SocketAddr::new(bind_ip, args.http_port);
 
     // Initialize router service bootstrap for catalog-based discovery
     let router_bootstrap =

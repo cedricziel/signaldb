@@ -45,21 +45,21 @@ CMD ["./target/release/signaldb"]
 
 # Microservices - Acceptor
 FROM base as acceptor
-RUN cargo build --release --bin signaldb-acceptor
+RUN cargo build --release --bin signaldb
 EXPOSE 4317 4318
-CMD ["./target/release/signaldb-acceptor"]
+CMD ["./target/release/signaldb", "acceptor"]
 
 # Microservices - Router
 FROM base as router
-RUN cargo build --release --bin signaldb-router
+RUN cargo build --release --bin signaldb
 EXPOSE 50053 3000
-CMD ["./target/release/signaldb-router"]
+CMD ["./target/release/signaldb", "router"]
 
 # Microservices - Writer
 FROM base as writer
-RUN cargo build --release --bin signaldb-writer
+RUN cargo build --release --bin signaldb
 EXPOSE 50051
-CMD ["./target/release/signaldb-writer"]
+CMD ["./target/release/signaldb", "writer"]
 
 # Development stage with all tools
 FROM base as dev

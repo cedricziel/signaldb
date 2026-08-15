@@ -5,13 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-jemalloc = ["dep:tikv-jemallocator"]
-jemalloc-profiling = ["jemalloc", "tikv-jemallocator/profiling", "common/jemalloc-profiling"]
 default = []
 benchmarks = ["dep:criterion", "dep:rand"]
 
 [dependencies]
-tikv-jemallocator = { workspace = true, optional = true }
 common.workspace = true
 
 datafusion.workspace = true
@@ -42,10 +39,6 @@ serde_json.workspace = true
 # Optional dependencies for benchmarks
 criterion = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
-
-[[bin]]
-name = "signaldb-writer"
-path = "src/main.rs"
 
 [[bench]]
 name = "iceberg_benchmarks"

@@ -4,13 +4,18 @@ use std::path::PathBuf;
 /// Common CLI arguments shared across all binaries
 #[derive(Parser, Debug, Clone)]
 pub struct CommonArgs {
-    #[arg(long, help = "Configuration file path")]
+    #[arg(long, global = true, help = "Configuration file path")]
     pub config: Option<PathBuf>,
 
-    #[arg(short, long, help = "Enable verbose logging")]
+    #[arg(short, long, global = true, help = "Enable verbose logging")]
     pub verbose: bool,
 
-    #[arg(short, long, help = "Enable quiet mode (minimal output)")]
+    #[arg(
+        short,
+        long,
+        global = true,
+        help = "Enable quiet mode (minimal output)"
+    )]
     pub quiet: bool,
 }
 

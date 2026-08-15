@@ -15,6 +15,7 @@ tikv-jemallocator = { workspace = true, optional = true }
 acceptor = { path = "../acceptor" }
 common = { path = "../common" }
 compactor = { path = "../compactor" }
+mcp-server = { path = "../mcp-server" }
 querier = { path = "../querier" }
 router = { path = "../router" }
 writer = { path = "../writer" }

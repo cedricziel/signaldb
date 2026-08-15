@@ -5,7 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-tikv-jemallocator = { workspace = true, optional = true }
 common.workspace = true
 signaldb-api.workspace = true
 logql.workspace = true
@@ -34,10 +33,6 @@ serde_json.workspace = true
 url.workspace = true
 utoipa.workspace = true
 
-[[bin]]
-name = "signaldb-router"
-path = "src/main.rs"
-
 [dev-dependencies]
 tokio-test.workspace = true
 tower.workspace = true
@@ -48,7 +43,3 @@ common = { workspace = true, features = ["testing"] }
 
 [package.metadata.cargo-machete]
 ignored = ["tokio-test"]
-
-[features]
-jemalloc = ["dep:tikv-jemallocator"]
-jemalloc-profiling = ["jemalloc", "tikv-jemallocator/profiling", "common/jemalloc-profiling"]

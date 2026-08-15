@@ -4,7 +4,7 @@ type: how-to
 status: living
 sources:
   - src/acceptor/src/lib.rs
-  - src/acceptor/src/main.rs
+  - src/acceptor/src/cli.rs
   - src/acceptor/src/middleware/grpc_auth.rs
 ---
 
@@ -22,7 +22,7 @@ JSON bodies, authenticated) — see
 
 ## Prerequisites
 
-- A running SignalDB acceptor (standalone `signaldb-acceptor` or the
+- A running SignalDB acceptor (standalone `signaldb acceptor` or the
   monolithic `signaldb` binary). Default ports: gRPC 4317, HTTP 4318.
 - An API key and tenant ID. See [Authentication](authentication.md) for how
   these are provisioned and what the headers mean.

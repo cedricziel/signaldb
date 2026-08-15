@@ -106,7 +106,7 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: sccache
         run: |
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }} --bin signaldb --bin signaldb-cli
 
       - name: Package CLI
         shell: bash
@@ -121,42 +121,20 @@ jobs:
             tar czf signaldb-cli-${{ matrix.target }}.tar.gz signaldb-cli-${{ matrix.target }}/
           fi
 
-      - name: Package binaries
+      # One server archive per target: `signaldb` runs the monolith by default
+      # and any single service via a subcommand (`signaldb router`), so the
+      # former monolithic / microservices / mcp archives collapse into it.
+      - name: Package server binary
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
 
-          # Create directories for different deployment models
-          mkdir -p signaldb-monolithic-${{ matrix.target }}
-          mkdir -p signaldb-microservices-${{ matrix.target }}
-
-          # Package monolithic deployment
-          cp signaldb${{ matrix.binary_suffix }} signaldb-monolithic-${{ matrix.target }}/
+          mkdir -p signaldb-${{ matrix.target }}
+          cp signaldb${{ matrix.binary_suffix }} signaldb-${{ matrix.target }}/
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a signaldb-monolithic-${{ matrix.target }}.zip signaldb-monolithic-${{ matrix.target }}/
+            7z a signaldb-${{ matrix.target }}.zip signaldb-${{ matrix.target }}/
           else
-            tar czf signaldb-monolithic-${{ matrix.target }}.tar.gz signaldb-monolithic-${{ matrix.target }}/
-          fi
-
-          # Package microservices deployment
-          cp signaldb-acceptor${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
-          cp signaldb-router${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
-          cp signaldb-writer${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
-          cp signaldb-querier${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
-          cp signaldb-compactor${{ matrix.binary_suffix }} signaldb-microservices-${{ matrix.target }}/
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a signaldb-microservices-${{ matrix.target }}.zip signaldb-microservices-${{ matrix.target }}/
-          else
-            tar czf signaldb-microservices-${{ matrix.target }}.tar.gz signaldb-microservices-${{ matrix.target }}/
-          fi
-
-          # Package the standalone MCP sidecar
-          mkdir -p signaldb-mcp-${{ matrix.target }}
-          cp signaldb-mcp${{ matrix.binary_suffix }} signaldb-mcp-${{ matrix.target }}/
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a signaldb-mcp-${{ matrix.target }}.zip signaldb-mcp-${{ matrix.target }}/
-          else
-            tar czf signaldb-mcp-${{ matrix.target }}.tar.gz signaldb-mcp-${{ matrix.target }}/
+            tar czf signaldb-${{ matrix.target }}.tar.gz signaldb-${{ matrix.target }}/
           fi
 
       - name: Upload artifacts
@@ -164,10 +142,8 @@ jobs:
         with:
           name: binaries-${{ matrix.target }}
           path: |
-            target/${{ matrix.target }}/release/signaldb-monolithic-${{ matrix.target }}.*
-            target/${{ matrix.target }}/release/signaldb-microservices-${{ matrix.target }}.*
+            target/${{ matrix.target }}/release/signaldb-${{ matrix.target }}.*
             target/${{ matrix.target }}/release/signaldb-cli-${{ matrix.target }}.*
-            target/${{ matrix.target }}/release/signaldb-mcp-${{ matrix.target }}.*
 
   # Static musl binaries for the release images, built natively per arch
   # (the previous single docker-build job compiled arm64 under QEMU).
@@ -208,27 +184,15 @@ jobs:
         run: |
           export RUSTC_WRAPPER=sccache
           cargo build --release --target x86_64-unknown-linux-musl \
-            --features acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc \
-            --bin signaldb-acceptor \
-            --bin signaldb-router \
-            --bin signaldb-writer \
-            --bin signaldb-querier \
-            --bin signaldb-compactor \
+            --features signaldb-bin/jemalloc \
             --bin signaldb \
-            --bin signaldb-cli \
-            --bin signaldb-mcp
+            --bin signaldb-cli
 
       - name: Stage binaries
         run: |
           mkdir -p dist
           cp target/x86_64-unknown-linux-musl/release/signaldb \
-             target/x86_64-unknown-linux-musl/release/signaldb-acceptor \
-             target/x86_64-unknown-linux-musl/release/signaldb-router \
-             target/x86_64-unknown-linux-musl/release/signaldb-writer \
-             target/x86_64-unknown-linux-musl/release/signaldb-querier \
-             target/x86_64-unknown-linux-musl/release/signaldb-compactor \
              target/x86_64-unknown-linux-musl/release/signaldb-cli \
-             target/x86_64-unknown-linux-musl/release/signaldb-mcp \
              dist/
 
       - name: Upload musl binaries
@@ -243,21 +207,12 @@ jobs:
       - name: Package release archives
         run: |
           target=x86_64-unknown-linux-musl
-          mkdir -p archives/signaldb-monolithic-${target} \
-                   archives/signaldb-microservices-${target} \
-                   archives/signaldb-cli-${target} \
-                   archives/signaldb-mcp-${target}
-          cp dist/signaldb archives/signaldb-monolithic-${target}/
-          cp dist/signaldb-acceptor dist/signaldb-router dist/signaldb-writer \
-             dist/signaldb-querier dist/signaldb-compactor \
-             archives/signaldb-microservices-${target}/
+          mkdir -p archives/signaldb-${target} archives/signaldb-cli-${target}
+          cp dist/signaldb archives/signaldb-${target}/
           cp dist/signaldb-cli archives/signaldb-cli-${target}/
-          cp dist/signaldb-mcp archives/signaldb-mcp-${target}/
           cd archives
-          tar czf signaldb-monolithic-${target}.tar.gz signaldb-monolithic-${target}
-          tar czf signaldb-microservices-${target}.tar.gz signaldb-microservices-${target}
+          tar czf signaldb-${target}.tar.gz signaldb-${target}
           tar czf signaldb-cli-${target}.tar.gz signaldb-cli-${target}
-          tar czf signaldb-mcp-${target}.tar.gz signaldb-mcp-${target}
 
       - name: Upload release archives
         uses: actions/upload-artifact@v7
@@ -302,27 +257,15 @@ jobs:
         run: |
           export RUSTC_WRAPPER=sccache
           cargo build --release --target aarch64-unknown-linux-musl \
-            --features acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc \
-            --bin signaldb-acceptor \
-            --bin signaldb-router \
-            --bin signaldb-writer \
-            --bin signaldb-querier \
-            --bin signaldb-compactor \
+            --features signaldb-bin/jemalloc \
             --bin signaldb \
-            --bin signaldb-cli \
-            --bin signaldb-mcp
+            --bin signaldb-cli
 
       - name: Stage binaries
         run: |
           mkdir -p dist
           cp target/aarch64-unknown-linux-musl/release/signaldb \
-             target/aarch64-unknown-linux-musl/release/signaldb-acceptor \
-             target/aarch64-unknown-linux-musl/release/signaldb-router \
-             target/aarch64-unknown-linux-musl/release/signaldb-writer \
-             target/aarch64-unknown-linux-musl/release/signaldb-querier \
-             target/aarch64-unknown-linux-musl/release/signaldb-compactor \
              target/aarch64-unknown-linux-musl/release/signaldb-cli \
-             target/aarch64-unknown-linux-musl/release/signaldb-mcp \
              dist/
 
       - name: Upload musl binaries
@@ -336,21 +279,12 @@ jobs:
       - name: Package release archives
         run: |
           target=aarch64-unknown-linux-musl
-          mkdir -p archives/signaldb-monolithic-${target} \
-                   archives/signaldb-microservices-${target} \
-                   archives/signaldb-cli-${target} \
-                   archives/signaldb-mcp-${target}
-          cp dist/signaldb archives/signaldb-monolithic-${target}/
-          cp dist/signaldb-acceptor dist/signaldb-router dist/signaldb-writer \
-             dist/signaldb-querier dist/signaldb-compactor \
-             archives/signaldb-microservices-${target}/
+          mkdir -p archives/signaldb-${target} archives/signaldb-cli-${target}
+          cp dist/signaldb archives/signaldb-${target}/
           cp dist/signaldb-cli archives/signaldb-cli-${target}/
-          cp dist/signaldb-mcp archives/signaldb-mcp-${target}/
           cd archives
-          tar czf signaldb-monolithic-${target}.tar.gz signaldb-monolithic-${target}
-          tar czf signaldb-microservices-${target}.tar.gz signaldb-microservices-${target}
+          tar czf signaldb-${target}.tar.gz signaldb-${target}
           tar czf signaldb-cli-${target}.tar.gz signaldb-cli-${target}
-          tar czf signaldb-mcp-${target}.tar.gz signaldb-mcp-${target}
 
       - name: Upload release archives
         uses: actions/upload-artifact@v7

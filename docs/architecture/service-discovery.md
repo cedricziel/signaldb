@@ -275,11 +275,11 @@ cargo run --bin signaldb
 
 ```bash
 # Each service discovers others via catalog
-cargo run --bin signaldb-acceptor
-cargo run --bin signaldb-writer
-cargo run --bin signaldb-router
-cargo run --bin signaldb-querier
-cargo run --bin signaldb-compactor
+cargo run --bin signaldb -- acceptor
+cargo run --bin signaldb -- writer
+cargo run --bin signaldb -- router
+cargo run --bin signaldb -- querier
+cargo run --bin signaldb -- compactor
 ```
 
 ## Future Enhancements _(Planned)_
