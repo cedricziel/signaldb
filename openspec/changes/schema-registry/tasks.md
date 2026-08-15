@@ -58,16 +58,16 @@
 
 ## 5. HTTP API (router)
 
-- [ ] 5.0 Failing tests in `common::auth`: `can_read_schema`/`can_write_schema`
+- [x] 5.0 Failing tests in `common::auth`: `can_read_schema`/`can_write_schema`
       for explicit scopes, legacy `None`, Viewer/Member/Admin sessions,
       instance admin; add `schema:read`/`schema:write` constants and
       `schema:read` to `READ_SCOPES`; implement
-- [ ] 5.0b Failing tests: one shared `API_KEY_SCOPES` vocabulary +
+- [x] 5.0b Failing tests: one shared `API_KEY_SCOPES` vocabulary +
       `validate_scopes()`; management and admin APIs accept `schema:read`/
       `schema:write` on key creation and list them; unknown scope → 422; empty
       scopes → 422; OAuth `granted_read_scopes` grants `schema:read` by default
       and rejects a `schema:write`-only request; implement
-- [ ] 5.0c Failing tests: admin `POST /tenants/{id}/api-keys` takes required
+- [x] 5.0c Failing tests: admin `POST /tenants/{id}/api-keys` takes required
       `scopes` + optional `dataset_id`; `PATCH …/api-keys/{key_id}` on admin
       and management APIs updates scopes/dataset, rejects revoked keys, and the
       next request with the key reflects the change; catalog
@@ -90,7 +90,7 @@
 
 - [ ] 6.1 Failing SDK tests for `schema()` methods; implement over the
       regenerated client
-- [ ] 6.1a Sweep every key-creation call site for the now-required `scopes`
+- [x] 6.1a Sweep every key-creation call site for the now-required `scopes`
       (no compat shim): CLI `admin api-key create` + TUI admin client
       (`src/signaldb-cli/src/tui/client/admin.rs`, `components/admin/`),
       MCP admin toolset, `tests-integration` and router/session tests that
@@ -98,7 +98,7 @@
       `docs/architecture/overview.md`, skills `multi-tenancy`, `tempo-api`,
       `signaldb-observe`; release note marks the admin API body change
       BREAKING
-- [ ] 6.1b Failing tests: ApiKeys UI scope picker groups Ingestion and Schema
+- [x] 6.1b Failing tests: ApiKeys UI scope picker groups Ingestion and Schema
       scopes with descriptions and offers Edit scopes on live keys; CLI
       `admin api-key create --scope … --dataset …` (scope required) and
       `admin api-key update`; MCP admin `create_api_key` takes `scopes`/

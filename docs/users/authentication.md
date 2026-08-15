@@ -106,8 +106,42 @@ operator via one of:
 Example (operator-side):
 
 ```bash
-signaldb-cli --admin-key <admin-key> admin api-key create acme --name "Production Key"
+signaldb-cli --admin-key <admin-key> admin api-key create acme \
+  --name "Production Key" --scope traces:write --scope logs:write
 ```
+
+### API-key scopes
+
+Every API key carries an explicit, non-empty list of scopes chosen at
+creation time; a request that names no scopes or an unknown scope is
+rejected on every surface (UI, admin/management HTTP API, SDK, CLI, MCP).
+The vocabulary is shared:
+
+| Scope                                                           | Grants                                                                    |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `metrics:write`, `logs:write`, `traces:write`, `profiles:write` | OTLP ingestion of that signal                                             |
+| `traces:read`, `logs:read`, `metrics:read`, `profiles:read`     | Query access to that signal (Tempo/Loki/Prometheus/Pyroscope APIs, MCP)   |
+| `schema:read`                                                   | Reading the schema registry (registries, attribute/entity/metric lookups) |
+| `schema:write`                                                  | Creating, replacing, validating, and deleting custom schema registries    |
+
+Keys may additionally be restricted to one dataset (`--dataset` / `dataset_id`).
+Keys defined in `signaldb.toml` (and keys that predate scopes) carry no scope
+list and remain unrestricted. Human sessions read the schema with any tenant
+role and write it as tenant admin or instance admin.
+
+The scopes and dataset restriction of a live key can be changed without
+rotating its secret; the change applies to the key's next request:
+
+```bash
+signaldb-cli --admin-key <admin-key> admin api-key update acme <key-id> \
+  --scope traces:write --scope schema:read --scope schema:write
+```
+
+Over HTTP this is `PATCH /api/v1/admin/tenants/{id}/api-keys/{key_id}` (or
+`/api/v1/manage/tenants/{id}/api-keys/{key_id}` for a tenant-admin session)
+with a body of `{"scopes": [...], "dataset_id": "..."}`; absent fields are
+left untouched, and revoked keys cannot be updated. Listing keys on any
+surface shows each key's scopes.
 
 Tenants and datasets created through the Admin API or CLI are usable for
 both ingest and query the moment they are created — no service restart and
