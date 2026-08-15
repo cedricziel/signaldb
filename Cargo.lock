@@ -6258,6 +6258,7 @@ dependencies = [
  "loki-api",
  "prometheus-api",
  "pyroscope-api",
+ "schema-model",
  "serde",
  "serde_json",
  "signaldb-api",
@@ -6469,6 +6470,7 @@ dependencies = [
  "serde_json",
  "serde_norway",
  "thiserror 2.0.20",
+ "utoipa",
 ]
 
 [[package]]

@@ -1729,6 +1729,757 @@
         ]
       }
     },
+    "/api/v1/schema/attributes": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_search_attributes",
+        "parameters": [
+          {
+            "name": "prefix",
+            "in": "query",
+            "description": "Name prefix (empty lists from the top).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum hits (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "keys",
+            "in": "query",
+            "description": "Comma-separated exact keys to resolve in one call (attributes only).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prefix hits (and per-key resolutions when keys= is given)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttributeSearchResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/schema/attributes/{key}": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_resolve_attribute",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Attribute wire key, e.g. k8s.pod.uid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every definition of the key across visible registries (empty when unknown)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttributeResolution"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/schema/entities": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_search_entities",
+        "parameters": [
+          {
+            "name": "prefix",
+            "in": "query",
+            "description": "Name prefix (empty lists from the top).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum hits (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "keys",
+            "in": "query",
+            "description": "Comma-separated exact keys to resolve in one call (attributes only).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Entity types whose name starts with the prefix",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntitySearchResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/schema/entities/{name}": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_resolve_entity",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Entity type name, e.g. k8s.pod",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every definition of the entity across visible registries (empty when unknown)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntityResolution"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/schema/metrics": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_search_metrics",
+        "parameters": [
+          {
+            "name": "prefix",
+            "in": "query",
+            "description": "Name prefix (empty lists from the top).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum hits (default 50, max 200).",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "keys",
+            "in": "query",
+            "description": "Comma-separated exact keys to resolve in one call (attributes only).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Metrics whose name starts with the prefix",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricSearchResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/schema/metrics/{name}": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_resolve_metric",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Metric name, e.g. k8s.pod.cpu.time",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every definition of the metric across visible registries (empty when unknown)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricResolution"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/schema/registries": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_list_registries",
+        "responses": {
+          "200": {
+            "description": "Registries visible to the tenant, precedence order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_create_registry",
+        "requestBody": {
+          "description": "Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Registry created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrySummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:write scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Registry already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid document (errors carry paths)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/schema/registries/{namespace}/{version}": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_get_registry",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Registry namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Registry version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Registry summary and document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such registry visible to the tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_replace_registry",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Registry namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Registry version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Replacement registry document; its name/version must match the path",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Registry replaced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrySummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:write scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such custom registry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Registry is bundled and read-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid document or identity mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_delete_registry",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "path",
+            "description": "Registry namespace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Registry version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Registry deleted"
+          },
+          "403": {
+            "description": "Missing schema:write scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such custom registry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Registry is bundled and read-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/schema/registries:validate": {
+      "post": {
+        "tags": [
+          "schema"
+        ],
+        "operationId": "schema_validate_registry",
+        "requestBody": {
+          "description": "Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Validation outcome (errors with paths, or resulting counts)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing schema:write scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/whoami": {
       "get": {
         "tags": [
@@ -2637,6 +3388,160 @@
           "value": {}
         }
       },
+      "AttributeDef": {
+        "type": "object",
+        "description": "A resolved attribute definition (one per `id` in the registry).",
+        "required": [
+          "key",
+          "group_id",
+          "brief",
+          "type"
+        ],
+        "properties": {
+          "brief": {
+            "type": "string"
+          },
+          "deprecated": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DeprecatedInfo"
+              }
+            ]
+          },
+          "enum_members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnumMember"
+            }
+          },
+          "examples": {
+            "type": "array",
+            "items": {}
+          },
+          "group_display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string",
+            "description": "Wire key (`k8s.pod.uid`)."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requirement_level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "description": "Canonical type name (`string`, `int[]`, `template[string]`, `enum`)."
+          }
+        }
+      },
+      "AttributeHit": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AttributeDef"
+          },
+          {
+            "type": "object",
+            "required": [
+              "namespace",
+              "version",
+              "source"
+            ],
+            "properties": {
+              "entity_roles": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/QualifiedEntityRole"
+                },
+                "description": "Entities (from any visible registry) in which this key plays a role,\nas `namespace/entity`-qualified roles."
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/RegistrySource"
+              },
+              "version": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "A resolved attribute definition tagged with provenance."
+      },
+      "AttributeResolution": {
+        "type": "object",
+        "description": "Every definition of one attribute key across the visible registries, in\nprecedence order; `primary` is the first.",
+        "required": [
+          "key",
+          "hits"
+        ],
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributeHit"
+            }
+          },
+          "key": {
+            "type": "string"
+          },
+          "primary": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AttributeHit"
+              }
+            ]
+          }
+        }
+      },
+      "AttributeSearchResponse": {
+        "type": "object",
+        "required": [
+          "hits"
+        ],
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributeHit"
+            }
+          },
+          "resolutions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributeResolution"
+            },
+            "description": "Present when `keys=` was given: one resolution per requested key."
+          }
+        }
+      },
       "ConsentContextResponse": {
         "type": "object",
         "description": "Context the consent screen renders: the requesting client and the tenants\nthe signed-in user may grant.",
@@ -2929,6 +3834,244 @@
             "description": "Tenant that owns this dataset."
           }
         }
+      },
+      "DeprecatedInfo": {
+        "type": "object",
+        "description": "Deprecation info in resolved form.",
+        "properties": {
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "renamed_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "EntityAttribute": {
+        "type": "object",
+        "description": "An attribute referenced by an entity, with its role.",
+        "required": [
+          "key",
+          "role"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "requirement_level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        }
+      },
+      "EntityDef": {
+        "type": "object",
+        "description": "A resolved entity type.",
+        "required": [
+          "name",
+          "group_id",
+          "brief",
+          "identifying",
+          "descriptive"
+        ],
+        "properties": {
+          "brief": {
+            "type": "string"
+          },
+          "deprecated": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DeprecatedInfo"
+              }
+            ]
+          },
+          "descriptive": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntityAttribute"
+            }
+          },
+          "extends": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Entity this one extends (bare name), if any."
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "identifying": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntityAttribute"
+            }
+          },
+          "name": {
+            "type": "string",
+            "description": "Entity type name (`k8s.pod`)."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "EntityHit": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EntityDef"
+          },
+          {
+            "type": "object",
+            "required": [
+              "namespace",
+              "version",
+              "source"
+            ],
+            "properties": {
+              "extended_by": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "`namespace/entity` names of entities extending this one."
+              },
+              "metrics": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Metric names associated with this entity (from every visible registry)."
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/RegistrySource"
+              },
+              "version": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "A resolved entity definition tagged with provenance."
+      },
+      "EntityResolution": {
+        "type": "object",
+        "required": [
+          "key",
+          "hits"
+        ],
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntityHit"
+            }
+          },
+          "key": {
+            "type": "string"
+          },
+          "primary": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EntityHit"
+              }
+            ]
+          }
+        }
+      },
+      "EntitySearchResponse": {
+        "type": "object",
+        "required": [
+          "hits"
+        ],
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntityHit"
+            }
+          }
+        }
+      },
+      "EnumMember": {
+        "allOf": [
+          {
+            "type": "object"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "value"
+            ],
+            "properties": {
+              "brief": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deprecated": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stability": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value": {}
+            }
+          }
+        ],
+        "description": "One member of an enum attribute type."
       },
       "Filterability": {
         "type": "string",
@@ -3503,6 +4646,158 @@
           "viewer"
         ]
       },
+      "MetricAttribute": {
+        "type": "object",
+        "description": "An attribute declared on a metric.",
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "requirement_level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "MetricDef": {
+        "type": "object",
+        "description": "A resolved metric definition.",
+        "required": [
+          "name",
+          "group_id",
+          "brief",
+          "instrument",
+          "unit",
+          "attributes",
+          "entity_associations"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricAttribute"
+            }
+          },
+          "brief": {
+            "type": "string"
+          },
+          "deprecated": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DeprecatedInfo"
+              }
+            ]
+          },
+          "entity_associations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Entity type names this metric describes."
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "instrument": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": "string"
+          }
+        }
+      },
+      "MetricHit": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/MetricDef"
+          },
+          {
+            "type": "object",
+            "required": [
+              "namespace",
+              "version",
+              "source"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/RegistrySource"
+              },
+              "version": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "A resolved metric definition tagged with provenance."
+      },
+      "MetricResolution": {
+        "type": "object",
+        "required": [
+          "key",
+          "hits"
+        ],
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricHit"
+            }
+          },
+          "key": {
+            "type": "string"
+          },
+          "primary": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MetricHit"
+              }
+            ]
+          }
+        }
+      },
+      "MetricSearchResponse": {
+        "type": "object",
+        "required": [
+          "hits"
+        ],
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricHit"
+            }
+          }
+        }
+      },
       "ProfileSummary": {
         "type": "object",
         "description": "Summary of a stored profile linked to a trace, without the bulky\nstack/sample payloads.",
@@ -3538,6 +4833,26 @@
           },
           "timeUnixNano": {
             "type": "string"
+          }
+        }
+      },
+      "QualifiedEntityRole": {
+        "type": "object",
+        "description": "An entity role qualified by the registry that declares it.",
+        "required": [
+          "namespace",
+          "entity",
+          "role"
+        ],
+        "properties": {
+          "entity": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
           }
         }
       },
@@ -3664,6 +4979,106 @@
           }
         }
       },
+      "RegistryListResponse": {
+        "type": "object",
+        "required": [
+          "registries"
+        ],
+        "properties": {
+          "registries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegistrySummary"
+            }
+          }
+        }
+      },
+      "RegistryResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RegistrySummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "document"
+            ],
+            "properties": {
+              "document": {
+                "type": "object",
+                "description": "The registry document in the OpenTelemetry Weaver semantic-convention\nmodel (`name`, `version`, `schema_url`, `dependencies`, `groups`)."
+              }
+            }
+          }
+        ],
+        "description": "A registry with its document (the uploaded Weaver-model file, verbatim)."
+      },
+      "RegistrySource": {
+        "type": "string",
+        "description": "Where a registry comes from.",
+        "enum": [
+          "bundled",
+          "custom",
+          "remote"
+        ]
+      },
+      "RegistrySummary": {
+        "type": "object",
+        "description": "Registry list entry.",
+        "required": [
+          "namespace",
+          "version",
+          "source",
+          "attribute_count",
+          "entity_count",
+          "metric_count",
+          "read_only"
+        ],
+        "properties": {
+          "attribute_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entity_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "metric_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "schema_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/RegistrySource"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
       "ResolvedWindow": {
         "type": "object",
         "description": "The resolved absolute time window, echoed for reproducibility/replay.",
@@ -3723,6 +5138,33 @@
               "items": {}
             },
             "description": "`[t_ns, value]` points."
+          }
+        }
+      },
+      "Role": {
+        "type": "string",
+        "description": "Role of an attribute within an entity.",
+        "enum": [
+          "identifying",
+          "descriptive"
+        ]
+      },
+      "SchemaError": {
+        "type": "object",
+        "description": "Error body for the schema API.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "description": "Validation errors with document paths (422 only)."
           }
         }
       },
@@ -4069,6 +5511,61 @@
           }
         }
       },
+      "ValidationError": {
+        "type": "object",
+        "description": "A validation failure at a location in the document.",
+        "required": [
+          "path",
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Path into the document (`groups[3].attributes[1].ref`)."
+          }
+        }
+      },
+      "ValidationReport": {
+        "type": "object",
+        "description": "Outcome of validating a document without storing it.",
+        "required": [
+          "namespace",
+          "version",
+          "errors",
+          "attribute_count",
+          "entity_count",
+          "metric_count"
+        ],
+        "properties": {
+          "attribute_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "entity_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            }
+          },
+          "metric_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
       "WhoamiIdentityResponse": {
         "type": "object",
         "description": "The non-null identity contract shared by generated clients.",
@@ -4170,6 +5667,10 @@
     {
       "name": "oauth",
       "description": "OAuth 2.1 connector consent flow"
+    },
+    {
+      "name": "schema",
+      "description": "Schema registry: semantic-convention registries, attribute/entity/metric resolution"
     }
   ]
 }
