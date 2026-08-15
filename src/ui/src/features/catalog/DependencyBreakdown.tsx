@@ -3,14 +3,26 @@
 // api/dependencyBreakdown.ts for how the numbers are derived (five
 // sum(duration) queries combined client-side; no dedicated backend
 // aggregation exists for a derived category like this).
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchDependencyBreakdown } from "../../api/dependencyBreakdown";
+import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import type { ResolvedRange } from "../../lib/time";
+import { formatShare, formatValue } from "../../lib/vizFormat";
 import { formatDurationMs } from "../../lib/waterfall";
 
 function plural(n: number, noun: string): string {
   return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
 }
+
+/** Tooltip swatch per category — mirrors the `.dep-*` rules in catalog.css. */
+const DEP_COLORS: Record<string, string> = {
+  database: "var(--svc-a)",
+  http: "var(--svc-b)",
+  rpc: "var(--svc-c)",
+  messaging: "var(--svc-d)",
+  other: "var(--faint)",
+};
 
 export function DependencyBreakdown({
   serviceName,
@@ -25,6 +37,9 @@ export function DependencyBreakdown({
     queryKey: ["catalog-dependency-breakdown", serviceName, rangeKey],
     queryFn: () => fetchDependencyBreakdown(serviceName, range),
   });
+  const rootRef = useRef<HTMLDivElement>(null);
+  const pointer = useVizPointer(rootRef);
+  const [active, setActive] = useState<string | null>(null);
 
   if (query.isPending) {
     return <div className="traces-note">Loading…</div>;
@@ -47,9 +62,10 @@ export function DependencyBreakdown({
       </div>
     );
   }
+  const activeCategory = categories.find((c) => c.key === active) ?? null;
 
   return (
-    <div className="dep-breakdown">
+    <div className="dep-breakdown viz-host" ref={rootRef}>
       <div
         className="dep-bar"
         role="img"
@@ -61,7 +77,27 @@ export function DependencyBreakdown({
           <span
             key={c.key}
             className={`dep-seg dep-${c.key}`}
+            data-testid="dep-seg"
             style={{ width: `${(c.durationNs / total) * 100}%` }}
+            tabIndex={0}
+            aria-label={`${c.label}: ${formatDurationMs(c.durationNs / 1e6)}, ${formatShare(c.durationNs, total)}`}
+            aria-describedby={active === c.key ? "dep-tip" : undefined}
+            onPointerMove={(e) => {
+              setActive(c.key);
+              pointer.track(e);
+            }}
+            onPointerLeave={() => {
+              setActive((a) => (a === c.key ? null : a));
+              pointer.clear();
+            }}
+            onFocus={(e) => {
+              setActive(c.key);
+              pointer.anchorTo(e.currentTarget);
+            }}
+            onBlur={() => {
+              setActive((a) => (a === c.key ? null : a));
+              pointer.clear();
+            }}
           />
         ))}
       </div>
@@ -76,11 +112,26 @@ export function DependencyBreakdown({
           </div>
         ))}
       </dl>
+      {activeCategory && pointer.anchor && (
+        <VizTooltip
+          id="dep-tip"
+          anchor={pointer.anchor}
+          host={pointer.host}
+          title={activeCategory.label}
+          rows={[
+            {
+              swatch: DEP_COLORS[activeCategory.key],
+              label: "time",
+              value: formatDurationMs(activeCategory.durationNs / 1e6),
+            },
+            {
+              label: "share",
+              value: formatShare(activeCategory.durationNs, total),
+            },
+            { label: "calls", value: formatValue(activeCategory.count) },
+          ]}
+        />
+      )}
     </div>
   );
-}
-
-function formatShare(part: number, total: number): string {
-  if (total <= 0) return "0%";
-  return `${((part / total) * 100).toFixed(1)}%`;
 }

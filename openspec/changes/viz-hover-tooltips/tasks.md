@@ -18,10 +18,10 @@
       tooltip (time range, per-series values, total); focusable bars
 - [x] 2.3 Failing test + implement: `traces/TraceVolumeHeatmap` cell tooltip
       (time bucket, value range, count, share of column); focusable cells
-- [ ] 2.4 Failing test + implement: `logs/Histogram` bucket tooltip; focusable
+- [x] 2.4 Failing test + implement: `logs/Histogram` bucket tooltip; focusable
       bars
-- [ ] 2.5 Failing test + implement: `errors/ErrorSparkline` point tooltip
-- [ ] 2.6 Failing test + implement: `catalog/DependencyBreakdown` bar tooltip
+- [x] 2.5 Failing test + implement: `errors/ErrorSparkline` point tooltip
+- [x] 2.6 Failing test + implement: `catalog/DependencyBreakdown` bar tooltip
       (category, value, share)
 - [x] 2.7 Failing test + implement: `query/QueryView` `series` envelope →
       `MetricsChart` (adapter to `PromSeries`) so it inherits the tooltip
