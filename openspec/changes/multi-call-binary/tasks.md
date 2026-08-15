@@ -22,7 +22,7 @@
 - [x] 3.2 `.github/workflows/ci.yml`: musl amd64/arm64 and glibc-profiling jobs build `--bin signaldb --bin signaldb-cli` with the reduced feature list; stage only those into `dist/`; `deployment-test` runs `signaldb`, `signaldb acceptor` and `signaldb router` for a few seconds each; docker job adds a `docker run <router image> --version` smoke check
 - [x] 3.3 `.github/workflows/release-please.yml`: build `--bin signaldb --bin signaldb-cli`; microservices archive = `signaldb` (`signaldb.exe`) only; drop the `signaldb-mcp-*` archive
 - [x] 3.4 `Dockerfile.test`, `docker-compose.test.yml`, `compose.yml`, `deploy/kubernetes/*.yaml`, `scripts/run-dev.sh` (services mode → `cargo run --bin signaldb -- <svc>`), `scripts/test-deployment.sh`: switch to the new invocation and verify `./scripts/run-dev.sh services` boots all services
-- [ ] 3.5 Open the PR with the `build-images` label so the image chain runs; confirm the musl amd64 job's link tail drops from ~25 min to the two-link cost and record the before/after job durations in the PR
+- [x] 3.5 Open the PR with the `build-images` label so the image chain runs; confirm the musl amd64 job's link tail drops from ~25 min to the two-link cost and record the before/after job durations in the PR
 
 ## 4. Docs and skills
 
