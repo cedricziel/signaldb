@@ -415,6 +415,7 @@ Once signed in, a user menu appears in the top bar showing an avatar
   persisted in `localStorage` and restored on reload.
 - **Send data** — opens the Instrumentation page (see below).
 - **API keys** — opens the API Keys page (see below).
+- **Schema** — opens the Schema hub (see below).
 - **Docs** — opens the SignalDB documentation in a new tab.
 - **Switch tenant** — opens the Tenant Selection page (see below).
 - **Sign out** — deletes the session, clears the query cache, and
@@ -468,6 +469,37 @@ dataset ID from `whoami`, so they can be copied directly. A
 verification section at the bottom shows ingestion status per signal
 (metrics, logs, traces, profiles) — currently static ("Waiting for
 data"), with real checks planned.
+
+### Schema hub (`/schema`)
+
+Two tabs, each a real URL so the browser back button walks between
+views:
+
+- **Conventions** (`/schema/conventions`, every tenant user) — the
+  semantic-convention registries visible to the tenant: the bundled
+  `otel` and `signaldb` registries (read-only, marked with a lock) plus
+  any custom registries, with version, source, definition counts, and
+  last update. A precedence line shows the order lookups use (custom
+  first). The lookup box resolves an attribute key, entity name, or
+  metric name across all registries and lists every hit in precedence
+  order, the first marked primary. Opening a registry
+  (`/schema/conventions/<namespace>/<version>`) shows a browser with a
+  filter box over its attributes, entities, and metrics and a definition
+  pane; each definition has its own URL
+  (`…/attributes/<key>`, `…/entities/<name>`, `…/metrics/<name>`) and
+  links to alternatives defined in other registries.
+- **Storage** (`/schema/storage`, instance admins only) — the logical
+  (query-facing) field model and the resolved physical storage schema
+  per signal source, as before.
+
+Tenant admins also get **New** / **Upload registry** on the Conventions
+tab and **Edit** on custom registries: a source editor over the
+Weaver-format YAML or JSON document with server-side **Validate**
+(per-path errors and resulting counts), **Save** / **Replace** (blocked
+until validation passes), **Save as new version**, a summary of added,
+changed, and removed definitions against the stored document, and
+**Delete** with confirmation. Bundled registries never expose these
+actions.
 
 ## Availability
 

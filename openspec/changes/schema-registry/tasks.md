@@ -130,24 +130,24 @@
 
 ## 8. Schema hub UI (management & inspection)
 
-- [ ] 8.1 Failing route tests: `/schema` renders hub with Conventions tab for any
+- [x] 8.1 Failing route tests: `/schema` renders hub with Conventions tab for any
       tenant user and Storage tab only for instance admins; `/schema/storage`
       deep-links the existing explorer; back button returns to prior view
-- [ ] 8.2 Move `management/SchemaExplorer*` under `features/schema/` as the
+- [x] 8.2 Move `management/SchemaExplorer*` under `features/schema/` as the
       Storage tab; add hub shell and tabs; make 8.1 pass
-- [ ] 8.3 Failing tests: registry list shows namespace/version/source/counts,
+- [x] 8.3 Failing tests: registry list shows namespace/version/source/counts,
       read-only marker on bundled; global lookup shows precedence-ordered hits
       with primary marker; implement over the generated client
-- [ ] 8.4 Failing tests: registry browser (search filters attributes / entities /
+- [x] 8.4 Failing tests: registry browser (search filters attributes / entities /
       metrics; definition pane per kind; alternatives linked; deep-link URLs for
       definitions); implement
-- [ ] 8.5 Failing tests: entity page (identifying/descriptive roles, associated
+- [x] 8.5 Failing tests: entity page (identifying/descriptive roles, associated
       metrics, extended-by); implement
-- [ ] 8.6 Failing tests: custom-registry editor — upload YAML/JSON or paste,
+- [x] 8.6 Failing tests: custom-registry editor — upload YAML/JSON or paste,
       Validate renders per-path errors and counts, Save blocked until valid,
       diff summary vs stored, save-as-new-version, Delete with confirmation,
       actions hidden for non-admins and for bundled registries; implement
-- [ ] 8.7 Link attribute tooltips (7.x) to the definition pages; verify in the
+- [x] 8.7 Link attribute tooltips (7.x) to the definition pages; verify in the
       running app (`/run`)
 
 ## 9. Docs, skills, housekeeping

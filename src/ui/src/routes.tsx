@@ -11,8 +11,8 @@ import { ExploreView } from "./features/explore/ExploreView";
 import { ApiKeysRoute } from "./features/management/ApiKeysRoute";
 import { InstrumentationRoute } from "./features/management/InstrumentationRoute";
 import { ManagementRoute } from "./features/management/ManagementRoute";
-import { SchemaExplorerRoute } from "./features/management/SchemaExplorerRoute";
 import { SelectTenantRoute } from "./features/management/SelectTenantRoute";
+import { schemaRoutes } from "./features/schema/routes";
 import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
 
@@ -43,7 +43,7 @@ export function AppRoutes() {
         <Route path="select-tenant" element={<SelectTenantRoute />} />
         <Route path="api-keys" element={<ApiKeysRoute />} />
         <Route path="instrumentation" element={<InstrumentationRoute />} />
-        <Route path="schema" element={<SchemaExplorerRoute />} />
+        {schemaRoutes()}
         {/* Single-trace view is a route, not a `?trace=` param on /traces —
             see buildPath in lib/urlState.ts. Matched by React Router's
             specificity ranking regardless of declaration order relative to

@@ -126,12 +126,10 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
             <span>API keys</span>
             <span className="user-menu-hint">{who.tenant.id}</span>
           </Link>
-          {who.user?.is_instance_admin && (
-            <Link className="user-menu-item" to="/schema" onClick={onClose}>
-              <span>Schema</span>
-              <span className="user-menu-hint">admin</span>
-            </Link>
-          )}
+          <Link className="user-menu-item" to="/schema" onClick={onClose}>
+            <span>Schema</span>
+            <span className="user-menu-hint">conventions</span>
+          </Link>
           <a
             className="user-menu-item"
             href="https://signaldb.dev/docs"

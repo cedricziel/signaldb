@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { AttributeHit } from "../api/gen";
@@ -107,6 +108,54 @@ describe("SemanticKey", () => {
 
     await userEvent.unhover(label);
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
+
+  it("links every registry mention in the tooltip to its definition page in the schema hub", async () => {
+    const custom = hit({
+      key: "service.name",
+      namespace: "acme",
+      version: "1.0.0",
+      source: "custom",
+      entity_roles: [{ namespace: "otel", entity: "service", role: "identifying" }],
+    });
+    const otel = hit({ key: "service.name" });
+    render(
+      <MemoryRouter>
+        <SemanticKey name="service.name" semantics={semOf([custom, otel])} />
+      </MemoryRouter>,
+    );
+    await userEvent.hover(
+      screen.getByText("service.name", { selector: ".semkey-name" }),
+    );
+    const tip = await screen.findByRole("tooltip");
+    expect(
+      within(tip).getByRole("link", { name: "acme@1.0.0" }),
+    ).toHaveAttribute(
+      "href",
+      "/schema/conventions/acme/1.0.0/attributes/service.name",
+    );
+    expect(
+      within(tip).getByRole("link", { name: "otel@1.43.0" }),
+    ).toHaveAttribute(
+      "href",
+      "/schema/conventions/otel/1.43.0/attributes/service.name",
+    );
+    expect(within(tip).getByRole("link", { name: "service" })).toHaveAttribute(
+      "href",
+      "/schema/conventions/otel/latest/entities/service",
+    );
+  });
+
+  it("degrades registry mentions to plain anchors outside a router", async () => {
+    render(<SemanticKey name="k8s.pod.uid" semantics={semOf([hit()])} />);
+    await userEvent.hover(
+      screen.getByText("k8s.pod.uid", { selector: ".semkey-name" }),
+    );
+    const tip = await screen.findByRole("tooltip");
+    expect(within(tip).getByRole("link", { name: "otel@1.43.0" })).toHaveAttribute(
+      "href",
+      "/schema/conventions/otel/1.43.0/attributes/k8s.pod.uid",
+    );
   });
 });
 
