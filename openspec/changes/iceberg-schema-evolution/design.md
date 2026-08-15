@@ -257,7 +257,8 @@ puts in it is the conversion layer's job as it always has been.
 ## Migration Plan
 
 1. `schemas.toml`: add `field_removals`, bump `traces.physical-v3` with the
-   four new nullable columns.
+   five new nullable columns (`span_kind_number`, `status_code_number`,
+   `dropped_attributes_count`, `dropped_events_count`, `dropped_links_count`).
 2. `common`: `FieldRemoval` in `schema_parser.rs`; the schema-evolution
    engine (diff + `CommitTable` builder) in `iceberg::table_manager`,
    applied to traces/logs; register `span_kind_number`/`status_code_number`

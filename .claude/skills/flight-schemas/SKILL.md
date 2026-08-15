@@ -35,11 +35,11 @@ Schema resolution in `SchemaDefinitions` (`src/common/src/schema/schema_parser.r
 
 **Positional field IDs, and why evolving a live table can't use them**: `ResolvedSchema::to_iceberg_schema()` assigns Iceberg field IDs by position (`idx + 1`) every time it's called — safe for a table being created fresh, but unsafe to diff against an existing table's live schema (a version that removes a field in the middle would shift every later field's ID, corrupting the mapping already burned into that table's Parquet files). `common::iceberg::evolution`'s live-table functions diff by field _name_ against the table's actual persisted schema instead, reusing existing IDs untouched and minting new ones only for genuine additions.
 
-## Flight Schema (v1) vs Iceberg Schema (v2)
+## Flight Schema (v1) vs Iceberg Schema (physical-v3)
 
 The wire format and storage format differ intentionally. Writer applies `transform_trace_v1_to_v2()` at ingestion. Despite the name, the transform resolves the physical schema via `resolve_trace_schema("physical-v3")` (a hardcoded literal bumped alongside `schemas.toml`'s `current_trace_version`, matching this function's existing style — it isn't dynamic).
 
-| Aspect           | Flight v1 (wire)              | Iceberg v2 (storage)                                      |
+| Aspect           | Flight v1 (wire)              | Iceberg physical-v3 (storage)                             |
 | ---------------- | ----------------------------- | --------------------------------------------------------- |
 | Span name        | `name`                        | `span_name`                                               |
 | Duration         | `duration_nano` (UInt64)      | `duration_nanos` (Int64)                                  |
@@ -59,7 +59,7 @@ The wire format and storage format differ intentionally. Writer applies `transfo
 4. **Complex type serialization**: `List<Struct>` events/links -> JSON strings
 5. **Computed fields**: Generate `timestamp`, `date_day`, `hour` from `start_time_unix_nano`
 
-Applied in Writer's Flight `do_put` handler before WAL write -- all WAL data is in v2 format.
+Applied in Writer's Flight `do_put` handler before WAL write -- all WAL data is in physical-v3 format.
 
 Non-finite metric doubles (NaN, ±Inf) are carried in v1 `data_json` as the strings `"NaN"`/`"+Inf"`/`"-Inf"` (`common::flight::conversion::{f64_to_json, json_to_f64}`), never `null`; the writer maps them back and stores a value-less point as NaN, so the non-nullable `metrics_gauge`/`metrics_sum.value` columns never see a null (#1061). The querier's histogram bounds parser accepts the same sentinels.
 

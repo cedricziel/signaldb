@@ -94,11 +94,16 @@ target_version)` using `Catalog::update_table` directly (not
 - [x] 3.8 Failing test: a table two versions behind is brought forward one
       hop at a time (asserts both intermediate columns land and the schema
       count reflects two distinct hop commits, not one combined jump).
-- [x] 3.9 Implement `ensure_schema_current`: read `signaldb.schema.version`
-      (via `version_chain`, defaulting to the oldest known version when
-      absent), loop calling `apply_schema_migration` for each hop up to
-      the signal's current version, stopping and returning the error on a
-      failed hop without attempting the next one. Test from 3.8 passes.
+- [x] 3.9 Implement `ensure_schema_current`: read `signaldb.schema.version`.
+      When absent, or when recorded but not actually found while walking
+      `version_chain` back from the current version (an unrecognized or
+      stale property), migrate directly to the current version in one
+      step, additions only, never removing -- the live schema's
+      relationship to an inferred baseline isn't trusted. When present and
+      found on the chain, loop calling `apply_schema_migration` for each
+      hop in order, renames and removals enabled, stopping and returning
+      the error on a failed hop without attempting the next one. Test from
+      3.8 passes.
 
 ## 4. Wire evolution into table lifecycle
 
