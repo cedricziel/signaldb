@@ -414,7 +414,7 @@ select:focus-visible {
   line-height: 1.4;
   white-space: normal;
   text-align: left;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .sem-tip-body {
@@ -436,6 +436,26 @@ select:focus-visible {
 .sem-tip-roles {
   color: var(--dim);
   font-size: 11px;
+}
+
+/* Invisible bridge over the 4px gap so the pointer can travel from the label
+   into the tooltip and click its links without the tooltip closing. */
+.sem-tip::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 0;
+  right: 0;
+  height: 6px;
+}
+
+/* Registry mentions link into the schema hub's definition pages. */
+.sem-tip-link {
+  color: inherit;
+  text-decoration: underline dotted;
+}
+.sem-tip-link:hover {
+  color: var(--text);
 }
 
 .sem-tip-examples,

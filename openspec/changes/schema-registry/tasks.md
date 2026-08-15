@@ -147,7 +147,7 @@
       Validate renders per-path errors and counts, Save blocked until valid,
       diff summary vs stored, save-as-new-version, Delete with confirmation,
       actions hidden for non-admins and for bundled registries; implement
-- [ ] 8.7 Link attribute tooltips (7.x) to the definition pages; verify in the
+- [x] 8.7 Link attribute tooltips (7.x) to the definition pages; verify in the
       running app (`/run`)
 
 ## 9. Docs, skills, housekeeping
