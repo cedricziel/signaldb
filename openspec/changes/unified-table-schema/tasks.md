@@ -1,9 +1,31 @@
-## 1. Prerequisite: full metrics coverage in `schemas.toml`
+## 1. Prerequisite: full metrics + profiles coverage in `schemas.toml`
 
-- [ ] 1.1 Check whether `iceberg-schema-evolution` has already landed the
-      `metrics_exponential_histogram`/`metrics_summary` → `schemas.toml`
-      consolidation; if so, skip to §2. If not, do it here (see that
-      change's tasks §2) rather than duplicating the work later.
+**Scope correction found while implementing `iceberg-schema-evolution`**:
+this is bigger than originally scoped — not just `metrics_exponential_histogram`/
+`metrics_summary`. None of the five metrics representations (gauge, sum,
+histogram, exponential histogram, summary) or profiles are actually
+sourced from `schemas.toml` for physical table creation; `schemas.toml`'s
+`metrics_gauge`/`metrics_sum`/`metrics_histogram` sections are wired only
+to admin introspection. `iceberg-schema-evolution` found this and deferred
+the entire consolidation here rather than doing it partially — this
+change owns all of it, not just a shared two-schema prerequisite.
+
+- [ ] 1.1 Failing test: resolving each of `metrics_gauge`/`metrics_sum`/
+      `metrics_histogram`/`metrics_exponential_histogram`/`metrics_summary`/
+      `profiles` from `SCHEMA_DEFINITIONS` produces the same field set
+      (name, type, nullability) as the corresponding
+      `iceberg::schemas::create_*_schema_with` function produces today.
+- [ ] 1.2 Add `schemas.toml` sections for `metrics_exponential_histogram`,
+      `metrics_summary`, and `profiles` (new — no section exists today);
+      correct the existing `metrics_gauge`/`metrics_sum`/`metrics_histogram`
+      sections if they've drifted from what `iceberg::schemas` actually
+      builds (they were never used for physical creation, so treat them as
+      unverified rather than assume they're already right).
+- [ ] 1.3 Change all six `create_*_schema_with` functions in
+      `iceberg::schemas` to resolve from `SCHEMA_DEFINITIONS` instead of
+      hand-built `StructField` lists, reusing the `mapify_attr_fields`/
+      `append_materialized_label_fields` post-processing steps as needed.
+      Test from 1.1 passes for all six.
 
 ## 2. Golden references (prove zero behavior change before touching anything)
 

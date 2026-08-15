@@ -10,12 +10,18 @@ discipline, and that discipline has already failed twice: traces'
 `dropped_attributes_count`/`dropped_events_count`/`dropped_links_count` are
 registered as queryable in `LogicalSchema::core()` but were never given a
 physical column or a conversion-code read path, so filtering on them
-silently always returns false; `ExponentialHistogram`/`Summary` metrics
-have real hand-written Iceberg schemas that never made it into
-`schemas.toml` at all. Collapsing physical, wire, and registry generation
-onto one load path removes this class of bug structurally instead of
-relying on catching it in review. It is also the prerequisite for ever
-letting an operator define a custom table: `dataset-table-provisioning`
+silently always returns false; and — this is bigger than originally scoped
+here, confirmed while implementing the sibling `iceberg-schema-evolution`
+change — **none of the five metrics representations (gauge, sum,
+histogram, exponential histogram, summary) or profiles have a
+`schemas.toml` entry backing their real physical table at all**, not just
+`ExponentialHistogram`/`Summary`. `schemas.toml`'s `metrics_gauge`/
+`metrics_sum`/`metrics_histogram` sections exist but are wired only to the
+admin schema-introspection endpoint, disconnected from the tables those
+signals actually write to. Collapsing physical, wire, and registry
+generation onto one load path removes this class of bug structurally
+instead of relying on catching it in review. It is also the prerequisite
+for ever letting an operator define a custom table: `dataset-table-provisioning`
 currently states custom tables "SHALL NOT be provisioned" because there is
 no generic pipeline a tenant-supplied definition could be resolved through
 — only hand-registered built-in signal types exist.
@@ -40,8 +46,13 @@ no generic pipeline a tenant-supplied definition could be resolved through
   no physical backing at all (e.g. the synthetic `resource.identity`
   `SignalDbDefined` field) remain hand-registered, since they are not part
   of any table's schema.
-- Fold `ExponentialHistogram`/`Summary` metrics into `schemas.toml` (shared
-  prerequisite with `iceberg-schema-evolution`; do once, consumed by both).
+- Fold all five metrics representations (gauge, sum, histogram,
+  exponential histogram, summary) and profiles into `schemas.toml`, so it
+  actually is the physical source of truth for every built-in table, not
+  just traces/logs. This is no longer a shared two-schema prerequisite
+  with `iceberg-schema-evolution` — that change found the same fact and
+  deferred the full consolidation here rather than doing it partially;
+  this change owns it entirely.
 - Add a load-time/test-level consistency check: every non-computed field a
   signal's resolved schema declares SHALL have a corresponding read and
   write path in that signal's conversion code, so a field declared but
@@ -74,17 +85,18 @@ schemas are byte-for-byte identical to today's hand-written ones.)
   becomes generated for physical-backed fields, hand-registration only for
   synthetic ones), `flight/schema.rs` (wire schema functions become thin
   wrappers over `SCHEMA_DEFINITIONS` resolution), `iceberg/schemas.rs`
-  (`ExponentialHistogram`/`Summary` resolve from `schemas.toml`, shared
-  work with `iceberg-schema-evolution`).
+  (all five metrics representations and profiles resolve from
+  `schemas.toml` instead of hand-built `StructField` lists).
 - **querier**: none functionally — `ir_planner.rs` keeps resolving through
   `LogicalSchema`, which now has a generated (not hand-written) source.
 - **router**: `endpoints/management.rs`'s schema-introspection endpoint is
   unaffected in output, only in how the data backing it is produced.
-- Depends on / shares scope with the already-proposed
-  `iceberg-schema-evolution` change (both touch `schemas.toml` and
-  `schema_parser.rs`); the metrics-schema consolidation task should land
-  once, not twice — coordinate ordering during `/opsx:apply` rather than
-  duplicate it.
+- Touches `schemas.toml`/`schema_parser.rs` alongside the already-merged
+  `iceberg-schema-evolution` change, but no longer shares a task with it —
+  that change's evolution mechanism is scoped to traces/logs only and
+  does not touch metrics/profiles; this change's metrics/profiles
+  consolidation is a prerequisite for evolution to reach them _later_, not
+  something split across both changes.
 - Not **BREAKING**: no wire format, Iceberg column, or query result
   changes for any existing signal — this is an internal source-of-truth
   consolidation, verified by golden-output tests.

@@ -9,9 +9,15 @@ this change:
    (`common::schema::schema_parser`): per-version `TableSchemaDefinition`
    with `inherits`/`field_renames`/`field_additions`, each field a
    `FieldDefinition { name, field_type, required, computed, physical_only }`.
-   Drives `traces`, `logs`, `metrics_gauge`, `metrics_sum`,
-   `metrics_histogram` today; `metrics_exponential_histogram`/
-   `metrics_summary` are absent (shared gap with `iceberg-schema-evolution`).
+   Drives **`traces` and `logs`' real physical tables** today. It also has
+   `metrics_gauge`/`metrics_sum`/`metrics_histogram` sections — but,
+   confirmed while scoping this change, those are wired only to the admin
+   schema-introspection endpoint (`router::endpoints::management`), not to
+   the actual `iceberg::schemas::create_metrics_*_schema_with` functions
+   that build those tables' real physical schema. `metrics_exponential_histogram`/
+   `metrics_summary` have no `schemas.toml` section at all. So all five
+   metrics representations, and profiles (no section either), are
+   currently 100% hand-written — a bigger gap than originally scoped here.
 2. `flight/schema.rs`: hand-written `Field` lists
    (`create_trace_schema`, `create_log_schema`, `create_metric_schema`,
    `create_profile_schema`, `create_span_batch_schema`) for the Arrow wire
@@ -156,12 +162,11 @@ behavior-preserving.
   removal by construction (task-level discipline, same as any other test
   update) — smaller and more local than keeping four _different_
   representations in sync across files.
-- **[Risk]** Sequencing conflict with `iceberg-schema-evolution` — both
-  change `schema_parser.rs`/`schemas.toml` and both need the
-  `ExponentialHistogram`/`Summary` consolidation → **Mitigation**: proposal.md
-  flags this explicitly; whichever change is implemented first should do
-  the metrics consolidation once, and the other rebases on top rather than
-  duplicating it.
+- **[Risk]** `iceberg-schema-evolution` (already merged/implemented) also
+  touches `schema_parser.rs`/`schemas.toml` → **Mitigation**: that change's
+  evolution engine is scoped to traces/logs only and does not depend on or
+  duplicate the metrics/profiles consolidation this change owns; no
+  coordination needed beyond a normal rebase.
 - **[Trade-off]** `filterable`/type-mapping metadata added to
   `FieldDefinition` makes `schemas.toml` denser and more coupled to the
   query layer's concerns, not purely "physical schema" anymore →
@@ -170,9 +175,10 @@ behavior-preserving.
 
 ## Migration Plan
 
-1. Land (or coordinate with) `iceberg-schema-evolution`'s
-   `ExponentialHistogram`/`Summary` → `schemas.toml` consolidation once,
-   shared by both changes.
+1. Fold all five metrics representations and profiles into `schemas.toml`,
+   matching the fields their current hand-written `iceberg::schemas`
+   functions already produce; wire those functions to resolve from
+   `SCHEMA_DEFINITIONS` like traces/logs already do.
 2. `schema_parser.rs`: add `filterable`, the type-mapping function, golden
    reference constants for current hand-written schemas.
 3. Generate wire schemas; golden tests pass; delete hand-written
