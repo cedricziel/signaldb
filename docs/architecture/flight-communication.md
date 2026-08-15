@@ -288,7 +288,7 @@ sequenceDiagram
     A->>A: convert to Arrow (otlp_traces_to_arrow)
     A->>A: append to Acceptor WAL + flush
     A->>W: Flight DoPut (Arrow batches)
-    W->>W: transform v1 to v2, append to Writer WAL
+    W->>W: transform v1 to physical-v3, append to Writer WAL
     W-->>A: confirm
     A->>A: mark WAL entry processed
     A-->>C: acknowledge
@@ -300,7 +300,7 @@ sequenceDiagram
 2. Acceptor converts OTLP to Arrow format using `otlp_traces_to_arrow`
 3. Acceptor appends the batch to its WAL and flushes for durability
 4. Acceptor uses Flight `DoPut` to send Arrow data to Writer (Storage capability)
-5. Writer transforms to the v2 storage schema and appends to its own WAL
+5. Writer transforms to the physical-v3 storage schema (function name says "v2" for historical reasons; it targets whatever `schemas.toml` currently declares as current) and appends to its own WAL
 6. Writer confirms after its WAL flush (it does **not** block the confirm on the Iceberg commit); Acceptor marks its WAL entry as processed
 7. Writer's `WalProcessor` asynchronously commits WAL entries to Iceberg (Parquet in the object store), **coalescing** pending entries per `(tenant, dataset, table)` — a group commits when `[writer].commit_interval` elapses or its rows reach `[writer].max_uncommitted_rows`. This caps the Iceberg snapshot / catalog-metadata write rate independent of ingest rate.
 

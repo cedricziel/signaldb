@@ -132,7 +132,7 @@ flowchart LR
 3. **OTLP-to-Arrow Conversion**: Acceptor converts OTLP protobuf data to Arrow RecordBatches using Flight schemas (v1 format).
 4. **Acceptor WAL**: Acceptor appends the Arrow batch to its own WAL (per tenant/dataset/signal type) and flushes it before forwarding.
 5. **Flight Transfer**: Acceptor sends Arrow RecordBatches to a Writer via Flight `do_put`, discovered by `Storage` capability.
-6. **Schema Transformation**: Writer transforms v1 Flight schema to the physical-v2 Iceberg schema (field renames, type conversions, computed partition fields).
+6. **Schema Transformation**: Writer transforms v1 Flight schema to the physical-v3 Iceberg schema (field renames, type conversions, computed partition fields). On every table load (not just creation), the writer also brings an existing traces/logs table's schema forward to the current version if it's behind — see [Schema Management](#schema-management).
 7. **Writer WAL Persistence**: Writer writes transformed data to its WAL (segmented by tenant/dataset/signal type) and confirms to the Acceptor.
 8. **Client Acknowledgment**: Acceptor marks its WAL entry processed and acknowledges to the client.
 9. **Background Flush**: Writer's `WalProcessor` reads WAL entries every 5 seconds (with exponential backoff up to 300s on repeated failures), creates/loads Iceberg tables, and writes Parquet files to the object store via DataFusion. Commits are **coalesced** per `(tenant, dataset, table)` (`[writer].commit_interval` / `max_uncommitted_rows`), so freshly-ingested data is queryable only once committed; a caller needing read-your-writes forces a commit with the Writer Flight `do_action("flush")`. See `architecture/flight-communication.md`.
@@ -454,13 +454,16 @@ Each service creates a `ServiceBootstrap` at startup which:
 
 Schema definitions are managed in `schemas.toml` at the repository root and compiled into the binary via `include_str!`. The schema system supports:
 
-- **Versioned schemas** with metadata tracking current physical versions (e.g., traces physical-v2, logs physical-v1, metrics physical-v1) and a separate `logical_schema_version` (`otel-2026-08`) for the client-visible OTel logical schema
+- **Versioned schemas** with metadata tracking current physical versions (e.g., traces physical-v3, logs physical-v1, metrics physical-v1) and a separate `logical_schema_version` (`otel-2026-08`) for the client-visible OTel logical schema
 - **Inheritance**: A schema version can inherit fields from a parent version
 - **Field renames**: e.g., `name` -> `span_name` in traces physical-v2
 - **Field additions**: e.g., `timestamp`, `date_day`, `hour` computed partition fields
+- **Field removals**: A schema version can drop a field inherited from its parent
 - **Computed fields**: Fields derived from other fields at write time (e.g., `date_day` from `start_time_unix_nano`); computed and partition-by fields are marked `physical_only` during resolution — they exist in the Iceberg table but are not part of the client-visible logical schema
 
-The Flight wire format (v1) and Iceberg storage format (physical-v2) differ intentionally. The Writer applies schema transformations at ingestion time via `transform_trace_v1_to_v2()`, resolving the physical schema by version key (`physical-v2`).
+The Flight wire format (v1) and Iceberg storage format (physical-v3) differ intentionally. The Writer applies schema transformations at ingestion time via `transform_trace_v1_to_v2()`, resolving the physical schema by version key (`physical-v3`).
+
+**Schema evolution**: for traces and logs (the two signals whose physical schema is `schemas.toml`-sourced), an existing table's schema is brought forward to the current version on every load, not just at creation — `common::iceberg::evolution::ensure_schema_current` diffs the table's live Iceberg schema against the target version by field name (never by regenerating field IDs positionally, which is only safe for a brand-new table) and commits any missing columns additively. Metrics and profiles are hand-written in `iceberg_schemas.rs`, not yet covered by this mechanism.
 
 For full details on table schemas, partitioning, and the object store layout, see [Storage Layout Design](storage-layout.md).
 
