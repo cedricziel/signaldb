@@ -1082,7 +1082,7 @@ DEBUG compactor::orphan::detector: Skipping recent file (within grace period) pa
 
 **Full Message:**
 
-```
+```text
 DEBUG compactor::orphan::cleaner: Deleted orphan file path=acme/prod/traces/data/orphan-001.parquet size_bytes=10485760 table=acme/prod/traces
 ```
 

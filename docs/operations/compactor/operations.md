@@ -231,13 +231,15 @@ Look for:
 INFO compactor::orphan::detector: Starting orphan detection tenant_id=acme dataset_id=prod table_name=traces
 INFO compactor::orphan::detector: Identified orphan candidates tenant_id=acme dataset_id=prod table_name=traces orphan_candidates=42
 INFO compactor::orphan::cleaner: Starting batch deletion of orphan files signaldb.job.candidates=42 signaldb.job.dry_run=true signaldb.job.batch_size=100
-INFO compactor::orphan::cleaner: Batch deletion complete would_delete=42 would_free_bytes=2147483648 failed=0 dry_run=true
+INFO compactor::orphan::cleaner: Batch deletion complete signaldb.job.files_deleted=42 signaldb.job.bytes_reclaimed=2147483648 signaldb.job.deletion_failures=0 signaldb.job.dry_run=true
 ```
 
-The per-file lines (`[DRY-RUN] Would delete orphan file …` / `Deleted orphan
-file …`, one per candidate with `path`, `size_bytes`, `table`) are logged at
-`DEBUG` — a backlog run can delete tens of thousands of files in one pass,
-which would otherwise flood the log at startup. Enable them with
+The per-file lines (`[DRY-RUN] Would delete orphan file …` for each dry-run
+candidate, `Deleted orphan file …` for each successful deletion, with `path`,
+`size_bytes`, `table`) are logged at `DEBUG` — a backlog run can delete tens
+of thousands of files in one pass, which would otherwise flood the log at
+startup. Failed deletions still log `Failed to delete orphan file` at
+`ERROR`. Enable the per-file lines with
 `RUST_LOG=compactor::orphan::cleaner=debug` when auditing individual
 deletions; the per-batch and per-run summaries above stay at `INFO`.
 
