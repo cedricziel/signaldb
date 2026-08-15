@@ -13,6 +13,12 @@ updates:
       - dependency-name: "bincode"
     assignees:
       - cedricziel
+    # Explicit `labels:` replaces Dependabot's defaults, so re-list them
+    # alongside docs-not-needed (a dependency bump never needs a doc update).
+    labels:
+      - "dependencies"
+      - "rust"
+      - "docs-not-needed"
     groups:
       datafusion-ecosystem:
         patterns:
@@ -46,6 +52,10 @@ updates:
       interval: "daily"
     assignees:
       - cedricziel
+    labels:
+      - "dependencies"
+      - "rust"
+      - "docs-not-needed"
     groups:
       # arrow must track grafana-plugin-sdk's arrow major; grouped so the
       # bump arrives as one PR that can be declined until the SDK moves.
@@ -59,6 +69,10 @@ updates:
       interval: "weekly"
     assignees:
       - cedricziel
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "docs-not-needed"
     ignore:
       # TypeScript 6+/7+ removed baseUrl/downlevelIteration/moduleResolution=node10,
       # which @grafana/tsconfig and the create-plugin scaffold still emit.
@@ -103,12 +117,19 @@ updates:
       interval: "daily"
     assignees:
       - cedricziel
+    labels:
+      - "dependencies"
+      - "docs-not-needed"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "daily"
     assignees:
       - cedricziel
+    labels:
+      - "dependencies"
+      - "github_actions"
+      - "docs-not-needed"
 
   - package-ecosystem: "docker"
     directory: "/"
@@ -116,3 +137,7 @@ updates:
       interval: "weekly"
     assignees:
       - cedricziel
+    labels:
+      - "dependencies"
+      - "docker"
+      - "docs-not-needed"
