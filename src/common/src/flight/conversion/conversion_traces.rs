@@ -846,15 +846,15 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
 
         let dropped_attributes_count = dropped_attributes_count_array
             .filter(|a| !a.is_null(row))
-            .map(|a| a.value(row) as u32)
+            .and_then(|a| u32::try_from(a.value(row)).ok())
             .unwrap_or(0);
         let dropped_events_count = dropped_events_count_array
             .filter(|a| !a.is_null(row))
-            .map(|a| a.value(row) as u32)
+            .and_then(|a| u32::try_from(a.value(row)).ok())
             .unwrap_or(0);
         let dropped_links_count = dropped_links_count_array
             .filter(|a| !a.is_null(row))
-            .map(|a| a.value(row) as u32)
+            .and_then(|a| u32::try_from(a.value(row)).ok())
             .unwrap_or(0);
 
         // Parse attributes JSON string to KeyValue vector
@@ -1605,6 +1605,69 @@ mod tests {
         // #1208: with the numeric columns entirely absent (pre-#1208
         // data), kind/status.code above were derived from the string
         // columns, and dropped counts default to 0 rather than erroring.
+        assert_eq!(span.dropped_attributes_count, 0);
+        assert_eq!(span.dropped_events_count, 0);
+        assert_eq!(span.dropped_links_count, 0);
+    }
+
+    #[test]
+    fn arrow_to_otlp_traces_falls_back_to_zero_for_out_of_range_dropped_counts() {
+        // The physical columns are Int64; the OTLP field is u32. A value
+        // outside u32's range must never be truncated/wrapped by an `as`
+        // cast -- it should fall back to 0, same as an absent column.
+        let span = Span {
+            trace_id: hex::decode("0123456789abcdef0123456789abcdef").unwrap(),
+            span_id: hex::decode("0123456789abcdef").unwrap(),
+            parent_span_id: vec![],
+            name: "test-span".to_string(),
+            kind: 1,
+            start_time_unix_nano: 1,
+            end_time_unix_nano: 2,
+            attributes: vec![],
+            dropped_attributes_count: 0,
+            events: vec![],
+            dropped_events_count: 0,
+            links: vec![],
+            dropped_links_count: 0,
+            status: None,
+            flags: 0,
+            trace_state: String::new(),
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let batch = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+
+        // Overwrite the dropped-count columns with out-of-range values
+        // (negative, and above u32::MAX) that a legitimate OTLP span could
+        // never produce, to exercise the defensive fallback.
+        let schema = batch.schema();
+        let mut columns: Vec<ArrayRef> = (0..batch.num_columns())
+            .map(|i| batch.column(i).clone())
+            .collect();
+        let replace = |name: &str, value: i64, columns: &mut Vec<ArrayRef>| {
+            let idx = schema.column_with_name(name).unwrap().0;
+            columns[idx] = Arc::new(Int64Array::from(vec![value]));
+        };
+        replace("dropped_attributes_count", -1, &mut columns);
+        replace(
+            "dropped_events_count",
+            i64::from(u32::MAX) + 1,
+            &mut columns,
+        );
+        replace("dropped_links_count", i64::MAX, &mut columns);
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+
+        let result = arrow_to_otlp_traces(&batch);
+        let span = &result.resource_spans[0].scope_spans[0].spans[0];
         assert_eq!(span.dropped_attributes_count, 0);
         assert_eq!(span.dropped_events_count, 0);
         assert_eq!(span.dropped_links_count, 0);
