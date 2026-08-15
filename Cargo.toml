@@ -12,6 +12,7 @@ members = [
     "src/pyroscope-api",
     "src/querier",
     "src/router",
+    "src/schema-model",
     "src/signal-producer",
     "src/signaldb-api",
     "src/signaldb-bin",

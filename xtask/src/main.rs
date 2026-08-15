@@ -16,6 +16,14 @@ enum Command {
     Generate,
     /// Check that generated code is up-to-date (for CI)
     Check,
+    /// Vendor the OpenTelemetry semantic-conventions model at the version
+    /// pinned by `common::self_monitoring::SEMCONV_SCHEMA_URL` into
+    /// `vendor/otel-semconv/`.
+    VendorSemconv {
+        /// Override the semconv version (defaults to the self-monitoring pin).
+        #[arg(long)]
+        version: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -23,7 +31,103 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Generate => generate(false),
         Command::Check => generate(true),
+        Command::VendorSemconv { version } => vendor_semconv(version),
     }
+}
+
+/// The semconv version SignalDB's self-monitoring telemetry claims, read
+/// textually from `common` so xtask does not have to link the workspace.
+fn pinned_semconv_version(root: &Path) -> Result<String> {
+    let path = root.join("src/common/src/self_monitoring/mod.rs");
+    let src =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    const PREFIX: &str = "https://opentelemetry.io/schemas/";
+    let line = src
+        .lines()
+        .find(|l| l.contains("SEMCONV_SCHEMA_URL") && l.contains(PREFIX))
+        .context("SEMCONV_SCHEMA_URL not found in common::self_monitoring")?;
+    let start = line.find(PREFIX).context("schema url prefix")? + PREFIX.len();
+    let version: String = line[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    if version.is_empty() {
+        anyhow::bail!("could not parse a version out of {line:?}");
+    }
+    Ok(version)
+}
+
+/// Clone `open-telemetry/semantic-conventions` at `v<version>` and copy its
+/// `model/` tree (plus LICENSE) into `vendor/otel-semconv/<version>/`,
+/// replacing whatever vintage was vendored before, and record the version in
+/// `vendor/otel-semconv/VERSION`. The bundled `otel` schema registry is built
+/// from this tree; a unit test in `common` keeps VERSION equal to the
+/// self-monitoring pin.
+fn vendor_semconv(version: Option<String>) -> Result<()> {
+    let root = project_root();
+    let version = match version {
+        Some(v) => v,
+        None => pinned_semconv_version(&root)?,
+    };
+    let dest_root = root.join("vendor/otel-semconv");
+    let tmp = std::env::temp_dir().join(format!("signaldb-semconv-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let status = std::process::Command::new("git")
+        .args([
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            "--branch",
+            &format!("v{version}"),
+            "https://github.com/open-telemetry/semantic-conventions",
+        ])
+        .arg(&tmp)
+        .status()
+        .context("running git clone")?;
+    if !status.success() {
+        anyhow::bail!("git clone of semantic-conventions v{version} failed");
+    }
+
+    // Replace any previously vendored vintage wholesale.
+    if dest_root.exists() {
+        std::fs::remove_dir_all(&dest_root).context("clearing vendor/otel-semconv")?;
+    }
+    let dest = dest_root.join(&version);
+    copy_tree(&tmp.join("model"), &dest.join("model"))?;
+    std::fs::copy(tmp.join("LICENSE"), dest.join("LICENSE")).context("copying LICENSE")?;
+    std::fs::write(dest_root.join("VERSION"), format!("{version}\n"))?;
+    std::fs::write(
+        dest_root.join("README.md"),
+        format!(
+            "# Vendored OpenTelemetry semantic conventions\n\n\
+             `{version}/model/` is a verbatim copy of `model/` from\n\
+             https://github.com/open-telemetry/semantic-conventions at tag `v{version}`\n\
+             (Apache-2.0, see `{version}/LICENSE`). It is the source of the bundled\n\
+             `otel` schema registry. Do not edit by hand — regenerate with\n\
+             `cargo xtask vendor-semconv` after bumping\n\
+             `common::self_monitoring::SEMCONV_SCHEMA_URL`.\n"
+        ),
+    )?;
+    let _ = std::fs::remove_dir_all(&tmp);
+    let files = collect_files(&dest.join("model"))?.len();
+    eprintln!("  VENDORED semconv v{version} ({files} model files)");
+    Ok(())
+}
+
+/// Recursively copy `src` into `dst` (created if missing).
+fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 fn project_root() -> PathBuf {

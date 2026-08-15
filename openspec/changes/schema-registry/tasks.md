@@ -1,36 +1,36 @@
 ## 1. Vendor the OpenTelemetry semantic conventions
 
-- [ ] 1.1 Add `cargo xtask vendor-semconv` that clones
+- [x] 1.1 Add `cargo xtask vendor-semconv` that clones
       `open-telemetry/semantic-conventions` at the tag derived from
       `SEMCONV_SCHEMA_URL`, copies `model/**` into
       `vendor/otel-semconv/<version>/model/`, and writes `VERSION`
-- [ ] 1.2 Run it for 1.43.0 and commit the vendored model; add a
+- [x] 1.2 Run it for 1.43.0 and commit the vendored model; add a
       `deny.toml`/license note for the vendored CC/Apache content
-- [ ] 1.3 Failing test in `common`: `vendor/otel-semconv/VERSION` equals the
+- [x] 1.3 Failing test in `common`: `vendor/otel-semconv/VERSION` equals the
       version in `SEMCONV_SCHEMA_URL`; wire the check into CI
 
 ## 2. Weaver-model parser and validator (`schema-model` crate)
 
-- [ ] 2.1 Create `src/schema-model` (no workspace-heavy deps: serde,
+- [x] 2.1 Create `src/schema-model` (no workspace-heavy deps: serde,
       serde_json, serde_norway, thiserror); write failing conformance test that
       parses every file under the vendored model with zero errors
-- [ ] 2.2 Implement serde types for manifest + groups (`attribute_group`,
+- [x] 2.2 Implement serde types for manifest + groups (`attribute_group`,
       `entity`, `metric`; opaque passthrough for other types/unknown fields),
       attributes (`id`/`ref`, `type` incl. enum + `template[...]`, brief, note,
       examples, stability, both `deprecated` shapes, requirement_level, role),
       `extends`, `entity_associations`, `display_name`; make 2.1 pass
-- [ ] 2.3 Failing tests for the resolver: `ref`/`extends` resolution across a
+- [x] 2.3 Failing tests for the resolver: `ref`/`extends` resolution across a
       registry and its dependencies; flattening into attribute/entity/metric
       records with reverse indexes (attribute→entity roles, entity→metrics)
-- [ ] 2.4 Implement resolution + flattening; make 2.3 pass; assert against
+- [x] 2.4 Implement resolution + flattening; make 2.3 pass; assert against
       known upstream facts (64 entities, `k8s.pod.cpu.time` → `k8s.pod`,
       `http.status_code` deprecated → `http.response.status_code`)
-- [ ] 2.5 Failing tests for the validator: duplicate ids, dangling ref, invalid
+- [x] 2.5 Failing tests for the validator: duplicate ids, dangling ref, invalid
       type/role, metric missing instrument/unit, association to unknown
       entity, extension adding an identifying attribute, reserved namespace;
       error paths name the group/attribute
-- [ ] 2.6 Implement the validator; make 2.5 pass
-- [ ] 2.7 CI job: `weaver registry check` on the sample custom registries in
+- [x] 2.6 Implement the validator; make 2.5 pass
+- [x] 2.7 CI job: `weaver registry check` on the sample custom registries in
       `src/schema-model/tests/fixtures/` (accept-set ⊆ Weaver)
 
 ## 3. Bundled registries in `common`

@@ -98,6 +98,13 @@ true`; `"oneOf": [{"type": "null"}, X]` (emitted for `Option<T>` where `T`
   consumes 3.1 directly. In `check` mode xtask regenerates into a temp directory
   and compares, so it never mutates the tree.
 
+xtask also owns one non-OpenAPI generation task: `cargo xtask vendor-semconv`
+copies the OpenTelemetry semantic-conventions `model/` tree at the version
+pinned by `common::self_monitoring::SEMCONV_SCHEMA_URL` into
+`vendor/otel-semconv/` (the source of the bundled `otel` schema registry). It
+is run by hand when the pin is bumped; a `common` test fails if the vendored
+`VERSION` and the pin disagree.
+
 Because the annotated paths are absolute, generated client URLs are absolute
 too — the CLI's admin client and the UI client are both configured with the
 router root as their base URL.

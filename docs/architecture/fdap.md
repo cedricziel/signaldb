@@ -111,6 +111,13 @@ poorly by object stores, so ingestion writes to a local write-ahead log
 before acknowledging the client; the writer drains the WAL into Parquet
 asynchronously. See [WAL persistence](../operations/wal-persistence.md).
 
+**Semantics ride outside the stack.** The FDAP layers carry bytes and
+types, not meaning. What an attribute key or metric name _means_ comes from
+the OpenTelemetry semantic conventions, which SignalDB vendors
+(`vendor/otel-semconv/`) and parses with the dependency-light `schema-model`
+crate — deliberately free of Arrow/DataFusion so the schema registry can be
+built and validated without the query engine.
+
 **One version rule.** Arrow, Parquet, and DataFusion evolve together and
 must agree on versions. SignalDB therefore always imports Arrow and
 Parquet types through DataFusion's re-exports — the rule and rationale

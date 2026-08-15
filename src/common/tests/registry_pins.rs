@@ -274,3 +274,28 @@ fn int_registry_attributes_are_emitted_as_i64() {
          (u64/usize bridge as strings): {offending:#?}"
     );
 }
+
+/// The vendored OpenTelemetry semantic-conventions model
+/// (`vendor/otel-semconv/`, the source of the bundled `otel` schema registry)
+/// must be the same vintage the self-monitoring telemetry claims via
+/// `SEMCONV_SCHEMA_URL`. Bump both together: change the constant, then run
+/// `cargo xtask vendor-semconv`.
+#[test]
+fn vendored_semconv_matches_self_monitoring_pin() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/otel-semconv");
+    let vendored = std::fs::read_to_string(root.join("VERSION"))
+        .expect("vendor/otel-semconv/VERSION (run `cargo xtask vendor-semconv`)");
+    let pinned = common::self_monitoring::SEMCONV_SCHEMA_URL
+        .rsplit('/')
+        .next()
+        .expect("schema url ends in a version");
+    assert_eq!(
+        vendored.trim(),
+        pinned,
+        "vendored semconv drifted from the pin"
+    );
+    assert!(
+        root.join(pinned).join("model").is_dir(),
+        "vendor/otel-semconv/{pinned}/model missing"
+    );
+}

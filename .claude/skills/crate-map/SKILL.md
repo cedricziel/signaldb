@@ -22,6 +22,7 @@ sources:
 | **tempo-api**         | `src/tempo-api/`       | Library          | Grafana Tempo API types and protobuf definitions                                                                                                                         |
 | **loki-api**          | `src/loki-api/`        | Library          | Loki HTTP API response types (LogQL query surface)                                                                                                                       |
 | **prometheus-api**    | `src/prometheus-api/`  | Library          | Prometheus HTTP API response types (PromQL query surface)                                                                                                                |
+| **schema-model**      | `src/schema-model/`    | Library          | OTel Weaver semantic-convention model: parser (single-doc JSON/YAML or multi-file `model/` tree), resolver (flat attribute/entity/metric defs + reverse indexes), subset validator; dependency-light so `common` and its build script can use it |
 | **signaldb-bin**      | `src/signaldb-bin/`    | Binary           | The `signaldb` executable: monolith by default, or one service via a subcommand (`signaldb router`, …); every service crate exposes `cli::Args` + `cli::run`                                                                                                                     |
 | **signaldb-api**      | `src/signaldb-api/`    | Library          | Hand-written admin API DTOs (utoipa `ToSchema`); the admin half of the code-first OpenAPI schemas (management DTOs live in `router`)                                     |
 | **signaldb-cli**      | `src/signaldb-cli/`    | Binary           | CLI for tenant, API key, dataset management; shell completions incl. dynamic tenant IDs                                                                                  |
@@ -135,3 +136,5 @@ This is the shared foundation. Key modules:
 | `signaldb.dist.toml` | Example configuration file                            |
 | `compose.yml`        | Development environment setup                         |
 | `Dockerfile`         | Multi-stage build for all services                    |
+| `vendor/otel-semconv/` | Vendored OpenTelemetry semconv `model/` at the self-monitoring pin (`cargo xtask vendor-semconv`); source of the bundled `otel` schema registry |
+| `otel/registry/`     | SignalDB's own semconv registry (`signaldb.*` attributes; Weaver-checked in CI); source of the bundled `signaldb` schema registry |

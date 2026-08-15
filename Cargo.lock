@@ -6461,6 +6461,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "schema-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "schemars"
 version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
