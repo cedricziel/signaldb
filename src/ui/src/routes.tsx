@@ -27,7 +27,13 @@ function ExploreRoute() {
   // of silently rendering the logs view under the wrong URL. Only the
   // generic `:signal` route needs this guard — `traces/:traceId`'s static
   // "traces" segment is always valid, and `signal` isn't even matched there.
-  if (traceId === undefined && signalFromParam(signal) !== signal) {
+  // Routes without a `:signal` param (traces/:traceId, catalog/...) are
+  // valid by construction.
+  if (
+    traceId === undefined &&
+    signal !== undefined &&
+    signalFromParam(signal) !== signal
+  ) {
     return <Navigate to={`/logs${location.search}`} replace />;
   }
   return <ExploreView state={state} update={update} />;
@@ -49,6 +55,15 @@ export function AppRoutes() {
             specificity ranking regardless of declaration order relative to
             :signal below, but listed first for readability. */}
         <Route path="traces/:traceId" element={<ExploreRoute />} />
+        {/* Catalog selection is path state too — entity type, then the
+            drilled-into entity and breakdown row (see lib/urlState.ts's
+            buildPath / parseCatalogPath). */}
+        <Route path="catalog/:entity" element={<ExploreRoute />} />
+        <Route path="catalog/:entity/:primary" element={<ExploreRoute />} />
+        <Route
+          path="catalog/:entity/:primary/:secondary"
+          element={<ExploreRoute />}
+        />
         <Route path=":signal" element={<ExploreRoute />} />
         <Route path="*" element={<Navigate to="/logs" replace />} />
       </Route>

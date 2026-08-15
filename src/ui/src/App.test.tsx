@@ -2,6 +2,7 @@ import { screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserRouter } from "react-router";
 import { TENANT_CONTEXT_STORAGE_KEY, getTenantContext } from "./api/http";
+import * as catalogApi from "./api/catalog";
 import { AppRoutes } from "./routes";
 import {
   emptyLabels,
@@ -10,6 +11,26 @@ import {
   renderWithClient,
   stubFetchRoutes,
 } from "./test/render";
+
+// The catalog's server-side aggregates are mocked at the module boundary (as
+// in CatalogView.test.tsx); everything else in the shell keeps real fetches.
+vi.mock("./api/catalog", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./api/catalog")>();
+  return {
+    ...actual,
+    fetchCatalogEntities: vi
+      .fn()
+      .mockResolvedValue({ groups: [], truncated: false }),
+  };
+});
+vi.mock("./api/traceGroupMembers", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./api/traceGroupMembers")>();
+  return {
+    ...actual,
+    fetchTraceGroupMembers: vi.fn().mockResolvedValue([]),
+  };
+});
 
 function renderApp(path = "/") {
   window.history.replaceState(null, "", path);
@@ -154,6 +175,80 @@ describe("App", () => {
     expect(
       JSON.parse(localStorage.getItem(TENANT_CONTEXT_STORAGE_KEY) ?? "{}"),
     ).toEqual({ tenant: "globex", dataset: "main" });
+  });
+
+  it("routes catalog entity detail under /catalog/:entity/:primary", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+    ]);
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/api/v1/query", body: { rows: [], columns: [] } },
+    ]);
+    renderApp("/catalog/host/db-01?tenant=acme");
+    const crumb = await screen.findByRole("navigation", {
+      name: "Breadcrumb",
+    });
+    expect(crumb).toHaveTextContent("Hosts");
+    expect(crumb).toHaveTextContent("db-01");
+    expect(window.location.pathname).toBe("/catalog/host/db-01");
+    expect(window.location.search).toContain("tenant=acme");
+  });
+
+  it("drills from the catalog list into an entity route and back", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+    ]);
+    vi.mocked(catalogApi.fetchCatalogEntities).mockResolvedValue({
+      groups: [
+        {
+          values: ["gateway", "edge"],
+          count: 12,
+          errors: 0,
+          p50Ms: 1,
+          p95Ms: 2,
+          lastNs: "1700000000000000000",
+        },
+      ],
+      truncated: false,
+    });
+    // Detail-only aggregates (span kinds, dependency breakdown) go through
+    // the generic query endpoint; an empty envelope is enough here.
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/api/v1/query", body: { rows: [], columns: [] } },
+    ]);
+    renderApp("/catalog/service?tenant=acme");
+    const user = (await import("@testing-library/user-event")).default;
+    await user.click(await screen.findByText("gateway"));
+    await waitFor(() =>
+      expect(window.location.pathname).toBe("/catalog/service/gateway,edge"),
+    );
+    expect(window.location.search).toContain("tenant=acme");
+    expect(
+      await screen.findByRole("navigation", { name: "Breadcrumb" }),
+    ).toHaveTextContent("gateway · edge");
+    window.history.back();
+    await waitFor(() =>
+      expect(window.location.pathname).toBe("/catalog/service"),
+    );
+  });
+
+  it("ignores legacy catalog query params and shows the default list", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+    ]);
+    renderApp("/catalog?entity=host&primary=x&tenant=acme");
+    await screen.findByRole("complementary", { name: "Entity types" });
+    expect(
+      screen.queryByRole("navigation", { name: "Breadcrumb" }),
+    ).not.toBeInTheDocument();
+    expect(window.location.pathname).toBe("/catalog");
   });
 
   it("switches signals via tabs, updating the path", async () => {
