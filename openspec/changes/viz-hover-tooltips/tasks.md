@@ -33,4 +33,5 @@
 - [x] 3.2 Guidance for future panels: `.claude/skills/frontend-instrumentation`
       or the explore-ui skill — "every viz panel uses `VizTooltip`"; run
       `scripts/check-doc-freshness.sh` and settle any flagged doc
-- [ ] 3.3 UI suite, tsc, eslint clean; verify a chart in the running app
+- [ ] 3.3 UI suite, tsc, eslint clean (done); verify a chart in the running app
+      (pending — not run in the implementation worktree)
