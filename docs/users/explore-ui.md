@@ -207,6 +207,30 @@ the log record — are merged in this view, and instrumentation-scope attributes
 are not shown at all. Storage keeps all three separate; see the
 [Query IR reference](querying-ir.md) to query them individually today.
 
+### What an attribute key means
+
+Wherever the UI shows an attribute key as a label — the expanded log line, the
+span-detail attribute table, the logs field sidebar, the trace facet headers,
+and the filter chip's key suggestions — it resolves the key through the
+[schema registry](schema-registry.md) for the active tenant and shows what the
+key means next to it. A known key keeps its raw spelling (still copyable) and
+gains its description, the defining namespace (`otel`, or a custom registry's
+name), the entity it identifies or describes, and a `deprecated → <new key>`
+marker when the convention renamed it; rows in the detail panels are grouped
+under the owning group's title (for example "Kubernetes Attributes"), with keys
+no registry knows listed under "Other" exactly as before. Hovering a key, or
+the info glyph beside a sidebar entry or facet header, opens the full
+definition — type, stability, examples, and every other registry that also
+defines the key, so a tenant's own definition never hides the upstream one.
+
+Resolution runs in the background and is cached for the session: rows render
+at once with the raw key and pick up the semantics when they arrive, and an
+unavailable registry endpoint just leaves the keys bare, with no error in the
+panel. Typing in the filter chip's key input merges the registry's prefix
+search (each suggestion with its description) with the labels observed in the
+current data, so an observed key the registry does not know remains
+suggestible — marked "seen", without a description.
+
 ### Narrowing traces
 
 The traces tab has a facet sidebar. Expanding a facet lists its values with the

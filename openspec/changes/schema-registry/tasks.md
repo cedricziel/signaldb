@@ -116,15 +116,15 @@
 
 ## 7. Explore UI semantic labels
 
-- [ ] 7.1 Failing hook tests: `useSemantics()` batches/de-dupes keys, caches
+- [x] 7.1 Failing hook tests: `useSemantics()` batches/de-dupes keys, caches
       per session/tenant, degrades to raw key on error
-- [ ] 7.2 Implement the hook over the generated client (batch `?keys=`)
-- [ ] 7.3 Failing component tests: span/log detail rows show key + brief +
+- [x] 7.2 Implement the hook over the generated client (batch `?keys=`)
+- [x] 7.3 Failing component tests: span/log detail rows show key + brief +
       title + namespace tag; unregistered key unchanged; deprecated marker with
       replacement; tenant definition primary with otel alternative
-- [ ] 7.4 Wire `spanAttributes` detail table, log detail panel, `FieldSidebar`,
+- [x] 7.4 Wire `spanAttributes` detail table, log detail panel, `FieldSidebar`,
       `TraceFacets` headers
-- [ ] 7.5 Failing test + implement: `FilterChips` autocomplete merges registry
+- [x] 7.5 Failing test + implement: `FilterChips` autocomplete merges registry
       prefix search (with briefs) and observed labels
 - [ ] 7.6 Verify in the running app (`/run`) against `_system/_monitoring` data
 
