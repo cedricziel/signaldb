@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Outlet } from "react-router";
 import { setTenantContext } from "./api/http";
 import { LoginGate } from "./features/shell/LoginPanel";
@@ -12,14 +13,31 @@ import { useExploreState } from "./lib/urlState";
  */
 export function App() {
   const [state, update] = useExploreState();
-  // Keep the API clients' tenant headers in sync with the URL state.
-  setTenantContext({ tenant: state.tenant, dataset: state.dataset });
+
+  // The tenant/dataset context lives in the URL (`?tenant=&dataset=`), but
+  // plain links (user menu → Schema, /manage, deep links inside the schema
+  // hub, …) drop the search string. A session-authenticated request without
+  // `X-Tenant-ID` is a 401, which the login gate would misread as "logged
+  // out". So the last non-empty context is sticky: it keeps feeding the API
+  // clients and is written back into the URL so subsequent links carry it.
+  const remembered = useRef({ tenant: state.tenant, dataset: state.dataset });
+  if (state.tenant) {
+    remembered.current = { tenant: state.tenant, dataset: state.dataset };
+  }
+  const effective = state.tenant ? state : { ...state, ...remembered.current };
+  // Keep the API clients' tenant headers in sync with the (effective) state.
+  setTenantContext({ tenant: effective.tenant, dataset: effective.dataset });
+  useEffect(() => {
+    if (!state.tenant && remembered.current.tenant) {
+      update(remembered.current);
+    }
+  }, [state.tenant, update]);
 
   return (
     <div className="app-frame">
-      <TopBar state={state} update={update} />
+      <TopBar state={effective} update={update} />
       <main className="app-main">
-        <Outlet context={{ state, update }} />
+        <Outlet context={{ state: effective, update }} />
       </main>
       <LoginGate
         onLoggedIn={({ tenant, dataset }) => update({ tenant, dataset })}
