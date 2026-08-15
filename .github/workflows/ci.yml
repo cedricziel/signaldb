@@ -19,11 +19,16 @@ concurrency:
 jobs:
   # Detect whether anything outside the Grafana plugin changed. The plugin
   # is a standalone workspace with its own CI (grafana-plugin-*.yml); the
-  # jobs below are skipped for plugin-only changes. A workflow-level
-  # paths-ignore must NOT be used for this: the ruleset requires
-  # "Check & Lint" and "Test Suite (stable)", and a path-filtered workflow
-  # never reports those contexts, deadlocking plugin-only PRs. Skipped
-  # jobs, by contrast, satisfy required checks.
+  # jobs below are skipped for plugin-only changes on non-main targets. A
+  # workflow-level paths-ignore must NOT be used for this: the ruleset
+  # requires "Check & Lint" and "Test Suite (stable)", and a path-filtered
+  # workflow never reports those contexts, deadlocking plugin-only PRs.
+  # Skipped jobs, by contrast, satisfy required checks — except when the
+  # skip-cause job is itself skipped (matrix jobs skipped via `needs:` don't
+  # expand, so their context name never matches what's required); to avoid
+  # that failure mode entirely, anything targeting main always runs full CI
+  # regardless of what changed. See the "always run full CI on main" branch
+  # in the filter step below.
   changes:
     name: Detect changed areas
     runs-on: ubuntu-latest
@@ -39,6 +44,20 @@ jobs:
         id: filter
         shell: bash
         run: |
+          # The path-filter skip below is a cost optimization for PRs stacked
+          # on top of each other (e.g. gh-stack layers), where an
+          # intermediate layer's diff genuinely is plugin/UI-only. It must
+          # NOT apply to anything landing on main: main is the actual merge
+          # gate, and skipped jobs whose skip-cause is itself skipped (see
+          # the `test` job's `needs: check`) report under a name that never
+          # matches the matrix-expanded required-check context (e.g. "Test
+          # Suite" instead of "Test Suite (stable)"), deadlocking the PR
+          # forever. Always run full CI when the target is main.
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.pull_request.base.ref }}" = "main" ]; then
+            echo "core=true" >> "$GITHUB_OUTPUT"
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             # PR checkouts are merge commits; first parent is the base tip.
             base=$(git rev-parse HEAD^1)
