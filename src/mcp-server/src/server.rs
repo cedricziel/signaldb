@@ -19,6 +19,9 @@
 //! - `query_ir` — native Query IR document (structured query surface)
 //! - `compact_run` / `compact_status` / `compact_dry_run` — operational
 //!   compaction control (admin-authenticated)
+//! - `list_api_keys` / `create_api_key` / `update_api_key_scopes` — API-key
+//!   management over the admin API (admin-authenticated); keys carry explicit
+//!   scopes from the shared vocabulary (`common::auth::API_KEY_SCOPES`)
 //!
 //! Raw SQL is served over Arrow Flight (gRPC) rather than the router HTTP API;
 //! this server is an HTTP forwarder and holds no Flight client, so SQL stays a
@@ -119,6 +122,49 @@ struct GetTraceParams {
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
+}
+
+/// Parameters for `list_api_keys`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListApiKeysParams {
+    /// Tenant whose keys to list.
+    tenant_id: String,
+}
+
+/// Parameters for `create_api_key`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct CreateApiKeyParams {
+    /// Tenant the key belongs to.
+    tenant_id: String,
+    /// Optional human-readable key name.
+    #[serde(default)]
+    name: Option<String>,
+    /// Scopes the key carries (required, at least one). Vocabulary:
+    /// `metrics:write`, `logs:write`, `traces:write`, `profiles:write`,
+    /// `traces:read`, `logs:read`, `metrics:read`, `profiles:read`,
+    /// `schema:read`, `schema:write`.
+    scopes: Vec<String>,
+    /// Optional dataset the key is restricted to.
+    #[serde(default)]
+    dataset_id: Option<String>,
+}
+
+/// Parameters for `update_api_key_scopes`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct UpdateApiKeyScopesParams {
+    /// Tenant the key belongs to.
+    tenant_id: String,
+    /// Key to update (the `id` from `list_api_keys` / `create_api_key`).
+    key_id: String,
+    /// Replacement scope list (non-empty). Omit to keep the current scopes.
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+    /// Replacement dataset restriction. Omit to keep the current one.
+    #[serde(default)]
+    dataset_id: Option<String>,
 }
 
 /// Parameters for `get_profile`.
@@ -585,6 +631,82 @@ impl McpServer {
             .map_err(|e| map_sdk_err(e, "compact_dry_run"))?;
         json_result(&resp.into_inner())
     }
+
+    #[tool(
+        description = "List a tenant's API keys with their scopes and dataset restriction (admin API; requires administrative credentials). Raw secrets are never returned."
+    )]
+    async fn list_api_keys(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<ListApiKeysParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .list_api_keys()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "list_api_keys"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read) and optionally restricted to `dataset_id` (admin API; requires administrative credentials). The raw secret is returned once."
+    )]
+    async fn create_api_key(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<CreateApiKeyParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if p.scopes.is_empty() {
+            return Err(ErrorData::invalid_params(
+                "at least one scope is required",
+                None,
+            ));
+        }
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .create_api_key()
+            .tenant_id(&p.tenant_id)
+            .body(signaldb_sdk::types::CreateApiKeyRequest {
+                name: p.name,
+                scopes: p.scopes,
+                dataset_id: p.dataset_id,
+            })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "create_api_key"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Update the scopes and/or dataset restriction of a live API key without rotating its secret (admin API; requires administrative credentials). Revoked keys cannot be updated; the change applies to the key's next request."
+    )]
+    async fn update_api_key_scopes(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<UpdateApiKeyScopesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if p.scopes.is_none() && p.dataset_id.is_none() {
+            return Err(ErrorData::invalid_params(
+                "nothing to update: pass `scopes` and/or `dataset_id`",
+                None,
+            ));
+        }
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .update_api_key()
+            .tenant_id(&p.tenant_id)
+            .key_id(&p.key_id)
+            .body(signaldb_sdk::types::UpdateApiKeyRequest {
+                scopes: p.scopes,
+                dataset_id: p.dataset_id,
+            })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "update_api_key_scopes"))?;
+        json_result(&resp.into_inner())
+    }
 }
 
 impl McpServer {
@@ -928,7 +1050,7 @@ fn flamegraph_or_not_found(
 /// Map a downstream router/SDK error onto an actionable MCP tool error, so
 /// agents see "not found" / "invalid query" / "access denied" / "rate limited"
 /// rather than an opaque transport failure.
-fn map_sdk_err(err: signaldb_sdk::Error<()>, what: &str) -> ErrorData {
+fn map_sdk_err<E: std::fmt::Debug>(err: signaldb_sdk::Error<E>, what: &str) -> ErrorData {
     match err.status().map(|s| s.as_u16()) {
         Some(400) | Some(422) | Some(501) => {
             ErrorData::invalid_params(format!("{what}: invalid request: {err}"), None)
