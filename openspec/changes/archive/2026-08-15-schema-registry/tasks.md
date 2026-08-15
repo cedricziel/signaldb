@@ -126,7 +126,11 @@
       `TraceFacets` headers
 - [x] 7.5 Failing test + implement: `FilterChips` autocomplete merges registry
       prefix search (with briefs) and observed labels
-- [ ] 7.6 Verify in the running app (`/run`) against `_system/_monitoring` data
+- [x] 7.6 Verify in the running app (`/run`) against `_system/_monitoring` data
+      (verified 2026-08-15 with a local monolith + Vite proxy: real self-monitoring
+      span keys resolve — rpc.*/server.*/thread.* and, after the `resource.` strip,
+      service.*/telemetry.sdk.*/deployment.* with entity roles; SignalDB-internal
+      keys stay raw; browser extension unavailable, so checked at the API the UI calls)
 
 ## 8. Schema hub UI (management & inspection)
 
@@ -152,11 +156,11 @@
 
 ## 9. Docs, skills, housekeeping
 
-- [ ] 9.1 Docs (route via the docs skill): users guide "Schema registry —
+- [x] 9.1 Docs (route via the docs skill): users guide "Schema registry —
       custom conventions", operations note on vendored semconv + pin, API
       reference regenerated
-- [ ] 9.2 Update skills: `cli-command-surface`-touching `dev-workflow` /
+- [x] 9.2 Update skills: `cli-command-surface`-touching `dev-workflow` /
       `crate-map` (new `schema-model` crate, `vendor/otel-semconv`), `docs`
       routing if needed
-- [ ] 9.3 `cargo machete`, `cargo deny check`, `make lint && make format`,
+- [x] 9.3 `cargo machete`, `cargo deny check`, `make lint && make format`,
       `/simplify`; validate specs (`openspec validate --strict`)
