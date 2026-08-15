@@ -209,6 +209,35 @@ describe("App", () => {
     expect(window.location.pathname).toBe("/traces");
   });
 
+  it("round-trips a trace id containing a literal % without double-decoding", async () => {
+    // react-router's useParams() already URL-decodes the :traceId route
+    // param; a second decodeURIComponent would corrupt "a%b" or throw
+    // URIError outright, since "%b" isn't a valid escape sequence.
+    stubFetchRoutes([
+      { match: "query_range", body: emptyMatrix },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
+      {
+        match: "/tempo/api/traces/a%25b",
+        body: {
+          traceID: "a%b",
+          rootServiceName: "gateway",
+          rootTraceName: "weird-id-trace",
+          startTimeUnixNano: "1000",
+          durationMs: 5,
+          spanSets: [{ matched: 0, spans: [] }],
+        },
+      },
+    ]);
+    renderApp("/traces");
+    const user = (await import("@testing-library/user-event")).default;
+
+    await user.type(await screen.findByLabelText("Trace ID"), "a%b{enter}");
+
+    expect(await screen.findByText("a%b")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/traces/a%25b");
+  });
+
   it("re-clicking the active tab returns to that tab's main view", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },

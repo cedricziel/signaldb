@@ -96,9 +96,10 @@ configuration: it groups the OTel attributes that identify a **service**,
 **container**, or **process**, and lists whatever it finds under each
 entity type in the left nav. There is no hardcoded or sample data: an
 entity type with nothing matching in the window renders an explicit empty
-state naming the attribute it's looking for (e.g. "No hosts observed in
-this window — no matching `host.name` value seen on any span") rather than
-a placeholder row. A tenant whose telemetry starts carrying that
+state naming the attribute — and the source(s) — it's looking for (e.g.
+"No hosts observed in this window — no matching `host.name` value seen in
+traces or logs") rather than a placeholder row. A tenant whose telemetry
+starts carrying that
 attribute — an SDK resource detector, an OTel Collector with
 `resourcedetection`, Kubernetes downward-API injection — gets that entity
 type populated with no further configuration.

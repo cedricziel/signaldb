@@ -99,11 +99,11 @@ export function formatDurationMs(ms: number): string {
 
 /** Like {@link formatDurationMs}, but for a duration that may not exist at
  * all — e.g. a catalog entity discovered only via a non-trace signal, which
- * carries no span duration to measure (`TraceGroup.hasDuration === false`).
+ * carries no span duration to measure (`TraceGroup.traceCount === 0`).
  * `0ms` would misreport that as a real (if implausibly fast) measurement. */
 export function formatDurationMsOrDash(
-  hasDuration: boolean | undefined,
+  traceCount: number | undefined,
   ms: number,
 ): string {
-  return hasDuration === false ? "–" : formatDurationMs(ms);
+  return traceCount === 0 ? "–" : formatDurationMs(ms);
 }

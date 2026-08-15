@@ -309,7 +309,11 @@ export function useExploreState(): [ExploreState, UpdateFn] {
   const state: ExploreState = {
     ...parseExploreState(location.search),
     signal,
-    trace: traceId !== undefined ? decodeURIComponent(traceId) : "",
+    // react-router's useParams() already URL-decodes route params — a
+    // second decodeURIComponent here would double-decode (corrupting a
+    // trace id containing a literal "%", or throwing URIError on a
+    // malformed one from a pasted/typed value).
+    trace: traceId !== undefined ? traceId : "",
   };
 
   const update = useCallback<UpdateFn>(

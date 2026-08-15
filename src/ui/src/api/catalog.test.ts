@@ -146,7 +146,7 @@ describe("fetchCatalogEntities", () => {
         p50Ms: 0.9,
         p95Ms: 3,
         lastNs: "1700000000000000000",
-        hasDuration: true,
+        traceCount: 5,
       },
     ]);
   });
@@ -187,7 +187,7 @@ describe("fetchCatalogEntities", () => {
         p50Ms: 0.9,
         p95Ms: 3,
         lastNs: "1700000000500000000",
-        hasDuration: true,
+        traceCount: 5,
       },
       {
         values: ["ip-10-0-2-09"],
@@ -196,7 +196,44 @@ describe("fetchCatalogEntities", () => {
         p50Ms: 0,
         p95Ms: 0,
         lastNs: "1700000000600000000",
-        hasDuration: false,
+        traceCount: 0,
+      },
+    ]);
+  });
+
+  it("keeps the trace count distinct from total volume, for an accurate error rate", async () => {
+    // 1 error among 10 traces, plus 90 log lines for the same host — the
+    // error is a rate of the 10 traces, not the 100 merged records.
+    vi.mocked(runIrQuery).mockImplementation(async (doc) => {
+      if (doc.from === "traces") {
+        return {
+          result: "table",
+          columns: [],
+          window: { start_ns: 1, end_ns: 2 },
+          rows: [
+            ["ip-10-0-1-08", 10, 1, 900_000, 3_000_000, "1700000000000000000"],
+          ],
+        };
+      }
+      return {
+        result: "table",
+        columns: [],
+        window: { start_ns: 1, end_ns: 2 },
+        rows: [["ip-10-0-1-08", 90, "1700000000500000000"]],
+      };
+    });
+
+    const result = await fetchCatalogEntities(hostMultiSource, range);
+
+    expect(result.groups).toEqual([
+      {
+        values: ["ip-10-0-1-08"],
+        count: 100,
+        errors: 1,
+        p50Ms: 0.9,
+        p95Ms: 3,
+        lastNs: "1700000000500000000",
+        traceCount: 10,
       },
     ]);
   });

@@ -136,14 +136,15 @@ function decodeSourceGroups(
       return typeof v === "number" ? v : 0;
     };
     const lastCell = cells[d + (isTraces ? 4 : 1)];
+    const count = num(0);
     return {
       values,
-      count: num(0),
+      count,
       errors: isTraces ? num(1) : 0,
       p50Ms: isTraces ? num(2) / NANOS_PER_MS : 0,
       p95Ms: isTraces ? num(3) / NANOS_PER_MS : 0,
       lastNs: lastCell == null ? "0" : String(lastCell),
-      hasDuration: isTraces,
+      traceCount: isTraces ? count : 0,
     };
   });
   return { groups, truncated: rows.length > GROUP_BUDGET };
@@ -185,8 +186,11 @@ export async function fetchCatalogEntities(
 
   // Merge by identity: count sums across every source (it's total observed
   // volume), but errors/p50/p95 only ever come from the traces source - a
-  // non-trace source's rows are `hasDuration: false` and must not clobber a
-  // real trace measurement for the same identity.
+  // non-trace source's rows contribute 0 to traceCount and must not clobber
+  // a real trace measurement for the same identity. traceCount itself sums
+  // like count (each source contributes its own truthful share, 0 for a
+  // non-trace source) - it's the denominator an error rate must use instead
+  // of count, not a last-write-wins flag.
   const merged = new Map<string, TraceGroup>();
   for (const { isTraces, groups } of perSource) {
     for (const g of groups) {
@@ -197,11 +201,11 @@ export async function fetchCatalogEntities(
         continue;
       }
       existing.count += g.count;
+      existing.traceCount = (existing.traceCount ?? 0) + (g.traceCount ?? 0);
       if (isTraces) {
         existing.errors = g.errors;
         existing.p50Ms = g.p50Ms;
         existing.p95Ms = g.p95Ms;
-        existing.hasDuration = true;
       }
       if (BigInt(g.lastNs) > BigInt(existing.lastNs)) {
         existing.lastNs = g.lastNs;

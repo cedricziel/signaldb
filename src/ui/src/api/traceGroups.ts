@@ -65,16 +65,21 @@ export interface TraceGroup {
   /** Start of the most recent record in the group, epoch nanoseconds. */
   lastNs: string;
   /**
-   * Whether `errors`/`p50Ms`/`p95Ms` describe real trace data. Always `true`
-   * here — this module is trace-only — but the catalog's multi-signal
-   * entity discovery (`api/catalog.ts`) can produce a group whose count came
-   * entirely from logs/metrics/profiles, which carry no span status or
-   * duration; that group sets this to `false` so the UI shows "no data"
-   * instead of a misleading "0ms" p50/p95. Optional, not just `boolean`, so
-   * every existing trace-only call site (which has no reason to set it)
-   * keeps compiling; absence means `true`.
+   * How much of `count` came from the traces source specifically — the only
+   * source `errors`/`p50Ms`/`p95Ms` can describe (a log line has no span
+   * status or duration). Absent everywhere in this module — it's
+   * trace-only, so `count` and the trace count are always the same thing —
+   * but the catalog's multi-signal entity discovery (`api/catalog.ts`) can
+   * merge in a non-trace source, at which point `count` and `traceCount`
+   * diverge: `count` is total observed volume, `traceCount` is what
+   * `errors` is actually a rate *of*. A consumer computing an error
+   * percentage must divide by `traceCount ?? count`, not `count` — dividing
+   * by total volume understates the rate for any entity with non-trace
+   * traffic. `traceCount === 0` also means "no duration data", the same
+   * signal `hasDuration` used to carry — render "–" instead of a
+   * misleading "0ms" p50/p95.
    */
-  hasDuration?: boolean;
+  traceCount?: number;
 }
 
 export interface TraceGroupResult {

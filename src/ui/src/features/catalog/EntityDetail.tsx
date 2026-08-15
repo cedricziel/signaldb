@@ -203,17 +203,17 @@ export function EntityDetail({ state, update }: Props) {
             <dt>Errors</dt>
             <dd className={kpiRow.errors > 0 ? "err-rate" : undefined}>
               {kpiRow.errors > 0
-                ? `${Math.round((100 * kpiRow.errors) / kpiRow.count)}%`
+                ? `${Math.round((100 * kpiRow.errors) / (kpiRow.traceCount ?? kpiRow.count))}%`
                 : "–"}
             </dd>
           </div>
           <div>
             <dt>P50</dt>
-            <dd>{formatDurationMsOrDash(kpiRow.hasDuration, kpiRow.p50Ms)}</dd>
+            <dd>{formatDurationMsOrDash(kpiRow.traceCount, kpiRow.p50Ms)}</dd>
           </div>
           <div>
             <dt>P95</dt>
-            <dd>{formatDurationMsOrDash(kpiRow.hasDuration, kpiRow.p95Ms)}</dd>
+            <dd>{formatDurationMsOrDash(kpiRow.traceCount, kpiRow.p95Ms)}</dd>
           </div>
           <div>
             <dt>Last seen</dt>

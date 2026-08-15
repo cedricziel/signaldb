@@ -283,14 +283,14 @@ export function EntityTable({
                 <td className="num">{formatRate(g.count, rangeSeconds)}</td>
                 <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
                   {g.errors > 0
-                    ? `${Math.round((100 * g.errors) / g.count)}%`
+                    ? `${Math.round((100 * g.errors) / (g.traceCount ?? g.count))}%`
                     : "–"}
                 </td>
                 <td className="num">
-                  {formatDurationMsOrDash(g.hasDuration, g.p50Ms)}
+                  {formatDurationMsOrDash(g.traceCount, g.p50Ms)}
                 </td>
                 <td className="num">
-                  {formatDurationMsOrDash(g.hasDuration, g.p95Ms)}
+                  {formatDurationMsOrDash(g.traceCount, g.p95Ms)}
                 </td>
                 <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
               </tr>
@@ -301,7 +301,8 @@ export function EntityTable({
       {done && rows.length === 0 && (
         <div className="traces-note">
           No {entity.label.toLowerCase()} observed in this window — no matching{" "}
-          <code>{entity.identity[0]}</code> value seen on any span.
+          <code>{entity.identity[0]}</code> value seen in{" "}
+          {(entity.sources ?? ["traces"]).join(" or ")}.
         </div>
       )}
       {result.data?.truncated && (
