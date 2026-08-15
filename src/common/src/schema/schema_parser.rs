@@ -38,7 +38,7 @@ fn default_logical_schema_version() -> String {
     "otel-2026-08".to_string()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct TableSchemaDefinition {
     pub description: String,
     #[serde(default)]
@@ -49,6 +49,8 @@ pub struct TableSchemaDefinition {
     pub field_renames: Vec<FieldRename>,
     #[serde(default)]
     pub field_additions: Vec<FieldDefinition>,
+    #[serde(default)]
+    pub field_removals: Vec<FieldRemoval>,
     #[serde(default)]
     pub partition_by: Vec<String>,
 }
@@ -65,10 +67,15 @@ pub struct FieldDefinition {
     pub physical_only: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct FieldRename {
     pub from: String,
     pub to: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct FieldRemoval {
+    pub name: String,
 }
 
 /// A resolved schema with all inheritance applied
@@ -183,6 +190,20 @@ impl SchemaDefinitions {
             resolved_fields.push(resolved);
         }
 
+        // Apply field removals
+        for removal in &schema_def.field_removals {
+            if let Some(idx) = field_names.remove(&removal.name) {
+                resolved_fields.remove(idx);
+                // Every field after the removed one shifted down by one
+                // position in `resolved_fields`; keep `field_names` in sync.
+                for stored_idx in field_names.values_mut() {
+                    if *stored_idx > idx {
+                        *stored_idx -= 1;
+                    }
+                }
+            }
+        }
+
         for partition in &schema_def.partition_by {
             if let Some(field) = resolved_fields
                 .iter_mut()
@@ -199,6 +220,46 @@ impl SchemaDefinitions {
             partition_by: schema_def.partition_by.clone(),
         })
     }
+}
+
+/// Walks the `inherits` chain backward from `to_version` until it reaches
+/// `from_version` (exclusive) or the chain's root (the version with no
+/// `inherits`), then reverses the result -- so the returned list is the
+/// forward hop order a table recorded at `from_version` (or predating
+/// version tracking entirely, when `None`) must walk to reach
+/// `to_version`, one version at a time.
+///
+/// Version names carry no ordering of their own -- `"physical-v3"` is not
+/// known to come after `"physical-v2"` by parsing the string. Only
+/// `inherits` pointers encode the chain, and they point backward (child to
+/// parent), so this walks backward first and reverses.
+///
+/// If `from_version` never appears while walking to the root (an unknown
+/// or stale recorded version), the full chain from root to `to_version` is
+/// returned; replaying already-satisfied hops is a safe no-op for callers
+/// that apply each hop idempotently.
+pub fn version_chain(
+    schemas: &HashMap<String, TableSchemaDefinition>,
+    from_version: Option<&str>,
+    to_version: &str,
+) -> Result<Vec<String>> {
+    let mut chain = Vec::new();
+    let mut current = to_version.to_string();
+    loop {
+        if Some(current.as_str()) == from_version {
+            break;
+        }
+        chain.push(current.clone());
+        let def = schemas
+            .get(&current)
+            .ok_or_else(|| anyhow!("Schema version {} not found", current))?;
+        match &def.inherits {
+            Some(parent) => current = parent.clone(),
+            None => break, // reached the root
+        }
+    }
+    chain.reverse();
+    Ok(chain)
 }
 
 impl ResolvedSchema {
@@ -228,6 +289,19 @@ impl ResolvedSchema {
         self.build_iceberg_schema(labels, true)
     }
 
+    /// Field IDs here are assigned positionally (`idx as i32 + 1`), recomputed
+    /// fresh on every call. That's only safe for a table being created for
+    /// the first time — there's no prior Parquet data whose column mapping
+    /// could disagree. It is NOT safe to diff this output's field IDs
+    /// against an existing table's live schema (e.g. to decide what to add
+    /// or remove when evolving that table): a version that removes a field
+    /// in the middle of the list shifts every subsequent field's ID here,
+    /// which would silently corrupt the ID mapping already burned into that
+    /// table's existing Parquet files. Evolving a live table must diff by
+    /// field *name* against the table's actual persisted `Schema`, reusing
+    /// its existing IDs untouched and minting new ones only for genuine
+    /// additions — never regenerate a live table's target schema from this
+    /// function.
     fn build_iceberg_schema(&self, labels: &[String], attr_tokens: bool) -> Result<Schema> {
         let mut fields = Vec::new();
 
@@ -547,5 +621,146 @@ fields = [
                 .unwrap()
                 .physical_only
         );
+    }
+
+    #[test]
+    fn field_removals_drop_the_named_field_from_the_resolved_schema() {
+        let toml = r#"
+[metadata]
+description = "Test schemas"
+current_trace_version = "physical-v3"
+current_log_version = "physical-v1"
+current_metric_version = "physical-v1"
+
+[traces.physical-v1]
+description = "Base schema"
+fields = [
+    { name = "trace_id", type = "string", required = true },
+    { name = "deprecated_field", type = "string", required = false },
+    { name = "span_name", type = "string", required = true },
+]
+
+[traces.physical-v3]
+description = "Removes deprecated_field"
+inherits = "physical-v1"
+field_removals = [
+    { name = "deprecated_field" },
+]
+
+[logs.physical-v1]
+description = "Log schema"
+fields = [
+    { name = "timestamp", type = "timestamp_ns", required = true },
+]
+"#;
+
+        let schemas = SchemaDefinitions::from_toml(toml).unwrap();
+
+        // A version with no field_removals is unaffected.
+        let v1 = schemas.resolve_trace_schema("physical-v1").unwrap();
+        assert_eq!(v1.fields.len(), 3);
+        assert!(v1.fields.iter().any(|f| f.name == "deprecated_field"));
+
+        // The version declaring the removal resolves without the field,
+        // and every remaining field survives with its name intact.
+        let v3 = schemas.resolve_trace_schema("physical-v3").unwrap();
+        assert_eq!(v3.fields.len(), 2);
+        assert!(!v3.fields.iter().any(|f| f.name == "deprecated_field"));
+        assert_eq!(v3.fields[0].name, "trace_id");
+        assert_eq!(v3.fields[1].name, "span_name");
+    }
+
+    fn chain_fixture() -> HashMap<String, TableSchemaDefinition> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "physical-v1".to_string(),
+            TableSchemaDefinition {
+                description: "root".to_string(),
+                inherits: None,
+                fields: vec![],
+                field_renames: vec![],
+                field_additions: vec![],
+                field_removals: vec![],
+                partition_by: vec![],
+            },
+        );
+        schemas.insert(
+            "physical-v2".to_string(),
+            TableSchemaDefinition {
+                description: "hop 1".to_string(),
+                inherits: Some("physical-v1".to_string()),
+                fields: vec![],
+                field_renames: vec![],
+                field_additions: vec![],
+                field_removals: vec![],
+                partition_by: vec![],
+            },
+        );
+        schemas.insert(
+            "physical-v3".to_string(),
+            TableSchemaDefinition {
+                description: "hop 2".to_string(),
+                inherits: Some("physical-v2".to_string()),
+                fields: vec![],
+                field_renames: vec![],
+                field_additions: vec![],
+                field_removals: vec![],
+                partition_by: vec![],
+            },
+        );
+        schemas
+    }
+
+    #[test]
+    fn version_chain_from_none_walks_the_full_chain_root_first() {
+        let schemas = chain_fixture();
+        let chain = version_chain(&schemas, None, "physical-v3").unwrap();
+        assert_eq!(chain, vec!["physical-v1", "physical-v2", "physical-v3"]);
+    }
+
+    #[test]
+    fn version_chain_from_a_known_version_walks_only_the_remaining_hops() {
+        let schemas = chain_fixture();
+        let chain = version_chain(&schemas, Some("physical-v1"), "physical-v3").unwrap();
+        assert_eq!(chain, vec!["physical-v2", "physical-v3"]);
+    }
+
+    #[test]
+    fn version_chain_already_at_target_is_empty() {
+        let schemas = chain_fixture();
+        let chain = version_chain(&schemas, Some("physical-v3"), "physical-v3").unwrap();
+        assert!(chain.is_empty());
+    }
+
+    #[test]
+    fn version_chain_ordering_does_not_depend_on_name_lexical_order() {
+        // Names are arbitrary labels -- only `inherits` encodes order.
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "alpha".to_string(),
+            TableSchemaDefinition {
+                description: "root".to_string(),
+                inherits: None,
+                fields: vec![],
+                field_renames: vec![],
+                field_additions: vec![],
+                field_removals: vec![],
+                partition_by: vec![],
+            },
+        );
+        schemas.insert(
+            "zeta-but-actually-next".to_string(),
+            TableSchemaDefinition {
+                description: "hop".to_string(),
+                inherits: Some("alpha".to_string()),
+                fields: vec![],
+                field_renames: vec![],
+                field_additions: vec![],
+                field_removals: vec![],
+                partition_by: vec![],
+            },
+        );
+        let chain = version_chain(&schemas, None, "zeta-but-actually-next").unwrap();
+        assert_eq!(chain, vec!["alpha", "zeta-but-actually-next"]);
     }
 }
