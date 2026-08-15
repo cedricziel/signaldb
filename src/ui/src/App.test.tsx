@@ -1,7 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserRouter } from "react-router";
-import { getTenantContext } from "./api/http";
+import { TENANT_CONTEXT_STORAGE_KEY, getTenantContext } from "./api/http";
 import { AppRoutes } from "./routes";
 import {
   emptyLabels,
@@ -23,6 +23,7 @@ function renderApp(path = "/") {
 afterEach(() => {
   vi.unstubAllGlobals();
   window.history.replaceState(null, "", "/");
+  localStorage.clear();
 });
 
 describe("App", () => {
@@ -110,6 +111,49 @@ describe("App", () => {
       expect(window.location.search).toContain("tenant=acme"),
     );
     expect(getTenantContext()).toEqual({ tenant: "acme", dataset: "prod" });
+  });
+
+  it("restores the last tenant/dataset in a fresh tab that opens a route without them", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/api/v1/schema/registries", body: { registries: [] } },
+      { match: "/api/v1/manage/schema", body: { logical: [], physical: [] } },
+      {
+        match: "/api/v1/whoami",
+        body: {
+          user: { id: "u1", email: "a@b", display_name: "A", is_instance_admin: true },
+          memberships: [{ tenant_id: "acme", role: "admin" }],
+          tenant: { id: "acme", slug: "acme", name: "Acme" },
+          dataset: "prod",
+          datasets: [],
+        },
+      },
+    ]);
+    // A previous visit (any tab) settled on acme/prod …
+    localStorage.setItem(
+      TENANT_CONTEXT_STORAGE_KEY,
+      JSON.stringify({ tenant: "acme", dataset: "prod" }),
+    );
+    // … and a bookmark/deep link opens a bare route in a new tab.
+    renderApp("/schema/storage");
+    await waitFor(() =>
+      expect(window.location.search).toContain("tenant=acme"),
+    );
+    expect(getTenantContext()).toEqual({ tenant: "acme", dataset: "prod" });
+  });
+
+  it("persists the tenant/dataset context for later tabs", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+    ]);
+    localStorage.removeItem(TENANT_CONTEXT_STORAGE_KEY);
+    renderApp("/logs?tenant=globex&dataset=main");
+    await screen.findByRole("button", { name: /globex/ });
+    expect(
+      JSON.parse(localStorage.getItem(TENANT_CONTEXT_STORAGE_KEY) ?? "{}"),
+    ).toEqual({ tenant: "globex", dataset: "main" });
   });
 
   it("switches signals via tabs, updating the path", async () => {

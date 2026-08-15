@@ -32,6 +32,53 @@ export function toErrorMessage(value: unknown): string {
 
 let current: TenantContext = { tenant: "", dataset: "" };
 
+/**
+ * localStorage key under which the last non-empty tenant/dataset context is
+ * kept, so a new tab or a bookmark that opens a bare route (no `?tenant=`)
+ * resumes where the user was instead of sending tenant-less requests.
+ */
+export const TENANT_CONTEXT_STORAGE_KEY = "signaldb.tenantContext";
+
+/** The persisted context, if any and well-formed. */
+export function loadPersistedTenantContext(): TenantContext | null {
+  try {
+    const raw = localStorage.getItem(TENANT_CONTEXT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as TenantContext).tenant === "string" &&
+      (parsed as TenantContext).tenant !== ""
+    ) {
+      const { tenant, dataset } = parsed as TenantContext;
+      return { tenant, dataset: typeof dataset === "string" ? dataset : "" };
+    }
+  } catch {
+    // Storage unavailable or corrupt: behave as if nothing was persisted.
+  }
+  return null;
+}
+
+/** Remember a non-empty context for later tabs; empty tenant is ignored. */
+export function persistTenantContext(ctx: TenantContext): void {
+  if (!ctx.tenant) return;
+  try {
+    localStorage.setItem(TENANT_CONTEXT_STORAGE_KEY, JSON.stringify(ctx));
+  } catch {
+    // Storage unavailable (private mode, quota): the URL still carries it.
+  }
+}
+
+/** Forget the persisted context (sign-out). */
+export function clearPersistedTenantContext(): void {
+  try {
+    localStorage.removeItem(TENANT_CONTEXT_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export function setTenantContext(ctx: TenantContext): void {
   current = ctx;
 }
