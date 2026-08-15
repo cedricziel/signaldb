@@ -141,14 +141,7 @@ pub fn otlp_traces_to_arrow(
                 let (status_code, status_message) = extract_status(span);
 
                 // Extract span kind
-                let span_kind = match span.kind {
-                    0 => "Internal",
-                    1 => "Server",
-                    2 => "Client",
-                    3 => "Producer",
-                    4 => "Consumer",
-                    _ => "Internal",
-                };
+                let span_kind = span_kind_to_str(span.kind);
 
                 // Extract events
                 let events = extract_events(span);
@@ -255,6 +248,36 @@ pub fn otlp_traces_to_arrow(
             scope_attributes_array,
         ],
     )
+}
+
+/// Maps an OTel proto `SpanKind` int to its spec string. Values match the
+/// proto enum exactly (`SPAN_KIND_UNSPECIFIED` = 0, ..., `SPAN_KIND_CONSUMER`
+/// = 5) — do not shift them. 0 and any unrecognized value fall back to
+/// `"Internal"`, per the OTel spec's guidance to treat UNSPECIFIED as
+/// INTERNAL. Inverse of [`span_kind_from_str`].
+fn span_kind_to_str(kind: i32) -> &'static str {
+    match kind {
+        1 => "Internal",
+        2 => "Server",
+        3 => "Client",
+        4 => "Producer",
+        5 => "Consumer",
+        _ => "Internal",
+    }
+}
+
+/// Inverse of [`span_kind_to_str`]: maps the spec string back to the OTel
+/// proto enum's real int value. An unrecognized string defaults to Internal
+/// (1), matching the forward direction's fallback.
+fn span_kind_from_str(kind: &str) -> i32 {
+    match kind {
+        "Internal" => 1,
+        "Server" => 2,
+        "Client" => 3,
+        "Producer" => 4,
+        "Consumer" => 5,
+        _ => 1,
+    }
 }
 
 /// Extract status code and message from span
@@ -745,15 +768,8 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
             }
         });
 
-        // Convert span kind string to enum
-        let span_kind = match span_kind_str {
-            "Internal" => 0,
-            "Server" => 1,
-            "Client" => 2,
-            "Producer" => 3,
-            "Consumer" => 4,
-            _ => 0,
-        };
+        // Convert span kind string back to the OTel proto enum's int value
+        let span_kind = span_kind_from_str(span_kind_str);
 
         // Convert status code string to OTLP StatusCode (0 = Unset, 1 = Ok,
         // 2 = Error).
@@ -916,6 +932,38 @@ mod tests {
     }
 
     #[test]
+    fn span_kind_to_str_matches_the_otel_proto_enum_exactly() {
+        // Regression test for an off-by-one that shipped for a while: the
+        // proto's real ints are SPAN_KIND_UNSPECIFIED=0, INTERNAL=1,
+        // SERVER=2, CLIENT=3, PRODUCER=4, CONSUMER=5. Pin every value, not
+        // just one, so a shift in either direction fails loudly.
+        assert_eq!(span_kind_to_str(0), "Internal"); // Unspecified -> Internal
+        assert_eq!(span_kind_to_str(1), "Internal");
+        assert_eq!(span_kind_to_str(2), "Server");
+        assert_eq!(span_kind_to_str(3), "Client");
+        assert_eq!(span_kind_to_str(4), "Producer");
+        assert_eq!(span_kind_to_str(5), "Consumer");
+        assert_eq!(span_kind_to_str(99), "Internal"); // unknown -> Internal
+    }
+
+    #[test]
+    fn span_kind_from_str_is_the_exact_inverse_for_every_real_kind() {
+        assert_eq!(span_kind_from_str("Internal"), 1);
+        assert_eq!(span_kind_from_str("Server"), 2);
+        assert_eq!(span_kind_from_str("Client"), 3);
+        assert_eq!(span_kind_from_str("Producer"), 4);
+        assert_eq!(span_kind_from_str("Consumer"), 5);
+        assert_eq!(span_kind_from_str("bogus"), 1); // unknown -> Internal
+    }
+
+    #[test]
+    fn span_kind_round_trips_through_both_conversion_directions() {
+        for kind in 1..=5 {
+            assert_eq!(span_kind_from_str(span_kind_to_str(kind)), kind);
+        }
+    }
+
+    #[test]
     fn otlp_traces_to_arrow_clamps_duration_to_zero_when_end_before_start() {
         // A span whose end timestamp precedes its start timestamp must not
         // underflow the u64 duration (panic in debug, wrap in release).
@@ -1026,7 +1074,7 @@ mod tests {
             span_id: span_id_bytes,
             parent_span_id: vec![], // Root span
             name: "test-span".to_string(),
-            kind: 1, // Server
+            kind: 2, // Server
             start_time_unix_nano: 1000000000,
             end_time_unix_nano: 2000000000,
             attributes,
@@ -1315,7 +1363,7 @@ mod tests {
         assert_eq!(hex::encode(&span.trace_id), trace_id);
         assert_eq!(hex::encode(&span.span_id), span_id);
         assert_eq!(span.name, "test-span");
-        assert_eq!(span.kind, 1); // Server
+        assert_eq!(span.kind, 2); // Server
         assert_eq!(span.start_time_unix_nano, 1000000000);
         assert_eq!(span.end_time_unix_nano, 2000000000);
 
@@ -1413,7 +1461,7 @@ mod tests {
             span_id: span_id_bytes,
             parent_span_id: vec![], // Root span
             name: "test-span".to_string(),
-            kind: 1, // Server
+            kind: 2, // Server
             start_time_unix_nano: 1000000000,
             end_time_unix_nano: 2000000000,
             attributes,
@@ -1525,7 +1573,7 @@ mod tests {
         );
         assert_eq!(hex::encode(&span.span_id), "0123456789abcdef");
         assert_eq!(span.name, "test-span");
-        assert_eq!(span.kind, 1); // Server
+        assert_eq!(span.kind, 2); // Server
         assert_eq!(span.start_time_unix_nano, 1000000000);
         assert_eq!(span.end_time_unix_nano, 2000000000);
 

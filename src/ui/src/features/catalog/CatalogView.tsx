@@ -17,7 +17,7 @@ import {
   type ResolvedRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { formatDurationMs } from "../../lib/waterfall";
+import { formatDurationMsOrDash } from "../../lib/waterfall";
 import { EntityDetail } from "./EntityDetail";
 import {
   DEFAULT_ENTITY_TYPE,
@@ -198,6 +198,9 @@ export function EntityTable({
         <span className="catalog-title">{entity.label}</span>
         <span className="catalog-sub">
           discovered from {entity.identity.join(", ")}
+          {entity.sources && entity.sources.length > 1
+            ? ` across ${entity.sources.join(", ")}`
+            : ""}
         </span>
       </div>
       {result.isError && (
@@ -280,11 +283,15 @@ export function EntityTable({
                 <td className="num">{formatRate(g.count, rangeSeconds)}</td>
                 <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
                   {g.errors > 0
-                    ? `${Math.round((100 * g.errors) / g.count)}%`
+                    ? `${Math.round((100 * g.errors) / (g.traceCount ?? g.count))}%`
                     : "–"}
                 </td>
-                <td className="num">{formatDurationMs(g.p50Ms)}</td>
-                <td className="num">{formatDurationMs(g.p95Ms)}</td>
+                <td className="num">
+                  {formatDurationMsOrDash(g.traceCount, g.p50Ms)}
+                </td>
+                <td className="num">
+                  {formatDurationMsOrDash(g.traceCount, g.p95Ms)}
+                </td>
                 <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
               </tr>
             ))
@@ -294,7 +301,8 @@ export function EntityTable({
       {done && rows.length === 0 && (
         <div className="traces-note">
           No {entity.label.toLowerCase()} observed in this window — no matching{" "}
-          <code>{entity.identity[0]}</code> value seen on any span.
+          <code>{entity.identity[0]}</code> value seen in{" "}
+          {(entity.sources ?? ["traces"]).join(" or ")}.
         </div>
       )}
       {result.data?.truncated && (

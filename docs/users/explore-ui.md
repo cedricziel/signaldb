@@ -91,19 +91,31 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
 ### The catalog
 
 The catalog answers "what's actually sending telemetry" by discovery, not
-configuration: it groups the traces in the selected window by the OTel
-attributes that identify a **service**, **database**,
-**message destination**, **host**, **Kubernetes pod/node**, **container**,
-or **process** — the same RED-metrics aggregate (count, error rate, p50/p95,
-last-seen) the traces group table computes — and lists whatever it finds
-under each entity type in the left nav. There is no hardcoded or sample
-data: an entity type with nothing matching in the window renders an
-explicit empty state naming the attribute it's looking for (e.g. "No hosts
-observed in this window — no matching `host.name` value seen on any span")
-rather than a placeholder row. A tenant whose telemetry starts carrying
-that attribute — an SDK resource detector, an OTel Collector with
+configuration: it groups the OTel attributes that identify a **service**,
+**database**, **message destination**, **host**, **Kubernetes pod/node**,
+**container**, or **process**, and lists whatever it finds under each
+entity type in the left nav. There is no hardcoded or sample data: an
+entity type with nothing matching in the window renders an explicit empty
+state naming the attribute — and the source(s) — it's looking for (e.g.
+"No hosts observed in this window — no matching `host.name` value seen in
+traces or logs") rather than a placeholder row. A tenant whose telemetry
+starts carrying that
+attribute — an SDK resource detector, an OTel Collector with
 `resourcedetection`, Kubernetes downward-API injection — gets that entity
 type populated with no further configuration.
+
+An entity keyed by a _resource_ attribute (service, host, Kubernetes
+pod/node, container, process — anything an SDK's `Resource` carries, not
+just spans) is discovered from both traces **and** logs, and its Count and
+Last-seen columns are the merge of both: a process that only ever logs,
+never traced, still shows up. Error rate and P50/P95 latency stay
+trace-only — a log line has no span status or duration to measure — so a
+row whose count came entirely from logs shows "–" there rather than a
+misleading "0ms". An entity keyed by a _span_ attribute (database, message
+destination — these describe one client call, not the process that made
+it) is discovered from traces only. The subtitle under each entity type's
+heading ("discovered from ... across traces, logs") names exactly which
+attributes and sources fed it.
 
 Selecting a row opens that entity's own page: a breadcrumb, its RED numbers
 pinned to exactly that entity, a breakdown table for entity types that have

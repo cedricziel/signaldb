@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPath,
   buildSearch,
   DEFAULT_STATE,
   parseExploreState,
@@ -25,7 +26,7 @@ describe("parseExploreState", () => {
 
   it("parses a fully-populated URL", () => {
     const state = parseExploreState(
-      "?range=15m&f=level%7C%3D%7Cerror&q=timeout&limit=100&live=1&trace=abc123&promql=up",
+      "?range=15m&f=level%7C%3D%7Cerror&q=timeout&limit=100&live=1&promql=up",
     );
     expect(state.range).toEqual({ type: "relative", seconds: 900 });
     expect(state.filters).toEqual([
@@ -34,7 +35,6 @@ describe("parseExploreState", () => {
     expect(state.search).toBe("timeout");
     expect(state.limit).toBe(100);
     expect(state.live).toBe(true);
-    expect(state.trace).toBe("abc123");
     expect(state.promql).toBe("up");
   });
 
@@ -53,6 +53,12 @@ describe("parseExploreState", () => {
     // old bookmark is ignored rather than parsed.
     expect(parseExploreState("?signal=traces").signal).toBe("logs");
   });
+
+  it("does not read the trace id from the query string", () => {
+    // Single-trace view is a route (/traces/:traceId — see buildPath), not
+    // a ?trace= param; a leftover one from an old bookmark is ignored.
+    expect(parseExploreState("?trace=abc123").trace).toBe("");
+  });
 });
 
 describe("buildSearch", () => {
@@ -63,6 +69,13 @@ describe("buildSearch", () => {
   it("never emits a signal param", () => {
     expect(buildSearch({ ...DEFAULT_STATE, signal: "metrics" })).not.toContain(
       "signal",
+    );
+  });
+
+  it("never emits a trace param", () => {
+    // Single-trace view is a route (see buildPath), not a ?trace= param.
+    expect(buildSearch({ ...DEFAULT_STATE, trace: "deadbeef" })).not.toContain(
+      "trace",
     );
   });
 
@@ -78,7 +91,6 @@ describe("buildSearch", () => {
       raw: '{x="y"}',
       limit: 1000,
       live: true,
-      trace: "deadbeef",
       group: "POST /checkout",
       groupBy: "resource.host.name",
       promql: "rate(x[5m])",
@@ -276,5 +288,25 @@ describe("trace filters", () => {
     expect(state.traceFilters).toEqual([
       { field: "service.name", value: "api" },
     ]);
+  });
+});
+
+describe("buildPath", () => {
+  it("routes an open trace under /traces/:traceId", () => {
+    expect(buildPath("traces", "deadbeef")).toBe("/traces/deadbeef");
+  });
+
+  it("encodes a trace id with URL-unsafe characters", () => {
+    expect(buildPath("traces", "a/b c")).toBe("/traces/a%2Fb%20c");
+  });
+
+  it("falls back to the bare signal path with no open trace", () => {
+    expect(buildPath("traces", "")).toBe("/traces");
+  });
+
+  it("ignores a trace id for any other signal", () => {
+    // Only the traces signal has a trace-detail route; a stray trace value
+    // elsewhere in state (e.g. mid-transition) must not leak into the path.
+    expect(buildPath("logs", "deadbeef")).toBe("/logs");
   });
 });

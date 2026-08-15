@@ -142,8 +142,25 @@ export function signalFromParam(value: string | undefined): Signal {
 }
 
 /**
- * Parses the search-param half of explore state (everything but the signal,
- * which comes from the route path — see {@link signalFromParam}).
+ * Builds the path segment for a signal, and — for traces — an open trace.
+ * Single-trace view is a real route (`/traces/:traceId`), not a `?trace=`
+ * param: distinct URLs for the list and a trace mean the browser's
+ * Back/Forward and the signal nav tabs (which always target the bare
+ * `/traces` list path — see `crossSignalSearch`) act like real navigation
+ * instead of a no-op within one path.
+ */
+export function buildPath(signal: Signal, trace: string): string {
+  if (signal === "traces" && trace !== "") {
+    return `/traces/${encodeURIComponent(trace)}`;
+  }
+  return `/${signal}`;
+}
+
+/**
+ * Parses the search-param half of explore state — everything but the
+ * signal and the selected trace id, both of which come from the route path
+ * (see {@link signalFromParam} and {@link buildPath}: single-trace view is
+ * `/traces/:traceId`, not a `?trace=` param).
  */
 export function parseExploreState(search: string): ExploreState {
   const p = new URLSearchParams(search);
@@ -165,7 +182,7 @@ export function parseExploreState(search: string): ExploreState {
       .getAll("tf")
       .map(traceFilterFromParam)
       .filter((f): f is TraceFilter => f !== null),
-    trace: p.get("trace") ?? "",
+    trace: "",
     group: p.get("group") ?? "",
     groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
     grain: grainFromParam(p.get("grain")),
@@ -213,7 +230,6 @@ export function buildSearch(state: ExploreState): string {
   if (state.scale !== DEFAULT_SCALE) p.set("scale", state.scale);
   if (state.step !== "") p.set("step", state.step);
   for (const f of state.traceFilters) p.append("tf", traceFilterToParam(f));
-  if (state.trace) p.set("trace", state.trace);
   if (state.group) p.set("group", state.group);
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);
   if (state.grain !== DEFAULT_GRAIN) p.set("grain", state.grain);
@@ -272,7 +288,8 @@ export type UpdateFn = (
 
 /**
  * URL-backed state: the signal comes from the route's `:signal` path segment
- * (must be rendered under a matching route — see `routes.tsx`), everything
+ * (or the static `traces` segment of `/traces/:traceId` — see `routes.tsx`),
+ * the open trace id (if any) from `:traceId` on that same route, everything
  * else from search params. `update()` replaces the current history entry by
  * default — refining filters/range/etc. within a view is one entry, not one
  * per keystroke. Pass `{ push: true }` for a patch that enters a genuinely
@@ -283,23 +300,33 @@ export type UpdateFn = (
 export function useExploreState(): [ExploreState, UpdateFn] {
   const location = useLocation();
   const navigate = useNavigate();
-  const { signal: signalParam } = useParams<{ signal?: string }>();
+  const { signal: signalParam, traceId } = useParams<{
+    signal?: string;
+    traceId?: string;
+  }>();
+  const signal =
+    traceId !== undefined ? "traces" : signalFromParam(signalParam);
   const state: ExploreState = {
     ...parseExploreState(location.search),
-    signal: signalFromParam(signalParam),
+    signal,
+    // react-router's useParams() already URL-decodes route params — a
+    // second decodeURIComponent here would double-decode (corrupting a
+    // trace id containing a literal "%", or throwing URIError on a
+    // malformed one from a pasted/typed value).
+    trace: traceId !== undefined ? traceId : "",
   };
 
   const update = useCallback<UpdateFn>(
     (patch, opts) => {
       const next = { ...state, ...patch };
-      navigate(`/${next.signal}${buildSearch(next)}`, {
+      navigate(`${buildPath(next.signal, next.trace)}${buildSearch(next)}`, {
         replace: !opts?.push,
       });
     },
-    // `state` is recomputed each render from location.search/signalParam, so
-    // depending on those (not `state` itself) still recreates `update`
-    // exactly when its captured `state` would otherwise go stale.
-    [navigate, location.search, signalParam],
+    // `state` is recomputed each render from location.search/signalParam/
+    // traceId, so depending on those (not `state` itself) still recreates
+    // `update` exactly when its captured `state` would otherwise go stale.
+    [navigate, location.search, signalParam, traceId],
   );
 
   return [state, update];

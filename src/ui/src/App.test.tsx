@@ -138,7 +138,107 @@ describe("App", () => {
     expect(window.location.search).toContain("live=1");
   });
 
-  it("re-clicking the active tab doesn't reset its state or navigate", async () => {
+  it("opening a trace navigates to /traces/:traceId, a real route", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyMatrix },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
+      {
+        match: "/tempo/api/traces/t1cafe",
+        body: {
+          traceID: "t1cafe",
+          rootServiceName: "gateway",
+          rootTraceName: "POST /api/checkout",
+          startTimeUnixNano: "1000",
+          durationMs: 412,
+          spanSets: [
+            {
+              matched: 1,
+              spans: [
+                {
+                  spanID: "root",
+                  startTimeUnixNano: "1000000000",
+                  durationNanos: "412000000",
+                  name: "POST /api/checkout",
+                  serviceName: "gateway",
+                  status: "ok",
+                  attributes: {},
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    renderApp("/traces");
+    const user = (await import("@testing-library/user-event")).default;
+
+    await user.type(await screen.findByLabelText("Trace ID"), "t1cafe{enter}");
+
+    // "POST /api/checkout" is ambiguous once the waterfall renders (it's
+    // also the root span's name and its detail-panel heading) — the
+    // trace-id chip in the header is unique.
+    expect(await screen.findByText("t1cafe")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/traces/t1cafe");
+  });
+
+  it("clicking the Traces tab while viewing a trace returns to the traces list", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyMatrix },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
+      {
+        match: "/tempo/api/traces/t1cafe",
+        body: {
+          traceID: "t1cafe",
+          rootServiceName: "gateway",
+          rootTraceName: "POST /api/checkout",
+          startTimeUnixNano: "1000",
+          durationMs: 412,
+          spanSets: [{ matched: 0, spans: [] }],
+        },
+      },
+    ]);
+    renderApp("/traces/t1cafe");
+    const user = (await import("@testing-library/user-event")).default;
+
+    await screen.findByText("t1cafe");
+    await user.click(screen.getByRole("tab", { name: "Traces" }));
+
+    expect(await screen.findByLabelText("Trace ID")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/traces");
+  });
+
+  it("round-trips a trace id containing a literal % without double-decoding", async () => {
+    // react-router's useParams() already URL-decodes the :traceId route
+    // param; a second decodeURIComponent would corrupt "a%b" or throw
+    // URIError outright, since "%b" isn't a valid escape sequence.
+    stubFetchRoutes([
+      { match: "query_range", body: emptyMatrix },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
+      {
+        match: "/tempo/api/traces/a%25b",
+        body: {
+          traceID: "a%b",
+          rootServiceName: "gateway",
+          rootTraceName: "weird-id-trace",
+          startTimeUnixNano: "1000",
+          durationMs: 5,
+          spanSets: [{ matched: 0, spans: [] }],
+        },
+      },
+    ]);
+    renderApp("/traces");
+    const user = (await import("@testing-library/user-event")).default;
+
+    await user.type(await screen.findByLabelText("Trace ID"), "a%b{enter}");
+
+    expect(await screen.findByText("a%b")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/traces/a%25b");
+  });
+
+  it("re-clicking the active tab returns to that tab's main view", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
       { match: "/labels?", body: emptyLabels },
@@ -148,8 +248,10 @@ describe("App", () => {
 
     await user.click(screen.getByRole("tab", { name: "Logs" }));
 
+    // Same as clicking a different tab: back to the bare main view, filters
+    // and search dropped — re-clicking isn't a no-op.
     expect(window.location.pathname).toBe("/logs");
-    expect(window.location.search).toContain("q=boom");
+    expect(window.location.search).toBe("");
   });
 
   it("navigates to /manage and back via the Manage link", async () => {

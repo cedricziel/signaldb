@@ -36,8 +36,9 @@ function group(
   p50Ms: number,
   p95Ms: number,
   lastNs: string,
+  traceCount?: number,
 ): TraceGroup {
-  return { values, count, errors, p50Ms, p95Ms, lastNs };
+  return { values, count, errors, p50Ms, p95Ms, lastNs, traceCount };
 }
 
 function renderView(state: Partial<ExploreState> = {}) {
@@ -113,6 +114,21 @@ describe("CatalogView", () => {
       { catalogPrimary: compositeKey(["gateway", "edge"]) },
       { push: true },
     );
+  });
+
+  it("rates errors against the trace count, not total volume across sources", async () => {
+    // 1 error among 10 traces, plus 90 unrelated log lines for the same
+    // entity: the merged count is 100, but the error is a rate of the 10
+    // traces it actually happened among — 10%, not 1%.
+    fetchCatalogEntities.mockResolvedValue({
+      groups: [
+        group(["gateway", "edge"], 100, 1, 12, 48, "1700000000000000000", 10),
+      ],
+      truncated: false,
+    });
+    renderView();
+    expect(await screen.findByText("10%")).toBeInTheDocument();
+    expect(screen.queryByText("1%")).not.toBeInTheDocument();
   });
 });
 
