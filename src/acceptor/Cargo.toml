@@ -5,12 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-jemalloc = ["dep:tikv-jemallocator"]
-jemalloc-profiling = ["jemalloc", "tikv-jemallocator/profiling", "common/jemalloc-profiling"]
 testing = []
 
 [dependencies]
-tikv-jemallocator = { workspace = true, optional = true }
 common.workspace = true
 prost.workspace = true
 
@@ -37,11 +34,6 @@ uuid.workspace = true
 opentelemetry.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
-
-
-[[bin]]
-name = "signaldb-acceptor"
-path = "src/main.rs"
 
 [dev-dependencies]
 tower.workspace = true

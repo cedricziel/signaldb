@@ -93,7 +93,7 @@ grep -A 5 "compactor.retention" signaldb.toml
 grep "dry_run" signaldb.toml | grep retention
 
 # 3. Check computed cutoff in logs (compactor logs to stdout)
-RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor 2>&1 | \
+RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb -- compactor 2>&1 | \
   grep "Retention cutoff computed"
 
 # 4. Check retention counters via the status endpoint
@@ -141,7 +141,7 @@ traces = "7d"
 
 ```bash
 # 1. Check effective retention configuration (compactor logs to stdout)
-RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor 2>&1 | \
+RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb -- compactor 2>&1 | \
   grep "Retention cutoff computed"
 # The source field shows which level applied: source=Global, source=Tenant,
 # or source=Dataset
@@ -500,7 +500,7 @@ reduce file counts before raising the threshold.
 curl -s localhost:9091/metrics | grep compactor_retention_duration_ms_total
 
 # 2. Profile with CPU profiling
-RUST_LOG=info cargo flamegraph --bin signaldb-compactor
+RUST_LOG=info cargo flamegraph --bin signaldb -- compactor
 
 # 3. Check data file counts per table on the object store
 #    (partition metadata lives in Iceberg metadata files, not PostgreSQL)
@@ -844,7 +844,7 @@ still executing the job (`compactor_jobs_started_total` vs
 **Temporary (current session):**
 
 ```bash
-RUST_LOG=debug,compactor=trace cargo run --bin signaldb-compactor
+RUST_LOG=debug,compactor=trace cargo run --bin signaldb -- compactor
 ```
 
 **Persistent:**
@@ -854,7 +854,7 @@ The compactor initializes `tracing-subscriber` with a standard `RUST_LOG` env fi
 ```bash
 # Shell: redirect stdout to a file
 RUST_LOG=info,compactor::retention=trace,compactor::orphan=trace \
-  cargo run --bin signaldb-compactor 2>&1 | tee compactor-debug.log
+  cargo run --bin signaldb -- compactor 2>&1 | tee compactor-debug.log
 
 # systemd: set the filter in the unit and read logs via journald
 #   [Service]
@@ -868,7 +868,7 @@ journalctl -u signaldb-compactor -f
 
 ```bash
 # Enable trace logging for retention only
-RUST_LOG=info,compactor::retention=trace cargo run --bin signaldb-compactor 2>&1 | \
+RUST_LOG=info,compactor::retention=trace cargo run --bin signaldb -- compactor 2>&1 | \
   grep -E "(retention|cutoff|drop|partition)"
 ```
 
@@ -876,7 +876,7 @@ RUST_LOG=info,compactor::retention=trace cargo run --bin signaldb-compactor 2>&1
 
 ```bash
 # Enable trace logging for orphan cleanup only
-RUST_LOG=info,compactor::orphan=trace cargo run --bin signaldb-compactor 2>&1 | \
+RUST_LOG=info,compactor::orphan=trace cargo run --bin signaldb -- compactor 2>&1 | \
   grep -E "(orphan|cleanup|delete|reference)"
 ```
 

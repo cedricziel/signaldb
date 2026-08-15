@@ -1,44 +1,39 @@
-use acceptor::{
+use crate::{
     GrpcAcceptorConfig, HttpAcceptorConfig, init_acceptor_resources, serve_otlp_grpc,
     serve_otlp_http,
 };
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::sync::oneshot;
 
-#[derive(Parser)]
-#[command(name = "signaldb-acceptor")]
-#[command(about = "SignalDB OTLP Acceptor Service - ingests observability data via OTLP protocols")]
-#[command(version)]
-struct Cli {
-    #[command(flatten)]
-    common: CommonArgs,
-
+/// Command-line arguments of the `acceptor` subcommand (`signaldb acceptor`).
+#[derive(clap::Args, Debug)]
+pub struct Args {
     #[command(subcommand)]
-    command: Option<AcceptorCommands>,
+    pub command: Option<AcceptorCommands>,
 
     #[arg(long, help = "OTLP gRPC server port", default_value = "4317")]
-    grpc_port: u16,
+    pub grpc_port: u16,
 
     #[arg(long, help = "OTLP HTTP server port", default_value = "4318")]
-    http_port: u16,
+    pub http_port: u16,
 
     #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
-    bind: String,
+    pub bind: String,
 
     #[arg(
         long,
         env = "ACCEPTOR_WAL_DIR",
         help = "WAL directory path (overrides [wal].wal_dir + \"/acceptor\"; default: .data/wal/acceptor)"
     )]
-    wal_dir: Option<PathBuf>,
+    pub wal_dir: Option<PathBuf>,
 }
 
-#[derive(Subcommand)]
-enum AcceptorCommands {
+#[derive(Subcommand, Debug)]
+pub enum AcceptorCommands {
     #[command(flatten)]
     Common(CommonCommands),
 }
@@ -49,26 +44,16 @@ impl Default for AcceptorCommands {
     }
 }
 
-// jemalloc as global allocator: the Linux release/Docker builds enable the
-// `jemalloc` feature because musl's (and to a lesser degree glibc's)
-// allocator degrades under multithreaded Arrow allocation churn.
-// `jemalloc-profiling` implies it and adds heap self-profiling.
-#[cfg(feature = "jemalloc")]
-#[global_allocator]
-static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
-
+/// Run the `acceptor` service with the shared options and its own arguments.
+pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
     // Load application configuration
-    let config = utils::load_config(cli.common.config.as_ref())?;
+    let config = utils::load_config(common.config.as_ref())?;
     // Standalone services need shared discovery/catalog backends; the
     // in-memory defaults only make sense in monolithic mode (issue #554).
     config.validate_for_distributed("acceptor")?;
 
     // Handle common commands that don't require starting the service
-    let command = cli.command.unwrap_or_default();
+    let command = args.command.unwrap_or_default();
     let AcceptorCommands::Common(ref common_cmd) = command;
     if utils::handle_common_command(common_cmd, &config).await? {
         return Ok(()); // Command handled, exit early
@@ -81,7 +66,7 @@ async fn main() -> Result<()> {
             Ok(t) => (t, None),
             Err(e) => (None, Some(e)),
         };
-    utils::init_logging(&cli.common, telemetry.as_ref());
+    utils::init_logging(common, telemetry.as_ref());
     if let Some(e) = telemetry_error {
         tracing::warn!(error = %e, "Self-monitoring init failed, continuing without it");
     } else if let Some(ref t) = telemetry {
@@ -103,12 +88,12 @@ async fn main() -> Result<()> {
     tracing::info!("Starting SignalDB Acceptor Service");
 
     // Use CLI-provided ports or defaults
-    let bind_ip = cli
+    let bind_ip = args
         .bind
         .parse::<std::net::IpAddr>()
         .context("Invalid bind address")?;
-    let grpc_addr = SocketAddr::new(bind_ip, cli.grpc_port);
-    let http_addr = SocketAddr::new(bind_ip, cli.http_port);
+    let grpc_addr = SocketAddr::new(bind_ip, args.grpc_port);
+    let http_addr = SocketAddr::new(bind_ip, args.http_port);
 
     // Initialize shared resources for both gRPC and HTTP servers
     let advertise_addr =
@@ -118,7 +103,7 @@ async fn main() -> Result<()> {
     // [wal].wal_dir from the configuration with the service suffix appended.
     let wal_dir = config
         .wal
-        .wal_dir_for_service("acceptor", cli.wal_dir.clone());
+        .wal_dir_for_service("acceptor", args.wal_dir.clone());
 
     let resources = init_acceptor_resources(config.clone(), advertise_addr, wal_dir)
         .await

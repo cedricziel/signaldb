@@ -288,7 +288,7 @@ else
 
     # Start acceptor
     echo -e "${GREEN}Starting Acceptor...${NC}"
-    cargo run --bin signaldb-acceptor -- --config "${DEV_CONFIG}" > "${LOG_DIR}/acceptor.log" 2>&1 &
+    cargo run --bin signaldb -- acceptor --config "${DEV_CONFIG}" > "${LOG_DIR}/acceptor.log" 2>&1 &
     PIDS="$PIDS $!"
     echo "  • OTLP gRPC: http://localhost:4317"
     echo "  • OTLP HTTP: http://localhost:4318"
@@ -296,21 +296,21 @@ else
 
     # Start writer
     echo -e "${GREEN}Starting Writer...${NC}"
-    cargo run --bin signaldb-writer -- --config "${DEV_CONFIG}" --flight-port 50051 > "${LOG_DIR}/writer.log" 2>&1 &
+    cargo run --bin signaldb -- writer --config "${DEV_CONFIG}" --flight-port 50051 > "${LOG_DIR}/writer.log" 2>&1 &
     PIDS="$PIDS $!"
     echo "  • Flight: http://localhost:50051"
     echo "  • Logs: ${LOG_DIR}/writer.log"
 
     # Start querier
     echo -e "${GREEN}Starting Querier...${NC}"
-    cargo run --bin signaldb-querier -- --config "${DEV_CONFIG}" > "${LOG_DIR}/querier.log" 2>&1 &
+    cargo run --bin signaldb -- querier --config "${DEV_CONFIG}" > "${LOG_DIR}/querier.log" 2>&1 &
     PIDS="$PIDS $!"
     echo "  • Flight: http://localhost:50054"
     echo "  • Logs: ${LOG_DIR}/querier.log"
 
     # Start router
     echo -e "${GREEN}Starting Router...${NC}"
-    cargo run --bin signaldb-router -- --config "${DEV_CONFIG}" > "${LOG_DIR}/router.log" 2>&1 &
+    cargo run --bin signaldb -- router --config "${DEV_CONFIG}" > "${LOG_DIR}/router.log" 2>&1 &
     PIDS="$PIDS $!"
     echo "  • HTTP API: http://localhost:3001"
     echo "  • Flight: http://localhost:50053"
@@ -321,7 +321,7 @@ else
     SIGNALDB__MCP__ENABLED=true \
     SIGNALDB__MCP__BIND_ADDRESS=0.0.0.0:8228 \
     SIGNALDB__MCP__ROUTER_URL=http://localhost:3001 \
-        cargo run --bin signaldb-mcp -- --config "${DEV_CONFIG}" > "${LOG_DIR}/mcp.log" 2>&1 &
+        cargo run --bin signaldb -- mcp --config "${DEV_CONFIG}" > "${LOG_DIR}/mcp.log" 2>&1 &
     PIDS="$PIDS $!"
     echo "  • MCP (Streamable HTTP): http://localhost:8228/mcp"
     echo "  • Logs: ${LOG_DIR}/mcp.log"
