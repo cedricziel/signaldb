@@ -110,7 +110,7 @@ pub fn register_system_metrics(
 
     let svc_process_cpu = svc.clone();
     let process_cpu_gauge = meter
-        .f64_observable_gauge("signaldb.process.cpu_utilization")
+        .f64_observable_gauge("process.cpu.utilization")
         .with_description(
             "CPU utilization of this process as a percentage of a single core \
              (may exceed 100 on multi-core hosts)",
@@ -127,7 +127,7 @@ pub fn register_system_metrics(
 
     let svc_process_mem = svc.clone();
     let process_memory_gauge = meter
-        .f64_observable_gauge("signaldb.process.memory_usage")
+        .f64_observable_gauge("process.memory.usage")
         .with_description("Resident set size (RSS) of this process in bytes")
         .with_unit("By")
         .with_callback(move |observer| {
@@ -141,7 +141,7 @@ pub fn register_system_metrics(
 
     let svc_system_cpu = svc.clone();
     let system_cpu_gauge = meter
-        .f64_observable_gauge("signaldb.system.cpu_utilization")
+        .f64_observable_gauge("system.cpu.utilization")
         .with_description("System-wide CPU utilization percentage averaged across all cores")
         .with_unit("1")
         .with_callback(move |observer| {
@@ -155,7 +155,7 @@ pub fn register_system_metrics(
 
     let svc_system_mem = svc.clone();
     let system_memory_gauge = meter
-        .f64_observable_gauge("signaldb.system.memory_usage")
+        .f64_observable_gauge("system.memory.usage")
         .with_description(
             "Host-wide used memory in bytes (includes page cache/ARC on some platforms)",
         )
@@ -171,7 +171,7 @@ pub fn register_system_metrics(
 
     let svc_up = svc;
     let uptime_gauge = meter
-        .f64_observable_gauge("signaldb.process.uptime")
+        .f64_observable_gauge("process.uptime")
         .with_description("Service uptime in seconds")
         .with_unit("s")
         .with_callback(move |observer| {
@@ -272,12 +272,15 @@ mod tests {
             .flat_map(|sm| sm.metrics().map(|m| m.name().to_string()))
             .collect();
 
+        // OTel semantic-convention names, not signaldb.*-namespaced: any
+        // OTel-aware tool already recognizes process.cpu.utilization etc.
+        // without SignalDB-specific configuration (issue #1211).
         for expected in [
-            "signaldb.process.cpu_utilization",
-            "signaldb.process.memory_usage",
-            "signaldb.system.cpu_utilization",
-            "signaldb.system.memory_usage",
-            "signaldb.process.uptime",
+            "process.cpu.utilization",
+            "process.memory.usage",
+            "system.cpu.utilization",
+            "system.memory.usage",
+            "process.uptime",
         ] {
             assert!(
                 names.contains(&expected.to_string()),
