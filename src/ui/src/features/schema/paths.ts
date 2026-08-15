@@ -4,6 +4,10 @@ import type { DefinitionKind } from "./api";
 
 export const CONVENTIONS = "/schema/conventions";
 
+/** Version placeholder meaning "whichever version of this namespace is
+ * visible"; the browser redirects it to the concrete version. */
+export const LATEST = "latest";
+
 export const registryPath = (namespace: string, version: string) =>
   `${CONVENTIONS}/${encodeURIComponent(namespace)}/${encodeURIComponent(version)}`;
 
