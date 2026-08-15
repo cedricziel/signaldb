@@ -4,9 +4,7 @@ Guarantees that every dataset SignalDB knows about holds the full set of storage
 tables for the signal types its tenant is configured to accept, so a dataset is
 complete and queryable from the moment it exists rather than only after telemetry
 happens to arrive for each signal.
-
 ## Requirements
-
 ### Requirement: Every registered dataset has its enabled signal tables
 
 SignalDB SHALL ensure that each tenant/dataset in the tenant registry has a
@@ -20,8 +18,12 @@ tables are outside this capability and SHALL NOT be provisioned.
 
 Provisioned tables SHALL be indistinguishable from tables the write path would
 have created: same schema, partitioning, and table properties, in the same
-namespace the ingest path writes to. Provisioning SHALL NOT alter the schema of
-a table that already exists.
+namespace the ingest path writes to. Provisioning a table that already exists
+SHALL NOT alter its partitioning, table properties, or data, but SHALL bring
+its schema forward when the table's tracked schema version is behind the
+current definition, per the table-schema-evolution capability. Provisioning
+SHALL NOT perform any schema change beyond that additive/removal catch-up —
+in particular it SHALL NOT rewrite, backfill, or delete existing data.
 
 #### Scenario: New tenant has tables before any ingest
 
@@ -54,6 +56,14 @@ a table that already exists.
   ahead of any write
 - **THEN** the data is written into those same tables and is queryable, with no
   second table created and no schema conflict
+
+#### Scenario: Existing table's schema is brought forward, not left behind
+
+- **WHEN** provisioning runs against a dataset whose traces table already
+  exists and is recorded at an older schema version than the current
+  definition
+- **THEN** the table's schema is evolved to the current version and its
+  existing data and partitioning are unchanged
 
 ### Requirement: A tenant's default dataset is provisioned even before it is separately recorded
 
@@ -157,3 +167,4 @@ create-on-first-write behavior rather than to data loss.
 - **WHEN** provisioning fails for one table within a dataset
 - **THEN** the dataset's remaining enabled tables are still provisioned, and the
   failure is reported for that table specifically
+
