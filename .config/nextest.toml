@@ -1,0 +1,15 @@
+# cargo-nextest configuration. `cargo nextest run` uses [profile.default];
+# CI selects `--profile ci`.
+
+[profile.default]
+# Report tests that run longer than this (they are not killed).
+slow-timeout = { period = "60s" }
+
+[profile.ci]
+# Keep going after a failure so one red test does not hide the others.
+fail-fast = false
+# No automatic retries: a flaky test should fail loudly, not be papered over.
+retries = 0
+slow-timeout = { period = "120s" }
+# Machine-readable results for the job summary.
+junit = { path = "junit.xml" }

@@ -362,9 +362,22 @@ jobs:
           mkdir -p .data
           # Tests use testcontainers - no need for external database configuration
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # nextest runs every test in its own process and schedules tests from
+      # all binaries onto one pool, instead of `cargo test`'s one-binary-at-a-
+      # time execution; see .config/nextest.toml for the CI profile. It does
+      # not run doctests, so those follow as a separate `cargo test --doc`
+      # (same cargo profile, so nothing is recompiled). signaldb-sdk is
+      # excluded there: its generated progenitor client sets doctest = false
+      # (the examples are pseudo-code), which an explicit --doc would override.
       - name: Run all tests
         run: |
-          cargo test --profile ci-test --workspace --all-features
+          cargo nextest run --profile ci --cargo-profile ci-test --workspace --all-features
+          cargo test --doc --profile ci-test --workspace --all-features --exclude signaldb-sdk
         env:
           RUST_LOG: warn # Reduced log level for faster tests
           RUST_BACKTRACE: 1
