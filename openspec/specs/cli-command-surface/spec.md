@@ -10,8 +10,9 @@ renders query results for downstream tooling.
 The CLI SHALL organize commands into top-level capability groups: a single
 `query` command that takes the query language as a mutually-exclusive flag
 (`--sql`, `--promql`, `--logql`, `--traceql`), `admin <noun> <verb>` for
-management, and `ops <verb>` for operational control — plus the existing `tui`,
-`completions`, and user-bootstrap utilities. Tenant, API-key, and dataset
+management, `ops <verb>` for operational control, and `schema <noun> <verb>` for
+schema-registry lookup — plus the existing `tui`, `completions`, and
+user-bootstrap utilities. Tenant, API-key, dataset, and custom schema-registry
 management SHALL live under `admin`. Exactly one language flag SHALL be required
 on `query`.
 
@@ -32,6 +33,20 @@ on `query`.
 
 - **WHEN** a user runs `signaldb admin tenant list`
 - **THEN** the CLI performs the tenant-list operation through the SDK
+
+#### Scenario: Schema lookup lives under schema
+
+- **WHEN** a user runs `signaldb schema registry list`,
+  `signaldb schema attribute get k8s.pod.uid`, `signaldb schema entity get
+k8s.pod`, or `signaldb schema metric get k8s.pod.cpu.time`
+- **THEN** the CLI performs the corresponding registry list / resolved lookup
+  through the SDK and prints the namespace-tagged, precedence-ordered result
+
+#### Scenario: Custom registry management lives under admin
+
+- **WHEN** a user runs `signaldb admin schema create --file conventions.yaml`
+  (or `replace`, `delete`)
+- **THEN** the CLI performs the custom-registry mutation through the SDK
 
 ### Requirement: Native per-language query output
 
@@ -90,4 +105,3 @@ need not know which transport a given capability uses.
 - **WHEN** an endpoint is set in the environment and a different endpoint is
   passed as a flag
 - **THEN** the CLI uses the flag value
-

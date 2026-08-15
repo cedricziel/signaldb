@@ -9,8 +9,10 @@ obligation to remain feature-equal with the CLI while consuming only the SDK.
 The MCP server SHALL expose a tool for every SDK-backed SignalDB capability the
 CLI exposes — the HTTP query languages (PromQL, LogQL, TraceQL, and Query IR;
 SQL is served over Arrow Flight and stays CLI-only), admin (tenant/API-key/
-dataset management), and operational compaction control. Local-only utilities
-(`tui`, `completions`, user bootstrap) are out of scope.
+dataset management and custom schema-registry management), operational
+compaction control, and schema-registry lookup (registry list, attribute /
+entity / metric resolution, prefix search). Local-only utilities (`tui`,
+`completions`, user bootstrap) are out of scope.
 
 #### Scenario: Query is available as a tool
 
@@ -23,6 +25,14 @@ dataset management), and operational compaction control. Local-only utilities
 - **WHEN** an MCP client lists available tools
 - **THEN** the list includes tools for operational compaction control (run,
   status, and dry-run)
+
+#### Scenario: Schema lookup is available as a tool
+
+- **WHEN** an MCP client lists available tools
+- **THEN** the list includes tools to list registries and to resolve an
+  attribute key, an entity type, or a metric name (including prefix search),
+  returning namespace-tagged, precedence-ordered definitions with briefs so an
+  LLM can learn what a key means before building a query
 
 ### Requirement: MCP query results match the SDK's native shape
 
@@ -50,4 +60,3 @@ details.
   operation
 - **THEN** the tool returns an error result derived from the SDK error
 - **AND** the server continues serving subsequent requests
-
