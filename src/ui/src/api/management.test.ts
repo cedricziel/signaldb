@@ -9,6 +9,7 @@ import {
   listMemberships,
   removeMembership,
   revokeApiKey,
+  updateApiKey,
   upsertMembership,
 } from "./management";
 import { ApiError, setTenantContext } from "./http";
@@ -84,6 +85,51 @@ describe("management API", () => {
     const req = fetchMock.mock.calls[0]?.[0] as Request;
     expect(req.url).toContain("/api/v1/manage/tenants/acme/api-keys/key-1");
     expect(req.method).toBe("DELETE");
+  });
+
+  it("creates a key carrying schema scopes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(
+        { id: "key-2", key: "sdbk_schema", scopes: ["schema:read", "schema:write"] },
+        201,
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createApiKey("acme", { scopes: ["schema:read", "schema:write"] });
+
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(await req.clone().json()).toEqual({
+      scopes: ["schema:read", "schema:write"],
+    });
+  });
+
+  it("updates a live key's scopes and dataset via PATCH", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: "key-1",
+        name: "collector",
+        dataset_id: "prod",
+        scopes: ["schema:read", "traces:write"],
+        revoked: false,
+        created_at: "2026-08-01T00:00:00Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await updateApiKey("acme", "key-1", {
+      scopes: ["schema:read", "traces:write"],
+      dataset_id: "prod",
+    });
+    expect(result.scopes).toEqual(["schema:read", "traces:write"]);
+
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(req.url).toContain("/api/v1/manage/tenants/acme/api-keys/key-1");
+    expect(req.method).toBe("PATCH");
+    expect(await req.clone().json()).toEqual({
+      scopes: ["schema:read", "traces:write"],
+      dataset_id: "prod",
+    });
   });
 
   it("rejects with an ApiError carrying the HTTP status", async () => {

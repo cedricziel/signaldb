@@ -16,6 +16,7 @@ import {
   manageListMemberships,
   manageRemoveMembership,
   manageRevokeApiKey,
+  manageUpdateApiKey,
   manageUpsertMembership,
   type ManageApiKeyResponse,
   type ManageCreatedApiKey,
@@ -26,10 +27,53 @@ import {
 } from "./gen";
 import { ApiError } from "./http";
 
-/** Ingestion scopes an API key may be granted. Narrower than the generated
- * `string[]`, this drives the scope checkboxes in the management UI. */
+/** Ingestion scopes an API key may be granted. */
 export type IngestScope =
   "metrics:write" | "logs:write" | "traces:write" | "profiles:write";
+
+/** Schema-registry scopes an API key may be granted. */
+export type SchemaScope = "schema:read" | "schema:write";
+
+/** Every scope selectable on the management UI. Narrower than the generated
+ * `string[]`, this drives the scope picker; the vocabulary mirrors
+ * `common::auth::API_KEY_SCOPES` (the read scopes are OAuth-only). */
+export type ApiKeyScope = IngestScope | SchemaScope;
+
+/** Scope picker groups with one-line descriptions, in display order. */
+export const SCOPE_GROUPS: ReadonlyArray<{
+  name: string;
+  scopes: ReadonlyArray<{ scope: ApiKeyScope; description: string }>;
+}> = [
+  {
+    name: "Ingestion",
+    scopes: [
+      { scope: "metrics:write", description: "Ingest metrics over OTLP" },
+      { scope: "logs:write", description: "Ingest logs over OTLP" },
+      { scope: "traces:write", description: "Ingest traces over OTLP" },
+      { scope: "profiles:write", description: "Ingest profiles over OTLP" },
+    ],
+  },
+  {
+    name: "Schema",
+    scopes: [
+      {
+        scope: "schema:read",
+        description:
+          "Read the schema registry: registries and attribute, entity, and metric lookups",
+      },
+      {
+        scope: "schema:write",
+        description:
+          "Create, replace, validate, and delete custom registries",
+      },
+    ],
+  },
+];
+
+/** All selectable scopes, flattened in display order. */
+export const ALL_SCOPES: ReadonlyArray<ApiKeyScope> = SCOPE_GROUPS.flatMap(
+  (group) => group.scopes.map((entry) => entry.scope),
+);
 
 /** API key as returned by the management API. Structurally the generated
  * wire type (scopes surface as `string[]`). */
@@ -70,10 +114,24 @@ export const listApiKeys = async (tenant: string): Promise<ManagedApiKey[]> =>
 
 export const createApiKey = async (
   tenant: string,
-  input: { name?: string; dataset_id?: string; scopes: IngestScope[] },
+  input: { name?: string; dataset_id?: string; scopes: ApiKeyScope[] },
 ): Promise<ManageCreatedApiKey> =>
   unwrap(
     await manageCreateApiKey({ path: { tenant_id: tenant }, body: input }),
+  );
+
+/** Change a live key's scopes and/or dataset restriction without rotating
+ * its secret; absent fields are left untouched. Revoked keys are rejected. */
+export const updateApiKey = async (
+  tenant: string,
+  keyId: string,
+  input: { scopes?: ApiKeyScope[]; dataset_id?: string },
+): Promise<ManagedApiKey> =>
+  unwrap(
+    await manageUpdateApiKey({
+      path: { tenant_id: tenant, key_id: keyId },
+      body: input,
+    }),
   );
 
 export const revokeApiKey = async (
