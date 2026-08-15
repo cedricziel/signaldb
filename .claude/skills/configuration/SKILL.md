@@ -259,7 +259,7 @@ pass and disables the periodic re-run. See
 
 ### MCP (Model Context Protocol server)
 
-The standalone `signaldb-mcp` server. A thin, credential-forwarding client: it
+The `signaldb mcp` server (a subcommand of the `signaldb` binary). A thin, credential-forwarding client: it
 validates the caller's bearer and forwards it to the router — it holds no key of
 its own. Off by default. See `docs/users/mcp.md`.
 

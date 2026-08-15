@@ -11,6 +11,8 @@ sources:
 
 # SignalDB Service Discovery
 
+> Services are started as subcommands of the one `signaldb` binary (`signaldb acceptor`, `signaldb writer`, …; see `docs/architecture/service-discovery.md` for the multi-service walkthrough); each registers itself in the shared catalog exactly as the former per-service binaries did.
+
 ## Capability-Based Routing
 
 Services register with specific capabilities for automatic routing:

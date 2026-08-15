@@ -412,27 +412,15 @@ jobs:
       - name: Build musl binaries
         run: |
           cargo build --release --target x86_64-unknown-linux-musl \
-            --features acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc \
-            --bin signaldb-acceptor \
-            --bin signaldb-router \
-            --bin signaldb-writer \
-            --bin signaldb-querier \
-            --bin signaldb-compactor \
+            --features signaldb-bin/jemalloc \
             --bin signaldb \
-            --bin signaldb-cli \
-            --bin signaldb-mcp
+            --bin signaldb-cli
 
       - name: Stage binaries
         run: |
           mkdir -p dist
           cp target/x86_64-unknown-linux-musl/release/signaldb \
-             target/x86_64-unknown-linux-musl/release/signaldb-acceptor \
-             target/x86_64-unknown-linux-musl/release/signaldb-router \
-             target/x86_64-unknown-linux-musl/release/signaldb-writer \
-             target/x86_64-unknown-linux-musl/release/signaldb-querier \
-             target/x86_64-unknown-linux-musl/release/signaldb-compactor \
              target/x86_64-unknown-linux-musl/release/signaldb-cli \
-             target/x86_64-unknown-linux-musl/release/signaldb-mcp \
              dist/
 
       - name: Upload musl binaries
@@ -543,27 +531,15 @@ jobs:
       - name: Build musl binaries
         run: |
           cargo build --release --target aarch64-unknown-linux-musl \
-            --features acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc \
-            --bin signaldb-acceptor \
-            --bin signaldb-router \
-            --bin signaldb-writer \
-            --bin signaldb-querier \
-            --bin signaldb-compactor \
+            --features signaldb-bin/jemalloc \
             --bin signaldb \
-            --bin signaldb-cli \
-            --bin signaldb-mcp
+            --bin signaldb-cli
 
       - name: Stage binaries
         run: |
           mkdir -p dist
           cp target/aarch64-unknown-linux-musl/release/signaldb \
-             target/aarch64-unknown-linux-musl/release/signaldb-acceptor \
-             target/aarch64-unknown-linux-musl/release/signaldb-router \
-             target/aarch64-unknown-linux-musl/release/signaldb-writer \
-             target/aarch64-unknown-linux-musl/release/signaldb-querier \
-             target/aarch64-unknown-linux-musl/release/signaldb-compactor \
              target/aarch64-unknown-linux-musl/release/signaldb-cli \
-             target/aarch64-unknown-linux-musl/release/signaldb-mcp \
              dist/
 
       - name: Upload musl binaries
@@ -888,12 +864,18 @@ jobs:
           if [ "${{ matrix.deployment }}" = "monolithic" ]; then
             timeout 5s ./target/release/signaldb || echo "Monolithic test completed"
           else
-            timeout 3s ./target/release/signaldb-acceptor &
-            timeout 3s ./target/release/signaldb-router &
-            timeout 3s ./target/release/signaldb-writer &
+            # One binary, one service per subcommand (openspec: multi-call-binary)
+            timeout 3s ./target/release/signaldb acceptor &
+            timeout 3s ./target/release/signaldb router &
+            timeout 3s ./target/release/signaldb writer &
             wait
             echo "Microservices test completed"
           fi
+          # Every service must answer --version and --help from the one binary
+          for svc in acceptor router writer querier compactor mcp; do
+            ./target/release/signaldb "$svc" --version
+            ./target/release/signaldb "$svc" --help > /dev/null
+          done
 
   coverage:
     name: Code Coverage

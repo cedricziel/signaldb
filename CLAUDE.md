@@ -23,11 +23,14 @@ RUST_LOG=debug cargo test test_name -- --nocapture  # With logging
 ### Running Services
 
 ```bash
-cargo run --bin signaldb   # Monolithic mode (all services in one process)
-cargo run --bin signaldb-acceptor   # OTLP ingestion (ports 4317/4318)
-cargo run --bin signaldb-router     # HTTP router (port 3000) + Flight (port 50053)
-cargo run --bin signaldb-writer     # Data persistence (Flight port 50061)
-cargo run --bin signaldb-querier    # Query execution (Flight port 50054)
+cargo run --bin signaldb                # Monolithic mode (all services in one process)
+cargo run --bin signaldb -- acceptor    # OTLP ingestion (ports 4317/4318)
+cargo run --bin signaldb -- router      # HTTP router (port 3000) + Flight (port 50053)
+cargo run --bin signaldb -- writer      # Data persistence (Flight port 50061)
+cargo run --bin signaldb -- querier     # Query execution (Flight port 50054)
+cargo run --bin signaldb -- compactor   # Compaction, retention, orphan cleanup
+cargo run --bin signaldb -- mcp         # MCP server sidecar
+# One binary: `signaldb` is the monolith, `signaldb <service>` runs one service.
 ```
 
 ### Local Development
@@ -183,7 +186,7 @@ catalog_uri = "sqlite::memory:"  # or sqlite:///path/to/catalog.db
 ## Compactor Service
 
 Manages compaction, retention, and orphan file cleanup.
-Run: `cargo run --bin signaldb-compactor`
+Run: `cargo run --bin signaldb -- compactor`
 Default: 30-day retention, dry_run=false, orphan cleanup enabled.
 See `docs/operations/compactor/` for configuration and troubleshooting.
 

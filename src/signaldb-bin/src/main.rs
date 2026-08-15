@@ -18,22 +18,46 @@ use tokio::sync::oneshot;
 use tonic::transport::Server;
 use writer::IcebergWriterFlightService;
 
-#[derive(Parser)]
+/// The `signaldb` command line: the monolith by default, or one service via
+/// its subcommand. The shared options (`--config`, `-v`, `-q`) are global, so
+/// `signaldb --config x router` and `signaldb router --config x` are the same.
+#[derive(Parser, Debug)]
 #[command(name = "signaldb")]
-#[command(about = "SignalDB - distributed observability signal database (monolithic mode)")]
+#[command(
+    about = "SignalDB - distributed observability signal database (monolithic mode by default; pick a service subcommand to run one service)"
+)]
 #[command(version)]
-struct Cli {
+pub struct Cli {
     #[command(flatten)]
-    common: CommonArgs,
+    pub common: CommonArgs,
 
     #[command(subcommand)]
-    command: Option<SignalDbCommands>,
+    pub command: Option<SignalDbCommands>,
 }
 
-#[derive(Subcommand)]
-enum SignalDbCommands {
+#[derive(Subcommand, Debug)]
+pub enum SignalDbCommands {
     #[command(flatten)]
     Common(CommonCommands),
+
+    /// Run only the OTLP acceptor (ingest) service
+    #[command(version)]
+    Acceptor(acceptor::cli::Args),
+    /// Run only the router (HTTP API + Flight) service
+    #[command(version)]
+    Router(router::cli::Args),
+    /// Run only the writer (Iceberg persistence) service
+    #[command(version)]
+    Writer(writer::cli::Args),
+    /// Run only the querier (query execution) service
+    #[command(version)]
+    Querier(querier::cli::Args),
+    /// Run only the compactor (compaction, retention, cleanup) service
+    #[command(version)]
+    Compactor(compactor::cli::Args),
+    /// Run only the MCP server sidecar
+    #[command(version)]
+    Mcp(mcp_server::cli::Args),
 }
 
 impl Default for SignalDbCommands {
@@ -54,13 +78,26 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Single-service mode: hand off to that service's own entry point. The
+    // service crates no longer have binaries of their own — this is the one
+    // executable that ships (see openspec change multi-call-binary).
+    let common_cmd = match cli.command.unwrap_or_default() {
+        SignalDbCommands::Acceptor(args) => return acceptor::cli::run(&cli.common, args).await,
+        SignalDbCommands::Router(args) => return router::cli::run(&cli.common, args).await,
+        SignalDbCommands::Writer(args) => return writer::cli::run(&cli.common, args).await,
+        SignalDbCommands::Querier(args) => return querier::cli::run(&cli.common, args).await,
+        SignalDbCommands::Compactor(args) => {
+            return compactor::cli::run(&cli.common, args).await;
+        }
+        SignalDbCommands::Mcp(args) => return mcp_server::cli::run(args).await,
+        SignalDbCommands::Common(common_cmd) => common_cmd,
+    };
+
     // Load application configuration
     let config = utils::load_config(cli.common.config.as_ref())?;
 
     // Handle common commands that don't require starting the service
-    let command = cli.command.unwrap_or_default();
-    let SignalDbCommands::Common(ref common_cmd) = command;
-    if utils::handle_common_command(common_cmd, &config).await? {
+    if utils::handle_common_command(&common_cmd, &config).await? {
         return Ok(()); // Command handled, exit early
     }
 
@@ -659,4 +696,140 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).unwrap_or_else(|e| panic!("parse {args:?}: {e}"))
+    }
+
+    #[test]
+    fn no_subcommand_is_the_monolith() {
+        let cli = parse(&["signaldb"]);
+        assert!(cli.command.is_none());
+        assert!(matches!(
+            cli.command.unwrap_or_default(),
+            SignalDbCommands::Common(CommonCommands::Start)
+        ));
+    }
+
+    #[test]
+    fn monolith_common_commands_still_parse() {
+        assert!(matches!(
+            parse(&["signaldb", "config", "--json"]).command,
+            Some(SignalDbCommands::Common(CommonCommands::Config {
+                json: true
+            }))
+        ));
+        assert!(matches!(
+            parse(&["signaldb", "validate"]).command,
+            Some(SignalDbCommands::Common(CommonCommands::Validate))
+        ));
+    }
+
+    #[test]
+    fn service_subcommand_selects_that_service() {
+        assert!(matches!(
+            parse(&["signaldb", "router", "--config", "x.toml"]).command,
+            Some(SignalDbCommands::Router(_))
+        ));
+        assert!(matches!(
+            parse(&["signaldb", "writer"]).command,
+            Some(SignalDbCommands::Writer(_))
+        ));
+        assert!(matches!(
+            parse(&["signaldb", "querier"]).command,
+            Some(SignalDbCommands::Querier(_))
+        ));
+        assert!(matches!(
+            parse(&["signaldb", "compactor"]).command,
+            Some(SignalDbCommands::Compactor(_))
+        ));
+        assert!(matches!(
+            parse(&["signaldb", "mcp", "--stdio"]).command,
+            Some(SignalDbCommands::Mcp(_))
+        ));
+    }
+
+    #[test]
+    fn shared_options_work_before_and_after_the_service_name() {
+        let before = parse(&["signaldb", "--config", "x.toml", "-v", "router"]);
+        let after = parse(&["signaldb", "router", "--config", "x.toml", "-v"]);
+        for cli in [before, after] {
+            assert_eq!(
+                cli.common.config.as_deref(),
+                Some(std::path::Path::new("x.toml"))
+            );
+            assert!(cli.common.verbose);
+            assert!(matches!(cli.command, Some(SignalDbCommands::Router(_))));
+        }
+    }
+
+    #[test]
+    fn service_flags_and_common_commands_nest_under_the_service() {
+        let cli = parse(&["signaldb", "acceptor", "--grpc-port", "4319", "validate"]);
+        let Some(SignalDbCommands::Acceptor(args)) = cli.command else {
+            panic!("expected acceptor");
+        };
+        assert_eq!(args.grpc_port, 4319);
+        assert!(matches!(
+            args.command,
+            Some(acceptor::cli::AcceptorCommands::Common(
+                CommonCommands::Validate
+            ))
+        ));
+    }
+
+    #[test]
+    fn unknown_subcommand_is_a_usage_error() {
+        let err = Cli::try_parse_from(["signaldb", "frobnicate"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn help_lists_every_service_and_service_help_is_its_own() {
+        let top = Cli::command().render_long_help().to_string();
+        for svc in [
+            "acceptor",
+            "router",
+            "writer",
+            "querier",
+            "compactor",
+            "mcp",
+        ] {
+            assert!(
+                top.contains(&format!("\n  {svc}")),
+                "top-level help lacks {svc}:\n{top}"
+            );
+        }
+        // Global options reach the subcommands only once the command is
+        // built (which the parser does implicitly).
+        let mut cmd = Cli::command();
+        cmd.build();
+        let acceptor = cmd
+            .find_subcommand_mut("acceptor")
+            .expect("acceptor subcommand")
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--grpc-port",
+            "--http-port",
+            "--bind",
+            "--wal-dir",
+            "--config",
+        ] {
+            assert!(
+                acceptor.contains(flag),
+                "acceptor help lacks {flag}:\n{acceptor}"
+            );
+        }
+        assert!(
+            !acceptor.contains("--flight-port"),
+            "acceptor help leaks router flags"
+        );
+    }
 }

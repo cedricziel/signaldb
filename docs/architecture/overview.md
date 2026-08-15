@@ -77,21 +77,21 @@ Parquet storage with DataFusion query processing:
 
 | Crate                 | Path                         | Type             | Description                                                                                                                                                                              |
 | --------------------- | ---------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **acceptor**          | `src/acceptor/`              | Binary + Library | OTLP gRPC/HTTP ingestion endpoint                                                                                                                                                        |
-| **router**            | `src/router/`                | Binary + Library | HTTP API + Flight routing layer                                                                                                                                                          |
-| **writer**            | `src/writer/`                | Binary + Library | Iceberg-based data persistence (the "Ingester")                                                                                                                                          |
-| **querier**           | `src/querier/`               | Binary + Library | Query execution engine via DataFusion                                                                                                                                                    |
-| **compactor**         | `src/compactor/`             | Binary + Library | Storage maintenance: compaction, retention (bin `signaldb-compactor`)                                                                                                                    |
+| **acceptor**          | `src/acceptor/`              | Library          | OTLP gRPC/HTTP ingestion endpoint                                                                                                                                                        |
+| **router**            | `src/router/`                | Library          | HTTP API + Flight routing layer                                                                                                                                                          |
+| **writer**            | `src/writer/`                | Library          | Iceberg-based data persistence (the "Ingester")                                                                                                                                          |
+| **querier**           | `src/querier/`               | Library          | Query execution engine via DataFusion                                                                                                                                                    |
+| **compactor**         | `src/compactor/`             | Library          | Storage maintenance: compaction, retention (`signaldb compactor`)                                                                                                                    |
 | **common**            | `src/common/`                | Library          | Shared config, auth, WAL, Flight, catalog, schema                                                                                                                                        |
 | **pyroscope-api**     | `src/pyroscope-api/`         | Library          | Pyroscope-compatible API types (flamebearer, profile types)                                                                                                                              |
 | **tempo-api**         | `src/tempo-api/`             | Library          | Grafana Tempo API types and protobuf definitions                                                                                                                                         |
 | **loki-api**          | `src/loki-api/`              | Library          | Loki HTTP API response types (LogQL query surface)                                                                                                                                       |
 | **prometheus-api**    | `src/prometheus-api/`        | Library          | Prometheus HTTP API response types (PromQL query surface)                                                                                                                                |
-| **signaldb-bin**      | `src/signaldb-bin/`          | Binary           | Monolithic mode runner (all services in one process)                                                                                                                                     |
+| **signaldb-bin**      | `src/signaldb-bin/`          | Binary           | The `signaldb` executable: monolith by default, or one service via a subcommand (`signaldb router`, …); every service crate exposes `cli::Args` + `cli::run`                                                                                                                                     |
 | **signaldb-api**      | `src/signaldb-api/`          | Library          | Hand-written admin API DTOs (utoipa `ToSchema`); OpenAPI schema source — see [OpenAPI codegen](openapi-codegen.md)                                                                       |
 | **signaldb-cli**      | `src/signaldb-cli/`          | Binary           | CLI and TUI for tenant, API key, and dataset management                                                                                                                                  |
 | **signaldb-sdk**      | `src/signaldb-sdk/`          | Library          | Generated Rust HTTP client (progenitor) for the admin API                                                                                                                                |
-| **mcp-server**        | `src/mcp-server/`            | Binary + Library | Standalone Model Context Protocol server (`signaldb-mcp`); credential-forwarding client over `signaldb-sdk`, serves MCP at `/mcp` — see [MCP server](../users/mcp.md)                    |
+| **mcp-server**        | `src/mcp-server/`            | Library          | Model Context Protocol server (`signaldb mcp`); credential-forwarding client over `signaldb-sdk`, serves MCP at `/mcp` — see [MCP server](../users/mcp.md)                    |
 | **grafana-plugin**    | `src/grafana-plugin/backend` | Plugin           | Grafana datasource (TypeScript frontend + Rust backend; the backend is a standalone cargo workspace excluded from the root workspace, since grafana-plugin-sdk pins its own Arrow major) |
 | **signal-producer**   | `src/signal-producer/`       | Binary           | Test data generator (OTLP traces)                                                                                                                                                        |
 | **tests-integration** | `tests-integration/`         | Test crate       | Integration test suite                                                                                                                                                                   |
@@ -489,10 +489,10 @@ Shared SQLite database for both service catalog and Iceberg catalog. Zero-config
 **Use Cases**: Production, scalable deployments, cloud environments
 
 ```bash
-cargo run --bin signaldb-acceptor   # OTLP ingestion (:4317, :4318)
-cargo run --bin signaldb-router     # HTTP API (:3000, :50053)
-cargo run --bin signaldb-writer     # Data persistence (:50061)
-cargo run --bin signaldb-querier    # Query execution (:50054)
+cargo run --bin signaldb -- acceptor   # OTLP ingestion (:4317, :4318)
+cargo run --bin signaldb -- router     # HTTP API (:3000, :50053)
+cargo run --bin signaldb -- writer     # Data persistence (:50061)
+cargo run --bin signaldb -- querier    # Query execution (:50054)
 ```
 
 Independent processes with network Flight communication. Requires shared catalog access (PostgreSQL or shared SQLite) for service discovery.

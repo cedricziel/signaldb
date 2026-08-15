@@ -10,7 +10,44 @@ sources:
 # Binary Runtime Characteristics
 
 What the released binaries and container images assume about the machine they
-run on, and how they allocate memory.
+run on, how a service is selected, and how they allocate memory.
+
+## One server executable
+
+SignalDB ships one server executable, `signaldb`, plus the separate operator
+CLI `signaldb-cli`. Run with no subcommand it is the monolith (every service in
+one process); run with a service subcommand it is that one service:
+
+```bash
+signaldb --config signaldb.toml            # monolith
+signaldb router --config signaldb.toml     # only the router
+signaldb writer --flight-port 50051        # only the writer, with its own flags
+signaldb --config signaldb.toml -v router  # shared options work before or after
+signaldb compactor validate                # common commands nest under a service
+signaldb router --help                     # that service's flags + shared options
+```
+
+Services: `acceptor`, `router`, `writer`, `querier`, `compactor`, `mcp`. Each
+keeps the flags, environment variables, ports and configuration keys of the
+former per-service binaries; only the way it is invoked changed. The
+executable's file name is never consulted — renaming or copying it does not
+change what it runs.
+
+Container images follow the same shape: every per-service image
+(`ghcr.io/cedricziel/signaldb/<service>`) contains the same `signaldb` binary
+and uses `["/usr/local/bin/signaldb", "<service>"]` as its entrypoint, so
+arguments given to the container append to that service's arguments and
+`docker run … router --version` prints the router's version. Deployments that
+rely on the image entrypoint (compose, Kubernetes manifests, the hive app) need
+no change; anything that used to exec `signaldb-<service>` by name runs
+`signaldb <service>` instead. Release archives contain `signaldb`
+(`signaldb.exe` on Windows) as the only server executable — the former
+monolithic / microservices / mcp archives collapsed into one per target.
+
+Why one binary: the release profile links with thin LTO, and cargo runs LTO
+once per binary over the whole DataFusion/Arrow/Iceberg graph (~7 minutes each
+on the release runners). Eight binaries meant eight such links for the same
+code; two (`signaldb`, `signaldb-cli`) is what the images and archives need.
 
 ## CPU baseline
 

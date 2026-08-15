@@ -4,12 +4,8 @@ version = "0.2.1"
 edition.workspace = true
 license.workspace = true
 
-[features]
-jemalloc = ["dep:tikv-jemallocator"]
-
 [dependencies]
 common.workspace = true
-tikv-jemallocator = { workspace = true, optional = true }
 iceberg-rust.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
@@ -43,11 +39,6 @@ tonic.workspace = true
 
 # Phase 6 dependencies (observability HTTP endpoints)
 axum.workspace = true
-
-[[bin]]
-name = "signaldb-compactor"
-path = "src/main.rs"
-
 
 [dev-dependencies]
 opentelemetry = { workspace = true }

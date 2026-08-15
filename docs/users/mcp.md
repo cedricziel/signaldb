@@ -10,7 +10,7 @@ sources:
 
 # MCP server (AI agent access)
 
-SignalDB ships a standalone **Model Context Protocol** server, `signaldb-mcp`,
+SignalDB ships a **Model Context Protocol** server, `signaldb mcp` (a subcommand of the `signaldb` binary),
 that lets AI agents (Claude Code, Claude.ai, IDE assistants) query your traces
 directly. It is a thin, credential-forwarding client: it validates the bearer
 token you present and forwards _that same token_ to the router's HTTP API. It
@@ -128,9 +128,9 @@ Then run the standalone binary (or use `./scripts/run-dev.sh services`, which
 starts it automatically on `:8228`):
 
 ```bash
-cargo run --bin signaldb-mcp
+cargo run --bin signaldb -- mcp
 # stdio transport for local development (unauthenticated — dev only):
-cargo run --bin signaldb-mcp -- --stdio
+cargo run --bin signaldb -- mcp --stdio
 ```
 
 The same settings are available as environment variables (multi-word fields
@@ -155,9 +155,9 @@ authorities, appended to the loopback defaults:
 
 ```bash
 # reached as mcp.example.org (behind TLS) and, for a bare LAN sidecar, by IP:port
-signaldb-mcp --allowed-hosts mcp.example.org,10.0.0.5:30228
+signaldb mcp --allowed-hosts mcp.example.org,10.0.0.5:30228
 # or via env
-SIGNALDB__MCP__ALLOWED_HOSTS="mcp.example.org,10.0.0.5:30228" signaldb-mcp
+SIGNALDB__MCP__ALLOWED_HOSTS="mcp.example.org,10.0.0.5:30228" signaldb mcp
 ```
 
 The single value `*` disables the guard entirely. The server still authenticates
@@ -166,9 +166,10 @@ authorization — but prefer an explicit list where you can.
 
 ## Running as a sidecar
 
-`signaldb-mcp` ships as its own small image, `ghcr.io/cedricziel/signaldb/mcp`,
-so it runs as a sidecar next to a `signaldb` router/monolith without pulling the
-full server image. The deployment (not the Dockerfile) makes it reachable: bind
+The MCP server ships as its own image, `ghcr.io/cedricziel/signaldb/mcp`
+(the same `signaldb` binary as every other image, with `signaldb mcp` as its
+entrypoint), so it runs as a sidecar next to a `signaldb` router/monolith. The
+deployment (not the Dockerfile) makes it reachable: bind
 a non-loopback address, point it at the router by service name, and **publish
 the port** (`EXPOSE` alone does not publish anything).
 
@@ -264,11 +265,11 @@ resource_url = "https://signaldb.example.org/mcp"  # the MCP resource tokens bin
 # access_token_ttl = "1h"; refresh_token_ttl = "30d"; authorization_code_ttl = "60s"
 ```
 
-The standalone `signaldb-mcp` sidecar advertises the same resource so an
+The `signaldb mcp` sidecar advertises the same resource so an
 unauthenticated request is challenged toward discovery — pass the matching URLs:
 
 ```bash
-signaldb-mcp \
+signaldb mcp \
   --oauth-resource-url https://signaldb.example.org/mcp \
   --oauth-issuer-url   https://signaldb.example.org
 ```
