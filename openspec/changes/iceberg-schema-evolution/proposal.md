@@ -36,11 +36,17 @@ deployments.
   schema update. No backfill of historical data — old rows keep whatever
   values (or absence of values) they already have; #1209 (the companion
   backfill issue) is closed and out of scope.
-- Consolidate the two `ExponentialHistogram`/`Summary` metrics schemas
-  (currently hand-written Rust only, absent from `schemas.toml`) into
-  `schemas.toml` so it is the single physical-schema source of truth for all
-  six metric-family tables — a prerequisite for the evolution mechanism to
-  see every table it needs to version.
+- **Scope correction found during implementation**: all five metrics
+  tables and profiles are hand-written in `iceberg/schemas.rs` with no
+  `schemas.toml` backing at all for physical creation (`schemas.toml`'s
+  `metrics_gauge`/`metrics_sum`/`metrics_histogram` sections are wired only
+  to admin introspection, not real tables) — not just
+  `ExponentialHistogram`/`Summary` as originally scoped. Migrating all five
+  onto `schemas.toml` is real, separate work, correctly owned by
+  `unified-table-schema` rather than done partially here. **This change's
+  evolution mechanism covers traces and logs only** — both already resolve
+  their physical schema from `schemas.toml` today; metrics/profiles gain
+  evolution support once that migration lands.
 
 ## Capabilities
 
@@ -69,13 +75,13 @@ deployments.
 ## Impact
 
 - **common**: `schema/schema_parser.rs` (new `FieldRemoval`), `schema/mod.rs`
-  (`schemas.toml` additions for traces + metrics), `schema/logical.rs`
-  (register the two `_number` fields), `flight/schema.rs` (wire schema
-  columns), `flight/conversion/conversion_traces.rs` (stop deriving-only,
-  read/write the numbers and the dropped-counts), `iceberg/table_manager.rs`
-  (new evolution path in `ensure_table`), `iceberg/schemas.rs`
-  (`ExponentialHistogram`/`Summary` schemas move to being generated from
-  `schemas.toml` like the others).
+  (`schemas.toml` additions for traces), `schema/logical.rs` (register the
+  two `_number` fields), `flight/schema.rs` (wire schema columns),
+  `flight/conversion/conversion_traces.rs` (stop deriving-only, read/write
+  the numbers and the dropped-counts), `iceberg/table_manager.rs` (new
+  evolution path in `ensure_table`, scoped to traces/logs — see the scope
+  correction above; `iceberg/schemas.rs`'s hand-written metrics/profiles
+  schemas are untouched by this change).
 - **writer**: `schema_transform.rs` (v1→v2 mapping for the new columns),
   `reconcile.rs` (schema evolution runs on the existing reconcile pass, no
   new job).
