@@ -72,6 +72,14 @@ human session is unrestricted. A per-signal guard on the Tempo / Loki /
 Prometheus query routers rejects a scoped caller lacking the scope with `403`.
 The mirror of the acceptor's `<signal>:write` ingest scopes.
 
+**Schema scopes** (change `schema-registry`). `schema:read` (in `READ_SCOPES`, so
+part of the OAuth default grant) gates `/api/v1/schema/*` reads via
+`TenantContext::can_read_schema()`; `schema:write` gates custom-registry
+create/replace/validate/delete via `can_write_schema()` (sessions additionally
+need tenant Admin / instance admin; not OAuth-grantable). `API_KEY_SCOPES` is
+the single vocabulary (`validate_scopes()`), used by key creation on every
+surface. Bundled registries answer `409` on mutation regardless of scope.
+
 ### Error Codes
 
 - **400**: Malformed auth headers (wrong scheme, invalid tenant/dataset ID)

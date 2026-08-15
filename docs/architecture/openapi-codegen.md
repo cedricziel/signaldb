@@ -49,9 +49,14 @@ flowchart LR
   `/label/{name}/values`) and `endpoints/logql.rs`
   (`/loki/api/v1/query{,_range}`, `/labels`, `/label/{name}/values`), the operational-control endpoints in
   `endpoints/ops.rs` (`/api/v1/ops/compact{,/status,/dry-run}`, admin-authenticated,
-  proxied to the compactor's Flight `do_action` surface), and `endpoints/oauth.rs`
+  proxied to the compactor's Flight `do_action` surface), `endpoints/oauth.rs`
   (the session-authed OAuth consent surface the explore-UI consumes —
-  `GET /oauth/consent/context` and `POST /oauth/authorize/decision`). Paths are absolute; operationIds on the
+  `GET /oauth/consent/context` and `POST /oauth/authorize/decision`), and
+  `endpoints/schema.rs` (the schema registry: `/api/v1/schema/registries`
+  CRUD + `:validate`, and attribute/entity/metric resolution and prefix search
+  under `/api/v1/schema/{attributes,entities,metrics}`; its resolved-definition
+  DTOs derive `ToSchema` in `common::schema_registry` and `schema-model`, and
+  the raw registry document is typed as an opaque object). Paths are absolute; operationIds on the
   management handlers are prefixed `manage_*` and their colliding component
   schemas aliased `Manage*` (via `#[schema(as = ...)]`) so admin and manage
   names don't clash. The PromQL/LogQL handlers set explicit `operation_id`s
