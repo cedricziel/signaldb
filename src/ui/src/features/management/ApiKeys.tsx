@@ -2,22 +2,58 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Navigate } from "react-router";
 import {
+  ALL_SCOPES,
+  SCOPE_GROUPS,
   createApiKey,
   listApiKeys,
   revokeApiKey,
-  type IngestScope,
+  updateApiKey,
+  type ApiKeyScope,
 } from "../../api/management";
 import { whoami } from "../../api/session";
 import { toErrorMessage } from "../../api/http";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import "./ApiKeys.css";
 
-const scopes: IngestScope[] = [
-  "metrics:write",
-  "logs:write",
-  "traces:write",
-  "profiles:write",
-];
+/** Scopes checked in a form, in vocabulary order. */
+function selectedScopes(data: FormData): ApiKeyScope[] {
+  return ALL_SCOPES.filter((scope) => data.has(scope));
+}
+
+/** The grouped scope picker (Ingestion / Schema) shared by the create form
+ * and the per-key editor. `idPrefix` keeps input ids unique per instance. */
+function ScopePicker({
+  idPrefix,
+  checked,
+}: {
+  idPrefix: string;
+  checked: (scope: ApiKeyScope) => boolean;
+}) {
+  return (
+    <div className="scope-picker">
+      {SCOPE_GROUPS.map((group) => (
+        <fieldset key={group.name}>
+          <legend>{group.name}</legend>
+          {group.scopes.map(({ scope, description }) => {
+            const id = `${idPrefix}-${scope.replace(":", "-")}`;
+            return (
+              <div key={scope} className="scope-option">
+                <input
+                  type="checkbox"
+                  id={id}
+                  name={scope}
+                  defaultChecked={checked(scope)}
+                />
+                <label htmlFor={id}>{scope}</label>
+                <span className="scope-description">{description}</span>
+              </div>
+            );
+          })}
+        </fieldset>
+      ))}
+    </div>
+  );
+}
 
 export function ApiKeys() {
   const queryClient = useQueryClient();
@@ -30,6 +66,7 @@ export function ApiKeys() {
 
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
 
   const tenant = who?.tenant.id;
   const keys = useQuery({
@@ -38,18 +75,30 @@ export function ApiKeys() {
     enabled: !!tenant,
   });
 
+  const invalidateKeys = () =>
+    queryClient.invalidateQueries({ queryKey: ["managed-api-keys", tenant] });
+
   const createMutation = useMutation({
     mutationFn: (input: {
       name?: string;
       dataset_id?: string;
-      scopes: IngestScope[];
+      scopes: ApiKeyScope[];
     }) => createApiKey(tenant!, input),
     onSuccess: (result) => {
       setSecret(result.key);
       setError(null);
-      void queryClient.invalidateQueries({
-        queryKey: ["managed-api-keys", tenant],
-      });
+      void invalidateKeys();
+    },
+    onError: (value) => setError(toErrorMessage(value)),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (input: { keyId: string; scopes: ApiKeyScope[] }) =>
+      updateApiKey(tenant!, input.keyId, { scopes: input.scopes }),
+    onSuccess: () => {
+      setEditingKeyId(null);
+      setError(null);
+      void invalidateKeys();
     },
     onError: (value) => setError(toErrorMessage(value)),
   });
@@ -57,9 +106,7 @@ export function ApiKeys() {
   const revokeMutation = useMutation({
     mutationFn: (keyId: string) => revokeApiKey(tenant!, keyId),
     onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["managed-api-keys", tenant],
-      });
+      void invalidateKeys();
     },
     onError: (value) => setError(toErrorMessage(value)),
   });
@@ -80,17 +127,30 @@ export function ApiKeys() {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    const selectedScopes = scopes.filter((scope) => data.has(scope));
-    if (selectedScopes.length === 0) {
-      setError("Select at least one ingestion scope.");
+    const scopes = selectedScopes(data);
+    if (scopes.length === 0) {
+      setError("Select at least one scope.");
       return;
     }
     createMutation.mutate({
       name: String(data.get("name") ?? "").trim() || undefined,
       dataset_id: String(data.get("dataset") ?? "").trim() || undefined,
-      scopes: selectedScopes,
+      scopes,
     });
     form.reset();
+  };
+
+  const handleUpdate = (
+    keyId: string,
+    event: React.FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+    const scopes = selectedScopes(new FormData(event.currentTarget));
+    if (scopes.length === 0) {
+      setError("Select at least one scope.");
+      return;
+    }
+    updateMutation.mutate({ keyId, scopes });
   };
 
   const handleRevoke = (keyId: string) => {
@@ -101,7 +161,8 @@ export function ApiKeys() {
     <div className="api-keys-page">
       <h1 className="api-keys-title">API keys</h1>
       <p className="api-keys-subtitle">
-        Manage ingestion keys for <strong>{who.tenant.id}</strong>.
+        Manage API keys for <strong>{who.tenant.id}</strong>. Every key carries
+        explicit scopes; edit them any time without rotating the secret.
       </p>
 
       {error && <p className="manage-error">{error}</p>}
@@ -122,19 +183,10 @@ export function ApiKeys() {
               </option>
             ))}
           </select>
-          <fieldset>
-            <legend>Ingestion scopes</legend>
-            {scopes.map((scope) => (
-              <label key={scope}>
-                <input
-                  type="checkbox"
-                  name={scope}
-                  defaultChecked={scope === "metrics:write"}
-                />
-                {scope}
-              </label>
-            ))}
-          </fieldset>
+          <ScopePicker
+            idPrefix="create"
+            checked={(scope) => scope === "metrics:write"}
+          />
           <button type="submit" disabled={createMutation.isPending}>
             Create API key
           </button>
@@ -149,7 +201,7 @@ export function ApiKeys() {
               key={key.id}
               className={`api-key-row ${key.revoked ? "revoked" : ""}`}
             >
-              <div>
+              <div className="api-key-main">
                 <div className={`api-key-name ${key.revoked ? "revoked" : ""}`}>
                   {key.name || "Unnamed key"}
                 </div>
@@ -161,15 +213,48 @@ export function ApiKeys() {
                   {` · created ${new Date(key.created_at).toLocaleDateString()}`}
                   {key.revoked && " · revoked"}
                 </div>
+                {editingKeyId === key.id && (
+                  <form
+                    className="api-key-editor"
+                    aria-label="Edit scopes"
+                    onSubmit={(event) => handleUpdate(key.id, event)}
+                  >
+                    <ScopePicker
+                      idPrefix={`edit-${key.id}`}
+                      checked={(scope) => key.scopes?.includes(scope) ?? false}
+                    />
+                    <div className="api-key-editor-actions">
+                      <button type="submit" disabled={updateMutation.isPending}>
+                        Save scopes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingKeyId(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
               {!key.revoked && (
-                <button
-                  className="api-key-revoke"
-                  onClick={() => handleRevoke(key.id)}
-                  disabled={revokeMutation.isPending}
-                >
-                  Revoke
-                </button>
+                <div className="api-key-actions">
+                  <button
+                    className="api-key-edit"
+                    onClick={() =>
+                      setEditingKeyId(editingKeyId === key.id ? null : key.id)
+                    }
+                  >
+                    Edit scopes
+                  </button>
+                  <button
+                    className="api-key-revoke"
+                    onClick={() => handleRevoke(key.id)}
+                    disabled={revokeMutation.isPending}
+                  >
+                    Revoke
+                  </button>
+                </div>
               )}
             </li>
           ))}

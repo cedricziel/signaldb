@@ -27,6 +27,10 @@ export type ApiKeyResponse = {
      */
     created_at: string;
     /**
+     * Dataset the key is restricted to, if any.
+     */
+    dataset_id?: string | null;
+    /**
      * Unique key identifier.
      */
     id: string;
@@ -38,6 +42,10 @@ export type ApiKeyResponse = {
      * ISO 8601 revocation timestamp (if revoked).
      */
     revoked_at?: string | null;
+    /**
+     * Scopes the key carries; `null` for a legacy unrestricted key.
+     */
+    scopes?: Array<string> | null;
 };
 
 export type Attribute = {
@@ -128,12 +136,25 @@ export type ConsentTenant = {
 
 /**
  * Request body for creating a new API key.
+ *
+ * `scopes` is required and non-empty: a key's permissions are always
+ * explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
+ * `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
+ * `profiles:read`, `schema:read`, `schema:write`.
  */
 export type CreateApiKeyRequest = {
+    /**
+     * Optional dataset the key is restricted to.
+     */
+    dataset_id?: string | null;
     /**
      * Optional human-readable name for the key.
      */
     name?: string | null;
+    /**
+     * Scopes the key carries (required, at least one).
+     */
+    scopes: Array<string>;
 };
 
 /**
@@ -144,6 +165,10 @@ export type CreateApiKeyResponse = {
      * ISO 8601 creation timestamp.
      */
     created_at: string;
+    /**
+     * Dataset the key is restricted to, if any.
+     */
+    dataset_id?: string | null;
     /**
      * Unique key identifier.
      */
@@ -156,6 +181,10 @@ export type CreateApiKeyResponse = {
      * Optional human-readable name.
      */
     name?: string | null;
+    /**
+     * Scopes the key carries.
+     */
+    scopes: Array<string>;
 };
 
 /**
@@ -455,6 +484,21 @@ export type ManageSchemaResponse = {
     physical: Array<ManagePhysicalSchema>;
 };
 
+/**
+ * Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
+ * Absent fields are left untouched.
+ */
+export type ManageUpdateApiKeyRequest = {
+    /**
+     * Replacement dataset restriction.
+     */
+    dataset_id?: string | null;
+    /**
+     * Replacement scope list (non-empty, drawn from the shared vocabulary).
+     */
+    scopes?: Array<string> | null;
+};
+
 export type MembershipResponse = {
     email: string;
     role: MembershipRole;
@@ -726,6 +770,22 @@ export type Trace = {
 };
 
 /**
+ * Request body for updating a live API key's scopes and/or dataset restriction.
+ *
+ * Absent fields are left untouched. Revoked keys cannot be updated.
+ */
+export type UpdateApiKeyRequest = {
+    /**
+     * New dataset restriction.
+     */
+    dataset_id?: string | null;
+    /**
+     * New scope list (replaces the current one; must be non-empty).
+     */
+    scopes?: Array<string> | null;
+};
+
+/**
  * Request body for updating an existing tenant.
  */
 export type UpdateTenantRequest = {
@@ -975,9 +1035,17 @@ export type CreateApiKeyData = {
 
 export type CreateApiKeyErrors = {
     /**
+     * Dataset does not exist
+     */
+    400: ApiError;
+    /**
      * Tenant not found
      */
     404: ApiError;
+    /**
+     * Invalid or empty scopes
+     */
+    422: ApiError;
     /**
      * Tenant API key quota exceeded
      */
@@ -1028,6 +1096,52 @@ export type RevokeApiKeyResponses = {
 };
 
 export type RevokeApiKeyResponse = RevokeApiKeyResponses[keyof RevokeApiKeyResponses];
+
+export type UpdateApiKeyData = {
+    body: UpdateApiKeyRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * API key identifier
+         */
+        key_id: string;
+    };
+    query?: never;
+    url: '/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}';
+};
+
+export type UpdateApiKeyErrors = {
+    /**
+     * Dataset does not exist
+     */
+    400: ApiError;
+    /**
+     * API key not found
+     */
+    404: ApiError;
+    /**
+     * API key is revoked
+     */
+    409: ApiError;
+    /**
+     * Invalid scopes
+     */
+    422: ApiError;
+};
+
+export type UpdateApiKeyError = UpdateApiKeyErrors[keyof UpdateApiKeyErrors];
+
+export type UpdateApiKeyResponses = {
+    /**
+     * API key updated
+     */
+    200: ApiKeyResponse;
+};
+
+export type UpdateApiKeyResponse = UpdateApiKeyResponses[keyof UpdateApiKeyResponses];
 
 export type ListDatasetsData = {
     body?: never;
@@ -1274,7 +1388,7 @@ export type ManageCreateApiKeyData = {
 
 export type ManageCreateApiKeyErrors = {
     /**
-     * Validation error
+     * Dataset does not exist
      */
     400: ManageError;
     /**
@@ -1285,6 +1399,10 @@ export type ManageCreateApiKeyErrors = {
      * Unable to create API key
      */
     409: ManageError;
+    /**
+     * Invalid or empty scopes
+     */
+    422: ManageError;
     /**
      * Internal error
      */
@@ -1343,6 +1461,60 @@ export type ManageRevokeApiKeyResponses = {
 };
 
 export type ManageRevokeApiKeyResponse = ManageRevokeApiKeyResponses[keyof ManageRevokeApiKeyResponses];
+
+export type ManageUpdateApiKeyData = {
+    body: ManageUpdateApiKeyRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * API key identifier
+         */
+        key_id: string;
+    };
+    query?: never;
+    url: '/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}';
+};
+
+export type ManageUpdateApiKeyErrors = {
+    /**
+     * Dataset does not exist
+     */
+    400: ManageError;
+    /**
+     * Forbidden
+     */
+    403: ManageError;
+    /**
+     * API key not found
+     */
+    404: ManageError;
+    /**
+     * API key is revoked
+     */
+    409: ManageError;
+    /**
+     * Invalid or empty scopes
+     */
+    422: ManageError;
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ManageUpdateApiKeyError = ManageUpdateApiKeyErrors[keyof ManageUpdateApiKeyErrors];
+
+export type ManageUpdateApiKeyResponses = {
+    /**
+     * API key updated
+     */
+    200: ManageApiKeyResponse;
+};
+
+export type ManageUpdateApiKeyResponse = ManageUpdateApiKeyResponses[keyof ManageUpdateApiKeyResponses];
 
 export type ManageListDatasetsData = {
     body?: never;

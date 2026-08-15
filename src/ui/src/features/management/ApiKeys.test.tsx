@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -146,6 +146,107 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("metrics:write")).toBeInTheDocument();
       expect(screen.getByText("Create API key")).toBeInTheDocument();
     });
+  });
+
+  it("groups the scope picker into Ingestion and Schema with descriptions", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+    const ingestion = screen.getByRole("group", { name: "Ingestion" });
+    const schema = screen.getByRole("group", { name: "Schema" });
+    for (const scope of [
+      "metrics:write",
+      "logs:write",
+      "traces:write",
+      "profiles:write",
+    ]) {
+      expect(ingestion).toContainElement(screen.getByLabelText(scope));
+    }
+    expect(schema).toContainElement(screen.getByLabelText("schema:read"));
+    expect(schema).toContainElement(screen.getByLabelText("schema:write"));
+    // One-line descriptions accompany each scope.
+    expect(schema).toHaveTextContent(/read the schema registry/i);
+    expect(schema).toHaveTextContent(/custom registries/i);
+    expect(ingestion).toHaveTextContent(/ingest traces/i);
+  });
+
+  it("creates a key with schema scopes", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: [] },
+      { match: API_KEYS_PATH, method: "POST", body: { key: "sdbk_schema" } },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    // Deselect the default ingestion scope, pick both schema scopes.
+    await userEvent.click(screen.getByLabelText("metrics:write"));
+    await userEvent.click(screen.getByLabelText("schema:read"));
+    await userEvent.click(screen.getByLabelText("schema:write"));
+    await userEvent.click(screen.getByText("Create API key"));
+
+    await waitFor(() =>
+      expect(findFetchCall(fetchMock, "/api-keys", "POST")).toBeDefined(),
+    );
+    const post = findFetchCall(fetchMock, "/api-keys", "POST")!;
+    expect(await post.clone().json()).toEqual({
+      scopes: ["schema:read", "schema:write"],
+    });
+  });
+
+  it("edits the scopes of a live key via PATCH", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-1`,
+        method: "PATCH",
+        body: { ...API_KEYS[0], scopes: ["metrics:write", "schema:read"] },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+
+    // Revoked keys offer no editor; live keys do.
+    const editButtons = screen.getAllByText("Edit scopes");
+    expect(editButtons).toHaveLength(2);
+    await userEvent.click(editButtons[0]!);
+
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    // key-1 carries metrics:write + logs:write: drop logs:write, add schema:read.
+    const { getByLabelText, getByText } = within(editor);
+    expect(getByLabelText("metrics:write")).toBeChecked();
+    expect(getByLabelText("logs:write")).toBeChecked();
+    expect(getByLabelText("schema:read")).not.toBeChecked();
+    await userEvent.click(getByLabelText("logs:write"));
+    await userEvent.click(getByLabelText("schema:read"));
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-1", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
+    expect(await patch.clone().json()).toEqual({
+      scopes: ["metrics:write", "schema:read"],
+    });
+    // Editor closes and the list refetches.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("form", { name: "Edit scopes" }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("creates new API key and shows secret modal", async () => {

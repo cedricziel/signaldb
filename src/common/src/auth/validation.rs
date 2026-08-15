@@ -20,6 +20,10 @@ pub enum ValidationError {
     InvalidCharacters { invalid: Vec<char> },
     /// ID contains path traversal patterns
     PathTraversal,
+    /// An API-key scope list was empty
+    NoScopes,
+    /// An API-key scope is not in [`API_KEY_SCOPES`](super::API_KEY_SCOPES)
+    UnknownScope { scope: String },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -36,6 +40,10 @@ impl std::fmt::Display for ValidationError {
             ValidationError::PathTraversal => {
                 write!(f, "ID contains path traversal patterns")
             }
+            ValidationError::NoScopes => write!(f, "at least one scope is required"),
+            ValidationError::UnknownScope { scope } => {
+                write!(f, "unknown scope '{scope}'")
+            }
         }
     }
 }
@@ -45,6 +53,29 @@ impl std::error::Error for ValidationError {}
 impl From<ValidationError> for AuthError {
     fn from(err: ValidationError) -> Self {
         AuthError::bad_request(err.to_string())
+    }
+}
+
+/// Validate an API-key scope list against the shared vocabulary
+/// [`API_KEY_SCOPES`](super::API_KEY_SCOPES).
+///
+/// # Errors
+///
+/// [`ValidationError::NoScopes`] when the list is empty (a key's permissions
+/// are always explicit); [`ValidationError::UnknownScope`] naming the first
+/// scope outside the vocabulary.
+pub fn validate_scopes(scopes: &[String]) -> Result<(), ValidationError> {
+    if scopes.is_empty() {
+        return Err(ValidationError::NoScopes);
+    }
+    match scopes
+        .iter()
+        .find(|scope| !super::API_KEY_SCOPES.contains(&scope.as_str()))
+    {
+        Some(scope) => Err(ValidationError::UnknownScope {
+            scope: scope.clone(),
+        }),
+        None => Ok(()),
     }
 }
 

@@ -75,7 +75,9 @@ Add new variants to `ALL` and `catalog_name()` together — `catalog_name`'s
 match is exhaustive so the compiler forces it.
 
 The same catalog database also holds the multi-tenancy tables (`tenants`,
-`api_keys`, `datasets`), the user-identity tables (`users`,
+`api_keys` — including each key's explicit `scopes` list and optional
+`dataset_id` restriction, updatable in place via
+`Catalog::update_api_key_scopes` — `datasets`), the user-identity tables (`users`,
 `tenant_memberships`, `user_sessions` — see the users-tenant-membership
 ADR), the `compactor_leases` table, and the advisory
 `attribute_stats` table (per-attribute-key presence and cardinality written

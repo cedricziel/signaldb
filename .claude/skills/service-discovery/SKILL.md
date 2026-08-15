@@ -67,7 +67,8 @@ CREATE TABLE ingesters (
 );
 ```
 
-The same catalog also holds multi-tenancy tables (`tenants`, `api_keys`,
+The same catalog also holds multi-tenancy tables (`tenants`, `api_keys` with
+per-key `scopes` + `dataset_id`, patched by `Catalog::update_api_key_scopes`,
 `datasets`), user-identity tables (`users`, `tenant_memberships`,
 `user_sessions`; users-tenant-membership ADR), `compactor_leases`, and the advisory `attribute_stats` table
 (epic #737: per-attribute-key presence/cardinality from the compactor's

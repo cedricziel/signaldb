@@ -44,20 +44,69 @@
   border-radius: 5px;
 }
 
-.api-keys-form fieldset {
+.scope-picker {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.scope-picker fieldset {
+  display: grid;
   gap: 6px;
   padding: 10px;
   border: 1px solid var(--border);
+  border-radius: 5px;
   margin: 0;
 }
 
-.api-keys-form fieldset label {
-  font: 11px var(--mono);
-  display: flex;
+.scope-picker legend {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.scope-option {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+}
+
+.scope-option label {
+  font: 11px var(--mono);
+}
+
+.scope-description {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.api-key-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.api-key-editor {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface2);
+}
+
+.api-key-editor-actions,
+.api-key-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.api-key-editor-actions button,
+.api-key-edit {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
 }
 
 .api-keys-list {

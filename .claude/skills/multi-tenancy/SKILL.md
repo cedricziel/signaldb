@@ -160,7 +160,7 @@ Mounted at `/api/v1/admin`, requires `admin_api_key` (`src/router/src/lib.rs`):
 | `/api/v1/admin/tenants`                            | GET, POST        | List/create tenants                                                                  |
 | `/api/v1/admin/tenants/{id}`                       | GET, PUT, DELETE | Manage a tenant                                                                      |
 | `/api/v1/admin/tenants/{id}/api-keys`              | GET, POST        | List/create API keys                                                                 |
-| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE           | Revoke API key                                                                       |
+| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE, PATCH    | Revoke API key / update its scopes and dataset restriction                          |
 | `/api/v1/admin/tenants/{id}/datasets`              | GET, POST        | List/create datasets                                                                 |
 | `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE           | Delete dataset                                                                       |
 | `/api/v1/admin/users`                              | POST             | Create a human user + initial tenant membership (used by `signaldb-cli user create`) |
@@ -191,7 +191,8 @@ scripts; dynamic tenant-ID completion for tenant-taking args via
 ```bash
 signaldb-cli admin tenant list
 signaldb-cli admin tenant create acme --name "Acme Corp" [--default-dataset production]
-signaldb-cli admin api-key create acme --name "Production Key"
+signaldb-cli admin api-key create acme --name "Production Key" --scope traces:write --scope schema:read
+signaldb-cli admin api-key update acme <key-id> --scope traces:write --scope schema:write
 signaldb-cli admin dataset create acme --name production
 signaldb-cli query --sql "SELECT ..."   # also --promql/--logql/--traceql/--ir
 signaldb-cli tui                         # Interactive terminal UI

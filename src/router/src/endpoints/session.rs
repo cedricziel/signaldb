@@ -875,6 +875,234 @@ mod tests {
         assert_eq!(body["scopes"][0], "metrics:write");
     }
 
+    async fn admin_cookie(app: &axum::Router) -> String {
+        let login = create_session(
+            app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        cookie_pair(&login)
+    }
+
+    async fn manage_create_key(
+        app: &axum::Router,
+        cookie: &str,
+        body: &str,
+    ) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .header(header::COOKIE, cookie)
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        (status, json_body(response).await)
+    }
+
+    async fn manage_patch_key(
+        app: &axum::Router,
+        cookie: &str,
+        key_id: &str,
+        body: &str,
+    ) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"))
+            .header(header::COOKIE, cookie)
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        (status, json_body(response).await)
+    }
+
+    async fn tempo_echo_status(app: &axum::Router, key: &str) -> StatusCode {
+        let request = Request::builder()
+            .uri("/tempo/api/echo")
+            .header("authorization", format!("Bearer {key}"))
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(request).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn management_creates_key_with_schema_scopes_and_lists_them() {
+        let app = test_app().await;
+        let cookie = admin_cookie(&app).await;
+        let (status, body) = manage_create_key(
+            &app,
+            &cookie,
+            r#"{"name":"schema-bot","scopes":["schema:read","schema:write"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(
+            body["scopes"],
+            serde_json::json!(["schema:read", "schema:write"])
+        );
+
+        let request = Request::builder()
+            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let list = json_body(response).await;
+        let listed = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["name"] == "schema-bot")
+            .expect("created key listed");
+        assert_eq!(
+            listed["scopes"],
+            serde_json::json!(["schema:read", "schema:write"])
+        );
+    }
+
+    #[tokio::test]
+    async fn management_rejects_unknown_and_empty_scopes_with_422() {
+        let app = test_app().await;
+        let cookie = admin_cookie(&app).await;
+        let (status, body) = manage_create_key(
+            &app,
+            &cookie,
+            r#"{"name":"bogus","scopes":["traces:write","schema:admin"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("schema:admin"));
+
+        let (status, body) =
+            manage_create_key(&app, &cookie, r#"{"name":"none","scopes":[]}"#).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("at least one scope")
+        );
+    }
+
+    #[tokio::test]
+    async fn management_patch_updates_scopes_and_next_request_reflects_it() {
+        let app = test_app().await;
+        let cookie = admin_cookie(&app).await;
+        let (status, created) = manage_create_key(
+            &app,
+            &cookie,
+            r#"{"name":"rotating","scopes":["metrics:read"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let key_id = created["id"].as_str().unwrap().to_string();
+        let secret = created["key"].as_str().unwrap().to_string();
+
+        // metrics:read does not grant the traces surface.
+        assert_eq!(
+            tempo_echo_status(&app, &secret).await,
+            StatusCode::FORBIDDEN
+        );
+
+        // Grant traces:read: the very next request with the same secret passes.
+        let (status, body) = manage_patch_key(
+            &app,
+            &cookie,
+            &key_id,
+            r#"{"scopes":["metrics:read","traces:read"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["scopes"],
+            serde_json::json!(["metrics:read", "traces:read"])
+        );
+        assert_eq!(tempo_echo_status(&app, &secret).await, StatusCode::OK);
+
+        // Remove it again: the next request is rejected.
+        let (status, _) =
+            manage_patch_key(&app, &cookie, &key_id, r#"{"scopes":["metrics:read"]}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            tempo_echo_status(&app, &secret).await,
+            StatusCode::FORBIDDEN
+        );
+
+        // Dataset restriction can be updated too; scopes preserved.
+        let (status, body) =
+            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_id":"staging"}"#).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["dataset_id"], "staging");
+        assert_eq!(body["scopes"], serde_json::json!(["metrics:read"]));
+
+        // Validation errors.
+        let (status, body) =
+            manage_patch_key(&app, &cookie, &key_id, r#"{"scopes":["schema:admin"]}"#).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let (status, _) =
+            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_id":"nope"}"#).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) =
+            manage_patch_key(&app, &cookie, "missing", r#"{"scopes":["schema:read"]}"#).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Revoked keys are immutable.
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"))
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let (status, body) =
+            manage_patch_key(&app, &cookie, &key_id, r#"{"scopes":["schema:read"]}"#).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    }
+
+    #[tokio::test]
+    async fn management_patch_requires_tenant_admin() {
+        let app = test_app().await;
+        let cookie = admin_cookie(&app).await;
+        let (_, created) =
+            manage_create_key(&app, &cookie, r#"{"name":"k","scopes":["schema:read"]}"#).await;
+        let key_id = created["id"].as_str().unwrap().to_string();
+
+        let viewer_login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "viewer@example.com",
+                "password": "viewer password",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        let viewer_cookie = cookie_pair(&viewer_login);
+        let (status, _) = manage_patch_key(
+            &app,
+            &viewer_cookie,
+            &key_id,
+            r#"{"scopes":["schema:write"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
     #[tokio::test]
     async fn instance_admin_creates_and_immediately_accesses_tenant() {
         let app = test_app().await;

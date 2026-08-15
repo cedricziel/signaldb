@@ -9,7 +9,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use common::{
-    auth::{Authenticator, TenantContext, TenantContextExtractor, validate_id},
+    auth::{Authenticator, TenantContext, TenantContextExtractor, validate_id, validate_scopes},
     catalog::MembershipRole,
     schema::{
         SCHEMA_DEFINITIONS,
@@ -19,13 +19,6 @@ use common::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
-
-const INGEST_SCOPES: [&str; 4] = [
-    "metrics:write",
-    "logs:write",
-    "traces:write",
-    "profiles:write",
-];
 
 pub fn router<S: RouterState>() -> Router<S> {
     Router::new()
@@ -44,7 +37,7 @@ pub fn router<S: RouterState>() -> Router<S> {
         )
         .route(
             "/tenants/{tenant_id}/api-keys/{key_id}",
-            delete(revoke_api_key::<S>),
+            delete(revoke_api_key::<S>).patch(update_api_key::<S>),
         )
         .route(
             "/tenants/{tenant_id}/memberships",
@@ -459,7 +452,8 @@ pub(crate) async fn list_api_keys<S: RouterState>(
     request_body = CreateApiKeyRequest,
     responses(
         (status = 201, description = "API key created", body = ManageCreatedApiKey),
-        (status = 400, description = "Validation error", body = ManageError),
+        (status = 400, description = "Dataset does not exist", body = ManageError),
+        (status = 422, description = "Invalid or empty scopes", body = ManageError),
         (status = 403, description = "Forbidden", body = ManageError),
         (status = 409, description = "Unable to create API key", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
@@ -474,31 +468,16 @@ pub(crate) async fn create_api_key<S: RouterState>(
     if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
         return error(status, message);
     }
-    if request.scopes.is_empty()
-        || request
-            .scopes
-            .iter()
-            .any(|scope| !INGEST_SCOPES.contains(&scope.as_str()))
-    {
+    if let Err(validation_error) = validate_scopes(&request.scopes) {
         return error(
-            StatusCode::BAD_REQUEST,
-            "At least one valid ingestion scope is required",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            validation_error.to_string(),
         );
     }
-    if let Some(dataset_id) = &request.dataset_id {
-        let datasets = match state.catalog().get_datasets(&tenant_id).await {
-            Ok(value) => value,
-            Err(catalog_error) => {
-                tracing::error!(error = %catalog_error, tenant_id, "dataset validation failed");
-                return error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Unable to validate dataset",
-                );
-            }
-        };
-        if !datasets.iter().any(|dataset| dataset.name == *dataset_id) {
-            return error(StatusCode::BAD_REQUEST, "Dataset does not exist");
-        }
+    if let Some(dataset_id) = &request.dataset_id
+        && let Err(response) = ensure_dataset_exists(&state, &tenant_id, dataset_id).await
+    {
+        return *response;
     }
     let secret = format!("sdbk_{}", Uuid::new_v4().simple());
     let key_hash = Authenticator::hash_api_key(&secret);
@@ -531,6 +510,137 @@ pub(crate) async fn create_api_key<S: RouterState>(
         Err(catalog_error) => {
             tracing::warn!(error = %catalog_error, tenant_id, "API key creation failed");
             error(StatusCode::CONFLICT, "Unable to create API key")
+        }
+    }
+}
+
+/// `400` unless `dataset_id` exists in the tenant.
+async fn ensure_dataset_exists<S: RouterState>(
+    state: &S,
+    tenant_id: &str,
+    dataset_id: &str,
+) -> Result<(), Box<Response>> {
+    match state.catalog().get_datasets(tenant_id).await {
+        Ok(datasets) if datasets.iter().any(|dataset| dataset.name == dataset_id) => Ok(()),
+        Ok(_) => Err(Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "Dataset does not exist",
+        ))),
+        Err(catalog_error) => {
+            tracing::error!(error = %catalog_error, tenant_id, "dataset validation failed");
+            Err(Box::new(error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to validate dataset",
+            )))
+        }
+    }
+}
+
+/// Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
+/// Absent fields are left untouched.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = ManageUpdateApiKeyRequest)]
+pub(crate) struct UpdateApiKeyRequest {
+    /// Replacement scope list (non-empty, drawn from the shared vocabulary).
+    scopes: Option<Vec<String>>,
+    /// Replacement dataset restriction.
+    dataset_id: Option<String>,
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}",
+    tag = "api-keys",
+    operation_id = "manage_update_api_key",
+    params(
+        ("tenant_id" = String, Path, description = "Tenant identifier"),
+        ("key_id" = String, Path, description = "API key identifier"),
+    ),
+    request_body = UpdateApiKeyRequest,
+    responses(
+        (status = 200, description = "API key updated", body = ApiKeyResponse),
+        (status = 400, description = "Dataset does not exist", body = ManageError),
+        (status = 403, description = "Forbidden", body = ManageError),
+        (status = 404, description = "API key not found", body = ManageError),
+        (status = 409, description = "API key is revoked", body = ManageError),
+        (status = 422, description = "Invalid or empty scopes", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+    )
+)]
+pub(crate) async fn update_api_key<S: RouterState>(
+    State(state): State<S>,
+    TenantContextExtractor(ctx): TenantContextExtractor,
+    Path((tenant_id, key_id)): Path<(String, String)>,
+    Json(request): Json<UpdateApiKeyRequest>,
+) -> Response {
+    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
+        return error(status, message);
+    }
+    if let Some(scopes) = &request.scopes
+        && let Err(validation_error) = validate_scopes(scopes)
+    {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            validation_error.to_string(),
+        );
+    }
+    if let Some(dataset_id) = &request.dataset_id
+        && let Err(response) = ensure_dataset_exists(&state, &tenant_id, dataset_id).await
+    {
+        return *response;
+    }
+    match state.catalog().get_api_key(&key_id).await {
+        Ok(Some(record)) if record.tenant_id == tenant_id => {
+            if record.revoked_at.is_some() {
+                return error(StatusCode::CONFLICT, "API key is revoked");
+            }
+        }
+        Ok(_) => return error(StatusCode::NOT_FOUND, "API key not found"),
+        Err(catalog_error) => {
+            tracing::error!(error = %catalog_error, tenant_id, key_id, "API key lookup failed");
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to update API key",
+            );
+        }
+    }
+    match state
+        .catalog()
+        .update_api_key_scopes(
+            &key_id,
+            request.scopes.as_deref(),
+            request.dataset_id.as_deref(),
+        )
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return error(StatusCode::CONFLICT, "API key is revoked"),
+        Err(catalog_error) => {
+            tracing::error!(error = %catalog_error, tenant_id, key_id, "API key update failed");
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to update API key",
+            );
+        }
+    }
+    tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, key_id, "API key scopes updated via UX");
+    match state.catalog().get_api_key(&key_id).await {
+        Ok(Some(key)) => Json(ApiKeyResponse {
+            id: key.id,
+            name: key.name,
+            dataset_id: key.dataset_id,
+            scopes: key.scopes,
+            revoked: key.revoked_at.is_some(),
+            created_at: key.created_at.to_rfc3339(),
+        })
+        .into_response(),
+        Ok(None) => error(StatusCode::NOT_FOUND, "API key not found"),
+        Err(catalog_error) => {
+            tracing::error!(error = %catalog_error, tenant_id, key_id, "API key reload failed");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to update API key",
+            )
         }
     }
 }

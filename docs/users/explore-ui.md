@@ -408,13 +408,22 @@ via `whoami(tenant_id)` on expansion.
 
 ### API keys (`/api-keys`)
 
-Tenant-admin-only page for managing ingestion API keys. The same API
-functions used by the admin management panel (`listApiKeys`,
-`createApiKey`, `revokeApiKey`) power this page, but it is scoped to
+Tenant-admin-only page for managing API keys. The same API functions
+used by the admin management panel (`listApiKeys`, `createApiKey`,
+`updateApiKey`, `revokeApiKey`) power this page, but it is scoped to
 the current tenant rather than requiring instance-admin privileges.
 
+Every key carries explicit scopes chosen in a picker grouped into
+**Ingestion** (`metrics:write`, `logs:write`, `traces:write`,
+`profiles:write`) and **Schema** (`schema:read`, `schema:write`), each
+with a one-line description; at least one scope is required, and an
+optional dataset restriction can be set. The list shows each key's scopes,
+and **Edit scopes** on a live key changes them in place (via
+`PATCH /api/v1/manage/tenants/{id}/api-keys/{key_id}`) without rotating
+the secret; the change applies to the key's next request.
+
 Creating a key shows the secret once in a modal with a copy button;
-revoking is immediate and irreversible.
+revoking is immediate and irreversible, and revoked keys cannot be edited.
 
 ### Instrumentation (`/instrumentation`)
 

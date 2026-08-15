@@ -38,7 +38,8 @@ flowchart LR
   define the JSON wire format; `ToSchema` makes each struct an OpenAPI
   component.
 - **Operations** are declared with `#[utoipa::path(...)]` on the handlers in
-  `endpoints/admin.rs` (`/api/v1/admin/...`), `endpoints/management.rs`
+  `endpoints/admin.rs` (`/api/v1/admin/...`, including the API-key
+  `POST`/`PATCH` bodies with their required `scopes`), `endpoints/management.rs`
   (`/api/v1/manage/...`), `endpoints/tempo.rs` (the Tempo-compatible trace
   query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`),
   `endpoints/query.rs` (the native Query IR endpoint `POST /api/v1/query`, whose

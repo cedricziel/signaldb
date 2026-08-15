@@ -129,8 +129,15 @@ impl AdminPanel {
 
         if let Some(action) = self.api_keys.pending_action.take() {
             match action {
-                self::api_keys::ApiKeyAction::Create { tenant_id, name } => {
-                    let _ = client.create_api_key(&tenant_id, &name).await?;
+                self::api_keys::ApiKeyAction::Create {
+                    tenant_id,
+                    name,
+                    scopes,
+                    dataset_id,
+                } => {
+                    let _ = client
+                        .create_api_key(&tenant_id, &name, scopes, dataset_id)
+                        .await?;
                 }
                 self::api_keys::ApiKeyAction::Revoke { tenant_id, key_id } => {
                     client.revoke_api_key(&tenant_id, &key_id).await?;

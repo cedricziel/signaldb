@@ -597,7 +597,8 @@ curl http://localhost:3000/health   # Router
 ```bash
 signaldb-cli admin tenant list
 signaldb-cli admin tenant create acme --name "Acme Corp"
-signaldb-cli admin api-key create acme --name "Production Key"
+signaldb-cli admin api-key create acme --name "Production Key" --scope traces:write --scope schema:read
+signaldb-cli admin api-key update acme <key-id> --scope traces:write --scope schema:write
 signaldb-cli admin dataset create acme --name production
 
 # Query in any language (exactly one flag):

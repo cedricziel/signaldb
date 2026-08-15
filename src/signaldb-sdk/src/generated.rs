@@ -87,6 +87,13 @@ pub mod types {
     ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
     ///    },
+    ///    "dataset_id": {
+    ///      "description": "Dataset the key is restricted to, if any.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
     ///    "id": {
     ///      "description": "Unique key identifier.",
     ///      "type": "string"
@@ -104,6 +111,16 @@ pub mod types {
     ///        "string",
     ///        "null"
     ///      ]
+    ///    },
+    ///    "scopes": {
+    ///      "description": "Scopes the key carries; `null` for a legacy unrestricted key.",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    }
     ///  }
     ///}
@@ -113,6 +130,9 @@ pub mod types {
     pub struct ApiKeyResponse {
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
+        ///Dataset the key is restricted to, if any.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_id: ::std::option::Option<::std::string::String>,
         ///Unique key identifier.
         pub id: ::std::string::String,
         ///Optional human-readable name.
@@ -121,6 +141,9 @@ pub mod types {
         ///ISO 8601 revocation timestamp (if revoked).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub revoked_at: ::std::option::Option<::std::string::String>,
+        ///Scopes the key carries; `null` for a legacy unrestricted key.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
     }
     impl ApiKeyResponse {
         pub fn builder() -> builder::ApiKeyResponse {
@@ -365,21 +388,43 @@ pub mod types {
             Default::default()
         }
     }
-    ///Request body for creating a new API key.
+    /**Request body for creating a new API key.
+
+    `scopes` is required and non-empty: a key's permissions are always
+    explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
+    `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
+    `profiles:read`, `schema:read`, `schema:write`.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Request body for creating a new API key.",
+    ///  "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`.",
     ///  "type": "object",
+    ///  "required": [
+    ///    "scopes"
+    ///  ],
     ///  "properties": {
+    ///    "dataset_id": {
+    ///      "description": "Optional dataset the key is restricted to.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
     ///    "name": {
     ///      "description": "Optional human-readable name for the key.",
     ///      "type": [
     ///        "string",
     ///        "null"
     ///      ]
+    ///    },
+    ///    "scopes": {
+    ///      "description": "Scopes the key carries (required, at least one).",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    }
     ///  }
     ///}
@@ -387,16 +432,14 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateApiKeyRequest {
+        ///Optional dataset the key is restricted to.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_id: ::std::option::Option<::std::string::String>,
         ///Optional human-readable name for the key.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
-    }
-    impl ::std::default::Default for CreateApiKeyRequest {
-        fn default() -> Self {
-            Self {
-                name: Default::default(),
-            }
-        }
+        ///Scopes the key carries (required, at least one).
+        pub scopes: ::std::vec::Vec<::std::string::String>,
     }
     impl CreateApiKeyRequest {
         pub fn builder() -> builder::CreateApiKeyRequest {
@@ -414,12 +457,20 @@ pub mod types {
     ///  "required": [
     ///    "created_at",
     ///    "id",
-    ///    "key"
+    ///    "key",
+    ///    "scopes"
     ///  ],
     ///  "properties": {
     ///    "created_at": {
     ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
+    ///    },
+    ///    "dataset_id": {
+    ///      "description": "Dataset the key is restricted to, if any.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
     ///    },
     ///    "id": {
     ///      "description": "Unique key identifier.",
@@ -435,6 +486,13 @@ pub mod types {
     ///        "string",
     ///        "null"
     ///      ]
+    ///    },
+    ///    "scopes": {
+    ///      "description": "Scopes the key carries.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    }
     ///  }
     ///}
@@ -444,6 +502,9 @@ pub mod types {
     pub struct CreateApiKeyResponse {
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
+        ///Dataset the key is restricted to, if any.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_id: ::std::option::Option<::std::string::String>,
         ///Unique key identifier.
         pub id: ::std::string::String,
         ///The raw API key (only shown once at creation time).
@@ -451,6 +512,8 @@ pub mod types {
         ///Optional human-readable name.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
+        ///Scopes the key carries.
+        pub scopes: ::std::vec::Vec<::std::string::String>,
     }
     impl CreateApiKeyResponse {
         pub fn builder() -> builder::CreateApiKeyResponse {
@@ -1801,6 +1864,59 @@ pub mod types {
             Default::default()
         }
     }
+    /**Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
+    Absent fields are left untouched.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched.",
+    ///  "type": "object",
+    ///  "properties": {
+    ///    "dataset_id": {
+    ///      "description": "Replacement dataset restriction.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "scopes": {
+    ///      "description": "Replacement scope list (non-empty, drawn from the shared vocabulary).",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ManageUpdateApiKeyRequest {
+        ///Replacement dataset restriction.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_id: ::std::option::Option<::std::string::String>,
+        ///Replacement scope list (non-empty, drawn from the shared vocabulary).
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+    }
+    impl ::std::default::Default for ManageUpdateApiKeyRequest {
+        fn default() -> Self {
+            Self {
+                dataset_id: Default::default(),
+                scopes: Default::default(),
+            }
+        }
+    }
+    impl ManageUpdateApiKeyRequest {
+        pub fn builder() -> builder::ManageUpdateApiKeyRequest {
+            Default::default()
+        }
+    }
     ///`MembershipResponse`
     ///
     /// <details><summary>JSON schema</summary>
@@ -2784,6 +2900,60 @@ pub mod types {
             Default::default()
         }
     }
+    /**Request body for updating a live API key's scopes and/or dataset restriction.
+
+    Absent fields are left untouched. Revoked keys cannot be updated.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated.",
+    ///  "type": "object",
+    ///  "properties": {
+    ///    "dataset_id": {
+    ///      "description": "New dataset restriction.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "scopes": {
+    ///      "description": "New scope list (replaces the current one; must be non-empty).",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct UpdateApiKeyRequest {
+        ///New dataset restriction.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_id: ::std::option::Option<::std::string::String>,
+        ///New scope list (replaces the current one; must be non-empty).
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+    }
+    impl ::std::default::Default for UpdateApiKeyRequest {
+        fn default() -> Self {
+            Self {
+                dataset_id: Default::default(),
+                scopes: Default::default(),
+            }
+        }
+    }
+    impl UpdateApiKeyRequest {
+        pub fn builder() -> builder::UpdateApiKeyRequest {
+            Default::default()
+        }
+    }
     ///Request body for updating an existing tenant.
     ///
     /// <details><summary>JSON schema</summary>
@@ -3062,6 +3232,10 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct ApiKeyResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            dataset_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             name: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -3071,14 +3245,20 @@ pub mod types {
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
             >,
+            scopes: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
         }
         impl ::std::default::Default for ApiKeyResponse {
             fn default() -> Self {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
+                    dataset_id: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     name: Ok(Default::default()),
                     revoked_at: Ok(Default::default()),
+                    scopes: Ok(Default::default()),
                 }
             }
         }
@@ -3091,6 +3271,16 @@ pub mod types {
                 self.created_at = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -3123,6 +3313,18 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for revoked_at: {e}"));
                 self
             }
+            pub fn scopes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.scopes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for scopes: {e}"));
+                self
+            }
         }
         impl ::std::convert::TryFrom<ApiKeyResponse> for super::ApiKeyResponse {
             type Error = super::error::ConversionError;
@@ -3131,9 +3333,11 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     created_at: value.created_at?,
+                    dataset_id: value.dataset_id?,
                     id: value.id?,
                     name: value.name?,
                     revoked_at: value.revoked_at?,
+                    scopes: value.scopes?,
                 })
             }
         }
@@ -3141,9 +3345,11 @@ pub mod types {
             fn from(value: super::ApiKeyResponse) -> Self {
                 Self {
                     created_at: Ok(value.created_at),
+                    dataset_id: Ok(value.dataset_id),
                     id: Ok(value.id),
                     name: Ok(value.name),
                     revoked_at: Ok(value.revoked_at),
+                    scopes: Ok(value.scopes),
                 }
             }
         }
@@ -3519,19 +3725,39 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct CreateApiKeyRequest {
+            dataset_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
             name: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            scopes: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
                 ::std::string::String,
             >,
         }
         impl ::std::default::Default for CreateApiKeyRequest {
             fn default() -> Self {
                 Self {
+                    dataset_id: Ok(Default::default()),
                     name: Ok(Default::default()),
+                    scopes: Err("no value supplied for scopes".to_string()),
                 }
             }
         }
         impl CreateApiKeyRequest {
+            pub fn dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
             pub fn name<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
@@ -3542,29 +3768,53 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
+            pub fn scopes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.scopes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for scopes: {e}"));
+                self
+            }
         }
         impl ::std::convert::TryFrom<CreateApiKeyRequest> for super::CreateApiKeyRequest {
             type Error = super::error::ConversionError;
             fn try_from(
                 value: CreateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self { name: value.name? })
+                Ok(Self {
+                    dataset_id: value.dataset_id?,
+                    name: value.name?,
+                    scopes: value.scopes?,
+                })
             }
         }
         impl ::std::convert::From<super::CreateApiKeyRequest> for CreateApiKeyRequest {
             fn from(value: super::CreateApiKeyRequest) -> Self {
                 Self {
+                    dataset_id: Ok(value.dataset_id),
                     name: Ok(value.name),
+                    scopes: Ok(value.scopes),
                 }
             }
         }
         #[derive(Clone, Debug)]
         pub struct CreateApiKeyResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            dataset_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             key: ::std::result::Result<::std::string::String, ::std::string::String>,
             name: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            scopes: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
                 ::std::string::String,
             >,
         }
@@ -3572,9 +3822,11 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
+                    dataset_id: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     key: Err("no value supplied for key".to_string()),
                     name: Ok(Default::default()),
+                    scopes: Err("no value supplied for scopes".to_string()),
                 }
             }
         }
@@ -3587,6 +3839,16 @@ pub mod types {
                 self.created_at = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -3619,6 +3881,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
+            pub fn scopes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.scopes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for scopes: {e}"));
+                self
+            }
         }
         impl ::std::convert::TryFrom<CreateApiKeyResponse> for super::CreateApiKeyResponse {
             type Error = super::error::ConversionError;
@@ -3627,9 +3899,11 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     created_at: value.created_at?,
+                    dataset_id: value.dataset_id?,
                     id: value.id?,
                     key: value.key?,
                     name: value.name?,
+                    scopes: value.scopes?,
                 })
             }
         }
@@ -3637,9 +3911,11 @@ pub mod types {
             fn from(value: super::CreateApiKeyResponse) -> Self {
                 Self {
                     created_at: Ok(value.created_at),
+                    dataset_id: Ok(value.dataset_id),
                     id: Ok(value.id),
                     key: Ok(value.key),
                     name: Ok(value.name),
+                    scopes: Ok(value.scopes),
                 }
             }
         }
@@ -5429,6 +5705,68 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct ManageUpdateApiKeyRequest {
+            dataset_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            scopes: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ManageUpdateApiKeyRequest {
+            fn default() -> Self {
+                Self {
+                    dataset_id: Ok(Default::default()),
+                    scopes: Ok(Default::default()),
+                }
+            }
+        }
+        impl ManageUpdateApiKeyRequest {
+            pub fn dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
+            pub fn scopes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.scopes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for scopes: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ManageUpdateApiKeyRequest> for super::ManageUpdateApiKeyRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ManageUpdateApiKeyRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset_id: value.dataset_id?,
+                    scopes: value.scopes?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ManageUpdateApiKeyRequest> for ManageUpdateApiKeyRequest {
+            fn from(value: super::ManageUpdateApiKeyRequest) -> Self {
+                Self {
+                    dataset_id: Ok(value.dataset_id),
+                    scopes: Ok(value.scopes),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct MembershipResponse {
             email: ::std::result::Result<::std::string::String, ::std::string::String>,
             role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
@@ -6805,6 +7143,68 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct UpdateApiKeyRequest {
+            dataset_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            scopes: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for UpdateApiKeyRequest {
+            fn default() -> Self {
+                Self {
+                    dataset_id: Ok(Default::default()),
+                    scopes: Ok(Default::default()),
+                }
+            }
+        }
+        impl UpdateApiKeyRequest {
+            pub fn dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
+            pub fn scopes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.scopes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for scopes: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<UpdateApiKeyRequest> for super::UpdateApiKeyRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: UpdateApiKeyRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset_id: value.dataset_id?,
+                    scopes: value.scopes?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::UpdateApiKeyRequest> for UpdateApiKeyRequest {
+            fn from(value: super::UpdateApiKeyRequest) -> Self {
+                Self {
+                    dataset_id: Ok(value.dataset_id),
+                    scopes: Ok(value.scopes),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct UpdateTenantRequest {
             default_dataset: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -7335,6 +7735,25 @@ impl Client {
     pub fn revoke_api_key(&self) -> builder::RevokeApiKey<'_> {
         builder::RevokeApiKey::new(self)
     }
+    /**Update the scopes and/or dataset restriction of a live API key
+
+    Sends a `PATCH` request to `/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `key_id`: API key identifier
+    - `body`
+    ```ignore
+    let response = client.update_api_key()
+        .tenant_id(tenant_id)
+        .key_id(key_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn update_api_key(&self) -> builder::UpdateApiKey<'_> {
+        builder::UpdateApiKey::new(self)
+    }
     /**List datasets for a tenant
 
     Sends a `GET` request to `/api/v1/admin/tenants/{tenant_id}/datasets`
@@ -7467,6 +7886,23 @@ impl Client {
     ```*/
     pub fn manage_revoke_api_key(&self) -> builder::ManageRevokeApiKey<'_> {
         builder::ManageRevokeApiKey::new(self)
+    }
+    /**Sends a `PATCH` request to `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `key_id`: API key identifier
+    - `body`
+    ```ignore
+    let response = client.manage_update_api_key()
+        .tenant_id(tenant_id)
+        .key_id(key_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_update_api_key(&self) -> builder::ManageUpdateApiKey<'_> {
+        builder::ManageUpdateApiKey::new(self)
     }
     /**Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/datasets`
 
@@ -8419,7 +8855,13 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 429u16 => Err(Error::ErrorResponse(
@@ -8504,6 +8946,125 @@ pub mod builder {
             match response.status().as_u16() {
                 204u16 => Ok(ResponseValue::empty(response)),
                 404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::update_api_key`]
+
+    [`Client::update_api_key`]: super::Client::update_api_key*/
+    #[derive(Debug, Clone)]
+    pub struct UpdateApiKey<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        key_id: Result<::std::string::String, String>,
+        body: Result<types::builder::UpdateApiKeyRequest, String>,
+    }
+    impl<'a> UpdateApiKey<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                key_id: Err("key_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn key_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.key_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for key_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::UpdateApiKeyRequest>,
+            <V as std::convert::TryInto<types::UpdateApiKeyRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `UpdateApiKeyRequest` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::UpdateApiKeyRequest,
+                ) -> types::builder::UpdateApiKeyRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `PATCH` request to `/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ApiKeyResponse>, Error<types::ApiError>> {
+            let Self {
+                client,
+                tenant_id,
+                key_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let key_id = key_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| types::UpdateApiKeyRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/admin/tenants/{}/api-keys/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&key_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .patch(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "update_api_key",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -9156,6 +9717,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -9241,6 +9805,136 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_update_api_key`]
+
+    [`Client::manage_update_api_key`]: super::Client::manage_update_api_key*/
+    #[derive(Debug, Clone)]
+    pub struct ManageUpdateApiKey<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        key_id: Result<::std::string::String, String>,
+        body: Result<types::builder::ManageUpdateApiKeyRequest, String>,
+    }
+    impl<'a> ManageUpdateApiKey<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                key_id: Err("key_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn key_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.key_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for key_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ManageUpdateApiKeyRequest>,
+            <V as std::convert::TryInto<types::ManageUpdateApiKeyRequest>>::Error:
+                std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `ManageUpdateApiKeyRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::ManageUpdateApiKeyRequest,
+                ) -> types::builder::ManageUpdateApiKeyRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `PATCH` request to `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ManageApiKeyResponse>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                key_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let key_id = key_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::ManageUpdateApiKeyRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/api-keys/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&key_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .patch(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_update_api_key",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(

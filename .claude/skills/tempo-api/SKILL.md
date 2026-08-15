@@ -83,7 +83,7 @@ Requires `admin_api_key` from config:
 | `/api/v1/admin/tenants`                            | GET/POST       | List/create tenants  |
 | `/api/v1/admin/tenants/{id}`                       | GET/PUT/DELETE | Manage tenant        |
 | `/api/v1/admin/tenants/{id}/api-keys`              | GET/POST       | List/create API keys |
-| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE         | Revoke API key       |
+| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE/PATCH   | Revoke / update scopes |
 | `/api/v1/admin/tenants/{id}/datasets`              | GET/POST       | List/create datasets |
 | `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE         | Delete dataset       |
 

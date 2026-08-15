@@ -36,6 +36,9 @@ gating in v1):
 | `compact_run`         | Trigger a compaction pass now (admin-authenticated).                                                                                                            |
 | `compact_status`      | Active compaction leases and metrics (admin-authenticated).                                                                                                     |
 | `compact_dry_run`     | Plan compaction candidates without executing (admin-authenticated).                                                                                             |
+| `list_api_keys`       | List a tenant's API keys with their scopes and dataset restriction (admin-authenticated).                                                                        |
+| `create_api_key`      | Create an API key carrying explicit `scopes` (required; e.g. `traces:write`, `schema:read`) and an optional `dataset_id` (admin-authenticated).                  |
+| `update_api_key_scopes` | Change a live key's scopes and/or dataset restriction without rotating its secret; revoked keys are rejected (admin-authenticated).                            |
 
 Each query tool accepts an optional `dataset` argument. Omit it to use your
 session's default dataset; pass one to target another dataset your tenant may
@@ -276,8 +279,11 @@ signaldb mcp \
 
 Tokens are opaque, catalog-backed, and audience-bound to `resource_url`;
 revoking one is a row delete. The read scopes a token may hold —
-`traces:read`, `logs:read`, `metrics:read` — gate the corresponding query
-surface (see the [multi-tenancy](../architecture/overview.md) model). The
+`traces:read`, `logs:read`, `metrics:read`, `profiles:read`, `schema:read` —
+gate the corresponding query surface (see the
+[multi-tenancy](../architecture/overview.md) model); a request with no `scope`
+is granted all of them, and `schema:write` is never grantable through OAuth
+(a request naming only it is rejected with `invalid_scope`). The
 existing `Bearer <api-key>` + `X-Tenant-ID` path is unchanged; OAuth is an
 added credential type, not a replacement.
 
