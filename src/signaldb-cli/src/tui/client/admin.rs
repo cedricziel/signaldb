@@ -191,14 +191,19 @@ impl AdminClient {
             .unwrap_or_default())
     }
 
-    /// Create a new API key for a tenant
+    /// Create a new API key for a tenant carrying exactly `scopes`
+    /// (non-empty) and optionally bound to `dataset_id`.
     pub async fn create_api_key(
         &self,
         tenant_id: &str,
         name: &str,
+        scopes: Vec<String>,
+        dataset_id: Option<String>,
     ) -> Result<serde_json::Value, AdminClientError> {
         let request = signaldb_sdk::types::CreateApiKeyRequest {
             name: Some(name.to_string()),
+            scopes,
+            dataset_id,
         };
 
         let response = self

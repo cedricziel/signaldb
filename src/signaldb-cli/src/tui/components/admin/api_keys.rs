@@ -17,6 +17,33 @@ pub fn mask_api_key(key: &str) -> String {
     format!("sk-****-{last4}")
 }
 
+/// Fields of the create form, in Tab order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateField {
+    Name,
+    Scopes,
+    Dataset,
+}
+
+impl CreateField {
+    fn next(self) -> Self {
+        match self {
+            CreateField::Name => CreateField::Scopes,
+            CreateField::Scopes => CreateField::Dataset,
+            CreateField::Dataset => CreateField::Name,
+        }
+    }
+}
+
+/// Split a space/comma-separated scope entry into distinct scopes.
+pub fn parse_scopes(input: &str) -> Vec<String> {
+    input
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// API key list sub-tab with create/revoke operations.
 pub struct ApiKeysPanel {
     keys: Vec<serde_json::Value>,
@@ -24,14 +51,25 @@ pub struct ApiKeysPanel {
     tenant_id: Option<String>,
     creating: bool,
     name_input: TextInput,
+    scopes_input: TextInput,
+    dataset_input: TextInput,
+    focus: CreateField,
     pub pending_action: Option<ApiKeyAction>,
 }
 
 /// Actions that the parent admin panel should handle.
 #[derive(Debug, Clone)]
 pub enum ApiKeyAction {
-    Create { tenant_id: String, name: String },
-    Revoke { tenant_id: String, key_id: String },
+    Create {
+        tenant_id: String,
+        name: String,
+        scopes: Vec<String>,
+        dataset_id: Option<String>,
+    },
+    Revoke {
+        tenant_id: String,
+        key_id: String,
+    },
 }
 
 impl ApiKeysPanel {
@@ -42,6 +80,11 @@ impl ApiKeysPanel {
             tenant_id: None,
             creating: false,
             name_input: TextInput::with_placeholder("Key name"),
+            scopes_input: TextInput::with_placeholder(
+                "traces:write logs:write metrics:write profiles:write schema:read schema:write",
+            ),
+            dataset_input: TextInput::with_placeholder("optional dataset"),
+            focus: CreateField::Name,
             pending_action: None,
         }
     }
@@ -118,6 +161,9 @@ impl ApiKeysPanel {
                 if self.tenant_id.is_some() {
                     self.creating = true;
                     self.name_input.clear();
+                    self.scopes_input.clear();
+                    self.dataset_input.clear();
+                    self.focus = CreateField::Name;
                 }
                 true
             }
@@ -132,21 +178,34 @@ impl ApiKeysPanel {
                 self.creating = false;
                 true
             }
+            KeyCode::Tab => {
+                self.focus = self.focus.next();
+                true
+            }
             KeyCode::Enter => {
                 let name = self.name_input.text().to_string();
+                let scopes = parse_scopes(self.scopes_input.text());
+                let dataset = self.dataset_input.text().trim().to_string();
                 if let Some(tenant_id) = &self.tenant_id
                     && !name.is_empty()
+                    && !scopes.is_empty()
                 {
                     self.pending_action = Some(ApiKeyAction::Create {
                         tenant_id: tenant_id.clone(),
                         name,
+                        scopes,
+                        dataset_id: (!dataset.is_empty()).then_some(dataset),
                     });
                     self.creating = false;
                 }
                 true
             }
             _ => {
-                self.name_input.handle_key(key);
+                match self.focus {
+                    CreateField::Name => self.name_input.handle_key(key),
+                    CreateField::Scopes => self.scopes_input.handle_key(key),
+                    CreateField::Dataset => self.dataset_input.handle_key(key),
+                };
                 true
             }
         }
@@ -168,6 +227,7 @@ impl ApiKeysPanel {
         let header = Row::new(vec![
             Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("Key").style(Style::default().add_modifier(Modifier::BOLD)),
+            Cell::from("Scopes").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("Created").style(Style::default().add_modifier(Modifier::BOLD)),
         ])
         .height(1);
@@ -184,6 +244,17 @@ impl ApiKeysPanel {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let masked = mask_api_key(key_val);
+                let scopes = k
+                    .get("scopes")
+                    .and_then(|v| v.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or_else(|| "unrestricted".to_string());
                 let created = k.get("created_at").and_then(|v| v.as_str()).unwrap_or("-");
 
                 let style = if i == self.selected {
@@ -198,6 +269,7 @@ impl ApiKeysPanel {
                 Row::new(vec![
                     Cell::from(name.to_string()),
                     Cell::from(masked),
+                    Cell::from(scopes),
                     Cell::from(created.to_string()),
                 ])
                 .style(style)
@@ -207,9 +279,10 @@ impl ApiKeysPanel {
         let table = Table::new(
             rows,
             [
-                Constraint::Percentage(35),
-                Constraint::Percentage(35),
                 Constraint::Percentage(30),
+                Constraint::Percentage(20),
+                Constraint::Percentage(30),
+                Constraint::Percentage(20),
             ],
         )
         .header(header)
@@ -228,7 +301,7 @@ impl ApiKeysPanel {
     fn render_right_pane(&self, frame: &mut Frame, area: Rect) {
         if self.creating {
             let block = Block::default()
-                .title(" Create API Key (Enter: submit, Esc: cancel) ")
+                .title(" Create API Key (Tab: next field, Enter: submit, Esc: cancel) ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Yellow));
 
@@ -237,11 +310,32 @@ impl ApiKeysPanel {
 
             let form_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(0)])
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Length(3),
+                    Constraint::Length(3),
+                    Constraint::Min(0),
+                ])
                 .split(inner);
 
-            self.name_input
-                .render(frame, form_chunks[0], "Key Name", true);
+            self.name_input.render(
+                frame,
+                form_chunks[0],
+                "Key Name",
+                self.focus == CreateField::Name,
+            );
+            self.scopes_input.render(
+                frame,
+                form_chunks[1],
+                "Scopes (space-separated, required)",
+                self.focus == CreateField::Scopes,
+            );
+            self.dataset_input.render(
+                frame,
+                form_chunks[2],
+                "Dataset",
+                self.focus == CreateField::Dataset,
+            );
         } else if self.tenant_id.is_none() {
             let msg = Paragraph::new("Select a tenant first (switch to Tenants tab)")
                 .style(Style::default().fg(Color::DarkGray))
@@ -353,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn create_form_submit() {
+    fn create_form_submit_carries_scopes_and_dataset() {
         let mut panel = ApiKeysPanel::new();
         panel.tenant_id = Some("acme".to_string());
         panel.handle_key(press(KeyCode::Char('c')));
@@ -361,10 +455,70 @@ mod tests {
         for c in "new-key".chars() {
             panel.handle_key(press(KeyCode::Char(c)));
         }
+        panel.handle_key(press(KeyCode::Tab));
+        for c in "traces:write schema:read".chars() {
+            panel.handle_key(press(KeyCode::Char(c)));
+        }
+        panel.handle_key(press(KeyCode::Tab));
+        for c in "production".chars() {
+            panel.handle_key(press(KeyCode::Char(c)));
+        }
         panel.handle_key(press(KeyCode::Enter));
 
         assert!(!panel.creating);
-        assert!(panel.pending_action.is_some());
+        match panel.pending_action {
+            Some(ApiKeyAction::Create {
+                ref name,
+                ref scopes,
+                ref dataset_id,
+                ..
+            }) => {
+                assert_eq!(name, "new-key");
+                assert_eq!(scopes, &["traces:write", "schema:read"]);
+                assert_eq!(dataset_id.as_deref(), Some("production"));
+            }
+            ref other => panic!("unexpected action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_form_requires_scopes() {
+        let mut panel = ApiKeysPanel::new();
+        panel.tenant_id = Some("acme".to_string());
+        panel.handle_key(press(KeyCode::Char('c')));
+        for c in "new-key".chars() {
+            panel.handle_key(press(KeyCode::Char(c)));
+        }
+        panel.handle_key(press(KeyCode::Enter));
+        assert!(panel.creating, "form stays open without scopes");
+        assert!(panel.pending_action.is_none());
+    }
+
+    #[test]
+    fn parse_scopes_splits_on_space_and_comma() {
+        assert_eq!(
+            parse_scopes(" traces:write,schema:read  logs:write "),
+            vec!["traces:write", "schema:read", "logs:write"]
+        );
+        assert!(parse_scopes("").is_empty());
+    }
+
+    #[test]
+    fn list_shows_scopes_column() {
+        let mut terminal = Terminal::new(TestBackend::new(120, 15)).unwrap();
+        let mut panel = ApiKeysPanel::new();
+        panel.tenant_id = Some("acme".to_string());
+        panel.set_data(vec![
+            serde_json::json!({"id": "key-1", "name": "Scoped", "scopes": ["schema:read"], "created_at": "2025-01-01"}),
+            serde_json::json!({"id": "key-2", "name": "Legacy", "created_at": "2025-01-01"}),
+        ]);
+        terminal
+            .draw(|frame| panel.render(frame, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("schema:read"));
+        assert!(content.contains("unrestricted"));
     }
 
     #[test]
