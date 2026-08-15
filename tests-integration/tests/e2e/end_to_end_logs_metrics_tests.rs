@@ -1,6 +1,6 @@
+use acceptor::handler::WalManager;
 use acceptor::handler::otlp_log_handler::LogHandler;
 use acceptor::handler::otlp_metrics_handler::MetricsHandler;
-use acceptor::handler::WalManager;
 use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource};
 use common::config::Configuration;
@@ -8,17 +8,14 @@ use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::{Wal, WalConfig};
 use futures::TryStreamExt;
-use object_store::{local::LocalFileSystem, ObjectStore};
+use object_store::{ObjectStore, local::LocalFileSystem};
 use opentelemetry_proto::tonic::{
-    collector::{
-        logs::v1::ExportLogsServiceRequest,
-        metrics::v1::ExportMetricsServiceRequest,
-    },
-    common::v1::{any_value::Value, AnyValue, KeyValue},
+    collector::{logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest},
+    common::v1::{AnyValue, KeyValue, any_value::Value},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
     metrics::v1::{
-        metric::Data, number_data_point, AggregationTemporality, Gauge, Histogram,
-        HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
+        AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint,
+        ResourceMetrics, ScopeMetrics, Sum, metric::Data, number_data_point,
     },
     resource::v1::Resource,
 };
@@ -83,7 +80,10 @@ async fn wait_for_storage_service(
 }
 
 async fn setup_logs_metrics_services() -> TestServices {
-    let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).with_test_writer().try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let temp_dir = TempDir::new().unwrap();
     let wal_config = WalConfig {
         wal_dir: PathBuf::from(temp_dir.path()),
@@ -140,13 +140,12 @@ async fn setup_logs_metrics_services() -> TestServices {
             .await
             .expect("Failed to create CatalogManager for writer"),
     );
-    let writer_service =
-        IcebergWriterFlightService::new(
-            writer_catalog_manager,
-            object_store.clone(),
-            writer_wal,
-            &common::config::WriterConfig::default(),
-        );
+    let writer_service = IcebergWriterFlightService::new(
+        writer_catalog_manager,
+        object_store.clone(),
+        writer_wal,
+        &common::config::WriterConfig::default(),
+    );
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(common::flight::flight_service_server(writer_service))
@@ -183,7 +182,8 @@ async fn setup_logs_metrics_services() -> TestServices {
 
 fn make_resource(service_name: &str) -> Resource {
     Resource {
-        attributes: vec![KeyValue { key_strindex: 0,
+        attributes: vec![KeyValue {
+            key_strindex: 0,
             key: "service.name".to_string(),
             value: Some(AnyValue {
                 value: Some(Value::StringValue(service_name.to_string())),
@@ -391,7 +391,8 @@ async fn test_logs_ingestion_and_persistence() {
         .await
         .expect("logs export must be durably accepted");
 
-    let locations = wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
+    let locations =
+        wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
     assert!(!locations.is_empty(), "expected persisted objects for logs");
     assert!(
         locations.iter().any(|location| location.contains("logs")),
@@ -439,7 +440,8 @@ async fn test_metrics_gauge_ingestion_and_persistence() {
         .await
         .expect("metrics export must be durably accepted");
 
-    let locations = wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
+    let locations =
+        wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
     assert!(
         locations
             .iter()
