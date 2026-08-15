@@ -1,6 +1,10 @@
 import { useEffect, useRef } from "react";
 import { Outlet } from "react-router";
-import { setTenantContext } from "./api/http";
+import {
+  loadPersistedTenantContext,
+  persistTenantContext,
+  setTenantContext,
+} from "./api/http";
 import { LoginGate } from "./features/shell/LoginPanel";
 import { TopBar } from "./features/shell/TopBar";
 import { useExploreState } from "./lib/urlState";
@@ -16,13 +20,20 @@ export function App() {
 
   // The tenant/dataset context lives in the URL (`?tenant=&dataset=`), but
   // plain links (user menu → Schema, /manage, deep links inside the schema
-  // hub, …) drop the search string. A session-authenticated request without
-  // `X-Tenant-ID` is a 401, which the login gate would misread as "logged
-  // out". So the last non-empty context is sticky: it keeps feeding the API
-  // clients and is written back into the URL so subsequent links carry it.
-  const remembered = useRef({ tenant: state.tenant, dataset: state.dataset });
+  // hub, …) drop the search string, and a bookmark or new tab starts with
+  // none at all. A session-authenticated request without `X-Tenant-ID` is a
+  // 401, which the login gate would misread as "logged out". So the last
+  // non-empty context is sticky — within this tab via a ref, across tabs via
+  // localStorage — it keeps feeding the API clients and is written back into
+  // the URL so subsequent links carry it.
+  const remembered = useRef(
+    state.tenant
+      ? { tenant: state.tenant, dataset: state.dataset }
+      : (loadPersistedTenantContext() ?? { tenant: "", dataset: "" }),
+  );
   if (state.tenant) {
     remembered.current = { tenant: state.tenant, dataset: state.dataset };
+    persistTenantContext(remembered.current);
   }
   const effective = state.tenant ? state : { ...state, ...remembered.current };
   // Keep the API clients' tenant headers in sync with the (effective) state.

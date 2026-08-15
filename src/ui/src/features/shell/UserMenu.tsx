@@ -4,6 +4,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
+import { clearPersistedTenantContext } from "../../api/http";
 import { whoami, deleteSession, type WhoamiResponse } from "../../api/session";
 import type { ExploreState } from "../../lib/urlState";
 import { isDarkTheme, toggleTheme } from "../../lib/theme";
@@ -74,6 +75,7 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
   const handleSignOut = async () => {
     try {
       await deleteSession();
+      clearPersistedTenantContext();
       client.clear();
       navigate("/logs");
       window.location.reload();

@@ -88,8 +88,10 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   navigable and can be bookmarked, shared, and revisited with the browser
   back/forward buttons. The tenant/dataset context rides along as
   `?tenant=&dataset=`; links that omit it (the user menu, deep links inside
-  the schema hub) keep the last context you were in, so a bare `/schema` or
-  `/manage` never turns into a tenant-less request. Tenant/dataset
+  the schema hub) keep the last context you were in, and the last context is
+  also remembered in the browser (cleared on sign-out) so a bookmark or a new
+  tab opening a bare `/schema/storage`, `/api-keys`, or `/manage` resumes
+  there instead of turning into a tenant-less request. Tenant/dataset
   administration lives at `/manage`.
 
 ### The catalog

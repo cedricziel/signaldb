@@ -330,3 +330,21 @@ describe("LogList semantic labels", () => {
     ).toEqual(["service_name", "app.order.id", "k8s.pod.uid"]);
   });
 });
+
+describe("log detail attribute styling", () => {
+  it("does not clip the semantic tooltip with the key cell's overflow", async () => {
+    // jsdom does not lay out CSS, so pin the rule that keeps `.sem-tip`
+    // (absolutely positioned inside the <dt>) visible: the plain dt clips for
+    // its ellipsis, a dt holding a resolved key must not.
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const css = readFileSync(
+      join(import.meta.dirname, "../explore/explore.css"),
+      "utf8",
+    );
+    const start = css.indexOf(".attr-row dt:has(.semkey)");
+    expect(start, "rule for dt cells holding a SemanticKey").toBeGreaterThan(-1);
+    const rule = css.slice(start, css.indexOf("}", start));
+    expect(rule).toMatch(/overflow:\s*visible/);
+  });
+});
