@@ -226,6 +226,12 @@ impl LogicalSchema {
             ),
             LogicalField::record_metadata("traces", "end_time_unix_nano", LogicalType::TimestampNs),
             LogicalField::record_metadata("traces", "span_kind", LogicalType::String),
+            // Numeric OTel source of truth (issue #1208): span_kind/
+            // status.code above remain derived display strings for query
+            // ergonomics, computed at write time from these, never the
+            // reverse.
+            LogicalField::record_metadata("traces", "span_kind_number", LogicalType::Int64),
+            LogicalField::record_metadata("traces", "status_code_number", LogicalType::Int64),
             LogicalField::record_metadata("traces", "status_message", LogicalType::String),
             LogicalField::record_metadata("traces", "is_root", LogicalType::Bool),
             LogicalField::record_metadata("traces", "trace_state", LogicalType::String),
@@ -388,6 +394,20 @@ mod tests {
         assert_eq!(
             schema.resolve("traces", "trace_id").unwrap().kind,
             LogicalFieldKind::JoinKey
+        );
+        assert_eq!(
+            schema
+                .resolve("traces", "span_kind_number")
+                .unwrap()
+                .value_type,
+            LogicalType::Int64
+        );
+        assert_eq!(
+            schema
+                .resolve("traces", "status_code_number")
+                .unwrap()
+                .value_type,
+            LogicalType::Int64
         );
         assert_eq!(
             schema.resolve("logs", "service.name").unwrap().value_type,

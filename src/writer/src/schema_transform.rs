@@ -99,7 +99,7 @@ pub fn determine_wal_operation(signal_type: Option<&str>) -> common::wal::WalOpe
 
 /// Transform a trace RecordBatch from v1 to v2 schema
 pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
-    let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("physical-v2")?;
+    let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("physical-v3")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v2_schema)?;
 
     // Debug logging to understand the schema mismatch
@@ -128,10 +128,19 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result
     for field in &v2_schema.fields {
         let column = match field.name.as_str() {
             // Direct mappings (same name in v1 and v2)
-            "trace_id" | "span_id" | "parent_span_id" | "service_name" | "span_kind"
-            | "status_code" | "status_message" | "is_root" => {
-                get_column_by_name(&batch, &field.name)?
-            }
+            "trace_id"
+            | "span_id"
+            | "parent_span_id"
+            | "service_name"
+            | "span_kind"
+            | "status_code"
+            | "status_message"
+            | "is_root"
+            | "span_kind_number"
+            | "status_code_number"
+            | "dropped_attributes_count"
+            | "dropped_events_count"
+            | "dropped_links_count" => get_column_by_name(&batch, &field.name)?,
 
             // UInt64 fields that need to be converted to Int64 for Iceberg compatibility
             "start_time_unix_nano" | "end_time_unix_nano" => {
@@ -2164,6 +2173,76 @@ pub fn transform_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transform_trace_v1_to_v2_carries_the_1208_columns_through() {
+        use common::flight::conversion::otlp_traces_to_arrow;
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::trace::v1::{
+            ResourceSpans, ScopeSpans, Span as OtelSpan, Status,
+        };
+
+        let span = OtelSpan {
+            trace_id: vec![0xab; 16],
+            span_id: vec![0xcd; 8],
+            parent_span_id: vec![],
+            name: "checkout".to_string(),
+            kind: 2, // Server
+            start_time_unix_nano: 1_700_000_000_000_000_000,
+            end_time_unix_nano: 1_700_000_000_100_000_000,
+            attributes: vec![],
+            dropped_attributes_count: 3,
+            events: vec![],
+            dropped_events_count: 5,
+            links: vec![],
+            dropped_links_count: 7,
+            status: Some(Status {
+                code: 2, // Error
+                message: "boom".to_string(),
+            }),
+            flags: 0,
+            trace_state: String::new(),
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let wire_batch = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+        let v2_batch = transform_trace_v1_to_v2(wire_batch, &[]).unwrap();
+
+        let get_i32 = |name: &str| {
+            let (idx, _) = v2_batch.schema().column_with_name(name).unwrap();
+            v2_batch
+                .column(idx)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0)
+        };
+        let get_i64 = |name: &str| {
+            let (idx, _) = v2_batch.schema().column_with_name(name).unwrap();
+            v2_batch
+                .column(idx)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0)
+        };
+
+        assert_eq!(get_i32("span_kind_number"), 2);
+        assert_eq!(get_i32("status_code_number"), 2);
+        assert_eq!(get_i64("dropped_attributes_count"), 3);
+        assert_eq!(get_i64("dropped_events_count"), 5);
+        assert_eq!(get_i64("dropped_links_count"), 7);
+    }
 
     #[test]
     fn transform_profiles_wire_batch_to_iceberg_schema() {
