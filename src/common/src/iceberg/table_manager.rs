@@ -5,11 +5,14 @@ use std::sync::Arc;
 use anyhow::Result;
 use iceberg_rust::catalog::Catalog as IcebergCatalog;
 use iceberg_rust::catalog::create::CreateTableBuilder;
+use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
 use iceberg_rust::table::Table;
 
+use super::evolution;
 use super::names;
 use super::schemas;
+use crate::schema::SCHEMA_DEFINITIONS;
 
 /// Standard Iceberg property: delete aged-out metadata files after commit.
 const DELETE_AFTER_COMMIT_KEY: &str = "write.metadata.delete-after-commit.enabled";
@@ -85,6 +88,39 @@ impl IcebergTableManager {
         }
     }
 
+    /// Bring `table_name`'s schema forward to its current `schemas.toml`
+    /// version via [`evolution::ensure_schema_current`].
+    ///
+    /// Scoped to `traces` and `logs` only: those are the only signals whose
+    /// physical schema is actually sourced from `schemas.toml` today.
+    /// Metrics (all five representations) and profiles are hand-written in
+    /// `iceberg::schemas` with no versioned definition to evolve against —
+    /// see `openspec/changes/iceberg-schema-evolution`'s scope correction
+    /// and `unified-table-schema`, which owns migrating them onto
+    /// `schemas.toml`. A no-op for any other table name.
+    async fn ensure_schema_evolved(&self, table_name: &str, ident: &Identifier) -> Result<()> {
+        let (schemas_map, current_version) = match table_name {
+            "traces" => (
+                &SCHEMA_DEFINITIONS.traces,
+                SCHEMA_DEFINITIONS.current_trace_version(),
+            ),
+            "logs" => (
+                &SCHEMA_DEFINITIONS.logs,
+                SCHEMA_DEFINITIONS.metadata.current_log_version.as_str(),
+            ),
+            _ => return Ok(()),
+        };
+        evolution::ensure_schema_current(
+            self.catalog.clone(),
+            ident,
+            &SCHEMA_DEFINITIONS,
+            schemas_map,
+            current_version,
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// Load an existing table or create it if it doesn't exist.
     ///
     /// This method:
@@ -111,6 +147,19 @@ impl IcebergTableManager {
             };
 
             self.backfill_metadata_pruning_properties(&mut table).await;
+
+            if let Err(e) = self.ensure_schema_evolved(table_name, &ident).await {
+                tracing::warn!(
+                    error = %e,
+                    table = %ident,
+                    "Failed to evolve table schema to current version; will retry on next load"
+                );
+            } else if let Ok(Tabular::Table(refreshed)) =
+                self.catalog.clone().load_tabular(&ident).await
+            {
+                table = refreshed;
+            }
+
             return Ok(table);
         }
 
@@ -200,6 +249,21 @@ impl IcebergTableManager {
             PREVIOUS_VERSIONS_MAX_KEY.to_string(),
             self.metadata_previous_versions_max.to_string(),
         );
+        // A table created fresh already IS the current version -- record it
+        // now so `ensure_schema_evolved` never treats a brand-new table as
+        // pre-dating this mechanism. Only for signals evolution actually
+        // covers today (see `ensure_schema_evolved`'s doc comment).
+        let current_version = match table_name {
+            "traces" => Some(SCHEMA_DEFINITIONS.current_trace_version()),
+            "logs" => Some(SCHEMA_DEFINITIONS.metadata.current_log_version.as_str()),
+            _ => None,
+        };
+        if let Some(version) = current_version {
+            properties.insert(
+                evolution::SCHEMA_VERSION_PROPERTY.to_string(),
+                version.to_string(),
+            );
+        }
         builder.with_properties(properties);
         let table_create = builder
             .create()
@@ -304,5 +368,151 @@ pub async fn ensure_target_file_size_property(table: &mut Table, target_file_siz
                  at the table's previous target this cycle"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CatalogManager;
+    use crate::config::MaterializedLabels;
+    use iceberg_rust::spec::schema::Schema;
+    use iceberg_rust::spec::types::StructType;
+
+    /// Creates a "traces" table pre-populated with the current
+    /// `physical-v2` schema minus one field and no
+    /// `signaldb.schema.version` property -- simulating a table that
+    /// predates the schema-evolution mechanism.
+    async fn create_stale_traces_table(catalog: &Arc<dyn IcebergCatalog>) -> anyhow::Result<()> {
+        let resolved =
+            SCHEMA_DEFINITIONS.resolve_trace_schema(SCHEMA_DEFINITIONS.current_trace_version())?;
+        let full = resolved.to_iceberg_schema()?;
+        let fields: Vec<_> = full
+            .fields()
+            .iter()
+            .filter(|f| f.name != "span_kind")
+            .cloned()
+            .collect();
+        let stale = Schema::from_struct_type(StructType::new(fields), 0, None);
+
+        let namespace = names::build_namespace("evo_tenant", "evo_dataset")?;
+        let _ = catalog.clone().create_namespace(&namespace, None).await;
+        let identifier = names::build_table_identifier("evo_tenant", "evo_dataset", "traces");
+        let create = CreateTableBuilder::default()
+            .with_name("traces".to_string())
+            .with_schema(stale)
+            .with_location(names::build_table_location(
+                "evo_tenant",
+                "evo_dataset",
+                "traces",
+            ))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        catalog.clone().create_table(identifier, create).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_table_evolves_an_existing_table_behind_the_current_version()
+    -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        create_stale_traces_table(&catalog).await?;
+
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        let table = table_manager
+            .ensure_table(
+                "evo_tenant",
+                "evo_dataset",
+                "traces",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+
+        let schema = table.current_schema()?;
+        assert!(
+            schema.fields().iter().any(|f| f.name == "span_kind"),
+            "missing field should have been added by evolution"
+        );
+        assert_eq!(
+            table
+                .metadata()
+                .properties
+                .get(evolution::SCHEMA_VERSION_PROPERTY),
+            Some(&SCHEMA_DEFINITIONS.current_trace_version().to_string()),
+            "schema version property should be stamped to current after evolving"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_table_on_a_table_already_current_does_not_error() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+
+        // First call creates the table fresh, at the current version.
+        table_manager
+            .ensure_table(
+                "evo_tenant2",
+                "evo_dataset2",
+                "traces",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+
+        // Second call hits the existing-table branch; evolution should be
+        // a no-op (already at current) rather than erroring or looping.
+        let table = table_manager
+            .ensure_table(
+                "evo_tenant2",
+                "evo_dataset2",
+                "traces",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+        assert_eq!(
+            table
+                .metadata()
+                .properties
+                .get(evolution::SCHEMA_VERSION_PROPERTY),
+            Some(&SCHEMA_DEFINITIONS.current_trace_version().to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_table_does_not_attempt_evolution_for_metrics_tables() -> anyhow::Result<()> {
+        // Metrics tables are hand-written, not schemas.toml-sourced (see
+        // `ensure_schema_evolved`'s doc comment) -- this must not panic or
+        // error trying to resolve a schemas.toml version for them.
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+
+        table_manager
+            .ensure_table(
+                "evo_tenant3",
+                "evo_dataset3",
+                "metrics_gauge",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+        let table = table_manager
+            .ensure_table(
+                "evo_tenant3",
+                "evo_dataset3",
+                "metrics_gauge",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+        assert!(
+            !table
+                .metadata()
+                .properties
+                .contains_key(evolution::SCHEMA_VERSION_PROPERTY),
+            "metrics tables are not versioned by this mechanism yet"
+        );
+        Ok(())
     }
 }
