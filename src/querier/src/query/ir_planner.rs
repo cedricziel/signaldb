@@ -40,16 +40,24 @@ use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, LargeStringArray, StringArray, StringBuilder,
     StringViewArray, TimestampNanosecondArray,
 };
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, TimeUnit};
+use datafusion::datasource::TableProvider;
 use datafusion::functions::core::expr_fn::{coalesce, get_field};
 use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::functions_aggregate::expr_fn::{approx_percentile_cont, avg, count, max, min, sum};
+use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ExprFunctionExt, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
     TypeSignature, Volatility, cast, col, lit, not,
 };
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::ScalarFunctionExpr;
+use datafusion::physical_expr::expressions::{CastExpr, Column as PhysicalColumn};
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
@@ -59,7 +67,7 @@ use super::histogram::{
     HistogramAcc, RateHistAcc, histogram_quantile, parse_bounds_cached, parse_f64_array,
 };
 use super::profile::batch_to_models;
-use super::table_lookup::optional_table;
+use super::table_lookup::{optional_table_provider, scan_provider};
 
 /// Upper bound on profile rows aggregated into one `flamegraph` result.
 /// Matches `QuerierConfig::max_search_limit`'s default — the same cap the
@@ -305,20 +313,35 @@ async fn scan_source_tables(
     dataset_slug: &str,
     source: &SourcePlan,
 ) -> Result<Option<DataFrame>, QuerierError> {
-    let mut scanned = Vec::with_capacity(source.tables.len());
+    let mut providers = Vec::with_capacity(source.tables.len());
     for table in source.tables {
         // A missing table (e.g. no sum metrics ingested yet) is not an
         // error — skip it. A catalog failure still is.
-        if let Some(df) = optional_table(ctx, tenant_slug, dataset_slug, table).await? {
-            scanned.push(df);
+        if let Some(found) = optional_table_provider(ctx, tenant_slug, dataset_slug, table).await? {
+            providers.push(found);
         }
     }
-    match scanned.len() {
+    match providers.len() {
         0 => Ok(None),
-        1 => Ok(scanned.pop()),
+        1 => {
+            let (table_ref, provider) = providers.remove(0);
+            Ok(Some(scan_provider(ctx, table_ref, provider)?))
+        }
         _ => {
+            // Tables created at different times can disagree on a column's
+            // physical type — most commonly an attribute container that is
+            // a legacy JSON string on one table and a typed
+            // `Map<Utf8,Utf8>` on the other. UNION requires identical types
+            // per position, so pick one target type per column and coerce
+            // each mismatching table's *scan* to it (a wrapping provider,
+            // not a projection expression: DataFusion 54's
+            // `optimize_projections` mis-orders the pushed-down projections
+            // of a UNION whose inputs mix columns and expressions) (#1206).
+            let targets = union_target_types(&providers, source.row_defaults);
             let mut union: Option<DataFrame> = None;
-            for df in scanned {
+            for (table_ref, provider) in providers {
+                let provider = CoercedTableProvider::wrap(provider, source.row_defaults, &targets);
+                let df = scan_provider(ctx, table_ref, provider)?;
                 let proj: Vec<Expr> = source.row_defaults.iter().map(|c| col(*c)).collect();
                 let projected = df.select(proj).map_err(QuerierError::QueryFailed)?;
                 union = Some(match union {
@@ -330,6 +353,279 @@ async fn scan_source_tables(
             }
             Ok(union)
         }
+    }
+}
+
+/// The type each unioned column should have: the first `Map` seen when any
+/// table stores the column as a map (so legacy JSON-string tables coerce up
+/// to the typed form), otherwise the first table's type.
+fn union_target_types(
+    providers: &[(datafusion::common::TableReference, Arc<dyn TableProvider>)],
+    columns: &[&str],
+) -> Vec<Option<DataType>> {
+    columns
+        .iter()
+        .map(|c| {
+            let types: Vec<DataType> = providers
+                .iter()
+                .filter_map(|(_, p)| {
+                    p.schema()
+                        .field_with_name(c)
+                        .ok()
+                        .map(|f| f.data_type().clone())
+                })
+                .collect();
+            types
+                .iter()
+                .find(|t| matches!(t, DataType::Map(_, _)))
+                .or(types.first())
+                .cloned()
+        })
+        .collect()
+}
+
+/// A [`TableProvider`] that presents `inner` with some columns coerced to a
+/// different type: a legacy JSON-string attribute container becomes a typed
+/// `Map<Utf8,Utf8>` (via [`JsonToMapUdf`]), anything else is cast. Used to
+/// give the tables of a multi-table source identical schemas before they are
+/// unioned. Filters that only touch un-coerced columns are still offered to
+/// the inner provider (so time-range pruning survives); projections and
+/// limits pass straight through.
+#[derive(Debug)]
+struct CoercedTableProvider {
+    inner: Arc<dyn TableProvider>,
+    schema: SchemaRef,
+    /// Column index → target type, for the columns that differ from `inner`.
+    coerced: Vec<(usize, DataType)>,
+}
+
+impl CoercedTableProvider {
+    /// Wrap `inner` if any of `columns` needs coercion to its target type;
+    /// return `inner` untouched otherwise.
+    fn wrap(
+        inner: Arc<dyn TableProvider>,
+        columns: &[&str],
+        targets: &[Option<DataType>],
+    ) -> Arc<dyn TableProvider> {
+        let inner_schema = inner.schema();
+        let mut coerced = Vec::new();
+        for (name, target) in columns.iter().zip(targets) {
+            let (Some(target), Ok(idx)) = (target, inner_schema.index_of(name)) else {
+                continue;
+            };
+            if inner_schema.field(idx).data_type() != target {
+                coerced.push((idx, target.clone()));
+            }
+        }
+        if coerced.is_empty() {
+            return inner;
+        }
+        let fields: Vec<Field> = inner_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(i, f)| match coerced.iter().find(|(idx, _)| *idx == i) {
+                Some((_, target)) => Field::new(f.name(), target.clone(), true),
+                None => f.as_ref().clone(),
+            })
+            .collect();
+        let schema = Arc::new(Schema::new_with_metadata(
+            fields,
+            inner_schema.metadata().clone(),
+        ));
+        Arc::new(Self {
+            inner,
+            schema,
+            coerced,
+        })
+    }
+
+    fn is_coerced(&self, idx: usize) -> bool {
+        self.coerced.iter().any(|(i, _)| *i == idx)
+    }
+}
+
+#[async_trait::async_trait]
+impl TableProvider for CoercedTableProvider {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+    fn table_type(&self) -> datafusion::datasource::TableType {
+        self.inner.table_type()
+    }
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::error::Result<Vec<TableProviderFilterPushDown>> {
+        // A filter over a coerced column must run against the coerced
+        // values, i.e. above this provider; everything else may go down.
+        let coerced_names: Vec<&str> = self
+            .coerced
+            .iter()
+            .map(|(i, _)| self.schema.field(*i).name().as_str())
+            .collect();
+        let (down, down_idx): (Vec<&Expr>, Vec<usize>) = filters
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                f.column_refs()
+                    .iter()
+                    .all(|c| !coerced_names.contains(&c.name.as_str()))
+            })
+            .map(|(i, f)| (*f, i))
+            .unzip();
+        let inner = self.inner.supports_filters_pushdown(&down)?;
+        let mut out = vec![TableProviderFilterPushDown::Unsupported; filters.len()];
+        for (i, support) in down_idx.into_iter().zip(inner) {
+            out[i] = support;
+        }
+        Ok(out)
+    }
+    async fn scan(
+        &self,
+        state: &dyn datafusion::catalog::Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        // The inner scan sees the same indices (we never reorder columns)
+        // and only the filters that survived `supports_filters_pushdown`.
+        let inner_plan = self.inner.scan(state, projection, filters, limit).await?;
+        let inner_schema = inner_plan.schema();
+        let selected: Vec<usize> = match projection {
+            Some(p) => p.clone(),
+            None => (0..self.schema.fields().len()).collect(),
+        };
+        if !selected.iter().any(|i| self.is_coerced(*i)) {
+            return Ok(inner_plan);
+        }
+        let mut exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = Vec::with_capacity(selected.len());
+        for (out_idx, src_idx) in selected.iter().enumerate() {
+            let name = self.schema.field(*src_idx).name().clone();
+            let column: Arc<dyn PhysicalExpr> = Arc::new(PhysicalColumn::new(&name, out_idx));
+            let expr: Arc<dyn PhysicalExpr> = match self.coerced.iter().find(|(i, _)| i == src_idx)
+            {
+                None => column,
+                Some((_, target)) => {
+                    let actual = inner_schema.field(out_idx).data_type();
+                    let is_string = matches!(
+                        actual,
+                        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+                    );
+                    if is_string && matches!(target, DataType::Map(_, _)) {
+                        let udf = Arc::new(ScalarUDF::from(JsonToMapUdf::new(target.clone())));
+                        Arc::new(ScalarFunctionExpr::try_new(
+                            udf,
+                            vec![column],
+                            &inner_schema,
+                            Arc::new(state.config_options().clone()),
+                        )?)
+                    } else {
+                        Arc::new(CastExpr::new(column, target.clone(), None))
+                    }
+                }
+            };
+            exprs.push((expr, name));
+        }
+        Ok(Arc::new(ProjectionExec::try_new(exprs, inner_plan)?))
+    }
+}
+
+/// `ir_json_to_map(Utf8) -> Map<Utf8,Utf8>`: decodes a legacy JSON-string
+/// attribute document into the typed map form (non-string JSON values are
+/// stringified, as the writer's `json_strings_to_map_array` does), producing
+/// exactly the `target` map type so it can sit under a UNION next to a table
+/// that already stores the map.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct JsonToMapUdf {
+    signature: Signature,
+    target: DataType,
+}
+
+impl JsonToMapUdf {
+    fn new(target: DataType) -> Self {
+        Self {
+            signature: Signature::one_of(
+                vec![
+                    TypeSignature::Exact(vec![DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8View]),
+                ],
+                Volatility::Immutable,
+            ),
+            target,
+        }
+    }
+}
+
+impl ScalarUDFImpl for JsonToMapUdf {
+    fn name(&self) -> &str {
+        "ir_json_to_map"
+    }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(self.target.clone())
+    }
+    fn invoke_with_args(
+        &self,
+        args: ScalarFunctionArgs,
+    ) -> datafusion::error::Result<ColumnarValue> {
+        use datafusion::arrow::array::{MapBuilder, MapFieldNames};
+        let num_rows = args.number_rows;
+        let docs = BodyArg::try_from(&args.args[0])?;
+        let DataType::Map(entry_field, _) = &self.target else {
+            return Err(datafusion::error::DataFusionError::Internal(
+                "ir_json_to_map target is not a map".into(),
+            ));
+        };
+        let DataType::Struct(kv) = entry_field.data_type() else {
+            return Err(datafusion::error::DataFusionError::Internal(
+                "ir_json_to_map map entries are not a struct".into(),
+            ));
+        };
+        let names = MapFieldNames {
+            entry: entry_field.name().clone(),
+            key: kv[0].name().clone(),
+            value: kv[1].name().clone(),
+        };
+        let mut builder = MapBuilder::new(Some(names), StringBuilder::new(), StringBuilder::new());
+        for i in 0..num_rows {
+            match docs
+                .value_at(i)
+                .map(serde_json::from_str::<serde_json::Value>)
+            {
+                Some(Ok(serde_json::Value::Object(map))) => {
+                    for (k, v) in map {
+                        builder.keys().append_value(k);
+                        match v {
+                            serde_json::Value::String(s) => builder.values().append_value(s),
+                            other => builder.values().append_value(other.to_string()),
+                        }
+                    }
+                    builder.append(true)?;
+                }
+                _ => builder.append(false)?,
+            }
+        }
+        let built = builder.finish();
+        // MapBuilder fixes its own entry-struct nullability; rebuild against
+        // the exact target field so the UNION sees identical types.
+        let (_, offsets, entries, nulls, ordered) = built.into_parts();
+        let entries = datafusion::arrow::array::StructArray::try_new(
+            kv.clone(),
+            entries.columns().to_vec(),
+            None,
+        )?;
+        let array = datafusion::arrow::array::MapArray::try_new(
+            entry_field.clone(),
+            offsets,
+            entries,
+            nulls,
+            ordered,
+        )?;
+        Ok(ColumnarValue::Array(Arc::new(array)))
     }
 }
 
@@ -2429,6 +2725,158 @@ mod tests {
             })
             .sum();
         assert_eq!(total, 15.0);
+    }
+
+    /// Grouping the gauge+sum union by a resource attribute that is *not* an
+    /// explicitly registered logical field (`host.name` resolves through the
+    /// generic `resource.`/map fallback) used to fail in the optimizer with
+    /// "UNION field 0 have different type in inputs" (#1206). The identical
+    /// document works on single-table sources; the union must too.
+    #[tokio::test]
+    async fn metrics_union_groups_by_a_fallback_resource_attribute() {
+        let svc = IrService::new(metrics_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["host.name"], "aggs": [{ "fn": "count", "as": "n" }] } },
+                { "limit": 501 }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("both metrics tables are registered");
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(plan.contains("Union"), "plan:\n{plan}");
+        let batches = df
+            .collect()
+            .await
+            .expect("union grouped by a fallback attribute executes");
+        let n: i64 = batches
+            .iter()
+            .map(|b| {
+                b.column_by_name("n")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Int64Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .sum::<i64>()
+            })
+            .sum();
+        // Every row of both tables lands in the one (null host.name) group.
+        assert_eq!(n, 3);
+    }
+
+    /// Same document as above, but the two tables disagree on the attribute
+    /// container type — `metrics_gauge` created after the typed-attribute
+    /// change (Map), `metrics_sum` a legacy table (JSON string) — which is
+    /// what a long-lived deployment actually has (hive's `_system`). This is
+    /// the shape that produced the optimizer's UNION type mismatch.
+    #[tokio::test]
+    async fn metrics_union_groups_by_a_fallback_attribute_across_mixed_container_types() {
+        let map_schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let json_schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("resource_attributes", DataType::Utf8, true),
+        ]));
+        let gauge_batch = RecordBatch::try_new(
+            map_schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20])),
+                Arc::new(StringArray::from(vec!["signaldb", "signaldb"])),
+                Arc::new(StringArray::from(vec!["m", "m"])),
+                Arc::new(Float64Array::from(vec![5.0, 7.0])),
+                build_map(&[&[], &[]]),
+                build_map(&[&[("host.name", "hive")], &[("host.name", "hive")]]),
+            ],
+        )
+        .unwrap();
+        let sum_batch = RecordBatch::try_new(
+            json_schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![15_i64])),
+                Arc::new(StringArray::from(vec!["signaldb"])),
+                Arc::new(StringArray::from(vec!["m"])),
+                Arc::new(Float64Array::from(vec![3.0])),
+                Arc::new(StringArray::from(vec![Some("{}")])),
+                Arc::new(StringArray::from(vec![Some(r#"{"host.name":"other"}"#)])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let gauge = MemTable::try_new(map_schema, vec![vec![gauge_batch]]).unwrap();
+        let sum = MemTable::try_new(json_schema, vec![vec![sum_batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_gauge".to_string(), Arc::new(gauge))
+            .unwrap();
+        sp.register_table("metrics_sum".to_string(), Arc::new(sum))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["host.name"], "aggs": [{ "fn": "count", "as": "n" }] } },
+                { "limit": 501 }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("both metrics tables are registered");
+        let batches = df
+            .collect()
+            .await
+            .expect("mixed-container union grouped by a fallback attribute executes");
+        // hive: 2 rows, other: 1 row.
+        let mut groups: Vec<(String, i64)> = Vec::new();
+        for b in &batches {
+            let keys = b
+                .column_by_name("host_name")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let ns = b
+                .column_by_name("n")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<datafusion::arrow::array::Int64Array>()
+                .unwrap();
+            for i in 0..b.num_rows() {
+                groups.push((keys.value(i).to_string(), ns.value(i)));
+            }
+        }
+        groups.sort();
+        assert_eq!(groups, vec![("hive".into(), 2), ("other".into(), 1)]);
     }
 
     /// A metrics document still executes when only one of the two tables

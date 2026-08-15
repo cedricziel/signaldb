@@ -21,11 +21,13 @@
 //! planning failures.
 
 use datafusion::arrow::array::{Array, RecordBatch, StringArray};
-use datafusion::datasource::provider_as_source;
+use datafusion::common::TableReference;
+use datafusion::datasource::{TableProvider, provider_as_source};
 use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::prelude::{DataFrame, SessionContext, col, lit};
 use datafusion::scalar::ScalarValue;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use super::error::QuerierError;
 use super::table_ref::build_table_reference;
@@ -91,6 +93,24 @@ pub async fn optional_table(
     dataset_slug: &str,
     table_name: &str,
 ) -> Result<Option<DataFrame>, QuerierError> {
+    let Some((table_ref, provider)) =
+        optional_table_provider(ctx, tenant_slug, dataset_slug, table_name).await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(scan_provider(ctx, table_ref, provider)?))
+}
+
+/// The catalog provider behind a signal table, with its fully qualified
+/// reference — `None` when the table does not exist (see [`optional_table`]).
+/// Callers that need to reshape the scan (e.g. coerce a legacy column type
+/// before unioning tables) wrap the provider and then [`scan_provider`] it.
+pub async fn optional_table_provider(
+    ctx: &SessionContext,
+    tenant_slug: &str,
+    dataset_slug: &str,
+    table_name: &str,
+) -> Result<Option<(TableReference, Arc<dyn TableProvider>)>, QuerierError> {
     let table_ref = build_table_reference(tenant_slug, dataset_slug, table_name)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
     let table = table_ref.table().to_string();
@@ -113,12 +133,20 @@ pub async fn optional_table(
         );
         return Ok(None);
     };
+    Ok(Some((table_ref, provider)))
+}
 
+/// A `DataFrame` scanning `provider` under `table_ref`'s qualified name.
+pub fn scan_provider(
+    ctx: &SessionContext,
+    table_ref: TableReference,
+    provider: Arc<dyn TableProvider>,
+) -> Result<DataFrame, QuerierError> {
     let plan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)
         .map_err(QuerierError::QueryFailed)?
         .build()
         .map_err(QuerierError::QueryFailed)?;
-    Ok(Some(DataFrame::new(ctx.state(), plan)))
+    Ok(DataFrame::new(ctx.state(), plan))
 }
 
 #[cfg(test)]
