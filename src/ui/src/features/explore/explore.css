@@ -198,6 +198,76 @@
   padding: 3px 9px;
 }
 
+/* Key input with the registry/observed suggestion list anchored below it. */
+.chip-label {
+  position: relative;
+  display: inline-flex;
+}
+
+.chip-suggest {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 3px);
+  left: 0;
+  margin: 0;
+  padding: 3px 0;
+  list-style: none;
+  min-width: 260px;
+  max-width: 380px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.chip-suggest-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+
+.chip-suggest-item:hover {
+  background: var(--surface2);
+}
+
+.chip-suggest-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.chip-suggest-key {
+  overflow-wrap: anywhere;
+}
+
+.chip-suggest-ns {
+  font-family: var(--ui);
+  font-size: 9.5px;
+  padding: 0 5px;
+  border-radius: 8px;
+  color: var(--faint);
+  border: 1px solid var(--border);
+}
+
+.chip-suggest-seen {
+  margin-left: auto;
+  font-family: var(--ui);
+  font-size: 9.5px;
+  color: var(--ok);
+  white-space: nowrap;
+}
+
+.chip-suggest-brief {
+  font-size: 11px;
+  color: var(--faint);
+}
+
 .search-form {
   flex: 1;
   min-width: 160px;
