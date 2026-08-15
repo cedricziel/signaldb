@@ -1192,6 +1192,9 @@ mod tests {
             metrics_gauge: HashMap::new(),
             metrics_sum: HashMap::new(),
             metrics_histogram: HashMap::new(),
+            metrics_exponential_histogram: HashMap::new(),
+            metrics_summary: HashMap::new(),
+            profiles: HashMap::new(),
         }
     }
 
