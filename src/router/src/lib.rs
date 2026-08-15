@@ -11,6 +11,7 @@ use common::config::Configuration;
 use common::ratelimit::TenantRateLimiter;
 use std::sync::Arc;
 
+pub mod cli;
 pub mod discovery;
 pub mod endpoints;
 pub mod openapi;

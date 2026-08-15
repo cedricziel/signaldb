@@ -1,4 +1,4 @@
-//! SignalDB Compactor Service
+//! `signaldb compactor` — the compactor service's command-line entry point.
 //!
 //! Full execution service that identifies compaction candidates, executes
 //! compaction with Parquet rewriting, commits changes atomically, enforces
@@ -6,22 +6,23 @@
 //! using distributed leases and round-robin scheduling, and serves
 //! observability endpoints (Prometheus metrics, status, health).
 
+use crate::service::CompactorService;
 use anyhow::{Context, Result};
-use clap::Parser;
 use common::catalog_manager::CatalogManager;
+use common::cli::CommonArgs;
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use compactor::service::CompactorService;
 use std::sync::Arc;
 use tonic::transport::Server;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Path to configuration file
-    #[arg(short, long, default_value = "signaldb.toml")]
-    config: String,
-}
+/// Command-line arguments of the `compactor` subcommand (`signaldb compactor`).
+///
+/// The compactor has no service-specific flags: its configuration comes from
+/// the shared `--config` option (default `signaldb.toml`), listen addresses
+/// from `COMPACTOR_FLIGHT_ADDR`, and everything else from the `[compactor]`
+/// section of the configuration.
+#[derive(clap::Args, Debug, Default)]
+pub struct Args {}
 
 /// Waits for a shutdown signal (SIGINT or SIGTERM)
 async fn wait_for_shutdown_signal() -> Result<()> {
@@ -51,15 +52,8 @@ async fn wait_for_shutdown_signal() -> Result<()> {
     Ok(())
 }
 
-// jemalloc as global allocator: the Linux release/Docker builds enable the
-// `jemalloc` feature because musl's (and to a lesser degree glibc's)
-// allocator degrades under multithreaded allocation churn.
-#[cfg(feature = "jemalloc")]
-#[global_allocator]
-static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Run the `compactor` service with the shared options and its own arguments.
+pub async fn run(common: &CommonArgs, _args: Args) -> Result<()> {
     // Initialize structured logging (RUST_LOG-compatible env filter)
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -68,12 +62,15 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let args = Args::parse();
-
-    // Load configuration
-    let config = if std::path::Path::new(&args.config).exists() {
-        Configuration::load_from_path(std::path::Path::new(&args.config))
-            .context("Failed to load configuration")?
+    // Load configuration: the shared --config option, defaulting to
+    // signaldb.toml; a missing file falls back to defaults (env overrides
+    // still apply), as the standalone compactor always did.
+    let config_path = common
+        .config
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("signaldb.toml"));
+    let config = if config_path.exists() {
+        Configuration::load_from_path(&config_path).context("Failed to load configuration")?
     } else {
         tracing::info!("Configuration file not found, using defaults");
         Configuration::default()
@@ -202,7 +199,7 @@ async fn main() -> Result<()> {
             .with_context(|| format!("Invalid compactor metrics_addr: {metrics_addr_str}"))?;
         let observability_state = service.observability_state(bootstrap.service_id());
         Some(tokio::spawn(async move {
-            if let Err(e) = compactor::http::serve(metrics_addr, observability_state).await {
+            if let Err(e) = crate::http::serve(metrics_addr, observability_state).await {
                 tracing::error!("Compactor observability HTTP endpoint error: {e:#}");
             }
         }))
@@ -237,8 +234,8 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use compactor::orphan::OrphanCleanupConfig;
-    use compactor::retention::RetentionConfig;
+    use crate::orphan::OrphanCleanupConfig;
+    use crate::retention::RetentionConfig;
     use std::time::Duration;
 
     #[test]
