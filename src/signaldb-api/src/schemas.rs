@@ -77,11 +77,34 @@ pub struct ListTenantsResponse {
 }
 
 /// Request body for creating a new API key.
+///
+/// `scopes` is required and non-empty: a key's permissions are always
+/// explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
+/// `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
+/// `profiles:read`, `schema:read`, `schema:write`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateApiKeyRequest {
     /// Optional human-readable name for the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Scopes the key carries (required, at least one).
+    pub scopes: Vec<String>,
+    /// Optional dataset the key is restricted to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_id: Option<String>,
+}
+
+/// Request body for updating a live API key's scopes and/or dataset restriction.
+///
+/// Absent fields are left untouched. Revoked keys cannot be updated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct UpdateApiKeyRequest {
+    /// New scope list (replaces the current one; must be non-empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    /// New dataset restriction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_id: Option<String>,
 }
 
 /// Response returned when a new API key is created (includes the raw key).
@@ -94,6 +117,11 @@ pub struct CreateApiKeyResponse {
     /// Optional human-readable name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Scopes the key carries.
+    pub scopes: Vec<String>,
+    /// Dataset the key is restricted to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_id: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
 }
@@ -106,6 +134,12 @@ pub struct ApiKeyResponse {
     /// Optional human-readable name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Scopes the key carries; `null` for a legacy unrestricted key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    /// Dataset the key is restricted to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_id: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 revocation timestamp (if revoked).

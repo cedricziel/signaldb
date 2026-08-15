@@ -339,8 +339,28 @@
               }
             }
           },
+          "400": {
+            "description": "Dataset does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid or empty scopes",
             "content": {
               "application/json": {
                 "schema": {
@@ -400,6 +420,100 @@
           },
           "404": {
             "description": "API key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "api-keys"
+        ],
+        "summary": "Update the scopes and/or dataset restriction of a live API key",
+        "operationId": "update_api_key",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key_id",
+            "in": "path",
+            "description": "API key identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateApiKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "API key updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Dataset does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "API key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "API key is revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid scopes",
             "content": {
               "application/json": {
                 "schema": {
@@ -846,7 +960,7 @@
             }
           },
           "400": {
-            "description": "Validation error",
+            "description": "Dataset does not exist",
             "content": {
               "application/json": {
                 "schema": {
@@ -867,6 +981,16 @@
           },
           "409": {
             "description": "Unable to create API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid or empty scopes",
             "content": {
               "application/json": {
                 "schema": {
@@ -930,6 +1054,114 @@
           },
           "404": {
             "description": "API key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "api-keys"
+        ],
+        "operationId": "manage_update_api_key",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key_id",
+            "in": "path",
+            "description": "API key identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManageUpdateApiKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "API key updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageApiKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Dataset does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "API key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "API key is revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid or empty scopes",
             "content": {
               "application/json": {
                 "schema": {
@@ -2355,6 +2587,13 @@
             "type": "string",
             "description": "ISO 8601 creation timestamp."
           },
+          "dataset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Dataset the key is restricted to, if any."
+          },
           "id": {
             "type": "string",
             "description": "Unique key identifier."
@@ -2372,6 +2611,16 @@
               "null"
             ],
             "description": "ISO 8601 revocation timestamp (if revoked)."
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Scopes the key carries; `null` for a legacy unrestricted key."
           }
         }
       },
@@ -2504,14 +2753,31 @@
       },
       "CreateApiKeyRequest": {
         "type": "object",
-        "description": "Request body for creating a new API key.",
+        "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`.",
+        "required": [
+          "scopes"
+        ],
         "properties": {
+          "dataset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional dataset the key is restricted to."
+          },
           "name": {
             "type": [
               "string",
               "null"
             ],
             "description": "Optional human-readable name for the key."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Scopes the key carries (required, at least one)."
           }
         }
       },
@@ -2521,12 +2787,20 @@
         "required": [
           "id",
           "key",
+          "scopes",
           "created_at"
         ],
         "properties": {
           "created_at": {
             "type": "string",
             "description": "ISO 8601 creation timestamp."
+          },
+          "dataset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Dataset the key is restricted to, if any."
           },
           "id": {
             "type": "string",
@@ -2542,6 +2816,13 @@
               "null"
             ],
             "description": "Optional human-readable name."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Scopes the key carries."
           }
         }
       },
@@ -3171,6 +3452,29 @@
           }
         }
       },
+      "ManageUpdateApiKeyRequest": {
+        "type": "object",
+        "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched.",
+        "properties": {
+          "dataset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Replacement dataset restriction."
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement scope list (non-empty, drawn from the shared vocabulary)."
+          }
+        }
+      },
       "MembershipResponse": {
         "type": "object",
         "required": [
@@ -3669,6 +3973,29 @@
           },
           "traceID": {
             "type": "string"
+          }
+        }
+      },
+      "UpdateApiKeyRequest": {
+        "type": "object",
+        "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated.",
+        "properties": {
+          "dataset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New dataset restriction."
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "New scope list (replaces the current one; must be non-empty)."
           }
         }
       },

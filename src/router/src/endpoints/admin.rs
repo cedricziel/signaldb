@@ -5,12 +5,13 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use common::auth::{Authenticator, hash_password};
+use common::auth::{Authenticator, hash_password, validate_scopes};
 use common::catalog::MembershipRole;
 use signaldb_api::{
     ApiError, ApiKeyResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateDatasetRequest,
     CreateTenantRequest, CreateUserRequest, DatasetResponse, ListApiKeysResponse,
-    ListDatasetsResponse, ListTenantsResponse, TenantResponse, UpdateTenantRequest, UserResponse,
+    ListDatasetsResponse, ListTenantsResponse, TenantResponse, UpdateApiKeyRequest,
+    UpdateTenantRequest, UserResponse,
 };
 use std::str::FromStr;
 use uuid::Uuid;
@@ -458,15 +459,7 @@ pub async fn list_api_keys<S: RouterState>(
     match state.catalog().list_api_keys(&tenant_id).await {
         Ok(keys) => {
             let response = ListApiKeysResponse {
-                api_keys: keys
-                    .into_iter()
-                    .map(|k| ApiKeyResponse {
-                        id: k.id,
-                        name: k.name,
-                        created_at: k.created_at.to_rfc3339(),
-                        revoked_at: k.revoked_at.map(|t| t.to_rfc3339()),
-                    })
-                    .collect(),
+                api_keys: keys.into_iter().map(api_key_record_to_response).collect(),
             };
             (
                 StatusCode::OK,
@@ -494,6 +487,8 @@ pub async fn list_api_keys<S: RouterState>(
         (status = 201, description = "API key created", body = CreateApiKeyResponse),
         (status = 404, description = "Tenant not found", body = ApiError),
         (status = 429, description = "Tenant API key quota exceeded", body = ApiError),
+        (status = 400, description = "Dataset does not exist", body = ApiError),
+        (status = 422, description = "Invalid or empty scopes", body = ApiError),
     )
 )]
 pub async fn create_api_key<S: RouterState>(
@@ -562,13 +557,29 @@ pub async fn create_api_key<S: RouterState>(
         }
     }
 
+    if let Err(response) = validate_scopes_response(&request.scopes) {
+        return *response;
+    }
+    if let Some(dataset_id) = &request.dataset_id
+        && let Err(response) = validate_dataset_exists(&*state, &tenant_id, dataset_id).await
+    {
+        return *response;
+    }
+
     // Generate a new raw API key
     let raw_key = format!("sk-{}-{}", tenant_id, Uuid::new_v4());
     let key_hash = Authenticator::hash_api_key(&raw_key);
 
     match state
         .catalog()
-        .upsert_api_key(&tenant_id, &key_hash, request.name.as_deref())
+        .upsert_scoped_api_key(
+            &tenant_id,
+            &key_hash,
+            request.name.as_deref(),
+            request.dataset_id.as_deref(),
+            Some(&request.scopes),
+            None,
+        )
         .await
     {
         Ok(key_id) => {
@@ -582,6 +593,8 @@ pub async fn create_api_key<S: RouterState>(
                 id: key_id,
                 key: raw_key,
                 name: request.name,
+                scopes: request.scopes,
+                dataset_id: request.dataset_id,
                 created_at,
             };
             (
@@ -595,6 +608,164 @@ pub async fn create_api_key<S: RouterState>(
             Json(serde_json::to_value(ApiError::new("internal_error", e.to_string())).unwrap()),
         )
             .into_response(),
+    }
+}
+
+/// Update the scopes and/or dataset restriction of a live API key
+#[utoipa::path(
+    patch,
+    path = "/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}",
+    tag = "api-keys",
+    security(("bearerAuth" = [])),
+    params(
+        ("tenant_id" = String, Path, description = "Tenant identifier"),
+        ("key_id" = String, Path, description = "API key identifier"),
+    ),
+    request_body = UpdateApiKeyRequest,
+    responses(
+        (status = 200, description = "API key updated", body = ApiKeyResponse),
+        (status = 400, description = "Dataset does not exist", body = ApiError),
+        (status = 404, description = "API key not found", body = ApiError),
+        (status = 409, description = "API key is revoked", body = ApiError),
+        (status = 422, description = "Invalid scopes", body = ApiError),
+    )
+)]
+pub async fn update_api_key<S: RouterState>(
+    state: State<S>,
+    Path((tenant_id, key_id)): Path<(String, String)>,
+    Json(request): Json<UpdateApiKeyRequest>,
+) -> impl IntoResponse {
+    if let Some(scopes) = &request.scopes
+        && let Err(response) = validate_scopes_response(scopes)
+    {
+        return *response;
+    }
+    if let Some(dataset_id) = &request.dataset_id
+        && let Err(response) = validate_dataset_exists(&*state, &tenant_id, dataset_id).await
+    {
+        return *response;
+    }
+    match state.catalog().get_api_key(&key_id).await {
+        Ok(Some(record)) if record.tenant_id == tenant_id => {
+            if record.revoked_at.is_some() {
+                return api_error(
+                    StatusCode::CONFLICT,
+                    "revoked",
+                    format!("API key '{key_id}' is revoked and cannot be updated"),
+                );
+            }
+        }
+        Ok(_) => {
+            return api_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("API key '{key_id}' not found for tenant '{tenant_id}'"),
+            );
+        }
+        Err(e) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                e.to_string(),
+            );
+        }
+    }
+    match state
+        .catalog()
+        .update_api_key_scopes(
+            &key_id,
+            request.scopes.as_deref(),
+            request.dataset_id.as_deref(),
+        )
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return api_error(
+                StatusCode::CONFLICT,
+                "revoked",
+                format!("API key '{key_id}' is revoked and cannot be updated"),
+            );
+        }
+        Err(e) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                e.to_string(),
+            );
+        }
+    }
+    match state.catalog().get_api_key(&key_id).await {
+        Ok(Some(record)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(api_key_record_to_response(record)).unwrap()),
+        )
+            .into_response(),
+        Ok(None) => api_error(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("API key '{key_id}' not found"),
+        ),
+        Err(e) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            e.to_string(),
+        ),
+    }
+}
+
+fn api_error(
+    status: StatusCode,
+    code: &str,
+    message: impl Into<String>,
+) -> axum::response::Response {
+    (
+        status,
+        Json(serde_json::to_value(ApiError::new(code, message)).unwrap()),
+    )
+        .into_response()
+}
+
+fn api_key_record_to_response(record: common::catalog::ApiKeyRecord) -> ApiKeyResponse {
+    ApiKeyResponse {
+        id: record.id,
+        name: record.name,
+        scopes: record.scopes,
+        dataset_id: record.dataset_id,
+        created_at: record.created_at.to_rfc3339(),
+        revoked_at: record.revoked_at.map(|t| t.to_rfc3339()),
+    }
+}
+
+/// `422 invalid_scope` naming the offending scope (or the empty list).
+fn validate_scopes_response(scopes: &[String]) -> Result<(), Box<axum::response::Response>> {
+    validate_scopes(scopes).map_err(|error| {
+        Box::new(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_scope",
+            error.to_string(),
+        ))
+    })
+}
+
+/// `400 invalid_dataset` unless `dataset_id` exists in the tenant.
+async fn validate_dataset_exists<S: RouterState>(
+    state: &S,
+    tenant_id: &str,
+    dataset_id: &str,
+) -> Result<(), Box<axum::response::Response>> {
+    match state.catalog().get_datasets(tenant_id).await {
+        Ok(datasets) if datasets.iter().any(|d| d.name == dataset_id) => Ok(()),
+        Ok(_) => Err(Box::new(api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_dataset",
+            format!("Dataset '{dataset_id}' does not exist in tenant '{tenant_id}'"),
+        ))),
+        Err(e) => Err(Box::new(api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            e.to_string(),
+        ))),
     }
 }
 
@@ -1122,7 +1293,7 @@ mod tests {
             )
             .route(
                 "/tenants/{tenant_id}/api-keys/{key_id}",
-                delete(revoke_api_key::<RouterAppState>),
+                delete(revoke_api_key::<RouterAppState>).patch(update_api_key::<RouterAppState>),
             )
             .route(
                 "/tenants/{tenant_id}/datasets",
@@ -1399,7 +1570,9 @@ mod tests {
                 .method("POST")
                 .uri("/tenants/acme/api-keys")
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"name": "{name}"}}"#)))
+                .body(Body::from(format!(
+                    r#"{{"name": "{name}", "scopes": ["traces:write"]}}"#
+                )))
                 .unwrap()
         };
 
@@ -1457,7 +1630,9 @@ mod tests {
                 .method("POST")
                 .uri("/tenants/acme/datasets")
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"name": "{name}"}}"#)))
+                .body(Body::from(format!(
+                    r#"{{"name": "{name}", "scopes": ["traces:write"]}}"#
+                )))
                 .unwrap()
         };
 
@@ -1488,7 +1663,9 @@ mod tests {
                 .method("POST")
                 .uri("/tenants/acme/api-keys")
                 .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"name": "key-{i}"}}"#)))
+                .body(Body::from(format!(
+                    r#"{{"name": "key-{i}", "scopes": ["logs:write"]}}"#
+                )))
                 .unwrap();
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::CREATED);
@@ -1513,7 +1690,9 @@ mod tests {
             .method("POST")
             .uri("/tenants/acme/api-keys")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"name": "Production Key"}"#))
+            .body(Body::from(
+                r#"{"name": "Production Key", "scopes": ["traces:write", "schema:read"]}"#,
+            ))
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -1523,6 +1702,8 @@ mod tests {
         let created: CreateApiKeyResponse = serde_json::from_slice(&body).unwrap();
         assert!(created.key.starts_with("sk-acme-"));
         assert_eq!(created.name, Some("Production Key".to_string()));
+        assert_eq!(created.scopes, vec!["traces:write", "schema:read"]);
+        assert_eq!(created.dataset_id, None);
 
         // List API keys
         let request = Request::builder()
@@ -1536,6 +1717,10 @@ mod tests {
             .unwrap();
         let list: ListApiKeysResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(list.api_keys.len(), 1);
+        assert_eq!(
+            list.api_keys[0].scopes,
+            Some(vec!["traces:write".to_string(), "schema:read".to_string()])
+        );
 
         // Revoke API key
         let key_id = &created.id;
@@ -1546,6 +1731,180 @@ mod tests {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    async fn create_key(app: &Router, body: &str) -> (StatusCode, serde_json::Value) {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/tenants/acme/api-keys")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    async fn patch_key(app: &Router, key_id: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let request = Request::builder()
+            .method("PATCH")
+            .uri(format!("/tenants/acme/api-keys/{key_id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let value = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap()
+        };
+        (status, value)
+    }
+
+    #[tokio::test]
+    async fn api_key_creation_rejects_empty_and_unknown_scopes() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        let (status, body) = create_key(&app, r#"{"name": "none", "scopes": []}"#).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("at least one scope")
+        );
+
+        let (status, body) = create_key(
+            &app,
+            r#"{"name": "bogus", "scopes": ["traces:write", "schema:admin"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body["message"].as_str().unwrap().contains("schema:admin"));
+
+        // `scopes` is required: a body without it is rejected by deserialization.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/tenants/acme/api-keys")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name": "legacy"}"#))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn api_key_creation_validates_dataset() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        state
+            .catalog()
+            .create_dataset("acme", "production")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        let (status, body) = create_key(
+            &app,
+            r#"{"name": "ghost", "scopes": ["schema:read"], "dataset_id": "nope"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+        let (status, body) = create_key(
+            &app,
+            r#"{"name": "prod", "scopes": ["schema:read"], "dataset_id": "production"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["dataset_id"], "production");
+    }
+
+    #[tokio::test]
+    async fn patch_api_key_updates_scopes_and_dataset_but_not_revoked_keys() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        state
+            .catalog()
+            .create_dataset("acme", "production")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        let (status, created) =
+            create_key(&app, r#"{"name": "k", "scopes": ["schema:read"]}"#).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let key_id = created["id"].as_str().unwrap().to_string();
+
+        // Add schema:write.
+        let (status, body) = patch_key(
+            &app,
+            &key_id,
+            r#"{"scopes": ["schema:read", "schema:write"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["scopes"],
+            serde_json::json!(["schema:read", "schema:write"])
+        );
+        assert_eq!(body["dataset_id"], serde_json::Value::Null);
+
+        // Dataset only, scopes preserved.
+        let (status, body) = patch_key(&app, &key_id, r#"{"dataset_id": "production"}"#).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["scopes"],
+            serde_json::json!(["schema:read", "schema:write"])
+        );
+        assert_eq!(body["dataset_id"], "production");
+
+        // Validation.
+        let (status, body) = patch_key(&app, &key_id, r#"{"scopes": []}"#).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        let (status, body) = patch_key(&app, &key_id, r#"{"scopes": ["schema:admin"]}"#).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body["message"].as_str().unwrap().contains("schema:admin"));
+        let (status, _) = patch_key(&app, &key_id, r#"{"dataset_id": "nope"}"#).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Unknown key.
+        let (status, _) = patch_key(&app, "no-such-key", r#"{"scopes": ["schema:read"]}"#).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Revoked key is immutable.
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(format!("/tenants/acme/api-keys/{key_id}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let (status, body) = patch_key(&app, &key_id, r#"{"scopes": ["schema:read"]}"#).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
     }
 
     #[tokio::test]
@@ -1630,7 +1989,7 @@ mod tests {
             .method("POST")
             .uri("/tenants/ghost/api-keys")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"name": "Key"}"#))
+            .body(Body::from(r#"{"name": "Key", "scopes": ["traces:write"]}"#))
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);

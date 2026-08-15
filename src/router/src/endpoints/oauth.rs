@@ -1475,6 +1475,44 @@ mod tests {
         assert_eq!(body_json(res).await["error"], "invalid_scope");
     }
 
+    #[test]
+    fn default_grant_includes_schema_read_but_never_schema_write() {
+        let granted = super::granted_read_scopes(None).expect("default grant");
+        assert!(granted.iter().any(|s| s == "schema:read"));
+        assert!(!granted.iter().any(|s| s == "schema:write"));
+
+        assert_eq!(
+            super::granted_read_scopes(Some("schema:read traces:read")),
+            Some(vec!["schema:read".to_string(), "traces:read".to_string()])
+        );
+        // schema:write is not a read scope: a request naming only it is
+        // rejected instead of silently widened.
+        assert_eq!(super::granted_read_scopes(Some("schema:write")), None);
+    }
+
+    #[tokio::test]
+    async fn decision_rejects_schema_write_only_scope() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize/decision")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("signaldb_session={cookie}"))
+                    .body(Body::from(
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","scope":"schema:write","tenant":"acme","approved":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(res).await["error"], "invalid_scope");
+    }
+
     #[tokio::test]
     async fn token_exchange_requires_client_id() {
         let (app, catalog) = app_and_catalog().await;

@@ -188,7 +188,8 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         .route(
             "/tenants/{tenant_id}/api-keys/{key_id}",
-            delete(endpoints::admin::revoke_api_key::<S>),
+            delete(endpoints::admin::revoke_api_key::<S>)
+                .patch(endpoints::admin::update_api_key::<S>),
         )
         .route(
             "/tenants/{tenant_id}/datasets",
