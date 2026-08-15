@@ -16,6 +16,7 @@ pub mod profile;
 pub mod query_ir;
 pub mod ratelimit;
 pub mod schema;
+pub mod schema_registry;
 pub mod self_monitoring;
 pub mod service_bootstrap;
 pub mod storage;

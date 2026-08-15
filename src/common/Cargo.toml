@@ -23,6 +23,7 @@ jemalloc-profiling = [
 tempfile = { workspace = true, optional = true }
 anyhow.workspace = true
 tempo-api = { path = "../tempo-api" }
+schema-model = { path = "../schema-model" }
 
 datafusion.workspace = true
 serde.workspace = true
@@ -147,3 +148,7 @@ sha2 = "0.11"
 # async-trait is used by discovery backends
 # opentelemetry-semantic-conventions is used in self_monitoring module
 ignored = ["async-trait", "humantime-serde", "testcontainers", "opentelemetry-semantic-conventions"]
+
+[build-dependencies]
+schema-model = { path = "../schema-model" }
+serde_json.workspace = true
