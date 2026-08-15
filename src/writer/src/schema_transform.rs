@@ -2880,3 +2880,319 @@ mod tests {
         assert_eq!(ts_col.value(2), real_ts as i64, "row 2: use time_unix_nano");
     }
 }
+
+/// Every non-computed field `schemas.toml` declares for a table must have a
+/// real read/write path in this module's transform for that table --
+/// `unified-table-schema`'s `table-schema-consistency` capability. Computed
+/// fields (`date_day`/`hour`/traces' `timestamp`) are populated by a fixed
+/// recipe keyed on the field's `computed` tag rather than a 1:1 source
+/// column, so they're excluded here and covered by their own dedicated
+/// tests instead.
+///
+/// `transform_trace_v1_to_v2`/`transform_logs_v1_to_iceberg`/
+/// `transform_profiles_v1_to_iceberg` already self-check this at runtime
+/// (an unhandled field hits an `Unknown field in ... schema` error, since
+/// each iterates its schema's own field list) -- these tests give that
+/// property a fast, explicit, named failure instead of relying on it
+/// surfacing through some other test. The five metrics tables have no such
+/// runtime check: `transform_metrics_*_v1_to_iceberg` builds its output
+/// columns positionally against its own hand-written
+/// `create_metrics_*_arrow_schema()`, entirely independent of
+/// `SCHEMA_DEFINITIONS` -- a field added to `schemas.toml` there would
+/// silently never be populated until the resulting Iceberg write bounced
+/// off a missing-required-column error, or worse, went unnoticed if the
+/// new field was nullable. These tests catch that at PR/CI time instead.
+#[cfg(test)]
+mod schema_consistency {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn assert_covers_non_computed_fields(table: &str, resolved: &ResolvedSchema, touched: &[&str]) {
+        let declared: HashSet<&str> = resolved
+            .fields
+            .iter()
+            .filter(|f| f.computed.is_none())
+            .map(|f| f.name.as_str())
+            .collect();
+        let touched: HashSet<&str> = touched.iter().copied().collect();
+        assert_eq!(
+            declared, touched,
+            "{table}: schemas.toml's non-computed fields and this module's \
+             known touched-field set have diverged -- a field was added to \
+             or removed from schemas.toml without updating the matching \
+             transform function (or vice versa)"
+        );
+    }
+
+    #[test]
+    fn traces_transform_covers_every_non_computed_physical_v3_field() {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_trace_schema(SCHEMA_DEFINITIONS.current_trace_version())
+            .unwrap();
+        assert_covers_non_computed_fields(
+            "traces",
+            &resolved,
+            &[
+                "trace_id",
+                "span_id",
+                "parent_span_id",
+                "service_name",
+                "span_kind",
+                "status_code",
+                "status_message",
+                "is_root",
+                "span_kind_number",
+                "status_code_number",
+                "dropped_attributes_count",
+                "dropped_events_count",
+                "dropped_links_count",
+                "start_time_unix_nano",
+                "end_time_unix_nano",
+                "events",
+                "links",
+                "span_name",
+                "duration_nanos",
+                "span_attributes",
+                "resource_attributes",
+                "trace_state",
+                "resource_schema_url",
+                "scope_name",
+                "scope_version",
+                "scope_schema_url",
+                "scope_attributes",
+            ],
+        );
+    }
+
+    #[test]
+    fn logs_transform_covers_every_non_computed_physical_v1_field() {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_log_schema(&SCHEMA_DEFINITIONS.metadata.current_log_version)
+            .unwrap();
+        assert_covers_non_computed_fields(
+            "logs",
+            &resolved,
+            &[
+                "timestamp",
+                "observed_timestamp",
+                "trace_id",
+                "span_id",
+                "trace_flags",
+                "severity_text",
+                "severity_number",
+                "service_name",
+                "body",
+                "resource_schema_url",
+                "resource_attributes",
+                "scope_schema_url",
+                "scope_name",
+                "scope_version",
+                "scope_attributes",
+                "log_attributes",
+            ],
+        );
+    }
+
+    #[test]
+    fn profiles_transform_covers_every_non_computed_physical_v1_field() {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.profiles, "physical-v1")
+            .unwrap();
+        assert_covers_non_computed_fields(
+            "profiles",
+            &resolved,
+            &[
+                "profile_id",
+                "timestamp",
+                "duration_nano",
+                "sample_type",
+                "sample_unit",
+                "period_type",
+                "period_unit",
+                "period",
+                "service_name",
+                "stacktraces_json",
+                "samples_json",
+                "resource_attributes",
+                "scope_attributes",
+                "profile_attributes",
+                "trace_id",
+                "span_id",
+            ],
+        );
+    }
+
+    #[test]
+    fn metrics_gauge_transform_covers_every_non_computed_physical_v1_field() {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v1")
+            .unwrap();
+        assert_covers_non_computed_fields(
+            "metrics_gauge",
+            &resolved,
+            &[
+                "timestamp",
+                "start_timestamp",
+                "service_name",
+                "metric_name",
+                "metric_description",
+                "metric_unit",
+                "value",
+                "flags",
+                "resource_schema_url",
+                "resource_attributes",
+                "scope_name",
+                "scope_version",
+                "scope_schema_url",
+                "scope_attributes",
+                "scope_dropped_attr_count",
+                "attributes",
+                "exemplars",
+            ],
+        );
+    }
+
+    #[test]
+    fn metrics_sum_transform_covers_every_non_computed_physical_v1_field() {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, "physical-v1")
+            .unwrap();
+        assert_covers_non_computed_fields(
+            "metrics_sum",
+            &resolved,
+            &[
+                "timestamp",
+                "start_timestamp",
+                "service_name",
+                "metric_name",
+                "metric_description",
+                "metric_unit",
+                "value",
+                "flags",
+                "aggregation_temporality",
+                "is_monotonic",
+                "resource_schema_url",
+                "resource_attributes",
+                "scope_name",
+                "scope_version",
+                "scope_schema_url",
+                "scope_attributes",
+                "scope_dropped_attr_count",
+                "attributes",
+                "exemplars",
+            ],
+        );
+    }
+
+    #[test]
+    fn metrics_histogram_transform_covers_every_non_computed_physical_v1_field() {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_histogram, "physical-v1")
+            .unwrap();
+        assert_covers_non_computed_fields(
+            "metrics_histogram",
+            &resolved,
+            &[
+                "timestamp",
+                "start_timestamp",
+                "service_name",
+                "metric_name",
+                "metric_description",
+                "metric_unit",
+                "count",
+                "sum",
+                "min",
+                "max",
+                "bucket_counts",
+                "explicit_bounds",
+                "flags",
+                "aggregation_temporality",
+                "resource_schema_url",
+                "resource_attributes",
+                "scope_name",
+                "scope_version",
+                "scope_schema_url",
+                "scope_attributes",
+                "scope_dropped_attr_count",
+                "attributes",
+                "exemplars",
+            ],
+        );
+    }
+
+    #[test]
+    fn metrics_exponential_histogram_transform_covers_every_non_computed_physical_v1_field() {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
+                "physical-v1",
+            )
+            .unwrap();
+        assert_covers_non_computed_fields(
+            "metrics_exponential_histogram",
+            &resolved,
+            &[
+                "timestamp",
+                "start_timestamp",
+                "service_name",
+                "metric_name",
+                "metric_description",
+                "metric_unit",
+                "count",
+                "sum",
+                "min",
+                "max",
+                "scale",
+                "zero_count",
+                "positive_offset",
+                "positive_bucket_counts",
+                "negative_offset",
+                "negative_bucket_counts",
+                "flags",
+                "aggregation_temporality",
+                "zero_threshold",
+                "resource_schema_url",
+                "resource_attributes",
+                "scope_name",
+                "scope_version",
+                "scope_schema_url",
+                "scope_attributes",
+                "scope_dropped_attr_count",
+                "attributes",
+                "exemplars",
+            ],
+        );
+    }
+
+    #[test]
+    fn metrics_summary_transform_covers_every_non_computed_physical_v1_field() {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_summary, "physical-v1")
+            .unwrap();
+        assert_covers_non_computed_fields(
+            "metrics_summary",
+            &resolved,
+            &[
+                "timestamp",
+                "start_timestamp",
+                "service_name",
+                "metric_name",
+                "metric_description",
+                "metric_unit",
+                "count",
+                "sum",
+                "quantile_values",
+                "flags",
+                "resource_schema_url",
+                "resource_attributes",
+                "scope_name",
+                "scope_version",
+                "scope_schema_url",
+                "scope_attributes",
+                "scope_dropped_attr_count",
+                "attributes",
+                "exemplars",
+            ],
+        );
+    }
+}
