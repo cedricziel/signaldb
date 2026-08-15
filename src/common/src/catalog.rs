@@ -2096,6 +2096,51 @@ impl Catalog {
         Ok(())
     }
 
+    /// Update the scopes and/or dataset restriction of a live API key.
+    ///
+    /// `None` leaves that attribute untouched. Returns `false` when the key
+    /// does not exist or is revoked (revoked keys are immutable). Because the
+    /// tenant context is rebuilt from the key row on every request, the change
+    /// applies to the next request made with the key.
+    pub async fn update_api_key_scopes(
+        &self,
+        key_id: &str,
+        scopes: Option<&[String]>,
+        dataset_id: Option<&str>,
+    ) -> Result<bool, sqlx::Error> {
+        let scopes_json = scopes
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| {
+                sqlx::Error::Protocol(format!("failed to serialize API key scopes: {error}"))
+            })?;
+        let rows_affected = match self {
+            Catalog::Sqlite(pool) => query(
+                "UPDATE api_keys SET scopes = COALESCE(?, scopes), \
+                     dataset_id = COALESCE(?, dataset_id) \
+                     WHERE id = ? AND revoked_at IS NULL",
+            )
+            .bind(&scopes_json)
+            .bind(dataset_id)
+            .bind(key_id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+            Catalog::Postgres(pool) => query(
+                "UPDATE api_keys SET scopes = COALESCE($1, scopes), \
+                     dataset_id = COALESCE($2, dataset_id) \
+                     WHERE id = $3 AND revoked_at IS NULL",
+            )
+            .bind(&scopes_json)
+            .bind(dataset_id)
+            .bind(key_id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+        };
+        Ok(rows_affected > 0)
+    }
+
     /// Create a dataset for a tenant
     pub async fn create_dataset(
         &self,
@@ -4108,6 +4153,101 @@ mod multi_tenancy_tests {
         assert_eq!(record.dataset_id.as_deref(), Some("production"));
         assert_eq!(record.scopes, Some(scopes));
         assert_eq!(record.created_by_user_id.as_deref(), Some("user-1"));
+    }
+
+    #[tokio::test]
+    async fn update_api_key_scopes_changes_scopes_and_dataset_of_live_key() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_hash = hash_api_key("live-secret");
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &key_hash,
+                Some("live"),
+                None,
+                Some(&["schema:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Scopes only: dataset untouched.
+        let updated = catalog
+            .update_api_key_scopes(
+                &key_id,
+                Some(&["schema:read".to_string(), "schema:write".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(updated);
+        let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
+        assert_eq!(
+            auth.scopes,
+            Some(vec!["schema:read".to_string(), "schema:write".to_string()])
+        );
+        assert_eq!(auth.dataset_id, None);
+
+        // Dataset only: scopes untouched.
+        let updated = catalog
+            .update_api_key_scopes(&key_id, None, Some("production"))
+            .await
+            .unwrap();
+        assert!(updated);
+        let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
+        assert_eq!(auth.dataset_id.as_deref(), Some("production"));
+        assert_eq!(
+            auth.scopes,
+            Some(vec!["schema:read".to_string(), "schema:write".to_string()])
+        );
+
+        // Nothing to change is a no-op success.
+        assert!(
+            catalog
+                .update_api_key_scopes(&key_id, None, None)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn update_api_key_scopes_rejects_revoked_and_unknown_keys() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_hash = hash_api_key("doomed-secret");
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &key_hash,
+                None,
+                None,
+                Some(&["traces:write".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+        catalog.revoke_api_key(&key_id).await.unwrap();
+
+        let updated = catalog
+            .update_api_key_scopes(&key_id, Some(&["logs:write".to_string()]), None)
+            .await
+            .unwrap();
+        assert!(!updated, "revoked keys must not be updatable");
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.scopes, Some(vec!["traces:write".to_string()]));
+
+        let updated = catalog
+            .update_api_key_scopes("no-such-key", Some(&["logs:write".to_string()]), None)
+            .await
+            .unwrap();
+        assert!(!updated);
     }
 
     /// The tenant row and its default dataset row must land together. A
