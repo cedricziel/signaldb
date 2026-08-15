@@ -279,9 +279,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler mold clang
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-
       - name: Setup test environment
         run: |
           mkdir -p .data
@@ -289,7 +286,6 @@ jobs:
 
       - name: Run all tests
         run: |
-          export RUSTC_WRAPPER=sccache
           cargo test --profile ci-test --workspace --all-features
         env:
           RUST_LOG: warn # Reduced log level for faster tests
@@ -322,6 +318,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false  # Using Swatinem/rust-cache instead
+          rustflags: "" # see build-musl-amd64
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -340,12 +337,8 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: brew install protobuf
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-
       - name: Build binaries
         run: |
-          export RUSTC_WRAPPER=sccache
           if [ "${{ matrix.deployment }}" = "monolithic" ]; then
             cargo build --release -p signaldb-bin --bin signaldb
             cargo build --release -p signaldb-cli --bin signaldb-cli
@@ -385,7 +378,7 @@ jobs:
           retention-days: 7
 
   # Static musl binaries for container images. Built on the host runner
-  # where rust-cache + sccache make rebuilds incremental, instead of inside
+  # where rust-cache keeps the dependency graph warm, instead of inside
   # docker where layer caching is all-or-nothing and misses on every
   # Cargo.toml change. The docker jobs below just copy these in.
   build-musl-amd64:
@@ -403,6 +396,13 @@ jobs:
         with:
           target: x86_64-unknown-linux-musl
           cache: false  # Using Swatinem/rust-cache instead
+          # Must stay empty: this action defaults RUSTFLAGS to "-D warnings",
+          # and a set RUSTFLAGS replaces (never merges with) the per-target
+          # rustflags in .cargo/config.toml. With the default, the mold linker
+          # and the +aes/+sse4.2 target features are silently dropped and the
+          # published binaries ship ahash's scalar fallback. Warnings are still
+          # gated: the Check & Lint job runs clippy with an explicit -D warnings.
+          rustflags: ""
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -416,12 +416,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler musl-tools mold clang
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-
       - name: Build musl binaries
         run: |
-          export RUSTC_WRAPPER=sccache
           cargo build --release --target x86_64-unknown-linux-musl \
             --features acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc \
             --bin signaldb-acceptor \
@@ -536,6 +532,7 @@ jobs:
         with:
           target: aarch64-unknown-linux-musl
           cache: false  # Using Swatinem/rust-cache instead
+          rustflags: "" # see build-musl-amd64
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -549,12 +546,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler musl-tools mold clang
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-
       - name: Build musl binaries
         run: |
-          export RUSTC_WRAPPER=sccache
           cargo build --release --target aarch64-unknown-linux-musl \
             --features acceptor/jemalloc,router/jemalloc,writer/jemalloc,querier/jemalloc,compactor/jemalloc,signaldb-bin/jemalloc,mcp-server/jemalloc \
             --bin signaldb-acceptor \
@@ -929,13 +922,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-
       - name: Install security tools
-        run: |
-          export RUSTC_WRAPPER=sccache
-          cargo install cargo-audit cargo-deny cargo-machete
+        run: cargo install cargo-audit cargo-deny cargo-machete
 
       - name: Run security audit
         run: cargo audit
@@ -991,9 +979,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler mold clang
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
 
@@ -1005,9 +990,7 @@ jobs:
           echo "SIGNALDB_DISCOVERY_DSN=postgres://postgres:postgres@localhost:5432/signaldb_test" >> $GITHUB_ENV
 
       - name: Generate coverage report
-        run: |
-          export RUSTC_WRAPPER=sccache
-          cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
