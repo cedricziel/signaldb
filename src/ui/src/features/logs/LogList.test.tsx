@@ -113,9 +113,9 @@ describe("LogList", () => {
       ),
     ).toEqual(["alpha", "zebra"]);
     expect(
-      [
-        ...container.querySelectorAll(".attr-row[data-scope='metadata'] dt"),
-      ].map((element) => element.textContent),
+      [...container.querySelectorAll(".attr-row[data-scope='metadata'] dt")].map(
+        (element) => element.textContent,
+      ),
     ).toEqual(["beta", "omega"]);
   });
 
@@ -326,9 +326,7 @@ describe("LogList semantic labels", () => {
     await new Promise((r) => setTimeout(r, 60));
     expect(screen.queryByText(/boom/)).not.toBeInTheDocument();
     expect(
-      [...container.querySelectorAll(".attr-row dt")].map(
-        (el) => el.textContent,
-      ),
+      [...container.querySelectorAll(".attr-row dt")].map((el) => el.textContent),
     ).toEqual(["service_name", "app.order.id", "k8s.pod.uid"]);
   });
 });

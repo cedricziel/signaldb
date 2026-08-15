@@ -945,9 +945,7 @@ describe("TracesView detail", () => {
     expect(
       await within(detail).findByText("The UID of the Pod."),
     ).toBeInTheDocument();
-    expect(
-      within(detail).getByText("Kubernetes Attributes"),
-    ).toBeInTheDocument();
+    expect(within(detail).getByText("Kubernetes Attributes")).toBeInTheDocument();
     expect(within(detail).getByText("otel")).toBeInTheDocument();
     // Unknown keys stay bare, grouped under "Other" after the titled group.
     expect(within(detail).getByText("Other")).toBeInTheDocument();

@@ -28,9 +28,9 @@
 
 ## 3. Docs and guidance
 
-- [ ] 3.1 `docs/users/explore-ui.md`: one paragraph on chart tooltips (hover,
+- [x] 3.1 `docs/users/explore-ui.md`: one paragraph on chart tooltips (hover,
       keyboard on bars/cells, what they show)
-- [ ] 3.2 Guidance for future panels: `.claude/skills/frontend-instrumentation`
+- [x] 3.2 Guidance for future panels: `.claude/skills/frontend-instrumentation`
       or the explore-ui skill — "every viz panel uses `VizTooltip`"; run
       `scripts/check-doc-freshness.sh` and settle any flagged doc
 - [ ] 3.3 UI suite, tsc, eslint clean; verify a chart in the running app

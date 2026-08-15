@@ -1,9 +1,11 @@
 ---
 name: frontend-instrumentation
-description: Best practices for instrumenting the SignalDB browser UI with OpenTelemetry - end-to-end trace correlation, RUM sessions, context propagation, exporter config, and manual spans. Use when working on src/ui telemetry, browser tracing, session tracking, or frontend-to-backend correlation.
+description: Best practices for instrumenting the SignalDB browser UI with OpenTelemetry - end-to-end trace correlation, RUM sessions, context propagation, exporter config, and manual spans - plus the UI-wide rule that every visualization panel shows its data through the shared VizTooltip. Use when working on src/ui telemetry, browser tracing, session tracking, frontend-to-backend correlation, or adding a chart/panel to the UI.
 user-invocable: false
 sources:
   - src/ui/src/telemetry/**
+  - src/ui/src/components/VizTooltip.tsx
+  - src/ui/src/lib/vizFormat.ts
   - src/ui/vite.config.ts
   - src/ui/.env.example
   - src/router/src/ui.rs
@@ -292,6 +294,33 @@ config is present (local dev, or a collector needing no auth).
 | `SIGNALDB_TELEMETRY_SERVICE_NAME` | `signaldb-ui` | `service.name` on exported spans (runtime `service_name` wins when set)                                                    |
 
 `service.version` is taken from `package.json` at build time.
+
+## Visualization panels: every viz panel uses `VizTooltip`
+
+Not telemetry, but the one UI-wide rule with no better home: every panel that
+draws data (time-series, histogram, area, heatmap, sparkline, breakdown bar,
+flame graph, and anything added later) shows a hover/focus tooltip through the
+shared primitive in `src/ui/src/components/VizTooltip.tsx` — a panel that
+draws its own tooltip markup is a defect
+(`openspec/specs/explore-ui-viz-tooltips`).
+
+- The panel resolves pointer → datum itself (bar index, heatmap cell, nearest
+  timestamp) and hands `VizTooltip` a title (the exact x: timestamp at the
+  panel's resolution, bucket range, or category), one row per series
+  (`swatch`, `label`, `value`; `muted` + `–` for a gap, never a dropped row),
+  and a `footer` for the aggregate (total, count, share).
+- Host is `position: relative` (`className="viz-host"`); use
+  `useVizPointer(hostRef)` for SVG/DOM panels (`track` on `onPointerMove`,
+  `anchorTo` on `onFocus`, `clear` on leave/blur). uPlot panels read
+  `u.cursor.idx` in a `setCursor` hook (see `MetricsChart.rowsForCursorIndex`).
+- Format through `src/ui/src/lib/vizFormat.ts` (`formatTimestamp`,
+  `formatTimeBucket`, `formatValue`, `formatRange`, `formatShare`,
+  `compactCount`), not ad-hoc `toFixed`/`Intl` calls.
+- Data marks that can take focus (bars, cells, segments) get `tabIndex={0}`
+  and `aria-describedby` pointing at the tooltip `id` while active; focus sets
+  the same "active datum" state as hover. Empty marks show no tooltip.
+- Tests assert tooltip _content_ after `fireEvent.pointerMove`/`focus` on the
+  mark (jsdom does no layout); for uPlot, test the pure row resolver.
 
 ## Semantic conventions used
 

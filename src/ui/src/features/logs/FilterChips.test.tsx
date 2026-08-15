@@ -129,17 +129,11 @@ describe("FilterChips", () => {
       },
     ]);
     render(
-      <FilterChips
-        filters={[]}
-        labels={["level", "line"]}
-        onChange={() => {}}
-      />,
+      <FilterChips filters={[]} labels={["level", "line"]} onChange={() => {}} />,
     );
     await userEvent.click(screen.getByRole("button", { name: "+ filter" }));
     await userEvent.type(screen.getByLabelText("Filter label"), "le");
-    const list = await screen.findByRole("listbox", {
-      name: "Label suggestions",
-    });
+    const list = await screen.findByRole("listbox", { name: "Label suggestions" });
     expect(
       within(list)
         .getAllByRole("option")
