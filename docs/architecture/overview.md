@@ -51,7 +51,7 @@ SignalDB maintains two distinct catalog systems:
 Apache Iceberg provides ACID transactions and structured metadata management:
 
 - **ACID transactions** with commit/rollback for data integrity
-- **Schema versioning** via `schemas.toml` with inheritance, field renames, and computed fields
+- **Schema versioning** via `schemas.toml` with inheritance, field renames, and computed fields — the physical schema source of truth for all six built-in table types (traces, logs, and all five metrics representations plus profiles), not only traces/logs
 - **Hour-based partitioning** on `timestamp` for all table types
 - **Namespace isolation**: Tables namespaced as `[tenant_slug, dataset_slug]`
 - **Materialized labels**: configured attribute keys promoted to dedicated
@@ -75,28 +75,28 @@ Parquet storage with DataFusion query processing:
 
 ### Workspace Members
 
-| Crate                 | Path                         | Type             | Description                                                                                                                                                                              |
-| --------------------- | ---------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **acceptor**          | `src/acceptor/`              | Library          | OTLP gRPC/HTTP ingestion endpoint                                                                                                                                                        |
-| **router**            | `src/router/`                | Library          | HTTP API + Flight routing layer                                                                                                                                                          |
-| **writer**            | `src/writer/`                | Library          | Iceberg-based data persistence (the "Ingester")                                                                                                                                          |
-| **querier**           | `src/querier/`               | Library          | Query execution engine via DataFusion                                                                                                                                                    |
-| **compactor**         | `src/compactor/`             | Library          | Storage maintenance: compaction, retention (`signaldb compactor`)                                                                                                                    |
-| **common**            | `src/common/`                | Library          | Shared config, auth, WAL, Flight, catalog, schema                                                                                                                                        |
-| **pyroscope-api**     | `src/pyroscope-api/`         | Library          | Pyroscope-compatible API types (flamebearer, profile types)                                                                                                                              |
-| **tempo-api**         | `src/tempo-api/`             | Library          | Grafana Tempo API types and protobuf definitions                                                                                                                                         |
-| **loki-api**          | `src/loki-api/`              | Library          | Loki HTTP API response types (LogQL query surface)                                                                                                                                       |
-| **prometheus-api**    | `src/prometheus-api/`        | Library          | Prometheus HTTP API response types (PromQL query surface)                                                                                                                                |
-| **schema-model**      | `src/schema-model/`          | Library          | OTel Weaver semantic-convention model: parser, resolver (flat attribute/entity/metric definitions), and the validator applied to custom schema registries                              |
-| **signaldb-bin**      | `src/signaldb-bin/`          | Binary           | The `signaldb` executable: monolith by default, or one service via a subcommand (`signaldb router`, …); every service crate exposes `cli::Args` + `cli::run`                                                                                                                                     |
-| **signaldb-api**      | `src/signaldb-api/`          | Library          | Hand-written admin API DTOs (utoipa `ToSchema`); OpenAPI schema source — see [OpenAPI codegen](openapi-codegen.md)                                                                       |
-| **signaldb-cli**      | `src/signaldb-cli/`          | Binary           | CLI and TUI for tenant, API key, and dataset management                                                                                                                                  |
-| **signaldb-sdk**      | `src/signaldb-sdk/`          | Library          | Generated Rust HTTP client (progenitor) for the admin API                                                                                                                                |
-| **mcp-server**        | `src/mcp-server/`            | Library          | Model Context Protocol server (`signaldb mcp`); credential-forwarding client over `signaldb-sdk`, serves MCP at `/mcp` — see [MCP server](../users/mcp.md)                    |
-| **grafana-plugin**    | `src/grafana-plugin/backend` | Plugin           | Grafana datasource (TypeScript frontend + Rust backend; the backend is a standalone cargo workspace excluded from the root workspace, since grafana-plugin-sdk pins its own Arrow major) |
-| **signal-producer**   | `src/signal-producer/`       | Binary           | Test data generator (OTLP traces)                                                                                                                                                        |
-| **tests-integration** | `tests-integration/`         | Test crate       | Integration test suite                                                                                                                                                                   |
-| **xtask**             | `xtask/`                     | Binary           | Code generation (OpenAPI-derived Rust SDK + TypeScript UI client) and build tasks                                                                                                        |
+| Crate                 | Path                         | Type       | Description                                                                                                                                                                              |
+| --------------------- | ---------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **acceptor**          | `src/acceptor/`              | Library    | OTLP gRPC/HTTP ingestion endpoint                                                                                                                                                        |
+| **router**            | `src/router/`                | Library    | HTTP API + Flight routing layer                                                                                                                                                          |
+| **writer**            | `src/writer/`                | Library    | Iceberg-based data persistence (the "Ingester")                                                                                                                                          |
+| **querier**           | `src/querier/`               | Library    | Query execution engine via DataFusion                                                                                                                                                    |
+| **compactor**         | `src/compactor/`             | Library    | Storage maintenance: compaction, retention (`signaldb compactor`)                                                                                                                        |
+| **common**            | `src/common/`                | Library    | Shared config, auth, WAL, Flight, catalog, schema                                                                                                                                        |
+| **pyroscope-api**     | `src/pyroscope-api/`         | Library    | Pyroscope-compatible API types (flamebearer, profile types)                                                                                                                              |
+| **tempo-api**         | `src/tempo-api/`             | Library    | Grafana Tempo API types and protobuf definitions                                                                                                                                         |
+| **loki-api**          | `src/loki-api/`              | Library    | Loki HTTP API response types (LogQL query surface)                                                                                                                                       |
+| **prometheus-api**    | `src/prometheus-api/`        | Library    | Prometheus HTTP API response types (PromQL query surface)                                                                                                                                |
+| **schema-model**      | `src/schema-model/`          | Library    | OTel Weaver semantic-convention model: parser, resolver (flat attribute/entity/metric definitions), and the validator applied to custom schema registries                                |
+| **signaldb-bin**      | `src/signaldb-bin/`          | Binary     | The `signaldb` executable: monolith by default, or one service via a subcommand (`signaldb router`, …); every service crate exposes `cli::Args` + `cli::run`                             |
+| **signaldb-api**      | `src/signaldb-api/`          | Library    | Hand-written admin API DTOs (utoipa `ToSchema`); OpenAPI schema source — see [OpenAPI codegen](openapi-codegen.md)                                                                       |
+| **signaldb-cli**      | `src/signaldb-cli/`          | Binary     | CLI and TUI for tenant, API key, and dataset management                                                                                                                                  |
+| **signaldb-sdk**      | `src/signaldb-sdk/`          | Library    | Generated Rust HTTP client (progenitor) for the admin API                                                                                                                                |
+| **mcp-server**        | `src/mcp-server/`            | Library    | Model Context Protocol server (`signaldb mcp`); credential-forwarding client over `signaldb-sdk`, serves MCP at `/mcp` — see [MCP server](../users/mcp.md)                               |
+| **grafana-plugin**    | `src/grafana-plugin/backend` | Plugin     | Grafana datasource (TypeScript frontend + Rust backend; the backend is a standalone cargo workspace excluded from the root workspace, since grafana-plugin-sdk pins its own Arrow major) |
+| **signal-producer**   | `src/signal-producer/`       | Binary     | Test data generator (OTLP traces)                                                                                                                                                        |
+| **tests-integration** | `tests-integration/`         | Test crate | Integration test suite                                                                                                                                                                   |
+| **xtask**             | `xtask/`                     | Binary     | Code generation (OpenAPI-derived Rust SDK + TypeScript UI client) and build tasks                                                                                                        |
 
 ### Data Flow Overview
 
@@ -190,10 +190,10 @@ flowchart LR
 
 **Purpose**: HTTP API gateway and query routing
 
-| Property       | Value                                                                                                                       |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| **Ports**      | HTTP: 3000, Flight: 50053                                                                                                   |
-| **Capability** | `Routing`                                                                                                                   |
+| Property       | Value                                                                                                                                                             |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**      | HTTP: 3000, Flight: 50053                                                                                                                                         |
+| **Capability** | `Routing`                                                                                                                                                         |
 | **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible (stubs), native Query IR (`POST /api/v1/query`), schema registry (`/api/v1/schema/*`), Admin API, OpenAPI |
 
 The router also serves the explore UI (a static SPA built from `src/ui`)
