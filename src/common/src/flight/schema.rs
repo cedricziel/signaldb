@@ -89,6 +89,16 @@ impl FlightSchemas {
             Field::new("scope_version", DataType::Utf8, true),
             Field::new("scope_schema_url", DataType::Utf8, true),
             Field::new("scope_attributes", DataType::Utf8, true),
+            // Numeric OTel source of truth for span_kind/status_code
+            // (issue #1208): span_kind/status_code above remain derived
+            // display strings, computed from these at write time, never
+            // the reverse.
+            Field::new("span_kind_number", DataType::Int32, true),
+            Field::new("status_code_number", DataType::Int32, true),
+            // Preserved verbatim from the OTel span rather than discarded.
+            Field::new("dropped_attributes_count", DataType::Int64, true),
+            Field::new("dropped_events_count", DataType::Int64, true),
+            Field::new("dropped_links_count", DataType::Int64, true),
         ];
 
         Schema::new(Fields::from(fields))

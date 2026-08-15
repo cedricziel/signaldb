@@ -55,6 +55,7 @@ common = { workspace = true, features = ["testing"] }
 tokio-stream.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
+opentelemetry-proto.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 

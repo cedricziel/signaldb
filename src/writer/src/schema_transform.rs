@@ -99,7 +99,7 @@ pub fn determine_wal_operation(signal_type: Option<&str>) -> common::wal::WalOpe
 
 /// Transform a trace RecordBatch from v1 to v2 schema
 pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
-    let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("physical-v2")?;
+    let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("physical-v3")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v2_schema)?;
 
     // Debug logging to understand the schema mismatch
@@ -131,6 +131,19 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result
             "trace_id" | "span_id" | "parent_span_id" | "service_name" | "span_kind"
             | "status_code" | "status_message" | "is_root" => {
                 get_column_by_name(&batch, &field.name)?
+            }
+
+            // #1208 columns: nullable, and the column itself may be absent
+            // entirely from the incoming v1 batch -- a v1 producer older
+            // than this column (an acceptor mid-rolling-upgrade, or a test
+            // fixture building a wire batch by hand) must not be rejected
+            // wholesale for it. Missing means "all null", same as any row
+            // whose value happens to be null.
+            "span_kind_number" | "status_code_number" => {
+                get_column_by_name_or_null(&batch, &field.name, &DataType::Int32)?
+            }
+            "dropped_attributes_count" | "dropped_events_count" | "dropped_links_count" => {
+                get_column_by_name_or_null(&batch, &field.name, &DataType::Int64)?
             }
 
             // UInt64 fields that need to be converted to Int64 for Iceberg compatibility
@@ -292,6 +305,24 @@ fn get_column_by_name(batch: &RecordBatch, name: &str) -> Result<ArrayRef> {
         .column_with_name(name)
         .map(|(idx, _)| batch.column(idx).clone())
         .ok_or_else(|| anyhow!("Column '{}' not found in batch", name))
+}
+
+/// Like [`get_column_by_name`], but a wholly absent column reads as
+/// all-null rather than an error -- for columns added to the wire schema
+/// after older producers exist (a v1 acceptor mid-rolling-upgrade, or a
+/// hand-built test fixture) may still send batches without them.
+fn get_column_by_name_or_null(
+    batch: &RecordBatch,
+    name: &str,
+    data_type: &DataType,
+) -> Result<ArrayRef> {
+    match batch.schema().column_with_name(name) {
+        Some((idx, _)) => Ok(batch.column(idx).clone()),
+        None => Ok(datafusion::arrow::array::new_null_array(
+            data_type,
+            batch.num_rows(),
+        )),
+    }
 }
 
 /// Serialize a ListArray (containing StructArrays) to JSON string arrays
@@ -2164,6 +2195,144 @@ pub fn transform_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transform_trace_v1_to_v2_carries_the_1208_columns_through() {
+        use common::flight::conversion::otlp_traces_to_arrow;
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::trace::v1::{
+            ResourceSpans, ScopeSpans, Span as OtelSpan, Status,
+        };
+
+        let span = OtelSpan {
+            trace_id: vec![0xab; 16],
+            span_id: vec![0xcd; 8],
+            parent_span_id: vec![],
+            name: "checkout".to_string(),
+            kind: 2, // Server
+            start_time_unix_nano: 1_700_000_000_000_000_000,
+            end_time_unix_nano: 1_700_000_000_100_000_000,
+            attributes: vec![],
+            dropped_attributes_count: 3,
+            events: vec![],
+            dropped_events_count: 5,
+            links: vec![],
+            dropped_links_count: 7,
+            status: Some(Status {
+                code: 2, // Error
+                message: "boom".to_string(),
+            }),
+            flags: 0,
+            trace_state: String::new(),
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let wire_batch = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+        let v2_batch = transform_trace_v1_to_v2(wire_batch, &[]).unwrap();
+
+        let get_i32 = |name: &str| {
+            let (idx, _) = v2_batch.schema().column_with_name(name).unwrap();
+            v2_batch
+                .column(idx)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0)
+        };
+        let get_i64 = |name: &str| {
+            let (idx, _) = v2_batch.schema().column_with_name(name).unwrap();
+            v2_batch
+                .column(idx)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0)
+        };
+
+        assert_eq!(get_i32("span_kind_number"), 2);
+        assert_eq!(get_i32("status_code_number"), 2);
+        assert_eq!(get_i64("dropped_attributes_count"), 3);
+        assert_eq!(get_i64("dropped_events_count"), 5);
+        assert_eq!(get_i64("dropped_links_count"), 7);
+    }
+
+    #[test]
+    fn transform_trace_v1_to_v2_tolerates_a_v1_batch_missing_the_1208_columns() {
+        // A v1 batch that predates #1208's columns entirely (an acceptor
+        // mid-rolling-upgrade, or a hand-built test fixture) must not be
+        // rejected wholesale -- missing reads as null, same as a present
+        // column with a null value.
+        use common::flight::conversion::otlp_traces_to_arrow;
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span as OtelSpan};
+
+        let span = OtelSpan {
+            trace_id: vec![0xab; 16],
+            span_id: vec![0xcd; 8],
+            name: "checkout".to_string(),
+            kind: 2,
+            start_time_unix_nano: 1,
+            end_time_unix_nano: 2,
+            ..Default::default()
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let full_batch = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+
+        // Simulate a producer without #1208's columns by projecting them out.
+        let new_columns = [
+            "span_kind_number",
+            "status_code_number",
+            "dropped_attributes_count",
+            "dropped_events_count",
+            "dropped_links_count",
+        ];
+        let keep: Vec<usize> = full_batch
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !new_columns.contains(&f.name().as_str()))
+            .map(|(i, _)| i)
+            .collect();
+        let reduced = full_batch
+            .project(&keep)
+            .expect("projection should succeed");
+        assert_eq!(
+            reduced.num_columns(),
+            full_batch.num_columns() - new_columns.len()
+        );
+
+        let v2_batch = transform_trace_v1_to_v2(reduced, &[])
+            .expect("a v1 batch missing #1208's columns must not error");
+
+        for name in new_columns {
+            let (idx, _) = v2_batch.schema().column_with_name(name).unwrap();
+            assert!(
+                v2_batch.column(idx).is_null(0),
+                "missing column '{name}' should read as null, not error"
+            );
+        }
+    }
 
     #[test]
     fn transform_profiles_wire_batch_to_iceberg_schema() {

@@ -39,7 +39,7 @@ use arrow::array::StringArray;
 ```
 OTLP Client (gRPC :4317 / HTTP :4318)
     -> Acceptor (validates auth, enforces rate limits + storage quotas, converts OTLP->Arrow, writes to WAL)
-    -> Writer via Flight do_put (transforms v1->v2 schema, writes to WAL)
+    -> Writer via Flight do_put (transforms v1->physical-v3 schema, writes to WAL)
     -> WalProcessor (background, 5s interval)
     -> Iceberg Tables (Parquet files in object store)
 ```
@@ -48,7 +48,7 @@ Key details:
 
 1. Acceptor writes to WAL before acknowledging client
 2. Acceptor converts OTLP protobuf -> Arrow RecordBatches using Flight schemas (v1)
-3. Writer transforms v1 Flight schema -> v2 Iceberg schema (field renames, type conversions, computed partition fields, materialized `label_<key>` columns for configured attributes across all four signals, allowlists resolved per tenant (tenant schema override replaces the global set); new tables (all signals) store attributes as typed `Map<String,String>` columns for exact any-attribute matching). `schemas.toml` is the physical schema source of truth for all six built-in table types (traces, logs, all five metrics representations, profiles) — `iceberg::schemas`'s `create_*_schema_with()` functions resolve from it rather than building field lists by hand.
+3. Writer transforms v1 Flight schema -> physical-v3 Iceberg schema (field renames, type conversions, computed partition fields, materialized `label_<key>` columns for configured attributes across all four signals, allowlists resolved per tenant (tenant schema override replaces the global set); new tables (all signals) store attributes as typed `Map<String,String>` columns for exact any-attribute matching). `schemas.toml` is the physical schema source of truth for all six built-in table types (traces, logs, all five metrics representations, profiles) — `iceberg::schemas`'s `create_*_schema_with()` functions resolve from it rather than building field lists by hand. On every load (not just creation), `ensure_table` also brings an existing traces/logs table's schema forward to schemas.toml's current version if it's behind (`common::iceberg::evolution::ensure_schema_current`) — additions-only when the table's starting version isn't trusted (no recorded `signaldb.schema.version`, or one not found on the version chain), renames/removals also enabled when it's a known recorded version walked hop by hop — metrics/profiles resolve from `schemas.toml` for creation but aren't covered by this evolution path yet.
 4. Writer's `do_put` acks after its WAL flush (it does NOT commit synchronously); WalProcessor reads WAL entries every 5s (exponential backoff on failure) and writes Parquet via DataFusion, coalescing commits per `(tenant, dataset, table)` (`[writer].commit_interval` / `max_uncommitted_rows`) to cap the Iceberg/catalog write rate. Data is queryable once committed; `do_action("flush")` forces an immediate commit (read-your-writes)
 5. Processed WAL entries are marked and cleaned up
 

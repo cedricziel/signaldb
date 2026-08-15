@@ -156,12 +156,12 @@ the services resolve their WAL directory from the TOML-level `[wal] wal_dir`
 
 ## Table Types (up to 7 per tenant-dataset)
 
-| Signal   | Table Name                                                                                              | Schema Source                    |
-| -------- | ------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| Traces   | `traces`                                                                                                | `schemas.toml` (v2, inherits v1) |
-| Logs     | `logs`                                                                                                  | `schemas.toml` (v1)              |
-| Metrics  | `metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary` | `schemas.toml` (v1)              |
-| Profiles | `profiles`                                                                                              | `schemas.toml` (v1)              |
+| Signal   | Table Name                                                                                              | Schema Source                                |
+| -------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Traces   | `traces`                                                                                                | `schemas.toml` (v3, inherits v2 inherits v1) |
+| Logs     | `logs`                                                                                                  | `schemas.toml` (v1)                          |
+| Metrics  | `metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary` | `schemas.toml` (v1)                          |
+| Profiles | `profiles`                                                                                              | `schemas.toml` (v1)                          |
 
 All tables partitioned by `Hour(timestamp)` as `timestamp_hour`.
 
@@ -173,25 +173,29 @@ New tables across all four signals store their attribute columns as Iceberg `Map
 
 `[schema.materialized_labels]` (per signal) promotes attribute keys from the `*_attributes` JSON into nullable `label_<key>` columns at ingest, so they match exactly / by regex / with ordered comparisons instead of the JSON substring approximation. Naming via `common::schema::materialized_column_name` (non-alphanumeric → `_`, `label_` prefix). Writer populates from resource→scope→record attributes (first non-null); `coerce_batch_to_schema` drops columns a table lacks and null-fills nullable ones it has. New tables carry the configured columns from creation; existing tables can gain `label_<key>` columns post-creation via `common::iceberg::evolution::add_label_columns` (metadata-only `AddSchema`+`SetCurrentSchema` commit via `Catalog::update_table`; idempotent; field ids continue past nested map/list ids; no Parquet rewrite — old files null-fill on read, snapshot-pinned schemas stay reachable; needs iceberg-rust rev >= 96f28c18). Tables not yet evolved fall back to JSON. Allowlists resolve per tenant (tenant schema override replaces global) at table creation (`ensure_table`) and in the writer transforms. Querier routes via the column when the table schema has it (LogQL `attribute_expr`, trace search `Condition::to_expr`, PromQL `matcher_expr`). Implemented for all four signals: **logs** (exact/regex/ordered), **traces** (exact), **metrics** (exact/regex filter; `by`/`without` grouping; part of the natural series identity — PromQL scan projects the label columns, null-filled across the gauge/sum union), **profiles** (columns populated; no attribute-filter query surface yet). Metrics/profiles table schemas now resolve from `schemas.toml` the same way traces/logs do (`ResolvedSchema::to_iceberg_schema_with_labels` appends label columns for all six built-in table types uniformly); metrics transforms extract per-exploded-data-point label values via `materialized_label_columns_from_json`. See `docs/architecture/storage-layout.md#materialized-labels`.
 
+### Schema evolution (traces/logs)
+
+For the two signals whose physical schema is `schemas.toml`-sourced (traces, logs — metrics/profiles are hand-written in `iceberg_schemas.rs` and not covered by this mechanism yet), an existing table's schema is brought forward to the current `schemas.toml` version on every `ensure_table` load, not just at creation: `common::iceberg::evolution::ensure_schema_current` reads the table's `signaldb.schema.version` property, walks `SchemaDefinitions::version_chain` to the current version, and applies each hop via `apply_schema_migration` (additive `AddSchema`+`SetCurrentSchema`+`SetProperties` through `Catalog::update_table`, same commit/verify shape as `add_label_columns` below). A table with **no recorded version** (pre-dates this mechanism) skips hop-by-hop walking and migrates directly to current in one step, additions only, never removing a field — hop-by-hop removal assumes the starting version is trusted, which an inferred baseline isn't (a table already ahead of an early hop would otherwise lose fields the diff can't tell it legitimately has). No backfill of historical row values; `field_removals` (schemas.toml) only ever drops a column going forward. Field-created-fresh tables get their version stamped at creation, not left to the evolution path to catch up on first load.
+
 ### Parquet bloom filters
 
 Enabled per column at table creation via the standard Iceberg property `write.parquet.bloom-filter-enabled.column.<col> = "true"` (honored by the pinned iceberg-rust writer on ingest + compaction); dispatch by table type lives in `common::schema::bloom_filter_properties_for_table`. Point lookups on high-cardinality columns can't use row-group min/max (every file spans the full random range), so a bloom filter is the only structure that prunes them. Enabled columns: **traces and logs** `trace_id`/`span_id` (`common::schema::bloom_filter_properties_for_trace_columns` — traces for single-trace/-span lookups, logs for logs-for-a-trace correlation, where the columns are optional but named identically), **logs** additionally `attr_tokens` list-leaf (`bloom_filter_property_for_attr_tokens`), and every materialized `label_<key>` column (`bloom_filter_properties_for_labels`). `trace_id`/`span_id` also carry `bloom-filter-fpp.column = "0.01"`; `trace_id` alone additionally carries an explicit `bloom-filter-ndv.column` (`BLOOM_FILTER_TRACE_ID_NDV`, an estimate) since it repeats across every span of a trace, unlike `span_id` which is unique per row and fits parquet-rs's default ndv as-is. Metadata-only + creation-time: pre-existing tables don't gain a filter retroactively. Read path: `datafusion_iceberg` reports `Inexact` and builds `ParquetSource` without a predicate, but DataFusion's physical filter-pushdown injects the predicate into `DataSourceExec`, so with `bloom_filter_on_read` (default on) row groups are skipped. Verified by `tests-integration/tests/querier/trace_bloom_pruning.rs`. Compactor gap: `TODO(#731)` — bloom props for _newly promoted_ label columns aren't re-set on rewrite. See `docs/architecture/storage-layout.md#parquet-bloom-filters`.
 
 ## Key Implementation Files
 
-| File                                      | Purpose                                                            |
-| ----------------------------------------- | ------------------------------------------------------------------ |
-| `schemas.toml`                            | Schema definitions with versioning                                 |
-| `src/common/src/iceberg/mod.rs`           | Iceberg catalog creation, object store builders                    |
-| `src/common/src/iceberg/schemas.rs`       | Schema creation functions for traces/logs/metrics, partition specs |
-| `src/common/src/iceberg/names.rs`         | Naming utilities for table identifiers, namespaces, locations      |
-| `src/common/src/iceberg/table_manager.rs` | IcebergTableManager for table operations                           |
-| `src/common/src/iceberg/evolution.rs`     | `add_label_columns()` schema-evolution helper                      |
-| `src/common/src/schema/mod.rs`            | Schema registry, re-exports iceberg modules                        |
-| `src/common/src/schema/schema_parser.rs`  | TOML schema parser                                                 |
-| `src/common/src/catalog_manager.rs`       | CatalogManager singleton                                           |
-| `src/common/src/storage.rs`               | Object store creation from DSN                                     |
-| `src/common/src/wal/mod.rs`               | WAL implementation                                                 |
-| `src/writer/src/storage/iceberg.rs`       | IcebergTableWriter                                                 |
-| `src/writer/src/processor.rs`             | WalProcessor                                                       |
-| `src/writer/src/schema_transform.rs`      | v1->v2 schema transformation                                       |
+| File                                      | Purpose                                                                                                     |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `schemas.toml`                            | Schema definitions with versioning                                                                          |
+| `src/common/src/iceberg/mod.rs`           | Iceberg catalog creation, object store builders                                                             |
+| `src/common/src/iceberg/schemas.rs`       | Schema creation functions for traces/logs/metrics, partition specs                                          |
+| `src/common/src/iceberg/names.rs`         | Naming utilities for table identifiers, namespaces, locations                                               |
+| `src/common/src/iceberg/table_manager.rs` | IcebergTableManager for table operations                                                                    |
+| `src/common/src/iceberg/evolution.rs`     | `add_label_columns()`/`remove_label_columns()` + generic `ensure_schema_current()` schema-evolution helpers |
+| `src/common/src/schema/mod.rs`            | Schema registry, re-exports iceberg modules                                                                 |
+| `src/common/src/schema/schema_parser.rs`  | TOML schema parser                                                                                          |
+| `src/common/src/catalog_manager.rs`       | CatalogManager singleton                                                                                    |
+| `src/common/src/storage.rs`               | Object store creation from DSN                                                                              |
+| `src/common/src/wal/mod.rs`               | WAL implementation                                                                                          |
+| `src/writer/src/storage/iceberg.rs`       | IcebergTableWriter                                                                                          |
+| `src/writer/src/processor.rs`             | WalProcessor                                                                                                |
+| `src/writer/src/schema_transform.rs`      | v1->v2 schema transformation                                                                                |

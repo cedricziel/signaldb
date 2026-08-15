@@ -60,14 +60,21 @@ Vec<TableUpdate> }`) — it must be called directly, bypassing the
 - Bring an existing table's Iceberg schema forward to match `schemas.toml`'s
   current version for its signal, additively, without touching existing
   data files.
-- Make `schemas.toml` the complete physical-schema source of truth for every
-  signal table, including the two metrics representations
-  (`ExponentialHistogram`, `Summary`) it doesn't cover today.
 - Ship `span_kind_number`, `status_code_number`, and the three
   `dropped_*_count` fixes as the first real use of the mechanism.
 
 **Non-Goals:**
 
+- Making `schemas.toml` the physical-schema source of truth for metrics or
+  profiles. Implementation revealed all five metrics representations and
+  profiles are entirely hand-written in `iceberg/schemas.rs`, disconnected
+  from `schemas.toml` even where a same-named section exists (it's wired
+  only to admin introspection) — a materially bigger migration than the
+  two schemas originally assumed missing, and correctly `unified-table-schema`'s
+  job. This change's evolution mechanism therefore covers **traces and
+  logs only**, the two signals already resolving physical schema from
+  `schemas.toml`; metrics/profiles gain evolution support once that
+  migration lands.
 - Backfilling historical row values for any column, old or new (#1209,
   closed).
 - Column rename or type-widening as live-table operations. `schemas.toml`
@@ -102,29 +109,37 @@ spec's scenario for pre-existing tables).
 
 ### Evolution commit shape: one atomic multi-update `CommitTable` per version hop
 
+**Implementation note**: this was written before discovering
+`common::iceberg::evolution` already existed (see §3's task-list
+correction). The shape below is accurate to what shipped, minus the
+`AssertCurrentSchemaId` requirement — that module's existing pattern
+relies on the Iceberg catalog's own commit protocol CAS-ing on the base
+metadata version for every commit regardless of caller-supplied
+requirements, verified by its own concurrent-write tests, so an explicit
+requirement wasn't load-bearing and this change didn't add one.
+
 For each version hop, build:
 
 ```
 CommitTable {
     identifier: <table ident>,
-    requirements: vec![TableRequirement::AssertCurrentSchemaId {
-        current_schema_id: <table's schema id when loaded>,
-    }],
+    requirements: vec![],
     updates: vec![
-        TableUpdate::AddSchema { schema: <new schema>, last_column_id: <max field id> },
-        TableUpdate::SetCurrentSchema { schema_id: -1 },
+        TableUpdate::AddSchema { schema: <new schema>, last_column_id: <max field id, if any additions> },
+        TableUpdate::SetCurrentSchema { schema_id: <new schema id> },
         TableUpdate::SetProperties {
-            updates: [("signaldb.schema.version", "<target version>")],
+            updates: { "signaldb.schema.version": "<target version>" },
         },
     ],
 }
 ```
 
-committed via `catalog.update_table(commit)`. All three updates land or none
-do. The `AssertCurrentSchemaId` requirement means a concurrent evolver (two
-writer replicas both reconciling the same table) fails the commit instead of
-racing; the loser reloads the table and re-evaluates from its new state,
-which naturally converges (the requirement in the retry now matches).
+committed via `catalog.update_table(commit)`, then the table is reloaded and
+the evolved schema + property are verified present — a lost race (two
+writer replicas evolving the same table concurrently) surfaces as a
+verification failure, logged and returned as an error for the caller (a
+periodic reconciler) to retry on its next pass, the same failure handling
+`backfill_metadata_pruning_properties` already uses.
 
 ### Building the new `Schema`: mutate the live schema, don't regenerate
 
@@ -147,15 +162,31 @@ unchanged from the live schema or newly minted — never recomputed
 positionally. This is the one rule that makes this safe: never call
 `ResolvedSchema::to_iceberg_schema()` against an existing table.
 
-### Walking versions one hop at a time, not straight to head
+### Walking versions one hop at a time — but only when the starting point is known
 
-If a table is N versions behind, apply each intervening version's diff as
-its own commit, in order, rather than computing one big diff from the
-table's current version straight to head. This mirrors `schemas.toml`'s own
-`inherits` chain (already sequential) and means a partial failure leaves the
-table at a valid, previously-reached version rather than in an ambiguous
-partially-applied state — each hop is independently a complete, self
-consistent version.
+If a table has a recorded `signaldb.schema.version`, apply each intervening
+version's diff as its own commit, in order, rather than computing one big
+diff straight to head. This mirrors `schemas.toml`'s own `inherits` chain
+(already sequential) and means a partial failure leaves the table at a
+valid, previously-reached version rather than an ambiguous partially-applied
+state.
+
+**Correction found in testing**: hop-by-hop walking is only safe when the
+starting version is _trusted_ — each hop's diff removes any field not in
+that hop's own field list, which is correct for a table genuinely at that
+prior version, but actively destructive for a table whose starting point is
+merely _inferred_. A table with no recorded version might already be ahead
+of the chain's root (e.g. created with a fuller field set before this
+mechanism existed and simply never stamped) — walking root-first would
+diff its live schema against the small root field set and delete every
+field the root doesn't mention, then re-add them later under new field IDs.
+A regression test (`ensure_schema_current_with_no_recorded_version_never_removes_extra_fields`)
+demonstrated this. The fix: a table with **no recorded version** skips
+hop-walking entirely and migrates directly to the current version in one
+step, **additions only** (`diff_schema`'s `allow_removals: false`) —
+correct regardless of the table's real history, at the cost of never
+removing a field for a table whose baseline was never recorded. Hop-by-hop
+removal only ever runs for a table whose recorded version is trusted.
 
 ### Where it plugs in
 
@@ -166,21 +197,22 @@ table we just loaded" shape. Triggered by whatever already calls
 new background job) and the manual `POST /api/v1/tenants/{id}/tables/create`
 endpoint.
 
-### `schemas.toml` gets `field_removals` and full metrics coverage
+### `schemas.toml` gets `field_removals`; metrics/profiles coverage deferred
 
 Add `field_removals: Vec<FieldRemoval>` (`{ name: String }`) to
 `TableSchemaDefinition`, parsed the same way as `field_renames`, applied
 after renames/additions when resolving a version (remove by name from
-`resolved_fields`). Separately — and as a prerequisite, since the evolution
-engine needs `schemas.toml` to actually describe every table it's
-responsible for — add `metrics_exponential_histogram` and `metrics_summary`
-schema blocks to `schemas.toml`, generated to match the fields
-`iceberg::schemas::create_metrics_exponential_histogram_schema_with`/
-`create_metrics_summary_schema_with` already produce by hand, then make
-those two functions resolve from `schemas.toml` like `metrics_gauge`/
-`metrics_sum`/`metrics_histogram` already do. This is a like-for-like
-consolidation (same fields, same types) with no behavior change on its own;
-it exists so item 6 below isn't scoped against half the metrics tables.
+`resolved_fields`). Unlike originally planned, this change does **not**
+also fold metrics schemas into `schemas.toml` — implementation found that
+none of the five metrics representations (not just
+`ExponentialHistogram`/`Summary`) or profiles are actually sourced from
+`schemas.toml` for physical table creation; all are hand-written in
+`iceberg/schemas.rs`, and `schemas.toml`'s same-named metrics sections feed
+only admin introspection. Migrating all five plus profiles is real, larger
+work than this change's evolution mechanism needs and is scoped instead to
+`unified-table-schema`. The evolution engine here (§3-4) therefore only
+targets **traces and logs**, since those two already resolve their
+physical schema from `schemas.toml`.
 
 ### span_kind_number / status_code_number / dropped_*_count: one-off uses of the mechanism, not new mechanism
 
@@ -224,14 +256,13 @@ puts in it is the conversion layer's job as it always has been.
 
 ## Migration Plan
 
-1. `schemas.toml`: add `field_removals`, add
-   `metrics_exponential_histogram`/`metrics_summary` blocks, bump
-   `traces.physical-v3` with the four new nullable columns.
+1. `schemas.toml`: add `field_removals`, bump `traces.physical-v3` with the
+   five new nullable columns (`span_kind_number`, `status_code_number`,
+   `dropped_attributes_count`, `dropped_events_count`, `dropped_links_count`).
 2. `common`: `FieldRemoval` in `schema_parser.rs`; the schema-evolution
-   engine (diff + `CommitTable` builder) in `iceberg::table_manager`; wire
-   `ExponentialHistogram`/`Summary` schema functions to resolve from
-   `schemas.toml`; register `span_kind_number`/`status_code_number` in
-   `LogicalSchema::core()`.
+   engine (diff + `CommitTable` builder) in `iceberg::table_manager`,
+   applied to traces/logs; register `span_kind_number`/`status_code_number`
+   in `LogicalSchema::core()`.
 3. `common::flight`: wire-schema columns; `conversion_traces.rs` read/write
    fixes.
 4. `writer`: `schema_transform.rs` v1→v2 mapping for the new columns.

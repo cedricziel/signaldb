@@ -3,7 +3,7 @@
 
 [metadata]
 description = "SignalDB built-in table schemas"
-current_trace_version = "physical-v2"
+current_trace_version = "physical-v3"
 current_log_version = "physical-v1"
 current_metric_version = "physical-v1"
 logical_schema_version = "otel-2026-08"
@@ -54,6 +54,17 @@ field_additions = [
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]
 partition_by = ["timestamp"]
+
+[traces.physical-v3]
+description = "Numeric OTel source-of-truth for span_kind/status_code, plus dropped-count preservation (#1208)"
+inherits = "physical-v2"
+field_additions = [
+    { name = "span_kind_number", type = "int32", required = false },
+    { name = "status_code_number", type = "int32", required = false },
+    { name = "dropped_attributes_count", type = "int64", required = false },
+    { name = "dropped_events_count", type = "int64", required = false },
+    { name = "dropped_links_count", type = "int64", required = false },
+]
 
 # ==============================================================================
 # LOGS TABLE SCHEMAS

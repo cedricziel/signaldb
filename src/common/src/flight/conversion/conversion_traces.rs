@@ -1,5 +1,8 @@
 use datafusion::arrow::{
-    array::{Array, ArrayRef, BooleanArray, ListArray, StringArray, StructArray, UInt64Array},
+    array::{
+        Array, ArrayRef, BooleanArray, Int32Array, Int64Array, ListArray, StringArray, StructArray,
+        UInt64Array,
+    },
     buffer::OffsetBuffer,
     datatypes::{DataType, Field},
     error::ArrowError,
@@ -56,6 +59,11 @@ pub fn otlp_traces_to_arrow(
     let mut scope_versions: Vec<Option<String>> = Vec::new();
     let mut scope_schema_urls: Vec<Option<String>> = Vec::new();
     let mut scope_attributes_jsons: Vec<Option<String>> = Vec::new();
+    let mut span_kind_numbers: Vec<i32> = Vec::new();
+    let mut status_code_numbers: Vec<i32> = Vec::new();
+    let mut dropped_attributes_counts: Vec<i64> = Vec::new();
+    let mut dropped_events_counts: Vec<i64> = Vec::new();
+    let mut dropped_links_counts: Vec<i64> = Vec::new();
 
     for resource_spans in &request.resource_spans {
         // Extract resource attributes as JSON
@@ -138,7 +146,7 @@ pub fn otlp_traces_to_arrow(
                     serde_json::to_string(&attr_map).unwrap_or_else(|_| "{}".to_string());
 
                 // Extract status
-                let (status_code, status_message) = extract_status(span);
+                let (status_code_number, status_code, status_message) = extract_status(span);
 
                 // Extract span kind
                 let span_kind = span_kind_to_str(span.kind);
@@ -167,6 +175,11 @@ pub fn otlp_traces_to_arrow(
                 status_codes.push(status_code);
                 status_messages.push(status_message);
                 is_roots.push(is_root);
+                span_kind_numbers.push(span.kind);
+                status_code_numbers.push(status_code_number);
+                dropped_attributes_counts.push(span.dropped_attributes_count as i64);
+                dropped_events_counts.push(span.dropped_events_count as i64);
+                dropped_links_counts.push(span.dropped_links_count as i64);
                 attributes_jsons.push(attributes_json);
                 resource_jsons.push(resource_json.clone());
                 events_data.push(events);
@@ -218,6 +231,13 @@ pub fn otlp_traces_to_arrow(
     let scope_schema_url_array: ArrayRef = Arc::new(StringArray::from(scope_schema_urls));
     let scope_attributes_array: ArrayRef = Arc::new(StringArray::from(scope_attributes_jsons));
 
+    let span_kind_number_array: ArrayRef = Arc::new(Int32Array::from(span_kind_numbers));
+    let status_code_number_array: ArrayRef = Arc::new(Int32Array::from(status_code_numbers));
+    let dropped_attributes_count_array: ArrayRef =
+        Arc::new(Int64Array::from(dropped_attributes_counts));
+    let dropped_events_count_array: ArrayRef = Arc::new(Int64Array::from(dropped_events_counts));
+    let dropped_links_count_array: ArrayRef = Arc::new(Int64Array::from(dropped_links_counts));
+
     // Create and return the RecordBatch. Assembly failures must propagate:
     // swallowing them into an empty batch would ACK data that was never
     // stored (silent data loss, issue #926).
@@ -246,6 +266,11 @@ pub fn otlp_traces_to_arrow(
             scope_version_array,
             scope_schema_url_array,
             scope_attributes_array,
+            span_kind_number_array,
+            status_code_number_array,
+            dropped_attributes_count_array,
+            dropped_events_count_array,
+            dropped_links_count_array,
         ],
     )
 }
@@ -280,20 +305,32 @@ fn span_kind_from_str(kind: &str) -> i32 {
     }
 }
 
-/// Extract status code and message from span
-fn extract_status(span: &OtelSpan) -> (String, String) {
+/// Maps an OTel proto `Status.code` int to its spec string. Values match
+/// the proto enum exactly (`STATUS_CODE_UNSET` = 0, `STATUS_CODE_OK` = 1,
+/// `STATUS_CODE_ERROR` = 2) -- do not shift them. Any unrecognized value
+/// falls back to `"Unspecified"`. Inverse of the match in
+/// [`arrow_to_otlp_traces`] that parses this string back to an int.
+fn status_code_to_str(code: i32) -> &'static str {
+    match code {
+        0 => "Unspecified",
+        1 => "Ok",
+        2 => "Error",
+        _ => "Unspecified",
+    }
+}
+
+/// Extract the raw status code, its derived display string, and the
+/// message from a span. The display string is always computed from the
+/// number, never the reverse, so a defect in the string mapping cannot
+/// destroy the original value (issue #1208).
+fn extract_status(span: &OtelSpan) -> (i32, String, String) {
     match &span.status {
-        Some(status) => {
-            // OTLP StatusCode: 0 = Unset, 1 = Ok, 2 = Error.
-            let code = match status.code {
-                0 => "Unspecified",
-                1 => "Ok",
-                2 => "Error",
-                _ => "Unspecified",
-            };
-            (code.to_string(), status.message.clone())
-        }
-        None => ("Unspecified".to_string(), String::new()),
+        Some(status) => (
+            status.code,
+            status_code_to_str(status.code).to_string(),
+            status.message.clone(),
+        ),
+        None => (0, status_code_to_str(0).to_string(), String::new()),
     }
 }
 
@@ -644,6 +681,20 @@ fn get_list_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a ListArr
         .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<ListArray>())
 }
 
+fn get_int32_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a Int32Array> {
+    batch
+        .schema()
+        .column_with_name(name)
+        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<Int32Array>())
+}
+
+fn get_int64_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a Int64Array> {
+    batch
+        .schema()
+        .column_with_name(name)
+        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<Int64Array>())
+}
+
 /// Convert Arrow RecordBatch to OTLP ExportTraceServiceRequest
 pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
     use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
@@ -684,6 +735,13 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
     let scope_version_array = get_string_column(batch, "scope_version");
     let scope_schema_url_array = get_string_column(batch, "scope_schema_url");
     let scope_attributes_array = get_string_column(batch, "scope_attributes");
+    // Absent for rows written before #1208: fall back to the derived
+    // string columns for those, per-row, below.
+    let span_kind_number_array = get_int32_column(batch, "span_kind_number");
+    let status_code_number_array = get_int32_column(batch, "status_code_number");
+    let dropped_attributes_count_array = get_int64_column(batch, "dropped_attributes_count");
+    let dropped_events_count_array = get_int64_column(batch, "dropped_events_count");
+    let dropped_links_count_array = get_int64_column(batch, "dropped_links_count");
 
     // Group by (service_name, resource_schema_url) -> ResourceSpans
     // Then within each ResourceSpans, group by (scope_name, scope_version, scope_schema_url) -> ScopeSpans
@@ -768,17 +826,36 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
             }
         });
 
-        // Convert span kind string back to the OTel proto enum's int value
-        let span_kind = span_kind_from_str(span_kind_str);
+        // Prefer the numeric source of truth (issue #1208); fall back to
+        // deriving from the display string only for rows written before
+        // that column existed.
+        let span_kind = span_kind_number_array
+            .filter(|a| !a.is_null(row))
+            .map(|a| a.value(row))
+            .unwrap_or_else(|| span_kind_from_str(span_kind_str));
 
-        // Convert status code string to OTLP StatusCode (0 = Unset, 1 = Ok,
-        // 2 = Error).
-        let status_code = match status_code_str {
-            "Unspecified" => 0,
-            "Ok" => 1,
-            "Error" => 2,
-            _ => 0,
-        };
+        let status_code = status_code_number_array
+            .filter(|a| !a.is_null(row))
+            .map(|a| a.value(row))
+            .unwrap_or_else(|| match status_code_str {
+                "Unspecified" => 0,
+                "Ok" => 1,
+                "Error" => 2,
+                _ => 0,
+            });
+
+        let dropped_attributes_count = dropped_attributes_count_array
+            .filter(|a| !a.is_null(row))
+            .and_then(|a| u32::try_from(a.value(row)).ok())
+            .unwrap_or(0);
+        let dropped_events_count = dropped_events_count_array
+            .filter(|a| !a.is_null(row))
+            .and_then(|a| u32::try_from(a.value(row)).ok())
+            .unwrap_or(0);
+        let dropped_links_count = dropped_links_count_array
+            .filter(|a| !a.is_null(row))
+            .and_then(|a| u32::try_from(a.value(row)).ok())
+            .unwrap_or(0);
 
         // Parse attributes JSON string to KeyValue vector
         let attributes: Vec<KeyValue> = if let Ok(serde_json::Value::Object(map)) =
@@ -847,11 +924,11 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
             start_time_unix_nano,
             end_time_unix_nano,
             attributes,
-            dropped_attributes_count: 0,
+            dropped_attributes_count,
             events: parse_events_from_list_array(events_array, row),
-            dropped_events_count: 0,
+            dropped_events_count,
             links: parse_links_from_list_array(links_array, row),
-            dropped_links_count: 0,
+            dropped_links_count,
             status: Some(Status {
                 code: status_code,
                 message: status_message_str.to_string(),
@@ -904,6 +981,7 @@ mod tests {
     use super::*;
 
     use datafusion::arrow::array::{BooleanArray, StringArray, UInt64Array};
+    use datafusion::arrow::datatypes::{Fields, Schema};
     use opentelemetry_proto::tonic::{
         common::v1::{AnyValue, KeyValue},
         trace::v1::{Span, Status},
@@ -922,13 +1000,32 @@ mod tests {
                 status: Some(status(code)),
                 ..Default::default()
             })
-            .0
+            .1
         };
         assert_eq!(stored(0), "Unspecified");
         assert_eq!(stored(1), "Ok");
         assert_eq!(stored(2), "Error");
         // A missing status is unspecified, not an error.
-        assert_eq!(extract_status(&Span::default()).0, "Unspecified");
+        assert_eq!(extract_status(&Span::default()).1, "Unspecified");
+    }
+
+    #[test]
+    fn extract_status_preserves_the_original_numeric_code() {
+        // The numeric code must survive verbatim alongside the derived
+        // string, so a defect in the string mapping can never destroy it
+        // (issue #1208).
+        let status = |code: i32| Status {
+            code,
+            message: String::new(),
+        };
+        for code in [0, 1, 2] {
+            let (number, _, _) = extract_status(&Span {
+                status: Some(status(code)),
+                ..Default::default()
+            });
+            assert_eq!(number, code);
+        }
+        assert_eq!(extract_status(&Span::default()).0, 0);
     }
 
     #[test]
@@ -1153,7 +1250,7 @@ mod tests {
 
         // Verify the result
         assert_eq!(result.num_rows(), 1);
-        assert_eq!(result.num_columns(), 22); // 16 original + 6 new fields
+        assert_eq!(result.num_columns(), 27); // 16 original + 6 scope/resource fields + 5 #1208 fields
 
         // Get columns by name
         let trace_id_array = get_string_column(&result, "trace_id").unwrap();
@@ -1224,13 +1321,141 @@ mod tests {
         // trace_state should be null (empty string in proto => None)
         let trace_state_array = get_string_column(&result, "trace_state").unwrap();
         assert!(trace_state_array.is_null(0));
+
+        // #1208: numeric source of truth alongside the derived strings,
+        // and dropped counts preserved (all zero for this fixture).
+        let span_kind_number_array = get_int32_column(&result, "span_kind_number").unwrap();
+        let status_code_number_array = get_int32_column(&result, "status_code_number").unwrap();
+        assert_eq!(span_kind_number_array.value(0), 2); // Server
+        assert_eq!(status_code_number_array.value(0), 1); // Ok
+        assert_eq!(
+            get_int64_column(&result, "dropped_attributes_count")
+                .unwrap()
+                .value(0),
+            0
+        );
+        assert_eq!(
+            get_int64_column(&result, "dropped_events_count")
+                .unwrap()
+                .value(0),
+            0
+        );
+        assert_eq!(
+            get_int64_column(&result, "dropped_links_count")
+                .unwrap()
+                .value(0),
+            0
+        );
+    }
+
+    #[test]
+    fn otlp_traces_to_arrow_preserves_nonzero_dropped_counts() {
+        let span = Span {
+            trace_id: hex::decode("0123456789abcdef0123456789abcdef").unwrap(),
+            span_id: hex::decode("0123456789abcdef").unwrap(),
+            parent_span_id: vec![],
+            name: "test-span".to_string(),
+            kind: 1,
+            start_time_unix_nano: 1,
+            end_time_unix_nano: 2,
+            attributes: vec![],
+            dropped_attributes_count: 3,
+            events: vec![],
+            dropped_events_count: 5,
+            links: vec![],
+            dropped_links_count: 7,
+            status: None,
+            flags: 0,
+            trace_state: String::new(),
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let result = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+
+        assert_eq!(
+            get_int64_column(&result, "dropped_attributes_count")
+                .unwrap()
+                .value(0),
+            3
+        );
+        assert_eq!(
+            get_int64_column(&result, "dropped_events_count")
+                .unwrap()
+                .value(0),
+            5
+        );
+        assert_eq!(
+            get_int64_column(&result, "dropped_links_count")
+                .unwrap()
+                .value(0),
+            7
+        );
     }
 
     #[test]
     fn test_arrow_to_otlp_traces() {
-        // Use FlightSchemas to get the canonical schema
-        let schemas = FlightSchemas::new();
-        let schema = Arc::new(schemas.trace_schema);
+        // Deliberately NOT the canonical `FlightSchemas` schema: this
+        // batch simulates a row written before #1208's numeric columns
+        // existed, to exercise `arrow_to_otlp_traces`'s string-derived
+        // fallback path when they're absent entirely.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::UInt64, false),
+            Field::new("end_time_unix_nano", DataType::UInt64, false),
+            Field::new("duration_nano", DataType::UInt64, false),
+            Field::new("span_kind", DataType::Utf8, false),
+            Field::new("status_code", DataType::Utf8, false),
+            Field::new("status_message", DataType::Utf8, true),
+            Field::new("is_root", DataType::Boolean, false),
+            Field::new("attributes_json", DataType::Utf8, true),
+            Field::new("resource_json", DataType::Utf8, true),
+            Field::new(
+                "events",
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("name", DataType::Utf8, false),
+                        Field::new("timestamp_unix_nano", DataType::UInt64, false),
+                        Field::new("attributes_json", DataType::Utf8, true),
+                    ])),
+                    true,
+                ))),
+                true,
+            ),
+            Field::new(
+                "links",
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("trace_id", DataType::Utf8, false),
+                        Field::new("span_id", DataType::Utf8, false),
+                        Field::new("attributes_json", DataType::Utf8, true),
+                    ])),
+                    true,
+                ))),
+                true,
+            ),
+            Field::new("trace_state", DataType::Utf8, true),
+            Field::new("resource_schema_url", DataType::Utf8, true),
+            Field::new("scope_name", DataType::Utf8, true),
+            Field::new("scope_version", DataType::Utf8, true),
+            Field::new("scope_schema_url", DataType::Utf8, true),
+            Field::new("scope_attributes", DataType::Utf8, true),
+        ]));
 
         // Sample data for a trace
         let trace_id = "0123456789abcdef0123456789abcdef";
@@ -1376,6 +1601,76 @@ mod tests {
         // Verify attributes
         assert_eq!(span.attributes.len(), 1);
         assert_eq!(span.attributes[0].key, "attr1");
+
+        // #1208: with the numeric columns entirely absent (pre-#1208
+        // data), kind/status.code above were derived from the string
+        // columns, and dropped counts default to 0 rather than erroring.
+        assert_eq!(span.dropped_attributes_count, 0);
+        assert_eq!(span.dropped_events_count, 0);
+        assert_eq!(span.dropped_links_count, 0);
+    }
+
+    #[test]
+    fn arrow_to_otlp_traces_falls_back_to_zero_for_out_of_range_dropped_counts() {
+        // The physical columns are Int64; the OTLP field is u32. A value
+        // outside u32's range must never be truncated/wrapped by an `as`
+        // cast -- it should fall back to 0, same as an absent column.
+        let span = Span {
+            trace_id: hex::decode("0123456789abcdef0123456789abcdef").unwrap(),
+            span_id: hex::decode("0123456789abcdef").unwrap(),
+            parent_span_id: vec![],
+            name: "test-span".to_string(),
+            kind: 1,
+            start_time_unix_nano: 1,
+            end_time_unix_nano: 2,
+            attributes: vec![],
+            dropped_attributes_count: 0,
+            events: vec![],
+            dropped_events_count: 0,
+            links: vec![],
+            dropped_links_count: 0,
+            status: None,
+            flags: 0,
+            trace_state: String::new(),
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let batch = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+
+        // Overwrite the dropped-count columns with out-of-range values
+        // (negative, and above u32::MAX) that a legitimate OTLP span could
+        // never produce, to exercise the defensive fallback.
+        let schema = batch.schema();
+        let mut columns: Vec<ArrayRef> = (0..batch.num_columns())
+            .map(|i| batch.column(i).clone())
+            .collect();
+        let replace = |name: &str, value: i64, columns: &mut Vec<ArrayRef>| {
+            let idx = schema.column_with_name(name).unwrap().0;
+            columns[idx] = Arc::new(Int64Array::from(vec![value]));
+        };
+        replace("dropped_attributes_count", -1, &mut columns);
+        replace(
+            "dropped_events_count",
+            i64::from(u32::MAX) + 1,
+            &mut columns,
+        );
+        replace("dropped_links_count", i64::MAX, &mut columns);
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+
+        let result = arrow_to_otlp_traces(&batch);
+        let span = &result.resource_spans[0].scope_spans[0].spans[0];
+        assert_eq!(span.dropped_attributes_count, 0);
+        assert_eq!(span.dropped_events_count, 0);
+        assert_eq!(span.dropped_links_count, 0);
     }
 
     #[test]

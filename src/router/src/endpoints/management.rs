@@ -1092,12 +1092,14 @@ mod schema_tests {
             SCHEMA_DEFINITIONS.current_trace_version(),
         );
 
-        // schemas.toml registers physical-v1 and physical-v2 for traces.
-        assert_eq!(schemas.len(), 2);
+        // schemas.toml registers physical-v1, physical-v2, and physical-v3
+        // for traces (#1208: span_kind_number/status_code_number/dropped
+        // counts).
+        assert_eq!(schemas.len(), 3);
         let versions: Vec<&str> = schemas.iter().map(|s| s.version.as_str()).collect();
         assert_eq!(
             versions,
-            vec!["physical-v1", "physical-v2"],
+            vec!["physical-v1", "physical-v2", "physical-v3"],
             "sorted by version name"
         );
 

@@ -798,7 +798,7 @@ The Writer applies `transform_trace_v1_to_v2()` (`src/writer/src/schema_transfor
 4. **Complex type serialization**: `List<Struct>` events/links -> JSON strings
 5. **Computed fields**: Generates `timestamp`, `date_day`, `hour` from `start_time_unix_nano`
 
-The transformation is applied in the Writer's Flight `do_put` handler before data is written to the WAL, ensuring all WAL data is in v2 format.
+The transformation is applied in the Writer's Flight `do_put` handler before data is written to the WAL, ensuring all WAL data is in physical-v3 format (despite the function's name).
 
 ### Label columns can be added to existing tables
 
@@ -812,7 +812,17 @@ Existing tables can gain optional string `label_<key>` columns after creation vi
 
 Requires iceberg-rust rev >= 96f28c18; earlier revisions resolved `current_schema` through the current snapshot's pinned schema id, so the flip never took effect (JanKaul/iceberg-rust#378).
 
-Beyond label columns there is no general ALTER TABLE surface: tables are created with the current schema version (v2 for traces, v1 for logs/metrics), an existing table is loaded as-is, and incoming v1 data is always transformed to v2 before writing.
+### An existing table's schema tracks and catches up to schemas.toml's version
+
+Beyond ad hoc label columns, `common::iceberg::evolution` also brings a **traces or logs** table's whole schema forward to `schemas.toml`'s current version whenever `ensure_table` loads it (not just at creation) — the general-purpose counterpart to the label-specific helper above, and the mechanism issue #1208's `span_kind_number`/`status_code_number`/dropped-count columns ship through.
+
+- **Version tracked as a table property**, not a separate migrations store: `signaldb.schema.version` (e.g. `"physical-v3"`) is stamped in the same commit as any schema change (`SetProperties` alongside `AddSchema`/`SetCurrentSchema`). A table's version and its actual columns can never diverge independently of the table's own commit history the way an external tracking table could.
+- **Diffed by field name against the table's live schema**, never by regenerating `ResolvedSchema::to_iceberg_schema()` fresh — that function assigns field ids positionally on every call, safe only for a table created new; diffing a live table by position would shift every field after a removal and corrupt the id mapping already burned into its Parquet files. `diff_schema` instead reuses existing ids untouched and mints new ones (past both the schema tree's true maximum and the metadata's `last_column_id`) only for genuine additions.
+- **Hop-by-hop when the starting version is known**: a table recorded at an older version walks each intervening `schemas.toml` version in order (`SchemaDefinitions::version_chain`, which walks `inherits` backward from the target and reverses — version names carry no ordering of their own).
+- **Straight to current, additions only, when the starting version is untrusted**: a table with no recorded property (pre-dates this mechanism), or one whose recorded property isn't actually found while walking `version_chain` back from the current version (a corrupted or retired version name), skips hop-walking and migrates directly to the current version in one step, never renaming or removing a field. Hop-by-hop removal assumes the starting shape is trusted; an inferred baseline isn't — a table already ahead of an early hop could otherwise lose fields the diff can't tell it legitimately has.
+- **Renames preserve the field id**: a hop's own `field_renames` (e.g. v1→v2's `name`→`span_name`) are resolved as a rename in place, not a removal plus a fresh-id addition — Iceberg readers map columns by id, so re-adding under a new id would orphan every historical value written under the old name's id.
+- **No backfill**: additions are always nullable and historical rows are never rewritten; `field_removals` only stops a column being read/written going forward, it never deletes the column's data from already-written Parquet files.
+- **Not yet covering metrics/profiles**: those five tables are hand-written in `iceberg_schemas.rs` with no `schemas.toml` definition to evolve against.
 
 ## Multi-Tenant Storage Isolation
 
@@ -873,22 +883,22 @@ metrics_enabled = true
 
 ## Key Implementation Files
 
-| File                                       | Purpose                                                        |
-| ------------------------------------------ | -------------------------------------------------------------- |
-| `schemas.toml`                             | Schema definitions with versioning and inheritance             |
-| `src/common/src/iceberg/mod.rs`            | Iceberg catalog creation (SQLite `SqlCatalog`)                 |
-| `src/common/src/iceberg/schemas.rs`        | Table schemas, partition specs, `TableSchema` enum             |
-| `src/common/src/iceberg/names.rs`          | Namespace/identifier/location builders                         |
-| `src/common/src/iceberg/table_manager.rs`  | `IcebergTableManager::ensure_table()` -- load-or-create tables |
-| `src/common/src/iceberg/evolution.rs`      | `add_label_columns()` -- add label columns to existing tables  |
-| `src/common/src/schema/schema_parser.rs`   | TOML schema parser with inheritance resolution                 |
-| `src/common/src/schema/iceberg_schemas.rs` | Backward-compatibility re-export of `iceberg/schemas.rs`       |
-| `src/common/src/catalog_manager.rs`        | `CatalogManager` singleton for shared Iceberg catalog          |
-| `src/common/src/storage.rs`                | Object store creation from DSN, path resolution                |
-| `src/common/src/wal/mod.rs`                | WAL implementation (segments, entries, flush, cleanup)         |
-| `src/common/src/config/mod.rs`             | Configuration structs including tenant/dataset/storage         |
-| `src/writer/src/storage/iceberg.rs`        | `IcebergTableWriter` -- table creation and data writes         |
-| `src/writer/src/processor.rs`              | `WalProcessor` -- background WAL-to-Iceberg processing         |
-| `src/writer/src/schema_transform.rs`       | Flight v1 -> Iceberg v2 schema transformation                  |
-| `src/querier/src/flight.rs`                | `TenantCatalog` -- DataFusion/Iceberg namespace bridge         |
-| `src/querier/src/query/table_ref.rs`       | Safe table reference construction with slug validation         |
+| File                                       | Purpose                                                                                                                                          |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `schemas.toml`                             | Schema definitions with versioning and inheritance                                                                                               |
+| `src/common/src/iceberg/mod.rs`            | Iceberg catalog creation (SQLite `SqlCatalog`)                                                                                                   |
+| `src/common/src/iceberg/schemas.rs`        | Table schemas, partition specs, `TableSchema` enum                                                                                               |
+| `src/common/src/iceberg/names.rs`          | Namespace/identifier/location builders                                                                                                           |
+| `src/common/src/iceberg/table_manager.rs`  | `IcebergTableManager::ensure_table()` -- load-or-create tables                                                                                   |
+| `src/common/src/iceberg/evolution.rs`      | `add_label_columns()`/`remove_label_columns()` (label columns) and `ensure_schema_current()` (schemas.toml-tracked traces/logs schema evolution) |
+| `src/common/src/schema/schema_parser.rs`   | TOML schema parser with inheritance resolution                                                                                                   |
+| `src/common/src/schema/iceberg_schemas.rs` | Backward-compatibility re-export of `iceberg/schemas.rs`                                                                                         |
+| `src/common/src/catalog_manager.rs`        | `CatalogManager` singleton for shared Iceberg catalog                                                                                            |
+| `src/common/src/storage.rs`                | Object store creation from DSN, path resolution                                                                                                  |
+| `src/common/src/wal/mod.rs`                | WAL implementation (segments, entries, flush, cleanup)                                                                                           |
+| `src/common/src/config/mod.rs`             | Configuration structs including tenant/dataset/storage                                                                                           |
+| `src/writer/src/storage/iceberg.rs`        | `IcebergTableWriter` -- table creation and data writes                                                                                           |
+| `src/writer/src/processor.rs`              | `WalProcessor` -- background WAL-to-Iceberg processing                                                                                           |
+| `src/writer/src/schema_transform.rs`       | Flight v1 -> Iceberg v2 schema transformation                                                                                                    |
+| `src/querier/src/flight.rs`                | `TenantCatalog` -- DataFusion/Iceberg namespace bridge                                                                                           |
+| `src/querier/src/query/table_ref.rs`       | Safe table reference construction with slug validation                                                                                           |

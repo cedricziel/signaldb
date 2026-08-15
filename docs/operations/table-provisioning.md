@@ -136,13 +136,21 @@ A converged pass logs at `debug`.
   snapshots and no data files, so retention, orphan cleanup, storage
   accounting, and the compactor all treat them as no-ops.
 - **Materialized labels are fixed at creation time.** `[schema]
-materialized_labels` is applied when a table is created; `ensure_table`
-  itself never evolves an existing table's schema. Provisioning means that
-  now happens for every dataset, not only for ones that ingest, so prefer
-  setting `materialized_labels` before a dataset is provisioned. Existing
-  tables are not stuck: the compactor's attribute-promotion pass can add
-  `label_<key>` columns to them — see
+materialized_labels` is applied when a table is created; `ensure_table`'s
+  own catch-up path (below) only brings a **traces or logs** table's
+  `schemas.toml`-declared columns forward, it does not retrofit a changed
+  label configuration onto an existing table. Provisioning means the initial
+  labels-at-creation behavior now happens for every dataset, not only for
+  ones that ingest, so prefer setting `materialized_labels` before a dataset
+  is provisioned. Existing tables are not stuck: the compactor's
+  attribute-promotion pass can add `label_<key>` columns to them — see
   [label columns can be added to existing tables](../architecture/storage-layout.md#label-columns-can-be-added-to-existing-tables).
+- **`ensure_table` does evolve an existing traces or logs table's schema**
+  (not metrics/profiles yet — those are hand-written, not `schemas.toml`-sourced).
+  Every load, not just creation, brings the table's schema forward to the
+  current `schemas.toml` version if it's behind, additively — new nullable
+  columns only, never a rewrite of existing data. See
+  [schema evolution](../architecture/storage-layout.md#an-existing-tables-schema-tracks-and-catches-up-to-schematomls-version).
 - **Not every table property is set at creation.** Provisioning applies the
   bloom-filter, column-statistics, compression and metadata-pruning
   properties, but deliberately not `write.target-file-size-bytes`: compaction

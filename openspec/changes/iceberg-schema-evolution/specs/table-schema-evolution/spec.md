@@ -8,8 +8,10 @@ table that already exists, not only tables created after the fix ships.
 
 ### Requirement: Every signal table tracks the schema version it was last reconciled to
 
-Every signal table (traces, logs, each metrics representation, profiles)
-SHALL record, in its own table metadata, the schema version it currently
+Every signal table whose physical schema is sourced from a versioned
+schema definition (traces and logs today; a signal not yet migrated onto a
+versioned definition is out of this capability's scope until it is) SHALL
+record, in its own table metadata, the schema version it currently
 conforms to. This record SHALL travel with the table itself (not a
 separate store external to it), so the recorded version and the table's
 actual columns can never diverge from each other independently of the
@@ -46,9 +48,19 @@ table's new state rather than corrupt or duplicate the change.
 
 #### Scenario: Table two versions behind catches up incrementally
 
-- **WHEN** a table is recorded at version N and the current version is N+2
-- **THEN** the table is brought to N+1 and then to N+2, each as a distinct
-  step, rather than jumping directly from N to N+2
+- **WHEN** a table has a recorded version and the current version is two
+  hops ahead of it
+- **THEN** the table is brought forward one hop at a time, each as a
+  distinct step, rather than jumping directly to the current version
+
+#### Scenario: A table with no recorded version never loses an existing field
+
+- **WHEN** a table has no recorded schema version and its live columns
+  already include one not declared by the earliest known version for its
+  signal (for example, because it was created before this capability
+  existed with a fuller shape than the oldest tracked version)
+- **THEN** bringing that table to the current version adds any columns it
+  is missing but does not remove the undeclared column
 
 #### Scenario: Historical rows are unaffected by a new column
 
