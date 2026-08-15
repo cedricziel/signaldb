@@ -50,6 +50,17 @@ export function formatTimestamp(ms: number, resolutionMs: number): string {
 }
 
 /**
+ * A time bucket as `start – end`, dropping the date from the end when it is
+ * the same calendar day as the start.
+ */
+export function formatTimeBucket(startMs: number, stepMs: number): string {
+  const start = formatTimestamp(startMs, stepMs);
+  const end = formatTimestamp(startMs + stepMs, stepMs);
+  const sameDay = start.slice(0, 10) === end.slice(0, 10);
+  return `${start} – ${sameDay ? end.slice(11) : end}`;
+}
+
+/**
  * A value with its unit. Integers group thousands; fractions keep three
  * significant digits (two decimals once past a thousand). Missing values
  * render as an en dash so a series with a gap still gets a row.
@@ -72,4 +83,10 @@ export function formatRange(
 ): string {
   if (hi === undefined) return `${formatValue(lo, unit)}+`;
   return `${formatValue(lo, unit)} – ${formatValue(hi, unit)}`;
+}
+
+/** A part of a total as a percentage with one decimal; `0%` for no total. */
+export function formatShare(part: number, total: number): string {
+  if (total <= 0) return "0%";
+  return `${((part / total) * 100).toFixed(1)}%`;
 }

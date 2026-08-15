@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
+import { formatTimeBucket } from "../../lib/vizFormat";
 
 describe("TraceVolumeHeatmap", () => {
   const props = {
@@ -58,5 +59,56 @@ describe("TraceVolumeHeatmap", () => {
       "data-count",
       "2",
     );
+  });
+
+  describe("cell tooltip", () => {
+    it("shows the time bucket, latency range, count, and share of the column", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      const cell = screen.getByLabelText(/0.*10 ms.*2 spans/i);
+      fireEvent.pointerMove(cell, { clientX: 100, clientY: 20 });
+      const tip = screen.getByRole("tooltip");
+      expect(
+        within(tip).getByText(formatTimeBucket(0, 60_000)),
+      ).toBeInTheDocument();
+      const rows = within(tip).getAllByTestId("viz-tip-row");
+      expect(rows.map((r) => r.textContent)).toEqual([
+        "latency0 µs – 10 ms",
+        "spans2",
+        // Two of the column's three spans.
+        "share of column66.7%",
+      ]);
+      expect(cell).toHaveAttribute("aria-describedby", tip.id);
+    });
+
+    it("labels the overflow row with an open range", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      fireEvent.pointerMove(screen.getByLabelText(/4 spans/i), {
+        clientX: 400,
+        clientY: 200,
+      });
+      expect(screen.getByRole("tooltip")).toHaveTextContent("100 ms+");
+    });
+
+    it("shows nothing over an empty cell", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      fireEvent.pointerMove(screen.getByLabelText(/10 ms.*100 ms.*no spans/i), {
+        clientX: 100,
+        clientY: 100,
+      });
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    });
+
+    it("focuses only populated cells and shows their tooltip", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      const populated = screen.getByLabelText(/2 spans/i);
+      expect(populated).toHaveAttribute("tabindex", "0");
+      expect(
+        screen.getByLabelText(/10 ms.*100 ms.*no spans/i),
+      ).not.toHaveAttribute("tabindex");
+      fireEvent.focus(populated);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("66.7%");
+      fireEvent.blur(populated);
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    });
   });
 });

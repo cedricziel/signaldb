@@ -1,11 +1,17 @@
+import { useRef, useState } from "react";
 import {
   bucketizeSeries,
   padBuckets,
   type VolumeBucket,
   type VolumeSeries,
 } from "../explore/SignalHistogram";
+import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import { axisLabelFormatter } from "../../lib/time";
-import { compactCount } from "../../lib/vizFormat";
+import {
+  compactCount,
+  formatTimeBucket,
+  formatValue,
+} from "../../lib/vizFormat";
 
 interface Props {
   series: VolumeSeries[];
@@ -56,6 +62,10 @@ export function TraceVolumeAreaChart({
   unit,
   label,
 }: Props) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const pointer = useVizPointer(rootRef);
+  const [active, setActive] = useState<number | null>(null);
+
   let buckets = bucketizeSeries(series);
   if (buckets.length > 0) {
     buckets = padBuckets(buckets, rangeMs.fromMs, rangeMs.toMs, stepMs);
@@ -75,9 +85,28 @@ export function TraceVolumeAreaChart({
   const plotWidth = WIDTH - PADDING.left - PADDING.right;
   const plotHeight = HEIGHT - PADDING.top - PADDING.bottom;
   const y = (fraction: number) => PADDING.top + plotHeight * (1 - fraction);
+  // Each bucket owns the half-step either side of its x position, matching
+  // where the area's vertices sit; the ends are clamped to the plot.
+  const stepPx = plotWidth / Math.max(1, buckets.length - 1);
+  const hitX = (index: number) =>
+    Math.max(PADDING.left, PADDING.left + stepPx * (index - 0.5));
+  const hitWidth = (index: number) =>
+    Math.min(WIDTH - PADDING.right, PADDING.left + stepPx * (index + 0.5)) -
+    hitX(index);
+  const bucketLabel = (bucket: VolumeBucket) =>
+    `${formatTimeBucket(bucket.tMs, stepMs)}: ${formatValue(bucket.total, unit)}`;
+  // A padded, empty bucket has no data under the pointer: no tooltip.
+  const activeBucket =
+    active === null || (buckets[active]?.total ?? 0) === 0
+      ? null
+      : buckets[active]!;
 
   return (
-    <div className="trace-area" data-testid="trace-volume-area">
+    <div
+      className="trace-area viz-host"
+      data-testid="trace-volume-area"
+      ref={rootRef}
+    >
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         role="img"
@@ -111,6 +140,38 @@ export function TraceVolumeAreaChart({
             stroke={colors[key]}
           />
         ))}
+        {buckets.map((bucket, index) => (
+          <rect
+            key={bucket.tMs}
+            className="trace-area-hit"
+            data-testid="trace-area-bucket"
+            x={hitX(index)}
+            y={PADDING.top}
+            width={hitWidth(index)}
+            height={plotHeight}
+            tabIndex={0}
+            aria-label={bucketLabel(bucket)}
+            aria-describedby={
+              activeBucket === bucket ? "trace-area-tip" : undefined
+            }
+            onPointerMove={(e) => {
+              setActive(index);
+              pointer.track(e);
+            }}
+            onPointerLeave={() => {
+              setActive((a) => (a === index ? null : a));
+              pointer.clear();
+            }}
+            onFocus={(e) => {
+              setActive(index);
+              pointer.anchorTo(e.currentTarget);
+            }}
+            onBlur={() => {
+              setActive((a) => (a === index ? null : a));
+              pointer.clear();
+            }}
+          />
+        ))}
         <text className="trace-area-xlabel" x={PADDING.left} y={HEIGHT - 5}>
           {formatAxis(buckets[0]!.tMs)}
         </text>
@@ -132,6 +193,26 @@ export function TraceVolumeAreaChart({
         ))}
         <span className="trace-area-unit">{unit}</span>
       </div>
+      {activeBucket && pointer.anchor && (
+        <VizTooltip
+          id="trace-area-tip"
+          anchor={pointer.anchor}
+          host={pointer.host}
+          title={formatTimeBucket(activeBucket.tMs, stepMs)}
+          rows={keys
+            .filter((key) => (activeBucket.counts[key] ?? 0) > 0)
+            .map((key) => ({
+              swatch: colors[key],
+              label: key,
+              value: formatValue(activeBucket.counts[key] ?? 0, unit),
+            }))}
+          footer={{
+            label: "total",
+            value: formatValue(activeBucket.total, unit),
+          }}
+          valueWidthCh={formatValue(max, unit).length}
+        />
+      )}
     </div>
   );
 }

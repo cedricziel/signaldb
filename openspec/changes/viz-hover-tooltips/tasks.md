@@ -14,9 +14,9 @@
 - [x] 2.1 Failing test + implement: `metrics/MetricsChart` uPlot cursor
       plugin → `VizTooltip` (timestamp, every series with swatch/value/unit,
       `–` for gaps); export pure `rowsForCursorIndex`
-- [ ] 2.2 Failing test + implement: `traces/TraceVolumeAreaChart` bucket
+- [x] 2.2 Failing test + implement: `traces/TraceVolumeAreaChart` bucket
       tooltip (time range, per-series values, total); focusable bars
-- [ ] 2.3 Failing test + implement: `traces/TraceVolumeHeatmap` cell tooltip
+- [x] 2.3 Failing test + implement: `traces/TraceVolumeHeatmap` cell tooltip
       (time bucket, value range, count, share of column); focusable cells
 - [ ] 2.4 Failing test + implement: `logs/Histogram` bucket tooltip; focusable
       bars

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   compactCount,
   formatRange,
+  formatShare,
+  formatTimeBucket,
   formatTimestamp,
   formatValue,
 } from "./vizFormat";
@@ -65,5 +67,31 @@ describe("formatRange", () => {
 
   it("marks an open upper bound with a plus", () => {
     expect(formatRange(100, undefined, "ms")).toBe("100 ms+");
+  });
+});
+
+describe("formatTimeBucket", () => {
+  const ms = new Date(2024, 2, 5, 14, 7, 0, 0).getTime();
+
+  it("shows the bucket's start and end, repeating the date only when it changes", () => {
+    expect(formatTimeBucket(ms, 60_000)).toBe("2024-03-05 14:07 – 14:08");
+  });
+
+  it("carries seconds at sub-minute resolution", () => {
+    expect(formatTimeBucket(ms, 15_000)).toBe("2024-03-05 14:07:00 – 14:07:15");
+  });
+
+  it("repeats the date across midnight", () => {
+    const late = new Date(2024, 2, 5, 23, 30, 0, 0).getTime();
+    expect(formatTimeBucket(late, 3_600_000)).toBe(
+      "2024-03-05 23:30 – 2024-03-06 00:30",
+    );
+  });
+});
+
+describe("formatShare", () => {
+  it("renders a part of a total as a one-decimal percentage", () => {
+    expect(formatShare(2, 3)).toBe("66.7%");
+    expect(formatShare(0, 0)).toBe("0%");
   });
 });
