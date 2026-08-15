@@ -15,7 +15,7 @@ Constraints: no behavioural change to any service, port, config key or environme
 
 **Non-Goals:**
 
-- Merging `signaldb-cli` (separate audience, separate dependency set) or `signal-producer` (test tool).
+- Merging `signaldb-cli` (separate audience, separate dependency set) or `signal-producer` (test tool). Folding the CLI in would save one more LTO link (~7 min) but make every CLI download the 100+ MB server binary and force either `signaldb cli <cmd>` or a rename of the server surface; the ecosystem convention is a separate client (`promtool`, `logcli`, `tempo-cli`). If that link ever matters, link the CLI without LTO via a `release-cli` profile instead.
 - Changing which services the monolith runs, or adding `mcp` to the monolith's default set.
 - Reworking the shared `CommonArgs`/`CommonCommands` surface.
 - Trimming binary size (the per-service images will grow to the monolith's size; accepted).
