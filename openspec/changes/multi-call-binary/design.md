@@ -11,7 +11,7 @@ Constraints: no behavioural change to any service, port, config key or environme
 - Two release links (`signaldb`, `signaldb-cli`) instead of eight, keeping thin LTO.
 - Zero-touch upgrade for manifests and compose files that rely on the images' default entrypoints; a one-line change (`signaldb-<svc>` → `signaldb <svc>`) everywhere else.
 - Each service's argument surface, help and version output unchanged.
-- One place (`signaldb-bin`) owns dispatch; service crates own their CLI definitions.
+- One clap parser owns the whole command tree; service crates own only their `Args` and `run`.
 
 **Non-Goals:**
 
@@ -22,12 +22,12 @@ Constraints: no behavioural change to any service, port, config key or environme
 
 ## Decisions
 
-**D1. Dispatch lives in `signaldb-bin`; selection is the first argument, nothing else.**
-`main` computes `select(args) -> Target` as a pure function (unit-testable): if `args[1]` is a known service name → `Target::Service(svc, args[2..])`, else `Target::Monolith(args)`. The executable's file name is deliberately not consulted: argv[0] dispatch (busybox-style symlinks) is implicit behaviour that is hard to discover, differs between platforms and container runtimes, and gives a mis-named copy a different personality. Unknown first arguments fall through to the monolith's clap parser, which reports the usage error and, per the spec, the error text lists the service names — implemented by giving the monolith `Cli` the service names as documented `after_help` text rather than as real clap subcommands, so they cannot collide with `CommonCommands` (`start`, `config …`) and the monolith's own parse tree stays untouched.
-_Alternatives rejected:_ (a) argv[0]/symlink dispatch — see above; (b) modelling services as clap subcommands of the monolith `Cli`, which would nest each service's parser under a shared one and change `--help`/`--version` output and error formatting for every service; a plain arg-vector hand-off keeps them identical.
+**D1. Services are clap subcommands of the monolith `Cli`.**
+The monolith's `Cli` keeps `CommonArgs` (now marked `global = true` so `--config`/`-v`/`-q` work before or after a service name) and its `Option<Commands>`; `Commands` gains one variant per service — `Acceptor(acceptor::cli::Args)`, `Router(router::cli::Args)`, … — flattened next to `CommonCommands` (`start`, `config`, `validate`, `version`), whose names do not collide with the service names. Each service's `Args` is a `clap::Args` struct holding only that service's flags plus its own `Option<CommonCommands>` subcommand, so `signaldb acceptor validate` and `signaldb acceptor --grpc-port 4319` parse as before; `#[command(version)]` on the variants keeps `signaldb querier --version` working. One parser therefore owns help, errors and (later) shell completions for the whole tree, and the executable's file name is never consulted.
+_Alternatives rejected:_ (a) argv[0]/symlink dispatch — implicit, platform-dependent behaviour that gives a mis-named copy a different personality; (b) a raw arg-vector hand-off to each service's former top-level parser — keeps help byte-identical but leaves two parsers, no unified `--help`, and a hand-rolled selector to test.
 
-**D2. Each service crate exposes `pub async fn run(args: Vec<OsString>) -> anyhow::Result<()>`.**
-The body of today's `main.rs` moves verbatim into the library (`src/cli.rs` or the crate root), with `Cli::parse()` replaced by `Cli::parse_from(args)` where `args[0]` is the display name the dispatcher passes (`signaldb <svc>`, so usage lines read naturally). `#[tokio::main]` and the allocator declaration are removed from the service crates: `signaldb-bin`'s single `#[tokio::main]` awaits whichever `run` was selected. All eight mains use the default multi-thread runtime today, so no per-service runtime tuning is lost. Anything the mains kept private (helper fns, `impl Default for XCommands`) moves along.
+**D2. Each service crate exposes `pub struct Args` (clap) and `pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()>`.**
+The body of today's `main.rs` moves verbatim into the library (`src/cli.rs`): its former `Cli` becomes `Args` minus the flattened `CommonArgs` (now supplied by the monolith parser), and `run` receives the parsed values instead of calling `Cli::parse()`. Telemetry service names stay literals per service. `#[tokio::main]` and the allocator declaration are removed from the service crates: `signaldb-bin`'s single `#[tokio::main]` matches on `Commands` and awaits the selected `run`. All eight mains use the default multi-thread runtime today, so no per-service runtime tuning is lost. Anything the mains kept private (helper fns, `impl Default for XCommands`) moves along.
 _Alternative rejected:_ keeping thin `main.rs` wrappers per crate calling `run`. A thin bin is still a full LTO link, and `cargo build --release` in release-please builds every bin unless filtered — the targets must go, not just shrink.
 
 **D3. Allocator and feature graph.**
@@ -44,7 +44,7 @@ Each service stage in `Dockerfile` copies `signaldb` and sets `ENTRYPOINT ["/usr
 
 **D7. Verification.**
 
-- Unit tests for `select(...)` covering every spec scenario (service first argument, monolith fall-through, unknown selector; a test that the result is independent of the executable path in `args[0]`).
+- Unit tests in `signaldb-bin` with `Cli::try_parse_from` covering every spec scenario: each service subcommand parses to its variant, shared options before and after the service name, `validate`/`config` under a service, unknown subcommand is a clap error, no subcommand → monolith.
 - An integration test in `signaldb-bin` runs `env!("CARGO_BIN_EXE_signaldb")` with `<svc> --version` and `<svc> --help` for every service and asserts the service name and the shared version appear (this replaces the deleted per-binary `--help`/`--version` smoke checks in CI's deployment test).
 - The CI `deployment-test` job runs `signaldb` and `signaldb acceptor` / `signaldb router` for a few seconds each from the musl artifact.
 - Image smoke: `docker run <router image> --version` (entrypoint appends → router's version) in the docker job.

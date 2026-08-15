@@ -1,19 +1,19 @@
 ## 1. Dispatcher in signaldb-bin
 
-- [ ] 1.1 Add failing unit tests for `select(args) -> Target` in `src/signaldb-bin`: `signaldb router …` → Service(router), bare `signaldb` → Monolith, unknown first arg → Monolith (so clap reports it), monolith flags before a service name are not treated as a selector, and the result is independent of the executable path in `args[0]`
-- [ ] 1.2 Implement `select` and `Target` (`Monolith(args)` / `Service(name, args)`) as a pure function; wire `main` to call it before the monolith's clap parse
-- [ ] 1.3 Add the service names to the monolith `Cli`'s `after_help` so `signaldb frobnicate` prints a usage error that lists them (spec: Unknown selector); assert this in a test using `Cli::try_parse_from`
+- [ ] 1.1 Add failing `Cli::try_parse_from` unit tests in `src/signaldb-bin`: `signaldb router --config x` and `signaldb --config x -v router` both parse to `Commands::Router` with the shared options set, `signaldb acceptor validate` and `signaldb acceptor --grpc-port 4319` parse into the acceptor `Args`, `signaldb frobnicate` is a clap error, bare `signaldb` and `signaldb config` still parse as before
+- [ ] 1.2 Make `CommonArgs` fields `global = true`; add the six service variants (`Acceptor(acceptor::cli::Args)`, …) to the monolith `Commands` next to the flattened `CommonCommands`, with `#[command(version)]`; wire `main` to match on them (2.x supplies the `Args`/`run` targets — land 1.x with the crates in the same PR)
+- [ ] 1.3 Assert `signaldb --help` lists the six services and `signaldb acceptor --help` lists the acceptor's flags plus the shared options (spec: Service help / Unknown subcommand) via `Cli::command().render_help()` in a unit test
 - [ ] 1.4 Add a failing integration test in `src/signaldb-bin/tests/` that runs `env!("CARGO_BIN_EXE_signaldb")` with `<svc> --version` and `<svc> --help` for every service and checks the service name and the shared version appear (this depends on 2.x, mark it `#[ignore]` until then if needed)
 
 ## 2. Service crates expose `run(args)`
 
-- [ ] 2.1 acceptor: move `main.rs` body into `pub async fn run(args: Vec<OsString>) -> anyhow::Result<()>` (`Cli::parse_from(args)`), keep the display name and telemetry service name; snapshot `--help` output before/after and diff in a test (`cargo test -p acceptor`)
+- [ ] 2.1 acceptor: move `main.rs` body into `src/cli.rs` as `pub struct Args` (former `Cli` minus `CommonArgs`) and `pub async fn run(common: &CommonArgs, args: Args)`; keep the telemetry service name; snapshot the flag list before/after in a test (`cargo test -p acceptor`)
 - [ ] 2.2 router: same as 2.1 (`cargo test -p router`)
 - [ ] 2.3 writer: same as 2.1 (`cargo test -p writer`)
 - [ ] 2.4 querier: same as 2.1 (`cargo test -p querier`)
 - [ ] 2.5 compactor: same as 2.1 (`cargo test -p compactor`)
 - [ ] 2.6 mcp-server: same as 2.1, preserving stdio/HTTP transport selection (`cargo test -p mcp-server`)
-- [ ] 2.7 signaldb-bin: dispatch `Target::Service` to each crate's `run`; un-ignore and pass 1.4
+- [ ] 2.7 signaldb-bin: dispatch each `Commands::<Service>` variant to that crate's `run`; un-ignore and pass 1.4
 - [ ] 2.8 Remove the six `[[bin]]` targets and their `main.rs`; remove the per-crate `#[global_allocator]` declarations and the `jemalloc` features that only existed for them (keep `jemalloc-profiling` where it gates library code); `cargo machete --with-metadata`, `cargo deny check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 
 ## 3. Build, images, release

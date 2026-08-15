@@ -6,7 +6,7 @@ Defines how the single `signaldb` server executable selects between running the 
 
 ### Requirement: One server executable runs monolith or single service
 
-The `signaldb` executable SHALL run all services in one process when its first argument is not a service name, and SHALL run exactly one service when the first argument names it: `signaldb <service> [args…]`. Recognised services are `acceptor`, `router`, `writer`, `querier`, `compactor` and `mcp`. Service selection SHALL depend only on the arguments, never on the executable's file name, so a copied or renamed binary behaves identically.
+The `signaldb` executable SHALL run all services in one process when no service subcommand is given, and SHALL run exactly one service when invoked with that service's subcommand: `signaldb <service> [flags] [start|config|validate|version]`. Recognised services are `acceptor`, `router`, `writer`, `querier`, `compactor` and `mcp`. The shared options `--config`, `--verbose`/`-v` and `--quiet`/`-q` SHALL be accepted before or after the service name with the same effect. Service selection SHALL depend only on the arguments, never on the executable's file name, so a copied or renamed binary behaves identically.
 
 #### Scenario: Monolithic start
 
@@ -18,19 +18,24 @@ The `signaldb` executable SHALL run all services in one process when its first a
 - **WHEN** an operator runs `signaldb router --config signaldb.toml`
 - **THEN** only the router starts, with the same behaviour, ports and configuration handling as the former `signaldb-router` binary
 
+#### Scenario: Shared options before the service name
+
+- **WHEN** an operator runs `signaldb --config signaldb.toml -v router`
+- **THEN** the router starts with that configuration and verbose logging, exactly as for `signaldb router --config signaldb.toml -v`
+
 #### Scenario: Renamed executable
 
 - **WHEN** the executable is copied to a file named `signaldb-writer` and run with `--flight-port 50051`
 - **THEN** it behaves as `signaldb --flight-port 50051` (the monolith's parser rejects the writer-only flag) — the file name is never consulted
 
-#### Scenario: Unknown selector
+#### Scenario: Unknown subcommand
 
 - **WHEN** an operator runs `signaldb frobnicate`
-- **THEN** the process exits non-zero with a usage error that lists the recognised services, and no service starts
+- **THEN** the process exits non-zero with an unrecognized-subcommand error and no service starts; `signaldb --help` lists the six service subcommands alongside `start`, `config`, `validate` and `version`
 
 ### Requirement: Each service keeps its own command-line surface
 
-In single-service mode the argument parser SHALL be that service's own: `--help` describes that service's flags and subcommands, `--version` reports the workspace version, and the common commands (`config validate`, `config show`, `start`) SHALL behave as they did in the per-service binaries. Environment-variable overrides SHALL be honoured unchanged.
+Each service subcommand SHALL carry that service's own flags: `signaldb <service> --help` describes them together with the shared options and the common commands (`start`, `config`, `validate`, `version`), `signaldb <service> --version` reports the workspace version, and the common commands SHALL behave as they did in the per-service binaries. Environment-variable overrides SHALL be honoured unchanged.
 
 #### Scenario: Service help
 
@@ -44,7 +49,7 @@ In single-service mode the argument parser SHALL be that service's own: `--help`
 
 #### Scenario: Common command in single-service mode
 
-- **WHEN** an operator runs `signaldb compactor config validate --config signaldb.toml`
+- **WHEN** an operator runs `signaldb compactor validate --config signaldb.toml`
 - **THEN** the configuration is validated and the process exits without starting the compactor
 
 ### Requirement: Container images ship the multi-call binary with a service entrypoint
