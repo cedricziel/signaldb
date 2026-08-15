@@ -37,6 +37,8 @@ manifest = {
 yaml.safe_dump(manifest, open(f"{out}/manifest.yaml", "w"), sort_keys=False)
 yaml.safe_dump({"groups": doc.get("groups", [])}, open(f"{out}/model/{doc['name']}.yaml", "w"), sort_keys=False)
 PY
+  # The weaver image runs unprivileged; mktemp dirs are 0700.
+  chmod -R a+rX "$tmp"
   echo "== weaver registry check: $name"
   if ! docker run --rm -v "$tmp:/registry" "$WEAVER_IMAGE" registry check -r /registry; then
     echo "::error::fixture $name rejected by Weaver" >&2
