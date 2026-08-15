@@ -83,6 +83,13 @@ pub fn extract_resource_json(resource: &Option<Resource>) -> String {
 }
 
 /// Extract service name from resource attributes
+/// `service_name` used when a resource carries no `service.name`. OTLP allows
+/// such resources (an OTel Collector hostmetrics pipeline without a resource
+/// processor is the classic producer) even though semconv requires the
+/// attribute; every signal stores the same fallback so `service_name` stays
+/// non-nullable and such data groups together instead of being rejected.
+pub const UNKNOWN_SERVICE_NAME: &str = "unknown";
+
 pub fn extract_service_name(resource: &Option<Resource>) -> String {
     if let Some(resource) = resource {
         for attr in &resource.attributes {
@@ -94,7 +101,7 @@ pub fn extract_service_name(resource: &Option<Resource>) -> String {
             }
         }
     }
-    "unknown".to_string()
+    UNKNOWN_SERVICE_NAME.to_string()
 }
 
 /// Extract scope attributes as JSON string

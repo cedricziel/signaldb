@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, Timelike};
+use common::flight::conversion::UNKNOWN_SERVICE_NAME;
 use common::schema::schema_parser::ResolvedSchema;
 use common::schema::{ATTR_TOKENS_COLUMN, SCHEMA_DEFINITIONS, materialized_column_name};
 use datafusion::arrow::{
@@ -1174,13 +1175,17 @@ fn extract_service_name(
 }
 
 fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
+    let unknown = || Some(UNKNOWN_SERVICE_NAME.to_string());
     let Some(resource_json) = resource_json else {
-        return ResourceContext::default();
+        return ResourceContext {
+            service_name: unknown(),
+            ..ResourceContext::default()
+        };
     };
 
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(resource_json) else {
         return ResourceContext {
-            service_name: None,
+            service_name: unknown(),
             resource_schema_url: None,
             resource_attributes: Some(resource_json.to_string()),
         };
@@ -1188,7 +1193,7 @@ fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
 
     let serde_json::Value::Object(obj) = parsed else {
         return ResourceContext {
-            service_name: None,
+            service_name: unknown(),
             resource_schema_url: None,
             resource_attributes: Some(resource_json.to_string()),
         };
@@ -1201,7 +1206,9 @@ fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
     };
 
     ResourceContext {
-        service_name: extract_service_name(&obj),
+        // Never `None`: the Iceberg `service_name` column is non-nullable and
+        // a missing `service.name` must not dead-letter the batch.
+        service_name: extract_service_name(&obj).or_else(unknown),
         resource_schema_url: obj
             .get("schema_url")
             .and_then(|value| value.as_str())
@@ -2256,6 +2263,110 @@ mod tests {
             vec![None; n],
             vec![None; n],
         )
+    }
+
+    /// A minimal v1 metrics batch (as the acceptor produces it) with one
+    /// gauge/sum data point and the given resource JSON.
+    fn metrics_v1_batch(resource_json: Option<&str>) -> RecordBatch {
+        use datafusion::arrow::array::{BooleanArray, Int32Array};
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("description", DataType::Utf8, true),
+            Field::new("unit", DataType::Utf8, true),
+            Field::new("start_time_unix_nano", DataType::UInt64, true),
+            Field::new("time_unix_nano", DataType::UInt64, false),
+            Field::new("attributes_json", DataType::Utf8, true),
+            Field::new("resource_json", DataType::Utf8, true),
+            Field::new("scope_json", DataType::Utf8, true),
+            Field::new("metric_type", DataType::Utf8, false),
+            Field::new("data_json", DataType::Utf8, false),
+            Field::new("aggregation_temporality", DataType::Int32, true),
+            Field::new("is_monotonic", DataType::Boolean, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["system.cpu.utilization"])),
+                Arc::new(StringArray::from(vec![Some("cpu")])),
+                Arc::new(StringArray::from(vec![Some("1")])),
+                Arc::new(UInt64Array::from(vec![Some(1_700_000_000_000_000_000u64)])),
+                Arc::new(UInt64Array::from(vec![1_700_000_001_000_000_000u64])),
+                Arc::new(StringArray::from(vec![Some("{}")])),
+                Arc::new(StringArray::from(vec![resource_json])),
+                Arc::new(StringArray::from(vec![Some(r#"{"name":"hostmetrics"}"#)])),
+                Arc::new(StringArray::from(vec!["gauge"])),
+                Arc::new(StringArray::from(vec![
+                    r#"[{"time_unix_nano":1700000001000000000,"start_time_unix_nano":1700000000000000000,"value":0.5,"attributes":{}}]"#,
+                ])),
+                Arc::new(Int32Array::from(vec![Some(2)])),
+                Arc::new(BooleanArray::from(vec![Some(false)])),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// OTLP allows a resource without `service.name` (an OTel Collector
+    /// hostmetrics pipeline without a resource processor is the classic
+    /// case), and the traces path already stores such producers as
+    /// `unknown`. Metrics must not be dead-lettered for it: the transform
+    /// fills the non-nullable `service_name` column with the same fallback.
+    #[test]
+    fn metrics_without_service_name_get_the_unknown_service_fallback() {
+        for resource_json in [
+            Some(r#"{"host.name":"hive","os.type":"linux"}"#),
+            Some(
+                r#"{"attributes":{"host.name":"hive"},"schema_url":"https://opentelemetry.io/schemas/1.43.0"}"#,
+            ),
+            Some("{}"),
+            None,
+        ] {
+            let gauge = transform_metrics_gauge_v1_to_iceberg(metrics_v1_batch(resource_json), &[])
+                .unwrap_or_else(|e| panic!("gauge with resource {resource_json:?}: {e}"));
+            let names = gauge
+                .column_by_name("service_name")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            assert_eq!(
+                names.value(0),
+                common::flight::conversion::UNKNOWN_SERVICE_NAME
+            );
+            assert!(
+                !gauge
+                    .schema()
+                    .field_with_name("service_name")
+                    .unwrap()
+                    .is_nullable()
+            );
+
+            let sum = transform_metrics_sum_v1_to_iceberg(metrics_v1_batch(resource_json), &[])
+                .unwrap_or_else(|e| panic!("sum with resource {resource_json:?}: {e}"));
+            let names = sum
+                .column_by_name("service_name")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            assert_eq!(
+                names.value(0),
+                common::flight::conversion::UNKNOWN_SERVICE_NAME
+            );
+        }
+
+        // A present service.name still wins.
+        let gauge = transform_metrics_gauge_v1_to_iceberg(
+            metrics_v1_batch(Some(r#"{"service.name":"checkout"}"#)),
+            &[],
+        )
+        .unwrap();
+        let names = gauge
+            .column_by_name("service_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(names.value(0), "checkout");
     }
 
     fn make_log_flight_batch_with_attrs(
