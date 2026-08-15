@@ -46,7 +46,9 @@ service:
 ```
 
 An export is acknowledged only after it is durably written to the
-profiles write-ahead log; a rejected export is safe to retry.
+profiles write-ahead log; a rejected export is safe to retry. Accepted
+requests are logged at `DEBUG` (`Handling OTLP profiles request`), like the
+other signals' per-request lines, so an idle-looking `INFO` log is normal.
 
 Per-tenant ingest rate limits and storage quotas cover profiles like
 every other signal: gRPC exports over the limit fail with

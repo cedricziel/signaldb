@@ -55,6 +55,8 @@ The wire format and storage format differ intentionally. Writer applies `transfo
 
 Applied in Writer's Flight `do_put` handler before WAL write -- all WAL data is in v2 format.
 
+`service_name` is non-nullable in every Iceberg table. A resource without `service.name` (OTLP allows it; a Collector hostmetrics pipeline without a resource processor is the classic producer) is stored as `common::flight::conversion::UNKNOWN_SERVICE_NAME` (`"unknown"`) — the acceptor's OTLP conversion does this for traces and logs (their v1 batches carry `service_name`), the writer's `extract_resource_context` for the metrics transforms, which re-derive `service_name` from `resource_json` — so such batches are never dead-lettered with "Column 'service_name' is declared as non-nullable but contains null values".
+
 ## Traces Table Schema (physical-v2 -- current)
 
 | #     | Field                                     | Iceberg Type | Required | Notes                        |

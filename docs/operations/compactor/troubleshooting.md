@@ -1078,6 +1078,22 @@ DEBUG compactor::orphan::detector: Skipping recent file (within grace period) pa
 
 **Solution:** Nothing to fix. The file becomes eligible after the grace period elapses.
 
+### Debug: "Deleted orphan file" / "[DRY-RUN] Would delete orphan file"
+
+**Full Message:**
+
+```text
+DEBUG compactor::orphan::cleaner: Deleted orphan file path=acme/prod/traces/data/orphan-001.parquet size_bytes=10485760 table=acme/prod/traces
+```
+
+**Cause:** One line per deleted (or, in dry-run, would-be-deleted) candidate.
+Logged at `DEBUG` because a backlog run can delete tens of thousands of files
+in a single pass — at `INFO` that flooded the log at startup. The per-batch
+`Batch deletion complete` and per-run summaries carry the counts and bytes at
+`INFO`.
+
+**Solution:** Nothing to fix. Enable with `RUST_LOG=...,compactor::orphan::cleaner=debug` to audit individual deletions.
+
 ## Attribute Promotion
 
 **A `label_<key>` column appeared that is not in `[schema.materialized_labels]`:** attribute auto-promotion added it. With `[compactor.attr_promotion].dry_run = false`, the compactor promotes frequently queried attribute keys to columns at rewrite (see the [operations guide](operations.md#attribute-promotion)).
