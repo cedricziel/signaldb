@@ -41,83 +41,69 @@ change owns all of it, not just a shared two-schema prerequisite.
       numbering, and this only affects tables created from this point
       forward, never an existing one.
 
-## 2. Golden references (prove zero behavior change before touching anything)
+## 2. Consistency check (`table-schema-consistency` capability)
 
-- [ ] 2.1 Add `#[cfg(test)]` reference constants capturing today's
-      hand-written `create_trace_schema`/`create_log_schema`/
-      `create_metric_schema`/`create_profile_schema`/
-      `create_span_batch_schema` field lists (name, `DataType`, nullable).
-- [ ] 2.2 Add a `#[cfg(test)]` reference capturing today's hand-registered
-      `LogicalSchema::core()` fields per source (name, `LogicalType`,
-      `Filterability`, `LogicalFieldKind`).
+**Second scope correction found while implementing**: generating
+`LogicalSchema::core()`'s physical-backed entries (formerly groups 2-4)
+turned out to hit the same class of problem as the wire schema did, just
+less severely — see `design.md`'s "`LogicalSchema::core()` generation:
+dropped" decision. Most of `core()`'s entries are query-ergonomics aliases
+(`name`/`span.name`/`duration`/`duration_nano`/`status.code`) that don't
+match any real physical column name at all, so a generator keyed by
+physical name would only ever ADD parallel entries, never actually replace
+or de-risk the hand-written ones, for comparatively little safety gain
+over what the consistency check below already provides on its own. This
+change now does only the consistency check, which directly targets the
+proposal's motivating bug (a field declared in `LogicalSchema::core()`
+with no real physical/conversion-code path) without requiring a schema
+generator at all.
 
-## 3. Extend `schemas.toml`'s field model
+**Correction on where the check lives**: the "fields this converter
+touches" logic named `conversion_traces.rs`/`conversion_logs.rs`/
+`conversion_metrics.rs` (`common::flight::conversion`), but those modules
+only handle the Flight wire format. The actual physical-column population
+happens one layer further in, in `writer::schema_transform`'s
+`transform_*_v1_to_v2`/`transform_*_v1_to_iceberg` functions — that's
+where the check needs to live to catch a real gap. Investigating them
+found `transform_trace_v1_to_v2`/`transform_logs_v1_to_iceberg`/
+`transform_profiles_v1_to_iceberg` already self-check at runtime (each
+iterates its own resolved-schema field list with an exhaustive match that
+errors on an unhandled field), but the five `transform_metrics_*_v1_to_iceberg`
+functions build columns positionally against their own hand-written
+`create_metrics_*_arrow_schema()`, entirely independent of
+`SCHEMA_DEFINITIONS` — no runtime check at all. Implemented tests for all
+eight tables (traces, logs, profiles, and all five metrics
+representations) rather than just traces/logs/metrics, since the
+mechanism is identical and profiles had the exact same unguarded gap as
+metrics.
 
-- [ ] 3.1 Failing test: a `FieldDefinition` with no `filterable` key
-      resolves to `filterable = true`; one with `filterable = false`
-      resolves accordingly.
-- [ ] 3.2 Add `filterable: bool` (`#[serde(default = "true")]`) to
-      `FieldDefinition`/`ResolvedField`. Test from 3.1 passes.
-- [ ] 3.3 Mark `logs.body` (and any other current `.retrieval_only()`
-      field) `filterable = false` in `schemas.toml`.
-- [ ] 3.4 Failing test: `physical_type_to_logical_type` maps every
-      `field_type` string currently used in `schemas.toml`
-      (`string`/`int32`/`int64`/`uint64`/`double`/`boolean`/
-      `timestamp_ns`/`date`) to the correct `LogicalType`, and panics or
-      errors clearly on an unmapped type rather than guessing.
-- [ ] 3.5 Implement `physical_type_to_logical_type`. Test from 3.4 passes.
+- [x] 2.1 Added `writer::schema_transform::schema_consistency`, a test
+      module with one test per table (traces, logs, profiles,
+      metrics_gauge/sum/histogram/exponential_histogram/summary) asserting
+      the table's current resolved schema's non-computed field names
+      exactly equal a hand-maintained "fields this transform touches" set.
+      All eight pass today (no existing drift).
+- [x] 2.2 Populated each hand-maintained set from the actual current state
+      of the corresponding `transform_*` function (read directly off its
+      match arms for traces/logs/profiles, and off its
+      `create_metrics_*_arrow_schema()` for the five metrics tables, which
+      each transform's column-building code follows positionally).
+      `dropped_*_count` was already fixed by `iceberg-schema-evolution`
+      before this task ran, so no mismatch to reconcile.
+- [x] 2.3 Documented above `schema_consistency` (doc comment on the module)
+      that adding or removing a handled field requires updating its
+      table's set in the same PR, and why traces/logs/profiles already
+      self-check at runtime while metrics doesn't.
 
-## 4. Generate the Flight wire schema
+## 3. Docs and specs hygiene
 
-- [ ] 4.1 Failing test: `create_trace_schema()`'s generated output equals
-      the golden reference from 2.1, field-for-field.
-- [ ] 4.2 Implement `create_trace_schema()` as
-      `SCHEMA_DEFINITIONS.resolve_trace_schema("physical-v1")` → `Arrow::Schema`
-      (excluding any `physical_only` field). Test from 4.1 passes.
-- [ ] 4.3 Repeat 4.1/4.2 for `create_log_schema`, `create_metric_schema`,
-      `create_profile_schema`, `create_span_batch_schema`.
-- [ ] 4.4 Delete the now-dead hand-written field-list code and the golden
-      reference constants from §2.1 (their job is done).
-
-## 5. Generate `LogicalSchema::core()`'s physical-backed entries
-
-- [ ] 5.1 Failing test: for each source (`logs`, `traces`, `metrics`,
-      `metrics_histogram`), the generated `RecordMetadata`/`Attribute`
-      entries equal the golden reference from 2.2.
-- [ ] 5.2 Implement generation: for each non-`physical_only` field in a
-      signal's current schema version, emit
-      `LogicalField::record_metadata(source, name, physical_type_to_logical_type(...))`,
-      applying `.retrieval_only()` when `filterable = false`. Test from 5.1
-      passes.
-- [ ] 5.3 Confirm synthetic/non-generated entries
-      (`LogicalField::signaldb_resource_identity`, any `JoinKey` fields)
-      remain hand-registered in `LogicalSchema::core()`, layered on top of
-      the generated set.
-- [ ] 5.4 Delete the now-dead hand-written physical-backed
-      `LogicalField::record_metadata`/`attribute` calls and the golden
-      reference constants from §2.2 (their job is done).
-
-## 6. Consistency check (`table-schema-consistency` capability)
-
-- [ ] 6.1 Failing test per signal (traces/logs/metrics): the signal's
-      current resolved schema's non-computed field names equal a
-      hand-maintained "fields this converter touches" set for that
-      signal's conversion module.
-- [ ] 6.2 Populate the "fields this converter touches" sets from the
-      actual current state of `conversion_traces.rs`/`conversion_logs.rs`/
-      `conversion_metrics.rs` (this should immediately surface today's
-      `dropped_*_count` mismatch if it hasn't already been fixed by
-      `iceberg-schema-evolution`'s tasks §5 — reconcile rather than
-      duplicate).
-- [ ] 6.3 Document in each conversion module (doc comment) that adding or
-      removing a handled field requires updating its matching set in the
-      same PR.
-
-## 7. Docs and specs hygiene
-
-- [ ] 7.1 Update the `flight-schemas` skill to describe wire schemas as
-      generated from `schemas.toml` rather than hand-written.
-- [ ] 7.2 Update the `crate-map`/`architecture` skills if they describe
-      `flight/schema.rs` or `logical.rs` in a way this change affects.
-- [ ] 7.3 Run `openspec validate --strict unified-table-schema` and fix any
-      findings before archiving.
+- [x] 3.1 Updated `flight-schemas` skill: removed two stale references to
+      deleted functions (`mapify_attr_fields`, `append_materialized_label_fields`,
+      both dead since #1237/#1235), and added a note on the new
+      `schema_consistency` test module and why it matters for the five
+      metrics tables specifically. Updated `storage-layout` skill's
+      evolution section, which still said metrics/profiles were
+      hand-written in `iceberg_schemas.rs` (stale since #1237 — they
+      resolve from `schemas.toml` now, just aren't wired into the
+      evolution mechanism).
+- [x] 3.2 `openspec validate --strict unified-table-schema` passes.

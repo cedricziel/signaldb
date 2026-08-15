@@ -31,19 +31,3 @@ query time.
   signal
 - **THEN** that field has a real physical column that the signal's ingest
   path actually populates, so querying it reflects genuine ingested data
-
-### Requirement: Generated schema representations are behaviorally identical to their hand-written predecessors
-
-Where a schema representation (wire format, physical layout, or
-query-registry entry) is produced by resolving a signal's schema
-definition instead of being hand-written, the generated representation
-SHALL be indistinguishable in behavior from what existed before generation
-replaced hand-authoring: same fields, same types, same nullability, same
-query results for existing data.
-
-#### Scenario: Generated wire schema matches the previous hand-written one
-
-- **WHEN** a signal's Flight wire schema is produced by resolving its
-  schema definition
-- **THEN** it declares exactly the same fields, types, and nullability as
-  the hand-written schema it replaces

@@ -58,14 +58,14 @@ unbounded.
 
 **Goals:**
 
-- One load path (`schemas.toml`) producing the physical Iceberg schema,
-  the Flight wire schema, and the `LogicalSchema::core()` registration for
-  every field that has a real physical column, for every signal.
-- A consistency check that fails before/at deployment when a declared
-  field has no real conversion-code path, closing the exact failure mode
-  that let `dropped_*_count` go silently wrong.
-- Zero behavior change for any existing signal — enforced by golden tests,
-  not asserted by inspection.
+- `schemas.toml` as the one physical schema source of truth for every
+  built-in table (traces, logs, all five metrics representations,
+  profiles) — done in §1, already merged. (Originally also targeted
+  generating the Flight wire schema and `LogicalSchema::core()` from it —
+  both dropped, see Decisions below.)
+- A consistency check that catches at test/CI time when a declared
+  physical field has no real conversion-code path, closing the exact
+  failure mode that let `dropped_*_count` go silently wrong.
 
 **Non-Goals:**
 
@@ -91,40 +91,75 @@ unbounded.
 
 ## Decisions
 
-### Wire schema: generate from `physical-v1`, not a new TOML section
+### Wire schema generation: dropped, `flight/schema.rs` stays hand-written
 
-Rather than inventing a separate "wire schema" concept in `schemas.toml`,
-each signal's Flight wire schema is `SCHEMA_DEFINITIONS.resolve_*_schema("physical-v1")`
-converted to an `Arrow::Schema` (excluding any `physical_only` field, which
-today is none for any v1 definition — the filter exists for correctness as
-future versions could in principle mark a v1 field `physical_only`, not
-because it does anything today). Alternative considered: a distinct
-`wire-v1` schema block mirroring `physical-v1`. Rejected — `physical-v1`'s
-own description already claims to be the wire-matching schema; a second
-parallel block would just reintroduce the two-representations problem this
-change exists to remove, with an even more confusing name.
+**[Found while implementing]** The plan to generate each signal's Flight
+wire schema from `SCHEMA_DEFINITIONS.resolve_*_schema("physical-v1")` does
+not hold up once actually compared field-by-field against today's
+hand-written `flight/schema.rs`:
 
-### Logical schema: generate for physical fields, hand-register the rest
+- **Traces**: the real wire format (`otlp_traces_to_arrow`) already writes
+  `span_kind_number`/`status_code_number`/the three `dropped_*_count`
+  columns, but those only exist in `schemas.toml` from `physical-v3`
+  onward — `physical-v1` doesn't have them (they were added post-hoc by
+  `iceberg-schema-evolution` as a physical-only evolution step, not a wire
+  addition). Wire field names are also pre-rename (`name`,
+  `duration_nano`, `attributes_json`) while `physical-v1`→`physical-v2`'s
+  renames are exactly what turns those into `physical-v1`'s post-rename
+  names — so even "just use physical-v1" doesn't reproduce the actual wire
+  names once v1's own field list is inherited-and-renamed by v2. And the
+  wire format uses a flat JSON-string type for attributes
+  (`attributes_json: Utf8`) while `schemas.toml` already types that same
+  v1 field `map<string,string>` (the physical/Iceberg representation) —
+  one `field_type` string per field cannot mean two different Arrow types
+  for the same field depending on which layer reads it.
+- **Logs**: worse — wire field names and types don't correspond 1:1 to
+  physical ones at all. `resource_schema_url`/`scope_name`/`scope_version`
+  exist as physical columns but aren't separate wire columns; they're
+  unpacked from the wire's `resource_json`/`scope_json` blobs by
+  hand-written writer logic. That's real ETL, not a rename or type cast a
+  declarative model can express.
+- **Metrics**: structurally incompatible, not just diverged. The wire
+  format is one polymorphic table (`metric_type` discriminator + generic
+  `data_json` blob); the physical layer is five separate normalized tables
+  (gauge/sum/histogram/exponential-histogram/summary). There is no 1:1
+  schema for a generator to target — a single wire row can only become one
+  of five different physical row shapes, decided by a value inside the
+  blob.
 
-Add a `filterable: bool` (default `true`) field to `FieldDefinition`/
-`ResolvedField`, and a pure function
-`physical_type_to_logical_type(field_type: &str) -> LogicalType`
-(`string`→`String`, `int32`/`int64`/`uint64`→`Int64`, `double`→`Float64`,
-`boolean`→`Bool`, `timestamp_ns`→`TimestampNs`, `date`→handled as
-`physical_only`/not client-visible today so excluded, same as now).
-For each resolved field that isn't `physical_only`, emit
-`LogicalField::record_metadata(source, name, mapped_type)`, marked
-`.retrieval_only()` when `filterable = false`. Fields with
-`kind = JoinKey` (rare — none exist yet outside test fixtures) or
-`SignalDbDefined` synthetic fields with no physical column (`resource.identity`)
-are not generated; they stay explicit `LogicalField::join_key(...)`/
-`LogicalField::signaldb_resource_identity(...)` calls layered on top of the
-generated set in `LogicalSchema::core()`. Attribute-level (`resource.`/
-`scope.`/`record.`) resolution stays the existing structural mechanism in
-`LogicalSchema::resolve` — it is not per-field generated, since attribute
-keys are unbounded; `schemas.toml` only needs to mark which map columns
-exist per source, which it already implies through the `map<string,string>`
-field type.
+Closing this gap for real would need genuine transform primitives in
+`schemas.toml` (a way to declare "unpack this JSON field into these named
+columns," "select physical table by this field's value," a name/type
+override for the pre-materialization representation) — a materially larger
+change than a rename list, and one this change's motivating bug
+(`dropped_*_count` never reaching a physical column) doesn't actually need
+solved to fix. `flight/schema.rs` stays hand-written; the wire-format
+consistency problem is deferred to a future change if it becomes a real
+recurring source of bugs the way the physical/logical split was.
+
+### `LogicalSchema::core()` generation: dropped, stays hand-written
+
+**[Found while implementing, after the wire-schema finding above]**
+Generating `core()`'s physical-backed entries (`LogicalField::record_metadata(source, name, ...)`
+keyed by each resolved field's own physical name) runs into the same class
+of problem as the wire schema, just less severely: most of `core()`'s
+current entries are query-ergonomics aliases that don't equal any real
+physical column name at all — e.g. traces registers `"name"` and
+`"span.name"` (physical column: `span_name`), `"duration"` and
+`"duration_nano"` (physical: `duration_nanos`), `"status.code"` (physical:
+`status_code`) — some using the pre-rename wire name, some a dotted
+TraceQL-style alias, inconsistently per field. A generator keyed by
+physical name would never match or replace any of these; it could only add
+new, different-named entries alongside them. Checked against this change's
+actual value proposition (closing the "declared field, no real path"
+failure mode) that addition buys little the consistency check below
+doesn't already cover directly, for real implementation cost (a
+`filterable` field-model addition, a type-mapping function, and a
+golden-equivalence test suite that can't actually assert equivalence with
+the current hand-written set, since the two are keyed differently by
+design). `LogicalSchema::core()` stays entirely hand-written; if it drifts
+from the physical schema again, the consistency check below is what
+catches it.
 
 ### Consistency check: a test-time reflection, not a runtime guard
 
@@ -141,17 +176,6 @@ weaker guarantee than a load-time check — it catches the mistake at PR/CI
 time for anyone working in this codebase, which is where `dropped_*_count`
 should have been caught, without pretending to give a compile-time or
 production-runtime guarantee that Rust's type system can't actually back.
-
-### Golden tests, not manual review, prove zero behavior change
-
-For each function converted from hand-written to generated
-(`create_trace_schema`, etc., and `LogicalSchema::core()`'s generated
-portion), a test asserts field-for-field equality (name, Arrow `DataType`,
-nullability) between the old hand-written definition (kept temporarily as
-a `#[cfg(test)]`-only reference constant) and the new generated output.
-Once the tests pass and land, the hand-written reference constants are
-deleted — they only exist transiently to prove the migration was
-behavior-preserving.
 
 ## Risks / Trade-offs
 
@@ -175,28 +199,22 @@ behavior-preserving.
   evolution engine is scoped to traces/logs only and does not depend on or
   duplicate the metrics/profiles consolidation this change owns; no
   coordination needed beyond a normal rebase.
-- **[Trade-off]** `filterable`/type-mapping metadata added to
-  `FieldDefinition` makes `schemas.toml` denser and more coupled to the
-  query layer's concerns, not purely "physical schema" anymore →
-  accepted: that coupling is the point — it's what makes drift structurally
-  impossible instead of a matter of remembering to update a second file.
 
 ## Migration Plan
 
 1. Fold all five metrics representations and profiles into `schemas.toml`,
    matching the fields their current hand-written `iceberg::schemas`
    functions already produce; wire those functions to resolve from
-   `SCHEMA_DEFINITIONS` like traces/logs already do.
-2. `schema_parser.rs`: add `filterable`, the type-mapping function, golden
-   reference constants for current hand-written schemas.
-3. Generate wire schemas; golden tests pass; delete hand-written
-   `flight/schema.rs` field lists.
-4. Generate `LogicalSchema::core()`'s physical-backed entries; golden tests
-   pass; delete the corresponding hand-written calls, keep the synthetic/
-   join-key ones.
-5. Add the per-signal consistency tests.
-6. No deployment-visible change and no rollback machinery needed — this is
-   a test-verified internal refactor, not a wire or storage format change.
+   `SCHEMA_DEFINITIONS` like traces/logs already do. (Done — merged as
+   #1237.)
+2. Add a per-signal consistency test (traces/logs/metrics): the signal's
+   current resolved schema's non-computed field names must equal a
+   hand-maintained "fields this converter touches" set in that signal's
+   conversion module.
+3. No deployment-visible change and no rollback machinery needed — this is
+   a test-only addition, not a wire or storage format change. (Wire-schema
+   and `LogicalSchema::core()` generation, both originally planned as
+   steps here, are dropped — see Decisions.)
 
 ## Open Questions
 
