@@ -155,6 +155,14 @@ behavior-preserving.
 
 ## Risks / Trade-offs
 
+- **[Found during §1 implementation]** Generating metrics/profiles schemas
+  through `ResolvedSchema::to_iceberg_schema_with_labels` orders label
+  columns' field IDs _after_ map key/value IDs, whereas the old hand-written
+  `append_materialized_label_fields`/`mapify_attr_fields` pair ordered them
+  _before_ → accepted as harmless: Iceberg only requires field IDs be
+  unique and stable once assigned, nothing reads meaning into their
+  relative ordering, and this only affects the shape assigned to a table
+  created after this change — no existing table's IDs are touched.
 - **[Risk]** The manually-maintained "fields this converter touches" set
   (for the consistency test) is itself hand-maintained and could drift the
   same way the four representations did → **Mitigation**: it's one flat set
