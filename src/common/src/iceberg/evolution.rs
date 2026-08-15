@@ -338,11 +338,16 @@ fn iceberg_type_for(field_type: &str) -> Result<Type> {
 pub struct SchemaDiff {
     pub additions: Vec<StructField>,
     pub removed_field_ids: Vec<i32>,
+    /// Live fields being renamed in place: same field id, new name, so the
+    /// existing Parquet data (written under that id) stays reachable
+    /// through the renamed column instead of going invisible under a
+    /// removed id while a same-typed field with a fresh id takes its place.
+    pub renamed: Vec<StructField>,
 }
 
 impl SchemaDiff {
     pub fn is_empty(&self) -> bool {
-        self.additions.is_empty() && self.removed_field_ids.is_empty()
+        self.additions.is_empty() && self.removed_field_ids.is_empty() && self.renamed.is_empty()
     }
 }
 
@@ -363,19 +368,43 @@ impl SchemaDiff {
 /// inferred baseline simply doesn't mention, not a field that needs
 /// dropping. Removal is only safe when the caller trusts `live` really
 /// matches a known prior version's exact field set.
+///
+/// `renames` is this hop's own `field_renames` (the version being migrated
+/// *to* -- see `schema_parser::resolve_table_schema`, which applies a
+/// version's renames to its parent's inherited fields). A rename whose
+/// `from` name is actually present in `live` is resolved as a rename in
+/// place (same field id, new name) rather than as a removal of `from` plus
+/// a fresh-id addition of `to` -- the latter would orphan every historical
+/// value written under `from`'s id, since Iceberg readers resolve columns
+/// by id, not name. Only used for known-baseline hops; pass `&[]` when
+/// `target` is an inferred baseline (`allow_removals: false`).
 pub fn diff_schema(
     live: &Schema,
     next_id: i32,
     target: &[ResolvedField],
+    renames: &[crate::schema::schema_parser::FieldRename],
     allow_removals: bool,
 ) -> Result<SchemaDiff> {
-    let live_names: HashSet<&str> = live.fields().iter().map(|f| f.name.as_str()).collect();
+    let live_by_name: HashMap<&str, &StructField> =
+        live.fields().iter().map(|f| (f.name.as_str(), f)).collect();
     let target_names: HashSet<&str> = target.iter().map(|f| f.name.as_str()).collect();
+
+    // Only trust a rename whose source field actually exists live -- a hop
+    // replayed on a table that already carries the renamed name (e.g. an
+    // idempotent retry) must not touch it again.
+    let renamed_from: HashMap<&str, &str> = renames
+        .iter()
+        .filter(|r| live_by_name.contains_key(r.from.as_str()))
+        .map(|r| (r.from.as_str(), r.to.as_str()))
+        .collect();
+    let renamed_to: HashSet<&str> = renamed_from.values().copied().collect();
 
     let mut id = next_id;
     let mut additions = Vec::new();
     for field in target {
-        if live_names.contains(field.name.as_str()) {
+        if renamed_to.contains(field.name.as_str())
+            || live_by_name.contains_key(field.name.as_str())
+        {
             continue;
         }
         additions.push(StructField {
@@ -390,10 +419,28 @@ pub fn diff_schema(
         id += 1;
     }
 
+    let renamed: Vec<StructField> = renamed_from
+        .iter()
+        .filter_map(|(from, to)| {
+            live_by_name.get(from).map(|live_field| StructField {
+                id: live_field.id,
+                name: (*to).to_string(),
+                required: live_field.required,
+                field_type: live_field.field_type.clone(),
+                doc: live_field.doc.clone(),
+                initial_default: live_field.initial_default.clone(),
+                write_default: live_field.write_default.clone(),
+            })
+        })
+        .collect();
+
     let removed_field_ids = if allow_removals {
         live.fields()
             .iter()
-            .filter(|f| !target_names.contains(f.name.as_str()))
+            .filter(|f| {
+                !target_names.contains(f.name.as_str())
+                    && !renamed_from.contains_key(f.name.as_str())
+            })
             .map(|f| f.id)
             .collect()
     } else {
@@ -403,6 +450,7 @@ pub fn diff_schema(
     Ok(SchemaDiff {
         additions,
         removed_field_ids,
+        renamed,
     })
 }
 
@@ -425,11 +473,13 @@ pub fn diff_schema(
 /// `allow_removals` is forwarded to [`diff_schema`] -- pass `false` when
 /// `target_fields` is an inferred baseline rather than a version the table
 /// is known to have actually passed through (see
-/// [`ensure_schema_current`]).
+/// [`ensure_schema_current`]). `renames` is also forwarded to
+/// [`diff_schema`] -- pass `&[]` alongside `allow_removals: false`.
 pub async fn apply_schema_migration(
     catalog: Arc<dyn Catalog>,
     identifier: &Identifier,
     target_fields: &[ResolvedField],
+    renames: &[crate::schema::schema_parser::FieldRename],
     target_version: &str,
     allow_removals: bool,
 ) -> Result<Schema> {
@@ -440,7 +490,7 @@ pub async fn apply_schema_migration(
     let metadata = table.metadata();
 
     let next_id = max_field_id(current).max(metadata.last_column_id) + 1;
-    let diff = diff_schema(current, next_id, target_fields, allow_removals)?;
+    let diff = diff_schema(current, next_id, target_fields, renames, allow_removals)?;
     let already_current = metadata
         .properties
         .get(SCHEMA_VERSION_PROPERTY)
@@ -454,7 +504,13 @@ pub async fn apply_schema_migration(
         .fields()
         .iter()
         .filter(|f| !diff.removed_field_ids.contains(&f.id))
-        .cloned()
+        .map(|f| {
+            diff.renamed
+                .iter()
+                .find(|r| r.id == f.id)
+                .cloned()
+                .unwrap_or_else(|| f.clone())
+        })
         .collect();
     fields.extend(diff.additions.iter().cloned());
     let last_column_id = if diff.additions.is_empty() {
@@ -571,32 +627,49 @@ pub async fn ensure_schema_current(
         .map_err(|e| anyhow::anyhow!("Failed to resolve current schema of {identifier}: {e}"))?
         .clone();
 
+    // Untrusted baseline: jump straight to current, additions only, never
+    // renaming or removing -- used both for a table with no recorded
+    // version at all and for one whose recorded version isn't actually on
+    // this chain (see `version_chain`'s doc comment).
+    let untrusted_baseline_migration = || async {
+        let resolved = defs.resolve_table_schema(schemas_map, current_version)?;
+        apply_schema_migration(
+            catalog.clone(),
+            identifier,
+            &resolved.fields,
+            &[],
+            current_version,
+            false,
+        )
+        .await
+    };
+
     match recorded {
         None => {
-            let resolved = defs.resolve_table_schema(schemas_map, current_version)?;
-            last = apply_schema_migration(
-                catalog.clone(),
-                identifier,
-                &resolved.fields,
-                current_version,
-                false, // unknown baseline: additions only, never remove
-            )
-            .await?;
+            last = untrusted_baseline_migration().await?;
         }
-        Some(from) => {
-            let hops = version_chain(schemas_map, Some(from.as_str()), current_version)?;
-            for version in hops {
-                let resolved = defs.resolve_table_schema(schemas_map, &version)?;
-                last = apply_schema_migration(
-                    catalog.clone(),
-                    identifier,
-                    &resolved.fields,
-                    &version,
-                    true, // recorded baseline: trusted, safe to remove
-                )
-                .await?;
+        Some(from) => match version_chain(schemas_map, Some(from.as_str()), current_version)? {
+            Some(hops) => {
+                for version in hops {
+                    let schema_def = schemas_map
+                        .get(&version)
+                        .ok_or_else(|| anyhow::anyhow!("Schema version {version} not found"))?;
+                    let resolved = defs.resolve_table_schema(schemas_map, &version)?;
+                    last = apply_schema_migration(
+                        catalog.clone(),
+                        identifier,
+                        &resolved.fields,
+                        &schema_def.field_renames,
+                        &version,
+                        true, // recorded baseline: trusted, safe to rename/remove
+                    )
+                    .await?;
+                }
             }
-        }
+            None => {
+                last = untrusted_baseline_migration().await?;
+            }
+        },
     }
     Ok(last)
 }
@@ -940,7 +1013,7 @@ mod tests {
             resolved_field("new_column", "int32"),
         ];
 
-        let diff = diff_schema(&live, 6, &target, true).unwrap();
+        let diff = diff_schema(&live, 6, &target, &[], true).unwrap();
 
         assert_eq!(diff.additions.len(), 1);
         assert_eq!(diff.additions[0].name, "new_column");
@@ -963,7 +1036,7 @@ mod tests {
             // "attributes" intentionally absent from the target.
         ];
 
-        let diff = diff_schema(&live, 6, &target, true).unwrap();
+        let diff = diff_schema(&live, 6, &target, &[], true).unwrap();
 
         assert!(diff.additions.is_empty());
         assert_eq!(diff.removed_field_ids, vec![attributes_id]);
@@ -987,12 +1060,77 @@ mod tests {
             resolved_field("body", "string"),
         ];
 
-        let diff = diff_schema(&live, 6, &target, false).unwrap();
+        let diff = diff_schema(&live, 6, &target, &[], false).unwrap();
 
         assert!(diff.additions.is_empty());
         assert!(
             diff.removed_field_ids.is_empty(),
             "removals must be skipped entirely when allow_removals is false"
+        );
+    }
+
+    #[test]
+    fn diff_schema_renames_a_live_field_in_place_preserving_its_id() {
+        // "body" -> "message": a target field by a new name, resolved via
+        // this hop's own field_renames. Must NOT be reported as a removal
+        // of "body" plus a fresh-id addition of "message" -- that would
+        // orphan every historical value written under "body"'s id, since
+        // Iceberg readers resolve columns by id, not name.
+        let live = base_schema_with_map();
+        let body_id = field(&live, "body").unwrap().id;
+        let target = vec![
+            resolved_field("timestamp", "timestamp_ns"),
+            resolved_field("message", "string"),
+            resolved_field("attributes", "map<string,string>"),
+        ];
+        let renames = vec![crate::schema::schema_parser::FieldRename {
+            from: "body".to_string(),
+            to: "message".to_string(),
+        }];
+
+        let diff = diff_schema(&live, 6, &target, &renames, true).unwrap();
+
+        assert!(
+            diff.additions.is_empty(),
+            "the renamed field must not also show up as an addition: {:?}",
+            diff.additions
+        );
+        assert!(
+            !diff.removed_field_ids.contains(&body_id),
+            "the renamed field's original id must not be removed"
+        );
+        assert_eq!(diff.renamed.len(), 1);
+        assert_eq!(diff.renamed[0].id, body_id, "rename must preserve the id");
+        assert_eq!(diff.renamed[0].name, "message");
+    }
+
+    #[test]
+    fn diff_schema_ignores_a_rename_whose_source_field_is_not_actually_live() {
+        // Idempotent replay: a hop already applied (live already has
+        // "message", not "body") must not try to rename again or drop
+        // anything.
+        let live = Schema::from_struct_type(
+            StructType::new(vec![
+                string_field(1, "timestamp", true),
+                string_field(2, "message", false),
+            ]),
+            0,
+            None,
+        );
+        let target = vec![
+            resolved_field("timestamp", "timestamp_ns"),
+            resolved_field("message", "string"),
+        ];
+        let renames = vec![crate::schema::schema_parser::FieldRename {
+            from: "body".to_string(),
+            to: "message".to_string(),
+        }];
+
+        let diff = diff_schema(&live, 3, &target, &renames, true).unwrap();
+
+        assert!(
+            diff.is_empty(),
+            "already-migrated hop must be a no-op: {diff:?}"
         );
     }
 
@@ -1019,9 +1157,15 @@ mod tests {
             resolved_field("attributes", "map<string,string>"),
             resolved_field("span_kind_number", "int32"),
         ];
-        let schema =
-            apply_schema_migration(catalog.clone(), &identifier, &target, "physical-v3", true)
-                .await?;
+        let schema = apply_schema_migration(
+            catalog.clone(),
+            &identifier,
+            &target,
+            &[],
+            "physical-v3",
+            true,
+        )
+        .await?;
 
         let added = field(&schema, "span_kind_number").expect("span_kind_number added");
         assert!(!added.required);
@@ -1046,12 +1190,28 @@ mod tests {
             resolved_field("body", "string"),
             resolved_field("attributes", "map<string,string>"),
         ];
-        apply_schema_migration(catalog.clone(), &identifier, &target, "physical-v1", true).await?;
+        apply_schema_migration(
+            catalog.clone(),
+            &identifier,
+            &target,
+            &[],
+            "physical-v1",
+            true,
+        )
+        .await?;
         let table_after_first = load_table(&catalog, &identifier).await?;
         let schema_count_after_first = table_after_first.metadata().schemas.len();
 
         // Same target, same version: no diff and already stamped -> no commit.
-        apply_schema_migration(catalog.clone(), &identifier, &target, "physical-v1", true).await?;
+        apply_schema_migration(
+            catalog.clone(),
+            &identifier,
+            &target,
+            &[],
+            "physical-v1",
+            true,
+        )
+        .await?;
         let table_after_second = load_table(&catalog, &identifier).await?;
         assert_eq!(
             table_after_second.metadata().schemas.len(),
@@ -1074,8 +1234,22 @@ mod tests {
             resolved_field("span_kind_number", "int32"),
         ];
         let (a, b) = tokio::join!(
-            apply_schema_migration(catalog.clone(), &identifier, &target, "physical-v3", true),
-            apply_schema_migration(catalog.clone(), &identifier, &target, "physical-v3", true),
+            apply_schema_migration(
+                catalog.clone(),
+                &identifier,
+                &target,
+                &[],
+                "physical-v3",
+                true
+            ),
+            apply_schema_migration(
+                catalog.clone(),
+                &identifier,
+                &target,
+                &[],
+                "physical-v3",
+                true
+            ),
         );
         assert!(
             a.is_ok() || b.is_ok(),
@@ -1213,6 +1387,7 @@ mod tests {
             catalog.clone(),
             &identifier,
             &v1.fields,
+            &[],
             "physical-v1",
             true,
         )
@@ -1298,6 +1473,7 @@ mod tests {
             catalog.clone(),
             &identifier,
             &v2.fields,
+            &[],
             "__setup_only__",
             false,
         )
@@ -1331,6 +1507,58 @@ mod tests {
             "field the table already had must survive an unknown-baseline migration"
         );
         assert!(field(current, "status_code_number").is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_current_with_an_unrecognized_recorded_version_never_removes_extra_fields()
+    -> anyhow::Result<()> {
+        // Same hazard as the unknown-baseline regression test above, but
+        // for a recorded `signaldb.schema.version` that isn't actually on
+        // this chain (corrupted property, or a retired version name) rather
+        // than an entirely absent one -- `version_chain` returns `None` for
+        // this case, and `ensure_schema_current` must fall back to the same
+        // untrusted, additions-only path instead of trusting a fabricated
+        // "full chain from root" with removals enabled.
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_generic_test_table(&catalog, "traces").await?;
+        let schemas_map = version_chain_fixture();
+        let defs = defs_for(schemas_map.clone());
+
+        // Table already has span_kind_number (v2-shaped) but is stamped
+        // with a version name that doesn't exist in `schemas_map` at all.
+        let v2 = defs.resolve_table_schema(&schemas_map, "physical-v2")?;
+        apply_schema_migration(
+            catalog.clone(),
+            &identifier,
+            &v2.fields,
+            &[],
+            "physical-v0-retired",
+            false,
+        )
+        .await?;
+
+        ensure_schema_current(
+            catalog.clone(),
+            &identifier,
+            &defs,
+            &schemas_map,
+            "physical-v3",
+        )
+        .await?;
+
+        let table = load_table(&catalog, &identifier).await?;
+        let current = table.current_schema()?;
+        assert!(
+            field(current, "span_kind_number").is_some(),
+            "field the table already had must survive an unrecognized-baseline migration"
+        );
+        assert!(field(current, "status_code_number").is_some());
+        assert_eq!(
+            table.metadata().properties.get(SCHEMA_VERSION_PROPERTY),
+            Some(&"physical-v3".to_string())
+        );
         Ok(())
     }
 }

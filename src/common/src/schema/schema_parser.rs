@@ -234,20 +234,27 @@ impl SchemaDefinitions {
 /// `inherits` pointers encode the chain, and they point backward (child to
 /// parent), so this walks backward first and reverses.
 ///
-/// If `from_version` never appears while walking to the root (an unknown
-/// or stale recorded version), the full chain from root to `to_version` is
-/// returned; replaying already-satisfied hops is a safe no-op for callers
-/// that apply each hop idempotently.
+/// Returns `Ok(None)` when `from_version` is `Some` but never appears while
+/// walking to the root -- an unrecognized or stale recorded version. Hops
+/// carry `field_removals`/renames with `allow_removals` enabled, computed by
+/// assuming the table's live schema exactly matches each hop's prior
+/// version; a table whose recorded version isn't actually on this chain
+/// doesn't satisfy that assumption; walking the full chain from root anyway
+/// could delete legacy fields the table genuinely has that this schema's
+/// history simply never mentions. Callers must treat `None` the same as an
+/// entirely unrecorded baseline (additions-only, direct jump to
+/// `to_version`), never as "apply every hop".
 pub fn version_chain(
     schemas: &HashMap<String, TableSchemaDefinition>,
     from_version: Option<&str>,
     to_version: &str,
-) -> Result<Vec<String>> {
+) -> Result<Option<Vec<String>>> {
     let mut chain = Vec::new();
     let mut current = to_version.to_string();
     loop {
         if Some(current.as_str()) == from_version {
-            break;
+            chain.reverse();
+            return Ok(Some(chain));
         }
         chain.push(current.clone());
         let def = schemas
@@ -255,11 +262,17 @@ pub fn version_chain(
             .ok_or_else(|| anyhow!("Schema version {} not found", current))?;
         match &def.inherits {
             Some(parent) => current = parent.clone(),
-            None => break, // reached the root
+            None => {
+                // Reached the root. With no `from_version` to find, the
+                // full chain to root is exactly what was asked for.
+                if from_version.is_none() {
+                    chain.reverse();
+                    return Ok(Some(chain));
+                }
+                return Ok(None);
+            }
         }
     }
-    chain.reverse();
-    Ok(chain)
 }
 
 impl ResolvedSchema {
@@ -714,21 +727,27 @@ fields = [
     #[test]
     fn version_chain_from_none_walks_the_full_chain_root_first() {
         let schemas = chain_fixture();
-        let chain = version_chain(&schemas, None, "physical-v3").unwrap();
+        let chain = version_chain(&schemas, None, "physical-v3")
+            .unwrap()
+            .unwrap();
         assert_eq!(chain, vec!["physical-v1", "physical-v2", "physical-v3"]);
     }
 
     #[test]
     fn version_chain_from_a_known_version_walks_only_the_remaining_hops() {
         let schemas = chain_fixture();
-        let chain = version_chain(&schemas, Some("physical-v1"), "physical-v3").unwrap();
+        let chain = version_chain(&schemas, Some("physical-v1"), "physical-v3")
+            .unwrap()
+            .unwrap();
         assert_eq!(chain, vec!["physical-v2", "physical-v3"]);
     }
 
     #[test]
     fn version_chain_already_at_target_is_empty() {
         let schemas = chain_fixture();
-        let chain = version_chain(&schemas, Some("physical-v3"), "physical-v3").unwrap();
+        let chain = version_chain(&schemas, Some("physical-v3"), "physical-v3")
+            .unwrap()
+            .unwrap();
         assert!(chain.is_empty());
     }
 
@@ -760,7 +779,22 @@ fields = [
                 partition_by: vec![],
             },
         );
-        let chain = version_chain(&schemas, None, "zeta-but-actually-next").unwrap();
+        let chain = version_chain(&schemas, None, "zeta-but-actually-next")
+            .unwrap()
+            .unwrap();
         assert_eq!(chain, vec!["alpha", "zeta-but-actually-next"]);
+    }
+
+    #[test]
+    fn version_chain_returns_none_for_an_unrecognized_recorded_version() {
+        // A recorded `signaldb.schema.version` that isn't actually on this
+        // table's chain (corrupted property, or a version retired from
+        // schemas.toml) must not be trusted as a real hop-by-hop baseline --
+        // the caller has to fall back to an untrusted, additions-only
+        // migration instead of walking the full chain with removals on.
+        let schemas = chain_fixture();
+        let chain =
+            version_chain(&schemas, Some("physical-v0-does-not-exist"), "physical-v3").unwrap();
+        assert!(chain.is_none());
     }
 }
