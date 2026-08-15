@@ -17,12 +17,17 @@ import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
 
 function ExploreRoute() {
-  const { signal } = useParams<{ signal: string }>();
+  const { signal, traceId } = useParams<{
+    signal?: string;
+    traceId?: string;
+  }>();
   const location = useLocation();
   const { state, update } = useOutletState();
   // An unknown path segment (typo, stale bookmark) settles on /logs instead
-  // of silently rendering the logs view under the wrong URL.
-  if (signalFromParam(signal) !== signal) {
+  // of silently rendering the logs view under the wrong URL. Only the
+  // generic `:signal` route needs this guard — `traces/:traceId`'s static
+  // "traces" segment is always valid, and `signal` isn't even matched there.
+  if (traceId === undefined && signalFromParam(signal) !== signal) {
     return <Navigate to={`/logs${location.search}`} replace />;
   }
   return <ExploreView state={state} update={update} />;
@@ -39,6 +44,11 @@ export function AppRoutes() {
         <Route path="api-keys" element={<ApiKeysRoute />} />
         <Route path="instrumentation" element={<InstrumentationRoute />} />
         <Route path="schema" element={<SchemaExplorerRoute />} />
+        {/* Single-trace view is a route, not a `?trace=` param on /traces —
+            see buildPath in lib/urlState.ts. Matched by React Router's
+            specificity ranking regardless of declaration order relative to
+            :signal below, but listed first for readability. */}
+        <Route path="traces/:traceId" element={<ExploreRoute />} />
         <Route path=":signal" element={<ExploreRoute />} />
         <Route path="*" element={<Navigate to="/logs" replace />} />
       </Route>
