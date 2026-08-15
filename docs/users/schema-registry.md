@@ -6,7 +6,7 @@ sources:
   - src/router/src/endpoints/schema.rs
   - src/common/src/schema_registry/**
   - src/schema-model/src/**
-  - src/signaldb-cli/src/commands/schema.rs
+  - src/signaldb-cli/src/commands/**
   - src/mcp-server/src/server.rs
 ---
 
