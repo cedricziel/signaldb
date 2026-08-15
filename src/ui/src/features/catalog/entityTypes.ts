@@ -1,15 +1,22 @@
 // The catalog's entity registry.
 //
-// Every entity type is discovered and measured the same way: group `traces`
-// by its `identity` dimensions and compute RED (count, error count, p50,
-// p95, last-seen) — the same aggregate the traces tab's own group table
-// uses. Nothing here is hardcoded sample data; an entity type with no
-// telemetry carrying its identity attribute(s) simply returns zero rows —
-// see CatalogView's empty state. Any tenant that starts sending an
+// Every entity type is discovered and measured the same way: group its
+// `sources` by its `identity` dimensions and compute RED (count, error
+// count, p50, p95, last-seen) — the same aggregate the traces tab's own
+// group table uses, run once per source and merged by identity (see
+// `api/catalog.ts`). Nothing here is hardcoded sample data; an entity type
+// with no telemetry carrying its identity attribute(s) simply returns zero
+// rows — see CatalogView's empty state. Any tenant that starts sending an
 // attribute (an SDK resource detector, an OTel Collector with
 // `resourcedetection`, ...) gets that entity type populated with no further
 // engineering, because discovery is driven by this registry, not by which
 // entity types happen to have data today.
+//
+// Error rate and duration percentiles are trace-only concepts (span status,
+// span duration) — a source with no `traces` in its `sources` list, or a
+// row whose count came entirely from non-trace sources, carries no RED
+// duration data; `api/catalog.ts` marks that explicitly rather than
+// reporting a false "0ms" p50/p95.
 export interface EntityTypeDef {
   id: string;
   /** Nav label, plural: "Services". */
@@ -51,7 +58,30 @@ export interface EntityTypeDef {
    * rather than a small, stable set of categories worth drilling into.
    */
   topValues?: { field: string; label: string };
+  /**
+   * Query IR sources to discover and measure this entity from, merged by
+   * identity (see `api/catalog.ts`). Defaults to `["traces"]` when omitted.
+   * Safe for any entity whose identity is an OTel *resource* attribute
+   * (`service.*`, `host.*`, `k8s.*`, `container.*`, `process.*`) — resource
+   * attributes are attached to every signal an SDK emits, not just spans.
+   * Not safe for an identity that is a *span* attribute (`db.namespace`,
+   * `messaging.destination.name`, ...): those describe one client call, not
+   * the process that made it, and have no counterpart on a log line or
+   * metric point.
+   */
+  sources?: string[];
 }
+
+/**
+ * The resource-scoped multi-source list (see `EntityTypeDef.sources`).
+ * `metrics` and `profiles` belong here in principle — a resource attribute
+ * is attached to every signal an SDK emits — but the backend can't serve
+ * them yet: neither source has a logical `timestamp` field, so the
+ * "last seen" aggregate 400s (#1205), and grouping `metrics` by any
+ * resource attribute other than the handful explicitly registered 500s on
+ * a query-planner type mismatch (#1206). Add them back once those land.
+ */
+export const RESOURCE_SOURCES = ["traces", "logs"];
 
 export const ENTITY_TYPES: EntityTypeDef[] = [
   {
@@ -61,6 +91,7 @@ export const ENTITY_TYPES: EntityTypeDef[] = [
     identity: ["service.name", "service.namespace"],
     spanKindScope: "Server",
     breakdown: { field: "span.name", label: "Operations" },
+    sources: RESOURCE_SOURCES,
   },
   {
     id: "database",
@@ -82,6 +113,7 @@ export const ENTITY_TYPES: EntityTypeDef[] = [
     singular: "host",
     identity: ["host.name"],
     breakdown: { field: "service.name", label: "Services" },
+    sources: RESOURCE_SOURCES,
   },
   {
     id: "k8s_pod",
@@ -89,6 +121,7 @@ export const ENTITY_TYPES: EntityTypeDef[] = [
     singular: "pod",
     identity: ["k8s.pod.name", "k8s.namespace.name"],
     breakdown: { field: "service.name", label: "Services" },
+    sources: RESOURCE_SOURCES,
   },
   {
     id: "k8s_node",
@@ -96,6 +129,7 @@ export const ENTITY_TYPES: EntityTypeDef[] = [
     singular: "node",
     identity: ["k8s.node.name"],
     breakdown: { field: "service.name", label: "Services" },
+    sources: RESOURCE_SOURCES,
   },
   {
     id: "container",
@@ -103,6 +137,7 @@ export const ENTITY_TYPES: EntityTypeDef[] = [
     singular: "container",
     identity: ["container.name"],
     breakdown: { field: "service.name", label: "Services" },
+    sources: RESOURCE_SOURCES,
   },
   {
     id: "process",
@@ -110,6 +145,7 @@ export const ENTITY_TYPES: EntityTypeDef[] = [
     singular: "process",
     identity: ["process.pid", "host.name"],
     breakdown: { field: "service.name", label: "Services" },
+    sources: RESOURCE_SOURCES,
   },
 ];
 

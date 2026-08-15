@@ -17,7 +17,7 @@ import {
   type ResolvedRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { formatDurationMs } from "../../lib/waterfall";
+import { formatDurationMsOrDash } from "../../lib/waterfall";
 import { EntityDetail } from "./EntityDetail";
 import {
   DEFAULT_ENTITY_TYPE,
@@ -198,6 +198,9 @@ export function EntityTable({
         <span className="catalog-title">{entity.label}</span>
         <span className="catalog-sub">
           discovered from {entity.identity.join(", ")}
+          {entity.sources && entity.sources.length > 1
+            ? ` across ${entity.sources.join(", ")}`
+            : ""}
         </span>
       </div>
       {result.isError && (
@@ -283,8 +286,12 @@ export function EntityTable({
                     ? `${Math.round((100 * g.errors) / g.count)}%`
                     : "–"}
                 </td>
-                <td className="num">{formatDurationMs(g.p50Ms)}</td>
-                <td className="num">{formatDurationMs(g.p95Ms)}</td>
+                <td className="num">
+                  {formatDurationMsOrDash(g.hasDuration, g.p50Ms)}
+                </td>
+                <td className="num">
+                  {formatDurationMsOrDash(g.hasDuration, g.p95Ms)}
+                </td>
                 <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
               </tr>
             ))

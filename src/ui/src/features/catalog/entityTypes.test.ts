@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ENTITY_TYPES, entityType } from "./entityTypes";
+import { ENTITY_TYPES, RESOURCE_SOURCES, entityType } from "./entityTypes";
 
 describe("ENTITY_TYPES", () => {
   it("has a unique id for every entity type", () => {
@@ -45,6 +45,25 @@ describe("ENTITY_TYPES", () => {
         field: "service.name",
         label: "Services",
       });
+    }
+  });
+
+  it("discovers resource-scoped entity types from traces and logs", () => {
+    for (const id of [
+      "service",
+      "host",
+      "k8s_pod",
+      "k8s_node",
+      "container",
+      "process",
+    ]) {
+      expect(entityType(id)?.sources).toEqual(RESOURCE_SOURCES);
+    }
+  });
+
+  it("leaves span-attribute entity types trace-only", () => {
+    for (const id of ["database", "messaging_destination"]) {
+      expect(entityType(id)?.sources).toBeUndefined();
     }
   });
 });

@@ -13,7 +13,7 @@
  *
  * This sums raw span duration, not exclusive/self time, so concurrent
  * overlapping calls double-count — the same caveat any RED-metrics
- * duration figure in this app already has (see buildEntityDoc's p50/p95).
+ * duration figure in this app already has (see buildEntitySourceDoc's p50/p95).
  */
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";

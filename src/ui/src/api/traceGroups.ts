@@ -64,6 +64,17 @@ export interface TraceGroup {
   p95Ms: number;
   /** Start of the most recent record in the group, epoch nanoseconds. */
   lastNs: string;
+  /**
+   * Whether `errors`/`p50Ms`/`p95Ms` describe real trace data. Always `true`
+   * here — this module is trace-only — but the catalog's multi-signal
+   * entity discovery (`api/catalog.ts`) can produce a group whose count came
+   * entirely from logs/metrics/profiles, which carry no span status or
+   * duration; that group sets this to `false` so the UI shows "no data"
+   * instead of a misleading "0ms" p50/p95. Optional, not just `boolean`, so
+   * every existing trace-only call site (which has no reason to set it)
+   * keeps compiling; absence means `true`.
+   */
+  hasDuration?: boolean;
 }
 
 export interface TraceGroupResult {

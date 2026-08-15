@@ -21,7 +21,7 @@ import {
   parseCompositeKey,
 } from "../../lib/traceGroups";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { formatDurationMs } from "../../lib/waterfall";
+import { formatDurationMsOrDash } from "../../lib/waterfall";
 import { MemberTable } from "../traces/MemberTable";
 import {
   catalogRangeSeconds,
@@ -209,11 +209,11 @@ export function EntityDetail({ state, update }: Props) {
           </div>
           <div>
             <dt>P50</dt>
-            <dd>{formatDurationMs(kpiRow.p50Ms)}</dd>
+            <dd>{formatDurationMsOrDash(kpiRow.hasDuration, kpiRow.p50Ms)}</dd>
           </div>
           <div>
             <dt>P95</dt>
-            <dd>{formatDurationMs(kpiRow.p95Ms)}</dd>
+            <dd>{formatDurationMsOrDash(kpiRow.hasDuration, kpiRow.p95Ms)}</dd>
           </div>
           <div>
             <dt>Last seen</dt>
