@@ -190,8 +190,11 @@ Mounted at `/api/v1` with tenant auth (`src/router/src/endpoints/tenant.rs`):
 ## CLI Tool
 
 Subcommands: `query` (one required language flag —
-`--sql`/`--promql`/`--logql`/`--traceql`/`--ir`), `admin`
-(`tenant`/`api-key`/`dataset`), `user`, `tui`, `completions` (static shell
+`--sql`/`--promql`/`--logql`/`--traceql`/`--ir`), `discover`, `schema`
+(`registry`/`attribute`/`entity`/`metric` lookup with a tenant key holding
+`schema:read`), `admin` (`tenant`/`api-key`/`dataset`, plus `schema`
+create/replace/delete/validate with a tenant key holding `schema:write`),
+`user`, `tui`, `completions` (static shell
 scripts; dynamic tenant-ID completion for tenant-taking args via
 `COMPLETE=<shell> signaldb-cli` — queries the admin API like
 `admin tenant list`, silently empty when the backend is unreachable).
@@ -202,6 +205,8 @@ signaldb-cli admin tenant create acme --name "Acme Corp" [--default-dataset prod
 signaldb-cli admin api-key create acme --name "Production Key" --scope traces:write --scope schema:read
 signaldb-cli admin api-key update acme <key-id> --scope traces:write --scope schema:write
 signaldb-cli admin dataset create acme --name production
+signaldb-cli admin schema create --file conventions.yaml --api-key <schema:write key> --tenant-id acme
+signaldb-cli schema attribute get k8s.pod.uid --api-key <schema:read key> --tenant-id acme
 signaldb-cli query --sql "SELECT ..."   # also --promql/--logql/--traceql/--ir
 signaldb-cli tui                         # Interactive terminal UI
 ```

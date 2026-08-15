@@ -39,6 +39,14 @@ gating in v1):
 | `list_api_keys`       | List a tenant's API keys with their scopes and dataset restriction (admin-authenticated).                                                                        |
 | `create_api_key`      | Create an API key carrying explicit `scopes` (required; e.g. `traces:write`, `schema:read`) and an optional `dataset_id` (admin-authenticated).                  |
 | `update_api_key_scopes` | Change a live key's scopes and/or dataset restriction without rotating its secret; revoked keys are rejected (admin-authenticated).                            |
+| `list_schema_registries` | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts. |
+| `resolve_attribute`   | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation. |
+| `resolve_entity`      | What an entity type (`k8s.pod`, `service`, ...) means: identifying/descriptive attributes, what it extends, associated metrics.                             |
+| `resolve_metric`      | What a metric means: instrument, unit, brief, recorded attributes, associated entities.                                                                     |
+| `search_schema`       | Prefix search over attributes, entities, or metrics (`kind`, `prefix`, `limit`) to find the right vocabulary before querying.                                |
+| `create_schema_registry` | Upload a custom Weaver-model registry document (JSON object) for your tenant (requires `schema:write`).                                                  |
+| `replace_schema_registry` | Replace a custom registry's document by namespace/version (requires `schema:write`; bundled registries refuse).                                          |
+| `delete_schema_registry` | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                       |
 
 Each query tool accepts an optional `dataset` argument. Omit it to use your
 session's default dataset; pass one to target another dataset your tenant may
@@ -300,6 +308,15 @@ To explore logs or metrics instead: `discover_attributes` with `signal:
 "metrics"` does the same for Prometheus labels. `discover_metrics` lists
 metric names directly, for building a `query_metrics` PromQL expression.
 
+Before filtering or grouping by a name you are unsure of, ask the schema
+registry what it means: `resolve_attribute` with `key: "k8s.pod.uid"` (or
+`resolve_entity` / `resolve_metric`, or `search_schema` with `kind:
+"attribute", prefix: "k8s.pod."`) returns namespace-tagged, precedence-ordered
+definitions — a tenant's own conventions (uploaded with
+`create_schema_registry`) come first, the bundled OpenTelemetry definition is
+kept as an alternative. `discover_*` tells you which names *have data*;
+`resolve_*` tells you what they *mean*.
+
 ## From the CLI
 
 The same discovery is available outside an agent session, via
@@ -310,4 +327,18 @@ signaldb-cli discover attributes --signal traces --tag service.name
 signaldb-cli discover attributes --signal logs
 signaldb-cli discover attributes --signal metrics --tag job
 signaldb-cli discover metrics
+```
+
+Schema-registry lookup and custom-registry management mirror the schema tools
+(reads need a key with `schema:read`, mutations `schema:write`):
+
+```bash
+signaldb-cli schema registry list
+signaldb-cli schema attribute get k8s.pod.uid
+signaldb-cli schema entity get k8s.pod
+signaldb-cli schema metric search k8s.pod. --limit 20
+signaldb-cli admin schema validate --file conventions.yaml
+signaldb-cli admin schema create --file conventions.yaml     # YAML or JSON
+signaldb-cli admin schema replace acme 1.0.0 --file conventions.yaml
+signaldb-cli admin schema delete acme 1.0.0
 ```

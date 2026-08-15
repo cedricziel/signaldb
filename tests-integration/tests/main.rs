@@ -33,6 +33,7 @@ mod promql_queries;
 mod query_ir_e2e;
 mod query_parity;
 mod router_tempo_endpoints;
+mod schema_registry_clients;
 mod sdk_query_methods;
 mod self_monitoring;
 mod storage_quota;

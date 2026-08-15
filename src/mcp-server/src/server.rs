@@ -22,6 +22,13 @@
 //! - `list_api_keys` / `create_api_key` / `update_api_key_scopes` — API-key
 //!   management over the admin API (admin-authenticated); keys carry explicit
 //!   scopes from the shared vocabulary (`common::auth::API_KEY_SCOPES`)
+//! - `list_schema_registries`, `resolve_attribute` / `resolve_entity` /
+//!   `resolve_metric`, `search_schema` — schema-registry lookup: what an
+//!   attribute key, entity type, or metric name *means*, precedence-ordered
+//!   across the tenant's visible registries (custom → signaldb → otel), so a
+//!   model can learn the vocabulary before building a query
+//! - `create_schema_registry` / `replace_schema_registry` /
+//!   `delete_schema_registry` — custom-registry management (`schema:write`)
 //!
 //! Raw SQL is served over Arrow Flight (gRPC) rather than the router HTTP API;
 //! this server is an HTTP forwarder and holds no Flight client, so SQL stays a
@@ -291,6 +298,124 @@ where
     match serde_json::Value::deserialize(deserializer)? {
         serde_json::Value::String(s) => serde_json::from_str(&s).map_err(serde::de::Error::custom),
         other => Ok(other),
+    }
+}
+
+/// Parameters for `resolve_attribute`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ResolveAttributeParams {
+    /// Attribute wire key, e.g. `k8s.pod.uid` or `service.name`.
+    key: String,
+}
+
+/// Parameters for `resolve_entity`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ResolveEntityParams {
+    /// Entity type name, e.g. `k8s.pod` or `service`.
+    name: String,
+}
+
+/// Parameters for `resolve_metric`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ResolveMetricParams {
+    /// Metric name, e.g. `k8s.pod.cpu.time`.
+    name: String,
+}
+
+/// Which definition kind `search_schema` targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "lowercase")]
+enum SchemaKind {
+    /// Attribute keys (`k8s.pod.uid`, `http.request.method`, ...).
+    Attribute,
+    /// Entity types (`k8s.pod`, `service`, `host`, ...).
+    Entity,
+    /// Metric names (`k8s.pod.cpu.time`, `http.server.request.duration`, ...).
+    Metric,
+}
+
+/// Parameters for `search_schema`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct SearchSchemaParams {
+    /// What to search: `attribute`, `entity`, or `metric`.
+    kind: SchemaKind,
+    /// Name prefix, e.g. `k8s.pod.`. Omit or leave empty to list from the top.
+    #[serde(default)]
+    prefix: Option<String>,
+    /// Maximum hits (server default 50, max 200).
+    #[serde(default)]
+    limit: Option<u64>,
+}
+
+/// Parameters for `create_schema_registry`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct CreateSchemaRegistryParams {
+    /// The registry document in the OpenTelemetry Weaver semantic-convention
+    /// model, as a JSON object: `name`, `version`, optional `schema_url` /
+    /// `description` / `dependencies`, and `groups` (attribute_group, entity,
+    /// metric). YAML must be converted to JSON first.
+    #[schemars(schema_with = "json_object_schema")]
+    #[serde(deserialize_with = "deserialize_json_object_or_string")]
+    document: serde_json::Value,
+}
+
+/// Parameters for `replace_schema_registry`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ReplaceSchemaRegistryParams {
+    /// Registry namespace (the document's `name`).
+    namespace: String,
+    /// Registry version (the document's `version`).
+    version: String,
+    /// The replacement registry document (Weaver model) as a JSON object; its
+    /// `name`/`version` must match `namespace`/`version`.
+    #[schemars(schema_with = "json_object_schema")]
+    #[serde(deserialize_with = "deserialize_json_object_or_string")]
+    document: serde_json::Value,
+}
+
+/// Parameters for `delete_schema_registry`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DeleteSchemaRegistryParams {
+    /// Registry namespace.
+    namespace: String,
+    /// Registry version.
+    version: String,
+}
+
+/// Advertises a nested-document parameter as a JSON object (see
+/// [`query_ir_document_schema`]).
+fn json_object_schema(_generator: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
+    rmcp::schemars::json_schema!({ "type": "object" })
+}
+
+/// Accepts a nested document as a native JSON object, or — for clients that
+/// stringify nested arguments (issue #1113) — a JSON-encoded string.
+fn deserialize_json_object_or_string<'de, D>(deserializer: D) -> Result<serde_json::Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_query_ir_document(deserializer)
+}
+
+/// The registry document a schema mutation submits, as the JSON object the
+/// API takes; anything but an object is a parameter error.
+fn registry_document(
+    document: serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>, ErrorData> {
+    match document {
+        serde_json::Value::Object(map) => Ok(map),
+        _ => Err(ErrorData::invalid_params(
+            "`document` must be a JSON object (the Weaver-model registry document: name, version, groups)",
+            None,
+        )),
     }
 }
 
@@ -707,6 +832,188 @@ impl McpServer {
             .map_err(|e| map_sdk_err(e, "update_api_key_scopes"))?;
         json_result(&resp.into_inner())
     }
+
+    #[tool(
+        description = "List the schema registries visible to your tenant, in precedence order (custom tenant registries first, then the bundled `signaldb` and OpenTelemetry `otel` semantic conventions), with attribute/entity/metric counts. Use `resolve_attribute`, `resolve_entity`, `resolve_metric`, or `search_schema` to look up what a specific name means."
+    )]
+    async fn list_schema_registries(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .schema_list_registries()
+            .send()
+            .await
+            .map_err(|e| map_schema_err(e, "list_schema_registries"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Look up what an attribute key means BEFORE filtering or grouping by it: returns every definition of `key` (e.g. `k8s.pod.uid`, `service.name`) across your tenant's visible schema registries, precedence-ordered with the tenant's own convention as `primary` and the OpenTelemetry definition as an alternative. Each hit carries the namespace, type, brief, examples, enum members, deprecation/replacement, and the entities the key identifies. Empty `hits` means the key is not in any registry (it may still exist in the data — see `discover_attributes`)."
+    )]
+    async fn resolve_attribute(
+        &self,
+        Parameters(p): Parameters<ResolveAttributeParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .schema_resolve_attribute()
+            .key(p.key)
+            .send()
+            .await
+            .map_err(|e| map_schema_err(e, "resolve_attribute"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Look up what an entity type means (e.g. `k8s.pod`, `service`, `host`) before building a query about it: returns every definition across your tenant's visible schema registries, precedence-ordered with `primary` first, including the identifying and descriptive attributes, the entity it extends, and the metrics associated with it. Use the identifying attributes as the keys to filter or group by."
+    )]
+    async fn resolve_entity(
+        &self,
+        Parameters(p): Parameters<ResolveEntityParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .schema_resolve_entity()
+            .name(p.name)
+            .send()
+            .await
+            .map_err(|e| map_schema_err(e, "resolve_entity"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Look up what a metric means (e.g. `k8s.pod.cpu.time`) before writing a PromQL query for it: returns every definition across your tenant's visible schema registries, precedence-ordered with `primary` first, including instrument, unit, brief, the attributes it is recorded with, and the entities it describes. Combine with `discover_metrics` to see which metric names actually have data."
+    )]
+    async fn resolve_metric(
+        &self,
+        Parameters(p): Parameters<ResolveMetricParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .schema_resolve_metric()
+            .name(p.name)
+            .send()
+            .await
+            .map_err(|e| map_schema_err(e, "resolve_metric"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Search the schema registries by name prefix to find the right vocabulary before building a query: `kind` is `attribute`, `entity`, or `metric`; `prefix` narrows by name (e.g. `k8s.pod.`), `limit` caps the hits (max 200). Each hit is namespace-tagged with its brief, so you can pick the correct attribute key, entity type, or metric name and then call the matching `resolve_*` tool for the full definition."
+    )]
+    async fn search_schema(
+        &self,
+        Parameters(p): Parameters<SearchSchemaParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let prefix = p.prefix.unwrap_or_default();
+        // Each kind has its own generated response type, so each arm sends and
+        // serializes its own result; the shape is the HTTP response, unchanged.
+        match p.kind {
+            SchemaKind::Attribute => {
+                let mut req = client.schema_search_attributes().prefix(prefix);
+                if let Some(limit) = p.limit {
+                    req = req.limit(limit);
+                }
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| map_schema_err(e, "search_schema"))?;
+                json_result(&resp.into_inner())
+            }
+            SchemaKind::Entity => {
+                let mut req = client.schema_search_entities().prefix(prefix);
+                if let Some(limit) = p.limit {
+                    req = req.limit(limit);
+                }
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| map_schema_err(e, "search_schema"))?;
+                json_result(&resp.into_inner())
+            }
+            SchemaKind::Metric => {
+                let mut req = client.schema_search_metrics().prefix(prefix);
+                if let Some(limit) = p.limit {
+                    req = req.limit(limit);
+                }
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| map_schema_err(e, "search_schema"))?;
+                json_result(&resp.into_inner())
+            }
+        }
+    }
+
+    #[tool(
+        description = "Create a custom schema registry for your tenant from a Weaver-model document (JSON object with `name`, `version`, `groups`; convert YAML first). Requires a credential with the `schema:write` scope. The tenant's own definitions take precedence over the bundled OpenTelemetry conventions in every `resolve_*` result. Validation errors come back with document paths."
+    )]
+    async fn create_schema_registry(
+        &self,
+        Parameters(p): Parameters<CreateSchemaRegistryParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let document = registry_document(p.document)?;
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .schema_create_registry()
+            .body(document)
+            .send()
+            .await
+            .map_err(|e| map_schema_err(e, "create_schema_registry"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Replace an existing custom schema registry (`namespace`/`version`) with a new Weaver-model document whose `name`/`version` match. Requires the `schema:write` scope. Bundled registries (`otel`, `signaldb`) are read-only and refuse replacement."
+    )]
+    async fn replace_schema_registry(
+        &self,
+        Parameters(p): Parameters<ReplaceSchemaRegistryParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let document = registry_document(p.document)?;
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .schema_replace_registry()
+            .namespace(p.namespace)
+            .version(p.version)
+            .body(document)
+            .send()
+            .await
+            .map_err(|e| map_schema_err(e, "replace_schema_registry"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Delete a custom schema registry (`namespace`/`version`) from your tenant. Requires the `schema:write` scope. Bundled registries (`otel`, `signaldb`) are read-only and refuse deletion."
+    )]
+    async fn delete_schema_registry(
+        &self,
+        Parameters(p): Parameters<DeleteSchemaRegistryParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        client
+            .schema_delete_registry()
+            .namespace(&p.namespace)
+            .version(&p.version)
+            .send()
+            .await
+            .map_err(|e| map_schema_err(e, "delete_schema_registry"))?;
+        json_result(&serde_json::json!({
+            "deleted": true,
+            "namespace": p.namespace,
+            "version": p.version,
+        }))
+    }
 }
 
 impl McpServer {
@@ -856,7 +1163,11 @@ impl ServerHandler for McpServer {
              Call `server_info` first to confirm which tenant your credential resolves to. \
              Clients that negotiate the MCP Apps extension render `get_trace` results as an \
              interactive waterfall and `get_profile` results as an interactive flamegraph. \
-             `prompts/list` offers ready-made investigation templates.",
+             `prompts/list` offers ready-made investigation templates. \
+             Before filtering, grouping, or writing a query around an attribute key, entity, or \
+             metric, call `resolve_attribute` / `resolve_entity` / `resolve_metric` (or \
+             `search_schema` by prefix) to learn what the name means in this tenant's schema \
+             registries; the tenant's own conventions take precedence over OpenTelemetry's.",
         )
     }
 
@@ -1068,6 +1379,42 @@ fn map_sdk_err<E: std::fmt::Debug>(err: signaldb_sdk::Error<E>, what: &str) -> E
             ErrorData::internal_error(format!("{what}: rate limited, retry shortly"), None)
         }
         _ => ErrorData::internal_error(format!("{what}: {err}"), None),
+    }
+}
+
+/// Map a schema-API error to an MCP error, keeping the router's typed body
+/// (`error` plus per-path validation `errors`) in the message so a model can
+/// fix an invalid registry document; other failures fall back to
+/// [`map_sdk_err`].
+fn map_schema_err(
+    err: signaldb_sdk::Error<signaldb_sdk::types::SchemaError>,
+    what: &str,
+) -> ErrorData {
+    let signaldb_sdk::Error::ErrorResponse(response) = err else {
+        return map_sdk_err(err.into_untyped(), what);
+    };
+    let status = response.status().as_u16();
+    let body = response.into_inner();
+    let mut message = format!("{what}: {}", body.error);
+    if !body.errors.is_empty() {
+        let details: Vec<String> = body
+            .errors
+            .iter()
+            .map(|e| format!("{}: {}", e.path, e.message))
+            .collect();
+        message.push_str(" [");
+        message.push_str(&details.join("; "));
+        message.push(']');
+    }
+    match status {
+        400 | 422 => ErrorData::invalid_params(message, None),
+        401 => ErrorData::invalid_request(
+            format!("{what}: credential expired or was revoked; re-authenticate the session"),
+            None,
+        ),
+        403 | 409 => ErrorData::invalid_request(message, None),
+        404 => ErrorData::resource_not_found(message, None),
+        _ => ErrorData::internal_error(message, None),
     }
 }
 
@@ -1314,9 +1661,109 @@ mod tests {
             "compact_run",
             "compact_status",
             "compact_dry_run",
+            "list_schema_registries",
+            "resolve_attribute",
+            "resolve_entity",
+            "resolve_metric",
+            "search_schema",
+            "create_schema_registry",
+            "replace_schema_registry",
+            "delete_schema_registry",
         ] {
             assert!(router.has_route(name), "tool `{name}` must be registered");
         }
+    }
+
+    /// The schema tools exist so a model looks up meaning before querying;
+    /// their descriptions must say so.
+    #[test]
+    fn schema_tool_descriptions_steer_resolve_before_query() {
+        let tools = McpServer::tool_router().list_all();
+        for name in [
+            "resolve_attribute",
+            "resolve_entity",
+            "resolve_metric",
+            "search_schema",
+        ] {
+            let tool = tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("tool `{name}` is listed"));
+            let description = tool.description.as_deref().unwrap_or_default();
+            assert!(
+                description.contains("before") || description.contains("BEFORE"),
+                "`{name}` must steer resolving before querying: {description}"
+            );
+            assert!(
+                description.contains("precedence") || description.contains("namespace"),
+                "`{name}` must explain namespace-tagged, precedence-ordered hits: {description}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_schema_kind_is_a_closed_lowercase_enum() {
+        let attr: SearchSchemaParams =
+            serde_json::from_value(serde_json::json!({ "kind": "attribute", "prefix": "k8s." }))
+                .unwrap();
+        assert_eq!(attr.kind, SchemaKind::Attribute);
+        assert_eq!(attr.prefix.as_deref(), Some("k8s."));
+        assert!(attr.limit.is_none());
+        assert!(
+            serde_json::from_value::<SearchSchemaParams>(serde_json::json!({ "kind": "span" }))
+                .is_err()
+        );
+        // The advertised schema names every kind (as `enum` or `oneOf`
+        // consts), so a client can offer them without guessing.
+        let schema = rmcp::schemars::schema_for!(SearchSchemaParams).to_value();
+        let text = schema.to_string();
+        for kind in ["\"attribute\"", "\"entity\"", "\"metric\""] {
+            assert!(text.contains(kind), "schema names {kind}: {text}");
+        }
+    }
+
+    #[test]
+    fn schema_registry_document_accepts_object_or_json_string() {
+        let doc = serde_json::json!({ "name": "acme", "version": "1.0.0", "groups": [] });
+        let native: CreateSchemaRegistryParams =
+            serde_json::from_value(serde_json::json!({ "document": doc })).unwrap();
+        assert_eq!(native.document, doc);
+        let stringified: CreateSchemaRegistryParams =
+            serde_json::from_value(serde_json::json!({ "document": doc.to_string() })).unwrap();
+        assert_eq!(stringified.document, doc);
+        assert!(registry_document(doc).is_ok());
+        assert!(registry_document(serde_json::json!([1, 2])).is_err());
+
+        let schema = rmcp::schemars::schema_for!(ReplaceSchemaRegistryParams);
+        assert_eq!(
+            schema
+                .pointer("/properties/document/type")
+                .and_then(|t| t.as_str()),
+            Some("object")
+        );
+    }
+
+    #[test]
+    fn schema_errors_keep_validation_paths_in_the_message() {
+        let body = signaldb_sdk::types::SchemaError {
+            error: "registry document is invalid".to_string(),
+            errors: vec![signaldb_sdk::types::ValidationError {
+                path: "groups[0].attributes[1].type".to_string(),
+                message: "unknown attribute type `strng`".to_string(),
+            }],
+        };
+        let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
+            body,
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            reqwest::header::HeaderMap::new(),
+        ));
+        let mapped = map_schema_err(err, "create_schema_registry");
+        assert_eq!(mapped.code, ErrorData::invalid_params("", None).code);
+        assert!(
+            mapped.message.contains("groups[0].attributes[1].type"),
+            "{}",
+            mapped.message
+        );
     }
 
     #[test]
