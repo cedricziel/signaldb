@@ -4,6 +4,7 @@ pub mod dataset;
 pub mod discover;
 pub mod ops;
 pub mod query;
+pub mod schema;
 pub mod tenant;
 pub mod user;
 
@@ -50,7 +51,12 @@ enum Commands {
         #[command(subcommand)]
         action: discover::DiscoverAction,
     },
-    /// Administrative operations (tenants, API keys, datasets)
+    /// Schema registry lookup (registries, attributes, entities, metrics)
+    Schema {
+        #[command(subcommand)]
+        action: schema::SchemaAction,
+    },
+    /// Administrative operations (tenants, API keys, datasets, schema registries)
     Admin {
         #[command(subcommand)]
         action: AdminAction,
@@ -145,6 +151,11 @@ enum AdminAction {
         #[command(subcommand)]
         action: dataset::DatasetAction,
     },
+    /// Manage custom schema registries (tenant API key with `schema:write`)
+    Schema {
+        #[command(subcommand)]
+        action: schema::AdminSchemaAction,
+    },
 }
 
 impl Cli {
@@ -154,6 +165,20 @@ impl Cli {
         }
 
         if let Commands::Discover { action } = self.command {
+            return action.run().await;
+        }
+
+        if let Commands::Schema { action } = self.command {
+            return action.run().await;
+        }
+
+        // Custom-registry management authenticates with a tenant API key
+        // carrying `schema:write` (the schema API is tenant-scoped), not the
+        // instance admin key the other `admin` nouns use.
+        if let Commands::Admin {
+            action: AdminAction::Schema { action },
+        } = self.command
+        {
             return action.run().await;
         }
 
@@ -210,11 +235,13 @@ impl Cli {
                 AdminAction::Tenant { action } => action.run(&client).await,
                 AdminAction::ApiKey { action } => action.run(&client).await,
                 AdminAction::Dataset { action } => action.run(&client).await,
+                AdminAction::Schema { .. } => unreachable!(),
             },
             Commands::User { action } => action.run(&client).await,
             Commands::Ops { .. } => unreachable!(),
             Commands::Query(_) => unreachable!(),
             Commands::Discover { .. } => unreachable!(),
+            Commands::Schema { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
         }
@@ -345,6 +372,82 @@ mod parse_tests {
         assert!(parse(&["signaldb-cli", "admin", "tenant", "list"]).is_ok());
         assert!(parse(&["signaldb-cli", "admin", "api-key", "list", "acme"]).is_ok());
         assert!(parse(&["signaldb-cli", "admin", "dataset", "list", "acme"]).is_ok());
+    }
+
+    #[test]
+    fn schema_lookup_lives_under_schema() {
+        assert!(parse(&["signaldb-cli", "schema", "registry", "list"]).is_ok());
+        assert!(
+            parse(&[
+                "signaldb-cli",
+                "schema",
+                "registry",
+                "get",
+                "otel",
+                "1.43.0"
+            ])
+            .is_ok()
+        );
+        assert!(parse(&["signaldb-cli", "schema", "attribute", "get", "k8s.pod.uid"]).is_ok());
+        assert!(parse(&["signaldb-cli", "schema", "attribute", "search", "k8s."]).is_ok());
+        assert!(parse(&["signaldb-cli", "schema", "entity", "get", "k8s.pod"]).is_ok());
+        assert!(parse(&["signaldb-cli", "schema", "entity", "search", "k8s."]).is_ok());
+        assert!(
+            parse(&[
+                "signaldb-cli",
+                "schema",
+                "metric",
+                "get",
+                "k8s.pod.cpu.time"
+            ])
+            .is_ok()
+        );
+        assert!(parse(&["signaldb-cli", "schema", "metric", "search", "k8s."]).is_ok());
+        // `schema` requires a noun and a verb.
+        assert!(parse(&["signaldb-cli", "schema"]).is_err());
+        assert!(parse(&["signaldb-cli", "schema", "attribute"]).is_err());
+    }
+
+    #[test]
+    fn custom_registry_management_lives_under_admin() {
+        assert!(
+            parse(&[
+                "signaldb-cli",
+                "admin",
+                "schema",
+                "create",
+                "--file",
+                "conventions.yaml"
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse(&[
+                "signaldb-cli",
+                "admin",
+                "schema",
+                "replace",
+                "acme",
+                "1.0.0",
+                "--file",
+                "conventions.json"
+            ])
+            .is_ok()
+        );
+        assert!(parse(&["signaldb-cli", "admin", "schema", "delete", "acme", "1.0.0"]).is_ok());
+        assert!(
+            parse(&[
+                "signaldb-cli",
+                "admin",
+                "schema",
+                "validate",
+                "--file",
+                "conventions.yaml"
+            ])
+            .is_ok()
+        );
+        // Mutations are not reachable from the read-only `schema` group.
+        assert!(parse(&["signaldb-cli", "schema", "create", "--file", "x.yaml"]).is_err());
     }
 
     #[test]

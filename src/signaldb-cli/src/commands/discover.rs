@@ -42,24 +42,26 @@ pub struct AttributesArgs {
     connect: ConnectArgs,
 }
 
+/// Router URL + tenant credential shared by the tenant-authenticated commands
+/// (`discover`, `schema`, `admin schema`).
 #[derive(Args)]
 pub struct ConnectArgs {
     /// SignalDB router base URL
     #[arg(long, env = "SIGNALDB_URL", default_value = "http://localhost:3000")]
-    url: String,
+    pub(crate) url: String,
     /// API key for authentication
     #[arg(long, env = "SIGNALDB_API_KEY")]
-    api_key: Option<String>,
+    pub(crate) api_key: Option<String>,
     /// Tenant ID
     #[arg(long, env = "SIGNALDB_TENANT_ID")]
-    tenant_id: Option<String>,
+    pub(crate) tenant_id: Option<String>,
     /// Dataset ID
     #[arg(long, env = "SIGNALDB_DATASET_ID")]
-    dataset_id: Option<String>,
+    pub(crate) dataset_id: Option<String>,
 }
 
 impl ConnectArgs {
-    fn build_client(&self) -> anyhow::Result<signaldb_sdk::Client> {
+    pub(crate) fn build_client(&self) -> anyhow::Result<signaldb_sdk::Client> {
         build_http_client(
             &self.url,
             self.api_key.as_deref(),
