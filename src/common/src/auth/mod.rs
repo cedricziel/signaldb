@@ -17,13 +17,56 @@ pub use password::{
     verify_password,
 };
 pub use session::{SESSION_COOKIE, session_token_from_headers};
-pub use validation::{ValidationError, validate_dataset_id, validate_id, validate_tenant_id};
+pub use validation::{
+    ValidationError, validate_dataset_id, validate_id, validate_scopes, validate_tenant_id,
+};
 
-/// Per-signal read scopes granted over the query surface (e.g. the MCP read
-/// tools). The mirror of the acceptor's ingest write scopes; a token or key
-/// carrying `<signal>:read` may read that signal (see
-/// [`TenantContext::can_read`]).
-pub const READ_SCOPES: [&str; 4] = ["traces:read", "logs:read", "metrics:read", "profiles:read"];
+/// Scope granting read access to the schema registry (registries, attribute /
+/// entity / metric lookups). A read scope: OAuth grants it by default.
+pub const SCHEMA_READ_SCOPE: &str = "schema:read";
+
+/// Scope granting mutation of custom schema registries. Never OAuth-grantable.
+pub const SCHEMA_WRITE_SCOPE: &str = "schema:write";
+
+/// Both schema-registry scopes.
+pub const SCHEMA_SCOPES: [&str; 2] = [SCHEMA_READ_SCOPE, SCHEMA_WRITE_SCOPE];
+
+/// Per-signal ingest scopes enforced by the acceptor; a key carrying
+/// `<signal>:write` may ingest that signal (see [`TenantContext::can_ingest`]).
+pub const INGEST_SCOPES: [&str; 4] = [
+    "metrics:write",
+    "logs:write",
+    "traces:write",
+    "profiles:write",
+];
+
+/// Read scopes granted over the query surface (e.g. the MCP read tools) and
+/// grantable through OAuth consent. A token or key carrying `<signal>:read`
+/// may read that signal (see [`TenantContext::can_read`]); `schema:read`
+/// covers the schema registry.
+pub const READ_SCOPES: [&str; 5] = [
+    "traces:read",
+    "logs:read",
+    "metrics:read",
+    "profiles:read",
+    SCHEMA_READ_SCOPE,
+];
+
+/// The complete API-key scope vocabulary: `INGEST_SCOPES ∪ READ_SCOPES ∪
+/// SCHEMA_SCOPES`. Every key-management surface (admin API, management API,
+/// CLI, MCP, UI) accepts exactly these; see [`validate_scopes`].
+pub const API_KEY_SCOPES: [&str; 10] = [
+    "metrics:write",
+    "logs:write",
+    "traces:write",
+    "profiles:write",
+    "traces:read",
+    "logs:read",
+    "metrics:read",
+    "profiles:read",
+    SCHEMA_READ_SCOPE,
+    SCHEMA_WRITE_SCOPE,
+];
 
 /// Human principal resolved from a server-side browser session.
 #[derive(Debug, Clone)]
@@ -161,6 +204,29 @@ impl TenantContext {
         self.api_key_scopes
             .as_ref()
             .is_none_or(|scopes| scopes.iter().any(|scope| scope == &required))
+    }
+
+    /// Whether this principal may read the schema registry.
+    ///
+    /// Any membership role may read; a legacy key with no explicit scopes is
+    /// unrestricted; explicit scopes must contain [`SCHEMA_READ_SCOPE`].
+    pub fn can_read_schema(&self) -> bool {
+        self.has_scope_or_unrestricted(SCHEMA_READ_SCOPE)
+    }
+
+    /// Whether this principal may create, replace, validate, or delete custom
+    /// schema registries.
+    ///
+    /// Sessions need tenant Admin or instance-admin; keys follow the same
+    /// shape as [`can_ingest`](Self::can_ingest) with [`SCHEMA_WRITE_SCOPE`].
+    pub fn can_write_schema(&self) -> bool {
+        self.can_manage_tenant() && self.has_scope_or_unrestricted(SCHEMA_WRITE_SCOPE)
+    }
+
+    fn has_scope_or_unrestricted(&self, required: &str) -> bool {
+        self.api_key_scopes
+            .as_ref()
+            .is_none_or(|scopes| scopes.iter().any(|scope| scope == required))
     }
 }
 
@@ -316,6 +382,114 @@ mod scoped_authorization_tests {
     fn write_scopes_do_not_grant_read() {
         let writer_only = context(Some(vec!["traces:write".into()]));
         assert!(!writer_only.can_read("traces"));
+    }
+
+    #[test]
+    fn schema_read_scope_allows_only_schema_reads() {
+        let reader = context(Some(vec![SCHEMA_READ_SCOPE.into()]));
+        assert!(reader.can_read_schema());
+        assert!(!reader.can_write_schema());
+        assert!(!reader.can_read("traces"));
+    }
+
+    #[test]
+    fn schema_write_scope_allows_writes_but_not_reads() {
+        let writer = context(Some(vec![SCHEMA_WRITE_SCOPE.into()]));
+        assert!(writer.can_write_schema());
+        assert!(!writer.can_read_schema());
+    }
+
+    #[test]
+    fn ingest_only_key_cannot_touch_schema() {
+        let ingest = context(Some(vec!["traces:write".into()]));
+        assert!(!ingest.can_read_schema());
+        assert!(!ingest.can_write_schema());
+    }
+
+    #[test]
+    fn legacy_unscoped_keys_have_full_schema_access() {
+        let legacy = context(None);
+        assert!(legacy.can_read_schema());
+        assert!(legacy.can_write_schema());
+    }
+
+    #[test]
+    fn sessions_read_schema_with_any_role_and_write_only_as_admin() {
+        use crate::catalog::MembershipRole;
+        for (role, may_write) in [
+            (MembershipRole::Viewer, false),
+            (MembershipRole::Member, false),
+            (MembershipRole::Admin, true),
+        ] {
+            let session =
+                context(None).with_user("user-1".into(), role, false, Some("session-1".into()));
+            assert!(session.can_read_schema(), "{role:?} must read schema");
+            assert_eq!(session.can_write_schema(), may_write, "{role:?} write");
+        }
+        let instance_admin = context(None).with_user(
+            "root".into(),
+            MembershipRole::Viewer,
+            true,
+            Some("session-2".into()),
+        );
+        assert!(instance_admin.can_read_schema());
+        assert!(instance_admin.can_write_schema());
+    }
+
+    #[test]
+    fn schema_read_is_a_read_scope_but_schema_write_is_not() {
+        assert!(READ_SCOPES.contains(&SCHEMA_READ_SCOPE));
+        assert!(!READ_SCOPES.contains(&SCHEMA_WRITE_SCOPE));
+        assert_eq!(SCHEMA_SCOPES, [SCHEMA_READ_SCOPE, SCHEMA_WRITE_SCOPE]);
+    }
+
+    #[test]
+    fn api_key_scopes_is_the_union_of_ingest_read_and_schema() {
+        for scope in INGEST_SCOPES
+            .iter()
+            .chain(READ_SCOPES.iter())
+            .chain(SCHEMA_SCOPES.iter())
+        {
+            assert!(API_KEY_SCOPES.contains(scope), "{scope} missing");
+        }
+        for scope in API_KEY_SCOPES {
+            assert!(
+                INGEST_SCOPES.contains(&scope)
+                    || READ_SCOPES.contains(&scope)
+                    || SCHEMA_SCOPES.contains(&scope),
+                "{scope} is not in any family"
+            );
+        }
+        let unique: std::collections::BTreeSet<&str> = API_KEY_SCOPES.into_iter().collect();
+        assert_eq!(unique.len(), API_KEY_SCOPES.len(), "duplicate scope");
+    }
+
+    #[test]
+    fn validate_scopes_accepts_every_known_scope() {
+        let all: Vec<String> = API_KEY_SCOPES.iter().map(|s| s.to_string()).collect();
+        assert_eq!(validate_scopes(&all), Ok(()));
+        assert_eq!(validate_scopes(&["schema:read".to_string()]), Ok(()));
+    }
+
+    #[test]
+    fn validate_scopes_rejects_empty_and_names_unknown_scope() {
+        assert_eq!(validate_scopes(&[]), Err(ValidationError::NoScopes));
+        assert_eq!(
+            validate_scopes(&["traces:write".to_string(), "schema:admin".to_string()]),
+            Err(ValidationError::UnknownScope {
+                scope: "schema:admin".to_string()
+            })
+        );
+        let message = ValidationError::UnknownScope {
+            scope: "schema:admin".to_string(),
+        }
+        .to_string();
+        assert!(message.contains("schema:admin"), "{message}");
+        assert!(
+            ValidationError::NoScopes
+                .to_string()
+                .contains("at least one scope"),
+        );
     }
 }
 
