@@ -86,7 +86,11 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   `/traces`, `/metrics`, `/profiles`, `/query`), with time range, filters, and
   selection in query parameters alongside it — so views are separately
   navigable and can be bookmarked, shared, and revisited with the browser
-  back/forward buttons. Tenant/dataset administration lives at `/manage`.
+  back/forward buttons. The tenant/dataset context rides along as
+  `?tenant=&dataset=`; links that omit it (the user menu, deep links inside
+  the schema hub) keep the last context you were in, so a bare `/schema` or
+  `/manage` never turns into a tenant-less request. Tenant/dataset
+  administration lives at `/manage`.
 
 ### The catalog
 
