@@ -1,35 +1,30 @@
+use crate::QuerierFlightService;
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use querier::QuerierFlightService;
 use std::sync::Arc;
 use tempo_api::tempopb::querier_server::QuerierServer;
 use tokio::signal;
 use tonic::transport::Server;
 
-#[derive(Parser)]
-#[command(name = "signaldb-querier")]
-#[command(about = "SignalDB Querier Service - executes queries on stored observability data")]
-#[command(version)]
-struct Cli {
-    #[command(flatten)]
-    common: CommonArgs,
-
+/// Command-line arguments of the `querier` subcommand (`signaldb querier`).
+#[derive(clap::Args, Debug)]
+pub struct Args {
     #[command(subcommand)]
-    command: Option<QuerierCommands>,
+    pub command: Option<QuerierCommands>,
 
     #[arg(long, help = "Arrow Flight server port", default_value = "50054")]
-    flight_port: u16,
+    pub flight_port: u16,
 
     #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
-    bind: String,
+    pub bind: String,
 }
 
-#[derive(Subcommand)]
-enum QuerierCommands {
+#[derive(Subcommand, Debug)]
+pub enum QuerierCommands {
     #[command(flatten)]
     Common(CommonCommands),
 }
@@ -40,26 +35,16 @@ impl Default for QuerierCommands {
     }
 }
 
-// jemalloc as global allocator: the Linux release/Docker builds enable the
-// `jemalloc` feature because musl's (and to a lesser degree glibc's)
-// allocator degrades under multithreaded Arrow allocation churn.
-// `jemalloc-profiling` implies it and adds heap self-profiling.
-#[cfg(feature = "jemalloc")]
-#[global_allocator]
-static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-
+/// Run the `querier` service with the shared options and its own arguments.
+pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     // Load configuration
-    let config = utils::load_config(cli.common.config.as_ref())?;
+    let config = utils::load_config(common.config.as_ref())?;
     // Standalone services need shared discovery/catalog backends; the
     // in-memory defaults only make sense in monolithic mode (issue #554).
     config.validate_for_distributed("querier")?;
 
     // Handle common commands that don't require starting the service
-    let command = cli.command.unwrap_or_default();
+    let command = args.command.unwrap_or_default();
     let QuerierCommands::Common(ref common_cmd) = command;
     if utils::handle_common_command(common_cmd, &config).await? {
         return Ok(()); // Command handled, exit early
@@ -72,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(t) => (t, None),
             Err(e) => (None, Some(e)),
         };
-    utils::init_logging(&cli.common, telemetry.as_ref());
+    utils::init_logging(common, telemetry.as_ref());
     if let Some(e) = telemetry_error {
         tracing::warn!(error = %e, "Self-monitoring init failed, continuing without it");
     } else if let Some(ref t) = telemetry {
@@ -91,11 +76,11 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let bind_ip = cli
+    let bind_ip = args
         .bind
         .parse::<std::net::IpAddr>()
         .context("Invalid bind address")?;
-    let flight_addr = std::net::SocketAddr::new(bind_ip, cli.flight_port);
+    let flight_addr = std::net::SocketAddr::new(bind_ip, args.flight_port);
 
     // Initialize service bootstrap for catalog-based discovery
     let advertise_addr =

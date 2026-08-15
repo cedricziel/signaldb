@@ -4,8 +4,8 @@ type: how-to
 status: living
 sources:
   - src/common/src/wal/**
-  - src/acceptor/src/main.rs
-  - src/writer/src/main.rs
+  - src/acceptor/src/cli.rs
+  - src/writer/src/cli.rs
 ---
 
 # WAL Persistence Configuration

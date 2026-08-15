@@ -1,0 +1,16 @@
+mod attr_demotion_rewrite;
+mod attr_promotion_rewrite;
+mod basic_compaction;
+mod concurrent_writes;
+mod default_config_safety_windows;
+mod default_lifecycle_e2e;
+mod logs_compaction;
+mod metrics_compaction;
+mod multi_instance;
+mod orphan_cleanup;
+mod partition_drop;
+mod partition_scoped_compaction;
+mod retention_cutoff;
+mod retention_failure_scenarios;
+mod snapshot_expiration;
+mod target_encoded_file_size;

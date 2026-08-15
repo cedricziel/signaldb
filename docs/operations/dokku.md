@@ -9,7 +9,7 @@ sources:
 
 # Deploying SignalDB on Dokku
 
-SignalDB can be deployed on [Dokku](https://dokku.com) using the monolithic Docker image from GHCR, or by building from source via git push.
+SignalDB can be deployed on [Dokku](https://dokku.com) using the monolithic Docker image from GHCR, or by building from source via git push. (Every SignalDB image ships the same `signaldb` binary; the monolithic image runs it with no subcommand, the per-service images with `signaldb <service>` — see [Binary Runtime Characteristics](binaries.md).)
 
 ## From GHCR image
 

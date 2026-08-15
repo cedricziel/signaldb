@@ -2,6 +2,9 @@
 name = "tests-integration"
 version = "0.1.4"
 edition.workspace = true
+# Integration tests are one binary (tests/main.rs) plus the two
+# subscriber-capturing tests; see tests/main.rs for the rationale.
+autotests = false
 license.workspace = true
 publish = false
 
@@ -91,118 +94,46 @@ name = "trace_index_scaling"
 harness = false
 required-features = ["benchmarks"]
 
-[[test]]
-name = "self_monitoring"
-path = "tests/self_monitoring.rs"
 
-[[test]]
-name = "storage_quota"
-path = "tests/storage_quota.rs"
 
-[[test]]
-name = "iceberg_integration"
-path = "tests/writer/iceberg_integration.rs"
 
-[[test]]
-name = "wal_replay_idempotency"
-path = "tests/writer/wal_replay_idempotency.rs"
 
-[[test]]
-name = "flight_rpc_tests"
-path = "tests/e2e/flight_rpc_tests.rs"
 
-[[test]]
-name = "end_to_end_trace_tests"
-path = "tests/e2e/end_to_end_trace_tests.rs"
 
-[[test]]
-name = "end_to_end_profiles_tests"
-path = "tests/e2e/end_to_end_profiles_tests.rs"
 
-[[test]]
-name = "component_integration_tests"
-path = "tests/e2e/component_integration_tests.rs"
 
-[[test]]
-name = "database_tenant_namespace_parity"
-path = "tests/e2e/database_tenant_namespace_parity.rs"
 
-[[test]]
-name = "dataset_table_provisioning"
-path = "tests/e2e/dataset_table_provisioning.rs"
 
-[[test]]
-name = "prometheus_remote_write_test"
-path = "tests/prometheus_remote_write_test.rs"
 
-[[test]]
-name = "basic_compaction"
-path = "tests/compactor/basic_compaction.rs"
 
-[[test]]
-name = "target_encoded_file_size"
-path = "tests/compactor/target_encoded_file_size.rs"
 
-[[test]]
-name = "concurrent_writes"
-path = "tests/compactor/concurrent_writes.rs"
 
-[[test]]
-name = "partition_scoped_compaction"
-path = "tests/compactor/partition_scoped_compaction.rs"
 
-[[test]]
-name = "logs_compaction"
-path = "tests/compactor/logs_compaction.rs"
 
-[[test]]
-name = "metrics_compaction"
-path = "tests/compactor/metrics_compaction.rs"
 
-[[test]]
-name = "retention_cutoff"
-path = "tests/compactor/retention_cutoff.rs"
 
-[[test]]
-name = "partition_drop"
-path = "tests/compactor/partition_drop.rs"
 
-[[test]]
-name = "snapshot_expiration"
-path = "tests/compactor/snapshot_expiration.rs"
 
-[[test]]
-name = "orphan_cleanup"
-path = "tests/compactor/orphan_cleanup.rs"
 
-[[test]]
-name = "retention_failure_scenarios"
-path = "tests/compactor/retention_failure_scenarios.rs"
 
-[[test]]
-name = "multi_instance"
-path = "tests/compactor/multi_instance.rs"
 
-[[test]]
-name = "attr_promotion_rewrite"
-path = "tests/compactor/attr_promotion_rewrite.rs"
 
-[[test]]
-name = "attr_demotion_rewrite"
-path = "tests/compactor/attr_demotion_rewrite.rs"
 
-[[test]]
-name = "default_lifecycle_e2e"
-path = "tests/compactor/default_lifecycle_e2e.rs"
 
-[[test]]
-name = "default_config_safety_windows"
-path = "tests/compactor/default_config_safety_windows.rs"
 
-[[test]]
-name = "trace_bloom_pruning"
-path = "tests/querier/trace_bloom_pruning.rs"
 
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
 ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "mcp-server", "opentelemetry-proto", "querier", "router", "signaldb-cli", "tokio", "tokio-stream", "tonic", "writer"]
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
+
+[[test]]
+name = "http_response_headers"
+path = "tests/http_response_headers.rs"
+
+[[test]]
+name = "ops_endpoints_tracing"
+path = "tests/ops_endpoints_tracing.rs"

@@ -16,6 +16,7 @@
 
 pub mod attr_promotion;
 pub mod attr_stats;
+pub mod cli;
 pub mod commit;
 pub mod executor;
 pub mod flight;

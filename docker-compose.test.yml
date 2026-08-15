@@ -70,7 +70,7 @@ services:
       - .:/app
       - /app/target
     working_dir: /app
-    command: ["cargo", "run", "--bin", "signaldb-acceptor"]
+    command: ["cargo", "run", "--bin", "signaldb", "--", "acceptor"]
 
   router-test:
     build:
@@ -91,7 +91,7 @@ services:
       - .:/app
       - /app/target
     working_dir: /app
-    command: ["cargo", "run", "--bin", "signaldb-router"]
+    command: ["cargo", "run", "--bin", "signaldb", "--", "router"]
 
   writer-test:
     build:
@@ -111,4 +111,4 @@ services:
       - .:/app
       - /app/target
     working_dir: /app
-    command: ["cargo", "run", "--bin", "signaldb-writer"]
+    command: ["cargo", "run", "--bin", "signaldb", "--", "writer"]

@@ -36,7 +36,7 @@ Compactor lifecycle configuration is located in the `[compactor]` section of `si
 
 - **Production:** `/etc/signaldb/signaldb.toml`
 - **Development:** `./signaldb.toml` (copy from `signaldb.dist.toml`)
-- **Container:** the compactor's `--config` flag defaults to `./signaldb.toml` relative to the working directory. If you mount a config file elsewhere (e.g. `/config/signaldb.toml`), you must pass `--config /config/signaldb.toml` explicitly or the mounted file is silently ignored.
+- **Container:** the compactor's `--config` flag (the shared `signaldb` option, usable as `signaldb compactor --config …` or `signaldb --config … compactor`) defaults to `./signaldb.toml` relative to the working directory. If you mount a config file elsewhere (e.g. `/config/signaldb.toml`), you must pass `--config /config/signaldb.toml` explicitly or the mounted file is silently ignored.
 
 **Duration syntax:** retention durations are humantime strings (`"1h"`, `"7d"`, `"30d"`, `"90d"`), not integers. Orphan-cleanup intervals are plain integer hour counts.
 

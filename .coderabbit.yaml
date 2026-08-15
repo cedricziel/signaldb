@@ -7,3 +7,8 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Dependabot PRs are auto-generated version bumps; CI (build/test/lint)
+    # is the real signal for them, and the "CodeRabbit" required check was
+    # left perpetually pending since it never fires for skipped authors.
+    ignore_usernames:
+      - dependabot[bot]

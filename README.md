@@ -119,9 +119,9 @@ There are no published benchmarks yet. Remaining gaps are tracked in the
 
 ## When you outgrow one box
 
-The monolith is one deployment mode, not a ceiling. The same services run
-as independent binaries — `signaldb-acceptor`, `signaldb-router`,
-`signaldb-writer`, `signaldb-querier`, `signaldb-compactor` — discovering
+The monolith is one deployment mode, not a ceiling. The same binary runs
+each service on its own — `signaldb acceptor`, `signaldb router`,
+`signaldb writer`, `signaldb querier`, `signaldb compactor` — discovering
 each other through a shared catalog and communicating over Apache Arrow
 Flight:
 

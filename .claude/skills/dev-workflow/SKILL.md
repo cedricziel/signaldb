@@ -62,12 +62,12 @@ cargo run --bin signaldb                              # All services in one proc
 ### Microservices Mode
 
 ```bash
-cargo run --bin signaldb-acceptor   # OTLP ingestion (:4317/:4318)
-cargo run --bin signaldb-router     # HTTP router (:3000) + Flight (:50053)
-cargo run --bin signaldb-writer     # Data persistence (Flight :50061)
-cargo run --bin signaldb-querier    # Query execution (Flight :50054)
-cargo run --bin signaldb-compactor  # Compaction/retention (Flight :50055, metrics :9091)
-cargo run --bin signaldb-mcp        # MCP server (Streamable HTTP :8228 /mcp; off unless [mcp].enabled)
+cargo run --bin signaldb -- acceptor   # OTLP ingestion (:4317/:4318)
+cargo run --bin signaldb -- router     # HTTP router (:3000) + Flight (:50053)
+cargo run --bin signaldb -- writer     # Data persistence (Flight :50061)
+cargo run --bin signaldb -- querier    # Query execution (Flight :50054)
+cargo run --bin signaldb -- compactor  # Compaction/retention (Flight :50055, metrics :9091)
+cargo run --bin signaldb -- mcp        # MCP server (Streamable HTTP :8228 /mcp; off unless [mcp].enabled)
 ```
 
 ```bash
