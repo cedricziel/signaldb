@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { NOT_SET, compositeKey } from "./traceGroups";
 import {
   buildPath,
   buildSearch,
   DEFAULT_STATE,
+  decodeCatalogSegment,
+  encodeCatalogSegment,
+  parseCatalogPath,
   parseExploreState,
   signalFromParam,
 } from "./urlState";
@@ -170,22 +174,7 @@ describe("buildSearch", () => {
     expect(search).not.toContain("pid");
   });
 
-  it("round-trips the catalog signal's selected entity type", () => {
-    const state = {
-      ...DEFAULT_STATE,
-      signal: "catalog" as const,
-      catalogEntity: "database",
-    };
-    const search = buildSearch(state);
-    expect(search).toContain("entity=database");
-    expect(parseExploreState(search)).toEqual({ ...state, signal: "logs" });
-  });
-
-  it("omits the entity param for the default entity type", () => {
-    expect(buildSearch(DEFAULT_STATE)).not.toContain("entity=");
-  });
-
-  it("round-trips the catalog signal's drilled-into entity and breakdown row", () => {
+  it("no longer emits or parses catalog entity/primary/secondary query params", () => {
     const state = {
       ...DEFAULT_STATE,
       signal: "catalog" as const,
@@ -194,15 +183,15 @@ describe("buildSearch", () => {
       catalogSecondary: "GET /health",
     };
     const search = buildSearch(state);
-    expect(search).toContain("primary=gatewayedge");
-    expect(search).toContain("secondary=GET+%2Fhealth");
-    expect(parseExploreState(search)).toEqual({ ...state, signal: "logs" });
-  });
-
-  it("omits the primary/secondary params at the list-view default", () => {
-    const search = buildSearch(DEFAULT_STATE);
+    expect(search).not.toContain("entity=");
     expect(search).not.toContain("primary=");
     expect(search).not.toContain("secondary=");
+    const parsed = parseExploreState(
+      "?entity=service&primary=x&secondary=y",
+    );
+    expect(parsed.catalogEntity).toBe(DEFAULT_STATE.catalogEntity);
+    expect(parsed.catalogPrimary).toBe("");
+    expect(parsed.catalogSecondary).toBe("");
   });
 
   it("omits tenant params for the ambient default context", () => {
@@ -308,5 +297,64 @@ describe("buildPath", () => {
     // Only the traces signal has a trace-detail route; a stray trace value
     // elsewhere in state (e.g. mid-transition) must not leak into the path.
     expect(buildPath("logs", "deadbeef")).toBe("/logs");
+  });
+
+  it("routes the catalog's entity type and drilled-into entity under /catalog", () => {
+    const base = DEFAULT_STATE;
+    expect(buildPath("catalog", "", base)).toBe("/catalog");
+    expect(
+      buildPath("catalog", "", { ...base, catalogEntity: "database" }),
+    ).toBe("/catalog/database");
+    expect(
+      buildPath("catalog", "", {
+        ...base,
+        catalogEntity: "service",
+        catalogPrimary: compositeKey(["checkout", "shop"]),
+      }),
+    ).toBe("/catalog/service/checkout,shop");
+    expect(
+      buildPath("catalog", "", {
+        ...base,
+        catalogEntity: "service",
+        catalogPrimary: compositeKey(["checkout", "shop"]),
+        catalogSecondary: compositeKey(["GET /health"]),
+      }),
+    ).toBe("/catalog/service/checkout,shop/GET%20%2Fhealth");
+  });
+
+  it("keeps the default entity type in the path once an entity is drilled into", () => {
+    expect(
+      buildPath("catalog", "", {
+        ...DEFAULT_STATE,
+        catalogPrimary: compositeKey(["db-01"]),
+      }),
+    ).toBe(`/catalog/${DEFAULT_STATE.catalogEntity}/db-01`);
+  });
+});
+
+describe("catalog path segments", () => {
+  it("round-trips identity values with reserved characters and not-set", () => {
+    const key = compositeKey(["a/b,c", null, "plain"]);
+    const seg = encodeCatalogSegment(key);
+    expect(seg).toBe(`a%2Fb%2Cc,${encodeURIComponent(NOT_SET)},plain`);
+    expect(decodeCatalogSegment(seg)).toBe(key);
+  });
+
+  it("parses the catalog route from a pathname", () => {
+    expect(parseCatalogPath("/catalog")).toEqual({
+      catalogEntity: DEFAULT_STATE.catalogEntity,
+      catalogPrimary: "",
+      catalogSecondary: "",
+    });
+    expect(parseCatalogPath("/catalog/host")).toEqual({
+      catalogEntity: "host",
+      catalogPrimary: "",
+      catalogSecondary: "",
+    });
+    expect(parseCatalogPath("/catalog/service/checkout,shop/GET%20%2Fhealth")).toEqual({
+      catalogEntity: "service",
+      catalogPrimary: compositeKey(["checkout", "shop"]),
+      catalogSecondary: compositeKey(["GET /health"]),
+    });
   });
 });

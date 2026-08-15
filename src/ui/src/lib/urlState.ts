@@ -12,7 +12,7 @@ import {
   traceFilterToParam,
   type TraceFilter,
 } from "./traceFilters";
-import { DEFAULT_GROUP_BY } from "./traceGroups";
+import { DEFAULT_GROUP_BY, KEY_SEP } from "./traceGroups";
 import type { GroupGrain } from "../api/traceGroups";
 
 /** A group row counts whole traces unless the URL says otherwise. */
@@ -149,11 +149,89 @@ export function signalFromParam(value: string | undefined): Signal {
  * `/traces` list path — see `crossSignalSearch`) act like real navigation
  * instead of a no-op within one path.
  */
-export function buildPath(signal: Signal, trace: string): string {
+export function buildPath(
+  signal: Signal,
+  trace: string,
+  catalog?: Pick<
+    ExploreState,
+    "catalogEntity" | "catalogPrimary" | "catalogSecondary"
+  >,
+): string {
   if (signal === "traces" && trace !== "") {
     return `/traces/${encodeURIComponent(trace)}`;
   }
+  if (signal === "catalog" && catalog) {
+    const { catalogEntity, catalogPrimary, catalogSecondary } = catalog;
+    // Bare /catalog is the default type's list; once anything more specific
+    // is selected the entity type is always spelled out.
+    if (catalogPrimary === "" && catalogEntity === DEFAULT_ENTITY_TYPE) {
+      return "/catalog";
+    }
+    let path = `/catalog/${encodeURIComponent(catalogEntity)}`;
+    if (catalogPrimary !== "") {
+      path += `/${encodeCatalogSegment(catalogPrimary)}`;
+      if (catalogSecondary !== "") {
+        path += `/${encodeCatalogSegment(catalogSecondary)}`;
+      }
+    }
+    return path;
+  }
   return `/${signal}`;
+}
+
+/**
+ * A catalog identity (a `compositeKey` of one or more dimension values) as one
+ * URL path segment: each value percent-encoded, joined by `,`. Because
+ * `encodeURIComponent` encodes `,` and `/`, splitting the raw segment on `,`
+ * is unambiguous even for values containing either.
+ */
+export function encodeCatalogSegment(compositeKey: string): string {
+  return compositeKey.split(KEY_SEP).map(encodeURIComponent).join(",");
+}
+
+/** Reverse of {@link encodeCatalogSegment}; expects the raw (undecoded) segment. */
+export function decodeCatalogSegment(segment: string): string {
+  return segment
+    .split(",")
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    })
+    .join(KEY_SEP);
+}
+
+/**
+ * The catalog selection encoded in a pathname (`/catalog[/:entity[/:primary
+ * [/:secondary]]]`). Reads the raw pathname rather than router params so the
+ * comma-joined segments are split before percent-decoding.
+ */
+export function parseCatalogPath(
+  pathname: string,
+): Pick<ExploreState, "catalogEntity" | "catalogPrimary" | "catalogSecondary"> {
+  const [, first, entity, primary, secondary] = pathname.split("/");
+  if (first !== "catalog") {
+    return {
+      catalogEntity: DEFAULT_ENTITY_TYPE,
+      catalogPrimary: "",
+      catalogSecondary: "",
+    };
+  }
+  let catalogEntity = DEFAULT_ENTITY_TYPE;
+  if (entity) {
+    try {
+      catalogEntity = decodeURIComponent(entity) || DEFAULT_ENTITY_TYPE;
+    } catch {
+      catalogEntity = entity;
+    }
+  }
+  return {
+    catalogEntity,
+    catalogPrimary: primary ? decodeCatalogSegment(primary) : "",
+    catalogSecondary: secondary ? decodeCatalogSegment(secondary) : "",
+  };
 }
 
 /**
@@ -196,9 +274,11 @@ export function parseExploreState(search: string): ExploreState {
     profileId: p.get("pid") ?? "",
     tenant: p.get("tenant") ?? "",
     dataset: p.get("dataset") ?? "",
-    catalogEntity: p.get("entity") || DEFAULT_ENTITY_TYPE,
-    catalogPrimary: p.get("primary") ?? "",
-    catalogSecondary: p.get("secondary") ?? "",
+    // Catalog selection lives in the path (/catalog/:entity/:primary/
+    // :secondary — see buildPath/parseCatalogPath), never in search params.
+    catalogEntity: DEFAULT_ENTITY_TYPE,
+    catalogPrimary: "",
+    catalogSecondary: "",
   };
 }
 
@@ -245,10 +325,6 @@ export function buildSearch(state: ExploreState): string {
   if (state.profileId) p.set("pid", state.profileId);
   if (state.tenant) p.set("tenant", state.tenant);
   if (state.dataset) p.set("dataset", state.dataset);
-  if (state.catalogEntity !== DEFAULT_ENTITY_TYPE)
-    p.set("entity", state.catalogEntity);
-  if (state.catalogPrimary) p.set("primary", state.catalogPrimary);
-  if (state.catalogSecondary) p.set("secondary", state.catalogSecondary);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }
@@ -304,10 +380,16 @@ export function useExploreState(): [ExploreState, UpdateFn] {
     signal?: string;
     traceId?: string;
   }>();
+  const onCatalogRoute = location.pathname.split("/")[1] === "catalog";
   const signal =
-    traceId !== undefined ? "traces" : signalFromParam(signalParam);
+    traceId !== undefined
+      ? "traces"
+      : onCatalogRoute
+        ? "catalog"
+        : signalFromParam(signalParam);
   const state: ExploreState = {
     ...parseExploreState(location.search),
+    ...(onCatalogRoute ? parseCatalogPath(location.pathname) : {}),
     signal,
     // react-router's useParams() already URL-decodes route params — a
     // second decodeURIComponent here would double-decode (corrupting a
@@ -319,14 +401,15 @@ export function useExploreState(): [ExploreState, UpdateFn] {
   const update = useCallback<UpdateFn>(
     (patch, opts) => {
       const next = { ...state, ...patch };
-      navigate(`${buildPath(next.signal, next.trace)}${buildSearch(next)}`, {
-        replace: !opts?.push,
-      });
+      navigate(
+        `${buildPath(next.signal, next.trace, next)}${buildSearch(next)}`,
+        { replace: !opts?.push },
+      );
     },
-    // `state` is recomputed each render from location.search/signalParam/
-    // traceId, so depending on those (not `state` itself) still recreates
-    // `update` exactly when its captured `state` would otherwise go stale.
-    [navigate, location.search, signalParam, traceId],
+    // `state` is recomputed each render from location.search/pathname/
+    // signalParam/traceId, so depending on those (not `state` itself) still
+    // recreates `update` exactly when its captured `state` would go stale.
+    [navigate, location.search, location.pathname, signalParam, traceId],
   );
 
   return [state, update];

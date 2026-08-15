@@ -110,6 +110,16 @@ attribute — an SDK resource detector, an OTel Collector with
 `resourcedetection`, Kubernetes downward-API injection — gets that entity
 type populated with no further configuration.
 
+Catalog selection is part of the URL path: `/catalog/<entity>` lists an
+entity type (`service`, `database`, `messaging_destination`, `host`,
+`k8s_pod`, …), `/catalog/<entity>/<identity>` opens one entity's detail
+page, and `/catalog/<entity>/<identity>/<row>` a breakdown row drilled into
+within it. `<identity>` is the entity's identity values, percent-encoded and
+comma-joined (`/catalog/service/checkout,shop` for `service.name=checkout`,
+`service.namespace=shop`), so entity pages are bookmarkable and shareable
+like every other view; tenant, dataset, and time range stay in the query
+string.
+
 An entity keyed by a _resource_ attribute (service, host, Kubernetes
 pod/node, container, process — anything an SDK's `Resource` carries, not
 just spans) is discovered from both traces **and** logs, and its Count and
