@@ -5,71 +5,6 @@ use iceberg_rust::spec::partition::{
     PartitionField, PartitionSpec, PartitionSpecBuilder, Transform,
 };
 use iceberg_rust::spec::schema::Schema;
-use iceberg_rust::spec::types::{MapType, PrimitiveType, StructField, StructType, Type};
-
-/// Helper to create a required StructField
-fn required_field(id: i32, name: &str, prim: PrimitiveType) -> StructField {
-    StructField {
-        id,
-        name: name.to_string(),
-        required: true,
-        field_type: Type::Primitive(prim),
-        doc: None,
-        initial_default: None,
-        write_default: None,
-    }
-}
-
-/// Helper to create an optional StructField
-fn optional_field(id: i32, name: &str, prim: PrimitiveType) -> StructField {
-    StructField {
-        id,
-        name: name.to_string(),
-        required: false,
-        field_type: Type::Primitive(prim),
-        doc: None,
-        initial_default: None,
-        write_default: None,
-    }
-}
-
-/// Append an optional `label_<key>` string column per configured
-/// materialized label to a hand-built (Rust) schema's field list, with IDs
-/// continuing after the existing fields. Deduplicates and skips names that
-/// collide with an existing column. Used by the metrics and profiles
-/// schemas, whose fields are defined in code rather than `schemas.toml`.
-fn append_materialized_label_fields(fields: &mut Vec<StructField>, labels: &[String]) {
-    let mut next_id = fields.iter().map(|f| f.id).max().unwrap_or(0) + 1;
-    for label in labels {
-        let name = crate::schema::materialized_column_name(label);
-        if fields.iter().any(|f| f.name == name) {
-            continue;
-        }
-        fields.push(optional_field(next_id, &name, PrimitiveType::String));
-        next_id += 1;
-    }
-}
-
-/// Convert the named top-level string fields of a hand-built schema into
-/// `Map<String, String>` attribute columns, allocating nested key/value
-/// field IDs after every existing top-level ID. Call this **after**
-/// [`append_materialized_label_fields`] so nested IDs cannot collide with
-/// label-column IDs (nested IDs are invisible to top-level `max(id)`).
-fn mapify_attr_fields(fields: &mut [StructField], names: &[&str]) {
-    let mut next_id = fields.iter().map(|f| f.id).max().unwrap_or(0) + 1;
-    for field in fields.iter_mut() {
-        if names.contains(&field.name.as_str()) {
-            field.field_type = Type::Map(MapType {
-                key_id: next_id,
-                key: Box::new(Type::Primitive(PrimitiveType::String)),
-                value_id: next_id + 1,
-                value_required: false,
-                value: Box::new(Type::Primitive(PrimitiveType::String)),
-            });
-            next_id += 2;
-        }
-    }
-}
 
 /// Create an hour partition spec for a schema, partitioning on the given source field.
 /// Uses the Iceberg convention: partition field_id = 1000 + source_id.
@@ -188,222 +123,44 @@ fn materialized_labels_for(signal: &str) -> Vec<String> {
 /// Create Iceberg schema for metrics gauge table
 /// Based on ClickHouse metrics_gauge_table.sql schema but adapted for Iceberg
 pub fn create_metrics_gauge_schema_with(labels: &[String]) -> Result<Schema> {
-    let mut fields = vec![
-        // Timing
-        required_field(1, "timestamp", PrimitiveType::Timestamp),
-        optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
-        // Metric identification
-        required_field(3, "service_name", PrimitiveType::String),
-        required_field(4, "metric_name", PrimitiveType::String),
-        optional_field(5, "metric_description", PrimitiveType::String),
-        optional_field(6, "metric_unit", PrimitiveType::String),
-        // Value
-        required_field(7, "value", PrimitiveType::Double),
-        optional_field(8, "flags", PrimitiveType::Int),
-        // Resource and scope information
-        optional_field(9, "resource_schema_url", PrimitiveType::String),
-        optional_field(10, "resource_attributes", PrimitiveType::String), // JSON string
-        optional_field(11, "scope_name", PrimitiveType::String),
-        optional_field(12, "scope_version", PrimitiveType::String),
-        optional_field(13, "scope_schema_url", PrimitiveType::String),
-        optional_field(14, "scope_attributes", PrimitiveType::String), // JSON string
-        optional_field(15, "scope_dropped_attr_count", PrimitiveType::Int),
-        // Metric attributes
-        optional_field(16, "attributes", PrimitiveType::String), // JSON string
-        // Exemplars - stored as JSON string for simplicity
-        optional_field(17, "exemplars", PrimitiveType::String), // JSON string
-        // Additional fields for query optimization
-        required_field(18, "date_day", PrimitiveType::Date), // Partition key
-        required_field(19, "hour", PrimitiveType::Int),      // Sub-partition key
-    ];
-    append_materialized_label_fields(&mut fields, labels);
-    mapify_attr_fields(
-        &mut fields,
-        &["resource_attributes", "scope_attributes", "attributes"],
-    );
-
-    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
+    SCHEMA_DEFINITIONS
+        .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v1")?
+        .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for metrics sum table
 /// Based on ClickHouse metrics_sum_table.sql schema but adapted for Iceberg
 pub fn create_metrics_sum_schema_with(labels: &[String]) -> Result<Schema> {
-    let mut fields = vec![
-        // Timing
-        required_field(1, "timestamp", PrimitiveType::Timestamp),
-        optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
-        // Metric identification
-        required_field(3, "service_name", PrimitiveType::String),
-        required_field(4, "metric_name", PrimitiveType::String),
-        optional_field(5, "metric_description", PrimitiveType::String),
-        optional_field(6, "metric_unit", PrimitiveType::String),
-        // Value and aggregation info
-        required_field(7, "value", PrimitiveType::Double),
-        optional_field(8, "flags", PrimitiveType::Int),
-        required_field(9, "aggregation_temporality", PrimitiveType::Int),
-        required_field(10, "is_monotonic", PrimitiveType::Boolean),
-        // Resource and scope information
-        optional_field(11, "resource_schema_url", PrimitiveType::String),
-        optional_field(12, "resource_attributes", PrimitiveType::String), // JSON string
-        optional_field(13, "scope_name", PrimitiveType::String),
-        optional_field(14, "scope_version", PrimitiveType::String),
-        optional_field(15, "scope_schema_url", PrimitiveType::String),
-        optional_field(16, "scope_attributes", PrimitiveType::String), // JSON string
-        optional_field(17, "scope_dropped_attr_count", PrimitiveType::Int),
-        // Metric attributes
-        optional_field(18, "attributes", PrimitiveType::String), // JSON string
-        // Exemplars - stored as JSON string for simplicity
-        optional_field(19, "exemplars", PrimitiveType::String), // JSON string
-        // Additional fields for query optimization
-        required_field(20, "date_day", PrimitiveType::Date), // Partition key
-        required_field(21, "hour", PrimitiveType::Int),      // Sub-partition key
-    ];
-    append_materialized_label_fields(&mut fields, labels);
-    mapify_attr_fields(
-        &mut fields,
-        &["resource_attributes", "scope_attributes", "attributes"],
-    );
-
-    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
+    SCHEMA_DEFINITIONS
+        .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, "physical-v1")?
+        .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for metrics histogram table
 /// Based on ClickHouse metrics_histogram_table.sql schema but adapted for Iceberg
 pub fn create_metrics_histogram_schema_with(labels: &[String]) -> Result<Schema> {
-    let mut fields = vec![
-        // Timing
-        required_field(1, "timestamp", PrimitiveType::Timestamp),
-        optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
-        // Metric identification
-        required_field(3, "service_name", PrimitiveType::String),
-        required_field(4, "metric_name", PrimitiveType::String),
-        optional_field(5, "metric_description", PrimitiveType::String),
-        optional_field(6, "metric_unit", PrimitiveType::String),
-        // Histogram data
-        required_field(7, "count", PrimitiveType::Long),
-        optional_field(8, "sum", PrimitiveType::Double),
-        optional_field(9, "min", PrimitiveType::Double),
-        optional_field(10, "max", PrimitiveType::Double),
-        optional_field(11, "bucket_counts", PrimitiveType::String), // JSON array string
-        optional_field(12, "explicit_bounds", PrimitiveType::String), // JSON array string
-        optional_field(13, "flags", PrimitiveType::Int),
-        required_field(14, "aggregation_temporality", PrimitiveType::Int),
-        // Resource and scope information
-        optional_field(15, "resource_schema_url", PrimitiveType::String),
-        optional_field(16, "resource_attributes", PrimitiveType::String), // JSON string
-        optional_field(17, "scope_name", PrimitiveType::String),
-        optional_field(18, "scope_version", PrimitiveType::String),
-        optional_field(19, "scope_schema_url", PrimitiveType::String),
-        optional_field(20, "scope_attributes", PrimitiveType::String), // JSON string
-        optional_field(21, "scope_dropped_attr_count", PrimitiveType::Int),
-        // Metric attributes
-        optional_field(22, "attributes", PrimitiveType::String), // JSON string
-        // Exemplars - stored as JSON string for simplicity
-        optional_field(23, "exemplars", PrimitiveType::String), // JSON string
-        // Additional fields for query optimization
-        required_field(24, "date_day", PrimitiveType::Date), // Partition key
-        required_field(25, "hour", PrimitiveType::Int),      // Sub-partition key
-    ];
-    append_materialized_label_fields(&mut fields, labels);
-    mapify_attr_fields(
-        &mut fields,
-        &["resource_attributes", "scope_attributes", "attributes"],
-    );
-
-    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
+    SCHEMA_DEFINITIONS
+        .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_histogram, "physical-v1")?
+        .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for metrics exponential histogram table
 /// Similar to histogram but with exponential bucketing for better precision
 pub fn create_metrics_exponential_histogram_schema_with(labels: &[String]) -> Result<Schema> {
-    let mut fields = vec![
-        // Timing
-        required_field(1, "timestamp", PrimitiveType::Timestamp),
-        optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
-        // Metric identification
-        required_field(3, "service_name", PrimitiveType::String),
-        required_field(4, "metric_name", PrimitiveType::String),
-        optional_field(5, "metric_description", PrimitiveType::String),
-        optional_field(6, "metric_unit", PrimitiveType::String),
-        // Exponential histogram data
-        required_field(7, "count", PrimitiveType::Long),
-        optional_field(8, "sum", PrimitiveType::Double),
-        optional_field(9, "min", PrimitiveType::Double),
-        optional_field(10, "max", PrimitiveType::Double),
-        optional_field(11, "scale", PrimitiveType::Int),
-        optional_field(12, "zero_count", PrimitiveType::Long),
-        optional_field(13, "positive_offset", PrimitiveType::Int),
-        optional_field(14, "positive_bucket_counts", PrimitiveType::String), // JSON array string
-        optional_field(15, "negative_offset", PrimitiveType::Int),
-        optional_field(16, "negative_bucket_counts", PrimitiveType::String), // JSON array string
-        optional_field(17, "flags", PrimitiveType::Int),
-        required_field(18, "aggregation_temporality", PrimitiveType::Int),
-        optional_field(19, "zero_threshold", PrimitiveType::Double),
-        // Resource and scope information
-        optional_field(20, "resource_schema_url", PrimitiveType::String),
-        optional_field(21, "resource_attributes", PrimitiveType::String), // JSON string
-        optional_field(22, "scope_name", PrimitiveType::String),
-        optional_field(23, "scope_version", PrimitiveType::String),
-        optional_field(24, "scope_schema_url", PrimitiveType::String),
-        optional_field(25, "scope_attributes", PrimitiveType::String), // JSON string
-        optional_field(26, "scope_dropped_attr_count", PrimitiveType::Int),
-        // Metric attributes
-        optional_field(27, "attributes", PrimitiveType::String), // JSON string
-        // Exemplars - stored as JSON string for simplicity
-        optional_field(28, "exemplars", PrimitiveType::String), // JSON string
-        // Additional fields for query optimization
-        required_field(29, "date_day", PrimitiveType::Date), // Partition key
-        required_field(30, "hour", PrimitiveType::Int),      // Sub-partition key
-    ];
-    append_materialized_label_fields(&mut fields, labels);
-    mapify_attr_fields(
-        &mut fields,
-        &["resource_attributes", "scope_attributes", "attributes"],
-    );
-
-    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
+    SCHEMA_DEFINITIONS
+        .resolve_table_schema(
+            &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
+            "physical-v1",
+        )?
+        .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for metrics summary table
 /// Stores quantile values for summary metrics
 pub fn create_metrics_summary_schema_with(labels: &[String]) -> Result<Schema> {
-    let mut fields = vec![
-        // Timing
-        required_field(1, "timestamp", PrimitiveType::Timestamp),
-        optional_field(2, "start_timestamp", PrimitiveType::Timestamp),
-        // Metric identification
-        required_field(3, "service_name", PrimitiveType::String),
-        required_field(4, "metric_name", PrimitiveType::String),
-        optional_field(5, "metric_description", PrimitiveType::String),
-        optional_field(6, "metric_unit", PrimitiveType::String),
-        // Summary data
-        required_field(7, "count", PrimitiveType::Long),
-        required_field(8, "sum", PrimitiveType::Double),
-        optional_field(9, "quantile_values", PrimitiveType::String), // JSON array of {quantile, value} objects
-        optional_field(10, "flags", PrimitiveType::Int),
-        // Resource and scope information
-        optional_field(11, "resource_schema_url", PrimitiveType::String),
-        optional_field(12, "resource_attributes", PrimitiveType::String), // JSON string
-        optional_field(13, "scope_name", PrimitiveType::String),
-        optional_field(14, "scope_version", PrimitiveType::String),
-        optional_field(15, "scope_schema_url", PrimitiveType::String),
-        optional_field(16, "scope_attributes", PrimitiveType::String), // JSON string
-        optional_field(17, "scope_dropped_attr_count", PrimitiveType::Int),
-        // Metric attributes
-        optional_field(18, "attributes", PrimitiveType::String), // JSON string
-        // Exemplars - stored as JSON string for simplicity
-        optional_field(19, "exemplars", PrimitiveType::String), // JSON string
-        // Additional fields for query optimization
-        required_field(20, "date_day", PrimitiveType::Date), // Partition key
-        required_field(21, "hour", PrimitiveType::Int),      // Sub-partition key
-    ];
-    append_materialized_label_fields(&mut fields, labels);
-    mapify_attr_fields(
-        &mut fields,
-        &["resource_attributes", "scope_attributes", "attributes"],
-    );
-
-    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
+    SCHEMA_DEFINITIONS
+        .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_summary, "physical-v1")?
+        .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for the profiles table
@@ -412,45 +169,9 @@ pub fn create_metrics_summary_schema_with(labels: &[String]) -> Result<Schema> {
 /// resolved at ingest. Identifiers (profile_id, trace_id, span_id) are
 /// stored as hex strings to stay joinable with the traces and logs tables.
 pub fn create_profiles_schema_with(labels: &[String]) -> Result<Schema> {
-    let mut fields = vec![
-        // Identity and timing
-        required_field(1, "profile_id", PrimitiveType::String), // hex encoded
-        required_field(2, "timestamp", PrimitiveType::Timestamp),
-        required_field(3, "duration_nano", PrimitiveType::Long),
-        // Sample value type/unit (e.g. cpu/nanoseconds)
-        required_field(4, "sample_type", PrimitiveType::String),
-        required_field(5, "sample_unit", PrimitiveType::String),
-        // Sampling period
-        optional_field(6, "period_type", PrimitiveType::String),
-        optional_field(7, "period_unit", PrimitiveType::String),
-        optional_field(8, "period", PrimitiveType::Long),
-        // Service context
-        required_field(9, "service_name", PrimitiveType::String),
-        // Resolved stack traces and samples
-        required_field(10, "stacktraces_json", PrimitiveType::String), // JSON array
-        required_field(11, "samples_json", PrimitiveType::String),     // JSON array
-        // Attribute context
-        optional_field(12, "resource_attributes", PrimitiveType::String), // JSON string
-        optional_field(13, "scope_attributes", PrimitiveType::String),    // JSON string
-        optional_field(14, "profile_attributes", PrimitiveType::String),  // JSON string
-        // Trace correlation (primary span link), hex encoded
-        optional_field(15, "trace_id", PrimitiveType::String),
-        optional_field(16, "span_id", PrimitiveType::String),
-        // Additional fields for query optimization
-        required_field(17, "date_day", PrimitiveType::Date), // Partition key
-        required_field(18, "hour", PrimitiveType::Int),      // Sub-partition key
-    ];
-    append_materialized_label_fields(&mut fields, labels);
-    mapify_attr_fields(
-        &mut fields,
-        &[
-            "resource_attributes",
-            "scope_attributes",
-            "profile_attributes",
-        ],
-    );
-
-    Ok(Schema::from_struct_type(StructType::new(fields), 0, None))
+    SCHEMA_DEFINITIONS
+        .resolve_table_schema(&SCHEMA_DEFINITIONS.profiles, "physical-v1")?
+        .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create partition specification for traces table
@@ -671,25 +392,39 @@ mod tests {
     }
 
     #[test]
-    fn append_materialized_label_fields_adds_optional_columns() {
-        let mut fields = vec![
-            required_field(1, "timestamp", PrimitiveType::Timestamp),
-            optional_field(2, "attributes", PrimitiveType::String),
-        ];
-        append_materialized_label_fields(
-            &mut fields,
-            &[
-                "namespace".to_string(),
-                "http.method".to_string(),
-                "namespace".to_string(),
-            ],
+    fn metrics_and_profiles_schemas_inject_labels_now_that_theyre_schemas_toml_sourced() {
+        // Regression coverage for the schemas.toml migration: metrics and
+        // profiles used to build their own label columns via
+        // append_materialized_label_fields (now deleted, dead code); they
+        // now go through the same ResolvedSchema::to_iceberg_schema_with_labels
+        // path traces/logs already used, which orders label columns after
+        // map key/value ids rather than before -- a harmless field-id
+        // ordering difference for brand-new tables, not a behavior change.
+        use crate::config::MaterializedLabels;
+        let m = MaterializedLabels {
+            metrics: vec!["region".to_string()],
+            profiles: vec!["deployment.environment".to_string()],
+            ..Default::default()
+        };
+
+        let gauge = TableSchema::MetricsGauge.schema_with_labels(&m).unwrap();
+        assert!(gauge.fields().iter().any(|f| f.name == "label_region"));
+
+        let profiles = TableSchema::Profiles.schema_with_labels(&m).unwrap();
+        assert!(
+            profiles
+                .fields()
+                .iter()
+                .any(|f| f.name == "label_deployment_environment")
         );
-        // 2 base + 2 unique labels (duplicate namespace collapsed).
-        assert_eq!(fields.len(), 4);
-        let ns = fields.iter().find(|f| f.name == "label_namespace").unwrap();
-        assert!(!ns.required);
-        assert_eq!(ns.id, 3); // IDs continue after the base fields
-        assert!(fields.iter().any(|f| f.name == "label_http_method"));
+
+        // No duplicate field ids anywhere in either schema.
+        for schema in [&gauge, &profiles] {
+            let mut ids: Vec<i32> = schema.fields().iter().map(|f| f.id).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), schema.fields().iter().count());
+        }
     }
 
     #[test]

@@ -16,6 +16,12 @@ pub struct SchemaDefinitions {
     pub metrics_sum: HashMap<String, TableSchemaDefinition>,
     #[serde(default)]
     pub metrics_histogram: HashMap<String, TableSchemaDefinition>,
+    #[serde(default)]
+    pub metrics_exponential_histogram: HashMap<String, TableSchemaDefinition>,
+    #[serde(default)]
+    pub metrics_summary: HashMap<String, TableSchemaDefinition>,
+    #[serde(default)]
+    pub profiles: HashMap<String, TableSchemaDefinition>,
 }
 
 #[derive(Debug, Deserialize)]
