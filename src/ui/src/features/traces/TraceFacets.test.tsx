@@ -1,11 +1,13 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetSemanticsCache } from "../../hooks/useSemantics";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { TraceFacets } from "./TraceFacets";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetSemanticsCache();
 });
 
 const range = { fromMs: 0, toMs: 3600_000 };
@@ -149,5 +151,37 @@ describe("TraceFacets", () => {
     renderFacets({ filters: [{ field: "status", value: "error" }] });
     const statusBtn = screen.getByRole("button", { name: /status/ });
     expect(within(statusBtn).getByText("1")).toBeInTheDocument();
+  });
+
+  it("adds an info glyph with the registry tooltip to facets it knows", async () => {
+    const serviceName = {
+      key: "service.name",
+      brief: "Logical name of the service.",
+      type: "string",
+      group_id: "registry.service",
+      group_display_name: "Service",
+      namespace: "otel",
+      version: "1.43.0",
+      source: "bundled",
+    };
+    stubFetchRoutes([
+      { match: "/api/v1/query", body: table([]) },
+      {
+        match: "/api/v1/schema/attributes",
+        body: {
+          hits: [],
+          resolutions: [
+            { key: "service.name", hits: [serviceName], primary: serviceName },
+          ],
+        },
+      },
+    ]);
+    renderFacets();
+    const info = await screen.findByLabelText("About service.name");
+    expect(screen.queryByLabelText("About span.name")).not.toBeInTheDocument();
+    await userEvent.hover(info);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Logical name of the service.",
+    );
   });
 });

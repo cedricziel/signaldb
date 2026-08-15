@@ -600,6 +600,20 @@
   color: var(--dim);
 }
 
+/* A resolved key carries its brief; cap the column so a long brief cannot
+   push the value column off the panel. */
+.span-attrs dt:has(.semkey) {
+  max-width: 240px;
+}
+
+/* Semantic-title sub-heading inside a Span/Resource section. */
+.span-detail-subsec {
+  font-size: 10.5px;
+  color: var(--dim);
+  font-weight: 600;
+  margin: 8px 0 3px;
+}
+
 .span-attrs dd {
   margin: 0;
   min-width: 0;

@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { lokiLabelValues } from "../../api/loki";
+import { SemanticInfo } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
+import { useSemantics } from "../../hooks/useSemantics";
 import type { LabelFilter } from "../../lib/filters";
 import type { ResolvedRange } from "../../lib/time";
 
@@ -23,6 +25,7 @@ export function FieldSidebar({ labels, range, rangeKey, onAddFilter }: Props) {
   const visible = labels.filter((l) =>
     l.toLowerCase().includes(filterText.toLowerCase()),
   );
+  const semantics = useSemantics(labels);
 
   return (
     <aside className="sidebar" aria-label="Fields">
@@ -42,13 +45,16 @@ export function FieldSidebar({ labels, range, rangeKey, onAddFilter }: Props) {
         )}
         {visible.map((label) => (
           <div key={label}>
-            <button
-              className={`field ${open === label ? "open" : ""}`}
-              aria-expanded={open === label}
-              onClick={() => setOpen(open === label ? null : label)}
-            >
-              {label}
-            </button>
+            <div className="field-row">
+              <button
+                className={`field ${open === label ? "open" : ""}`}
+                aria-expanded={open === label}
+                onClick={() => setOpen(open === label ? null : label)}
+              >
+                {label}
+              </button>
+              <SemanticInfo name={label} semantics={semantics.get(label)} />
+            </div>
             {open === label && (
               <FieldValues
                 label={label}

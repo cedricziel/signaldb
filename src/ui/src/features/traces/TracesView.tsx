@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -23,6 +24,9 @@ import {
 } from "../../api/traceVolume";
 import { SignalHistogram } from "../explore/SignalHistogram";
 import { AttributeValue } from "../../components/AttributeValue";
+import { SemanticKey } from "../../components/SemanticKey";
+import { useSemantics } from "../../hooks/useSemantics";
+import { groupBySemanticTitle } from "../../lib/semantics";
 import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
@@ -900,6 +904,11 @@ function SpanDetail({
     () => groupSpanAttributes(span.attributes),
     [span.attributes],
   );
+  const attributeKeys = useMemo(
+    () => groups.flatMap((g) => g.entries.map(([k]) => k)),
+    [groups],
+  );
+  const semantics = useSemantics(attributeKeys);
   const spanProfiles = profiles.filter((p) => p.spanId === span.spanId);
   return (
     <aside className="span-detail" aria-label="Span details">
@@ -955,16 +964,28 @@ function SpanDetail({
       {groups.map((group) => (
         <div key={group.label}>
           <div className="span-detail-sec">{group.label}</div>
-          <dl className="span-attrs">
-            {group.entries.map(([k, v]) => (
-              <div key={k}>
-                <dt>{k}</dt>
-                <dd>
-                  <AttributeValue value={String(v)} label={`value for ${k}`} />
-                </dd>
-              </div>
-            ))}
-          </dl>
+          {groupBySemanticTitle(group.entries, semantics).map((sub) => (
+            <Fragment key={sub.title ?? ""}>
+              {sub.title && (
+                <div className="span-detail-subsec">{sub.title}</div>
+              )}
+              <dl className="span-attrs">
+                {sub.entries.map(([k, v]) => (
+                  <div key={k}>
+                    <dt>
+                      <SemanticKey name={k} semantics={semantics.get(k)} />
+                    </dt>
+                    <dd>
+                      <AttributeValue
+                        value={String(v)}
+                        label={`value for ${k}`}
+                      />
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </Fragment>
+          ))}
         </div>
       ))}
     </aside>
