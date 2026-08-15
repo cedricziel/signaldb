@@ -71,7 +71,9 @@ builds on. Do it first so the consumers can be thin.
   shared with `common::self_monitoring::SEMCONV_SCHEMA_URL` so the two cannot
   drift.
 
-No OTLP ingest, Tempo/LogQL/PromQL, Flight, or on-disk changes. Not BREAKING.
+No OTLP ingest, Tempo/LogQL/PromQL, Flight, or on-disk changes. **BREAKING**
+(admin API only): `POST /api/v1/tenants/{id}/api-keys` now requires `scopes`;
+no compatibility shim — callers are swept in this change.
 
 ## Capabilities
 

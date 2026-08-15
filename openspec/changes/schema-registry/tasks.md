@@ -90,6 +90,14 @@
 
 - [ ] 6.1 Failing SDK tests for `schema()` methods; implement over the
       regenerated client
+- [ ] 6.1a Sweep every key-creation call site for the now-required `scopes`
+      (no compat shim): CLI `admin api-key create` + TUI admin client
+      (`src/signaldb-cli/src/tui/client/admin.rs`, `components/admin/`),
+      MCP admin toolset, `tests-integration` and router/session tests that
+      mint keys, `docs/users/authentication.md`, `docs/users/explore-ui.md`,
+      `docs/architecture/overview.md`, skills `multi-tenancy`, `tempo-api`,
+      `signaldb-observe`; release note marks the admin API body change
+      BREAKING
 - [ ] 6.1b Failing tests: ApiKeys UI scope picker groups Ingestion and Schema
       scopes with descriptions and offers Edit scopes on live keys; CLI
       `admin api-key create --scope … --dataset …` (scope required) and
