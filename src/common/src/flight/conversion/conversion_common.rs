@@ -203,6 +203,41 @@ pub fn json_value_to_any_value(json_val: &JsonValue) -> AnyValue {
     }
 }
 
+/// Encode an `f64` for the JSON-carried v1 wire format. JSON has no NaN or
+/// infinities, so those are spelled the way Prometheus's own exposition
+/// formats do (`"NaN"`, `"+Inf"`, `"-Inf"`); finite values stay numbers.
+/// Never `null`: NaN (Prometheus staleness marker, `0/0` rates) and ±Inf are
+/// legitimate metric values, and collapsing them to `null` used to make the
+/// writer reject the whole batch — permanently — against its non-nullable
+/// value columns (#1061). Reversed by [`json_to_f64`].
+pub fn f64_to_json(v: f64) -> JsonValue {
+    match serde_json::Number::from_f64(v) {
+        Some(num) => JsonValue::Number(num),
+        None if v.is_nan() => JsonValue::String("NaN".to_string()),
+        None if v.is_sign_positive() => JsonValue::String("+Inf".to_string()),
+        None => JsonValue::String("-Inf".to_string()),
+    }
+}
+
+/// Decode a value written by [`f64_to_json`] (or any JSON number). Accepts the
+/// Prometheus/Go spellings of the non-finite values case-insensitively;
+/// anything else (including `null`) is `None`.
+pub fn json_to_f64(v: &JsonValue) -> Option<f64> {
+    match v {
+        JsonValue::Number(n) => n
+            .as_f64()
+            .or_else(|| n.as_i64().map(|i| i as f64))
+            .or_else(|| n.as_u64().map(|u| u as f64)),
+        JsonValue::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "nan" => Some(f64::NAN),
+            "inf" | "+inf" | "infinity" | "+infinity" => Some(f64::INFINITY),
+            "-inf" | "-infinity" => Some(f64::NEG_INFINITY),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +255,25 @@ mod tests {
             json_value_to_any_value(&extracted).value,
             Some(Value::BytesValue(vec![0, 255, b'x']))
         );
+    }
+
+    #[test]
+    fn f64_json_codec_round_trips_non_finite_values() {
+        for v in [0.0, -1.5, 1e300, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(json_to_f64(&f64_to_json(v)), Some(v));
+        }
+        assert!(json_to_f64(&f64_to_json(f64::NAN)).unwrap().is_nan());
+        assert_eq!(f64_to_json(f64::NAN), JsonValue::String("NaN".into()));
+        assert_eq!(f64_to_json(f64::INFINITY), JsonValue::String("+Inf".into()));
+        assert_eq!(
+            f64_to_json(f64::NEG_INFINITY),
+            JsonValue::String("-Inf".into())
+        );
+        assert_eq!(
+            json_to_f64(&JsonValue::String("inf".into())),
+            Some(f64::INFINITY)
+        );
+        assert_eq!(json_to_f64(&JsonValue::Null), None);
+        assert_eq!(json_to_f64(&JsonValue::String("nope".into())), None);
     }
 }
