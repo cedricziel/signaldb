@@ -64,6 +64,7 @@ nav:
       - users/profiles.md
       - users/tempo-api-reference.md
       - users/authentication.md
+      - users/schema-registry.md
   - Operating SignalDB:
       - operations/wal-persistence.md
       - operations/binaries.md
