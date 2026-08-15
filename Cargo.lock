@@ -1296,6 +1296,7 @@ dependencies = [
  "pyroscope",
  "rand 0.10.2",
  "rustc-hash",
+ "schema-model",
  "serde",
  "serde_json",
  "sha2 0.11.0",

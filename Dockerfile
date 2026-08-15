@@ -70,6 +70,7 @@ COPY src/common/Cargo.toml src/common/
 COPY src/logql/Cargo.toml src/logql/
 COPY src/loki-api/Cargo.toml src/loki-api/
 COPY src/prometheus-api/Cargo.toml src/prometheus-api/
+COPY src/schema-model/Cargo.toml src/schema-model/
 COPY src/pyroscope-api/Cargo.toml src/pyroscope-api/
 COPY src/tempo-api/Cargo.toml src/tempo-api/
 COPY src/signaldb-bin/Cargo.toml src/signaldb-bin/
@@ -93,6 +94,7 @@ RUN mkdir -p src/acceptor/src && echo "pub fn dummy() {}" > src/acceptor/src/lib
     mkdir -p src/logql/src && echo "pub fn dummy() {}" > src/logql/src/lib.rs && \
     mkdir -p src/loki-api/src && echo "pub fn dummy() {}" > src/loki-api/src/lib.rs && \
     mkdir -p src/prometheus-api/src && echo "pub fn dummy() {}" > src/prometheus-api/src/lib.rs && \
+    mkdir -p src/schema-model/src && echo "pub fn dummy() {}" > src/schema-model/src/lib.rs && \
     mkdir -p src/pyroscope-api/src && echo "pub fn dummy() {}" > src/pyroscope-api/src/lib.rs && \
     mkdir -p src/tempo-api/src && echo "pub fn dummy() {}" > src/tempo-api/src/lib.rs && \
     mkdir -p src/signaldb-bin/src && echo "fn main() {}" > src/signaldb-bin/src/main.rs && \
@@ -130,6 +132,9 @@ RUN rm -rf src/*/src src/*/benches && \
 # Copy actual source code and build assets
 COPY api/ api/
 COPY opentelemetry-proto/ opentelemetry-proto/
+# common's build script embeds the bundled schema registries from these.
+COPY vendor/otel-semconv/ vendor/otel-semconv/
+COPY otel/registry/ otel/registry/
 COPY src/ src/
 
 # Build the server binary (all services live in `signaldb`; a service is

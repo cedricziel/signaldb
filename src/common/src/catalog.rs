@@ -356,6 +356,32 @@ impl Catalog {
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
 
+                // Tenant custom schema registries (change: schema-registry).
+                // The uploaded Weaver-model document is the source of truth;
+                // `resolved` caches the flattened definitions the resolver
+                // loads per tenant. Bundled registries never live here.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS schema_registries (
+                    tenant_id TEXT NOT NULL,
+                    namespace TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'custom',
+                    schema_url TEXT,
+                    description TEXT,
+                    document TEXT NOT NULL,
+                    resolved TEXT NOT NULL,
+                    attribute_count BIGINT NOT NULL DEFAULT 0,
+                    entity_count BIGINT NOT NULL DEFAULT 0,
+                    metric_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (tenant_id, namespace, version)
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+
                 // OAuth 2.1 authorization-server tables (change: mcp-oauth-dcr).
                 // Dynamically-registered clients, single-use authorization
                 // codes, and opaque access/refresh tokens (stored as hashes).
@@ -623,6 +649,29 @@ impl Catalog {
                     PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
+
+                // Tenant custom schema registries (change: schema-registry).
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS schema_registries (
+                    tenant_id TEXT NOT NULL,
+                    namespace TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'custom',
+                    schema_url TEXT,
+                    description TEXT,
+                    document TEXT NOT NULL,
+                    resolved TEXT NOT NULL,
+                    attribute_count BIGINT NOT NULL DEFAULT 0,
+                    entity_count BIGINT NOT NULL DEFAULT 0,
+                    metric_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, namespace, version)
+                )"#,
+                )
+                .execute(pool)
+                .await?;
 
                 // OAuth 2.1 authorization-server tables (change: mcp-oauth-dcr).
                 query(

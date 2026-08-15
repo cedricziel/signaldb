@@ -113,34 +113,33 @@ CI (`registry check`) — and a CI test runs `weaver registry check` on the samp
 custom registries used in tests, so our validator's accept-set stays a subset
 of Weaver's.
 
-### D4 — Storage: document blob + flattened lookup tables in the catalog
+### D4 — Storage: document blob + cached resolution in one catalog table
 
-New catalog tables (both SQLite and Postgres DDL, following the existing
-`CREATE TABLE IF NOT EXISTS` bootstrap):
+One new catalog table (SQLite and Postgres DDL in the existing bootstrap):
 
 ```
-schema_registries   (tenant_id, namespace, version, source, schema_url,
-                     document JSON, created_at, updated_at,
-                     PK (tenant_id, namespace, version))
-schema_attributes   (tenant_id, namespace, version, attr_key, group_id,
-                     display_name, brief, note, type, stability,
-                     deprecated JSON?, examples JSON, PK (…, attr_key))
-schema_entities     (tenant_id, namespace, version, entity_name, group_id,
-                     brief, stability, identifying JSON[], descriptive JSON[])
-schema_metrics      (tenant_id, namespace, version, metric_name, group_id,
-                     brief, instrument, unit, stability, attributes JSON[],
-                     entity_associations JSON[])
+schema_registries (tenant_id, namespace, version, source, schema_url,
+                   description, document JSON, resolved JSON,
+                   attribute_count, entity_count, metric_count,
+                   created_at, updated_at,
+                   PK (tenant_id, namespace, version))
 ```
 
-The document is the source of truth (returned verbatim on GET); the flattened
-rows are derived on write inside one transaction (replace = delete rows for
-`(tenant, ns, version)` + reinsert; the spec's atomicity scenario). Bundled
-registries live only in the embedded index; the resolver merges the tenant's
-DB rows with the bundled index in memory.
+The uploaded document is the source of truth (returned verbatim on GET,
+unknown fields included); `resolved` caches the flattened
+`schema_model::ResolvedRegistry` computed at write time so the resolver can
+load a tenant's registries with one query and no re-resolution. Replace is a
+single `UPDATE`, so readers see either the old or the new row (the spec's
+atomicity scenario). Bundled registries live only in the embedded snapshot.
 
-Why not only-blob + parse on read: prefix search and per-key lookup at UI
-frequency need indexed rows. Why not only-rows: lossless round-trip of the
-uploaded document (unknown groups/fields) requires keeping it.
+Why not the flattened per-definition tables originally sketched: custom
+registries are small (tens to hundreds of definitions) and the resolver keeps
+each tenant's registries in memory anyway (D5), where prefix search is a
+`BTreeMap` range — SQL-side indexes would add three tables and a fan-out
+write for no lookup the process does not already serve from memory. If a
+tenant ever needs SQL-level search across thousands of custom definitions,
+the cached `resolved` column can be exploded into tables without changing
+the API.
 
 ### D5 — Resolver: in-memory bundled index + per-tenant cached custom index
 
