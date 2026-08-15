@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod handler;
 pub mod middleware;
 pub mod services;

@@ -1,6 +1,7 @@
 pub mod storage;
 pub use storage::{IcebergTableWriter, RetryConfig};
 
+pub mod cli;
 pub mod processor;
 pub use processor::{FlushScope, ProcessorStats, WalProcessor};
 

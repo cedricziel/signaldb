@@ -103,7 +103,7 @@ Start the compactor with dry-run enabled:
 
 ```bash
 # Start compactor (logs to stdout; redirect to a file if you want to tail it)
-cargo run --bin signaldb-compactor 2>&1 | tee compactor.log
+cargo run --bin signaldb -- compactor 2>&1 | tee compactor.log
 
 # Or in monolithic mode via the dev script (logs to .data/logs/monolithic.log)
 ./scripts/run-dev.sh
@@ -583,7 +583,7 @@ traces = "14d"  # Changed from 30d to 14d
 ```bash
 # Restart compactor (graceful)
 pkill -TERM compactor
-cargo run --bin signaldb-compactor
+cargo run --bin signaldb -- compactor
 
 # Or restart monolithic service
 systemctl restart signaldb
@@ -636,7 +636,7 @@ To check what the current retention cutoff would be:
 
 ```bash
 # Enable debug logging (logs go to stdout)
-RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb-compactor 2>&1 | \
+RUST_LOG=debug,compactor::retention=trace cargo run --bin signaldb -- compactor 2>&1 | \
   grep "Retention cutoff computed"
 
 # Example output:

@@ -90,20 +90,20 @@ test_microservices() {
     export SIGNALDB_DISCOVERY_DSN="sqlite://${TEST_DATA_DIR}/microservices.db"
     
     # Build microservice binaries
-    cargo build --bin signaldb-acceptor --bin signaldb-router --bin signaldb-writer
+    cargo build --bin signaldb
     
     # Start services
-    timeout "${TIMEOUT_DURATION}s" ./target/debug/signaldb-acceptor &
+    timeout "${TIMEOUT_DURATION}s" ./target/debug/signaldb acceptor &
     ACCEPTOR_PID=$!
     
     sleep 1
     
-    timeout "${TIMEOUT_DURATION}s" ./target/debug/signaldb-router &
+    timeout "${TIMEOUT_DURATION}s" ./target/debug/signaldb router &
     ROUTER_PID=$!
     
     sleep 1
     
-    timeout "${TIMEOUT_DURATION}s" ./target/debug/signaldb-writer &
+    timeout "${TIMEOUT_DURATION}s" ./target/debug/signaldb writer &
     WRITER_PID=$!
     
     sleep 3
@@ -147,7 +147,7 @@ EOF
         
         export SIGNALDB_CONFIG_PATH="${TEST_DATA_DIR}/test_config.toml"
         
-        timeout 5s ./target/debug/signaldb-acceptor &
+        timeout 5s ./target/debug/signaldb acceptor &
         CONFIG_PID=$!
         
         sleep 2
@@ -169,11 +169,12 @@ EOF
 test_binary_help() {
     log_info "Testing binary help outputs..."
     
-    cargo build --bin signaldb --bin signaldb-acceptor --bin signaldb-router --bin signaldb-writer
+    cargo build --bin signaldb
     
-    for binary in signaldb signaldb-acceptor signaldb-router signaldb-writer; do
+    # One binary; each service is a subcommand (`signaldb router --help`)
+    for binary in "signaldb" "signaldb acceptor" "signaldb router" "signaldb writer"; do
         log_info "Testing $binary --help"
-        if ./target/debug/"$binary" --help >/dev/null 2>&1; then
+        if ./target/debug/$binary --help >/dev/null 2>&1; then
             log_info "$binary help output works"
         else
             log_warn "$binary help output not available (expected for some binaries)"
