@@ -1006,6 +1006,7 @@ dependencies = [
  "humantime-serde",
  "iceberg-rust",
  "iceberg-sql-catalog",
+ "libc",
  "object_store",
  "once_cell",
  "opentelemetry",

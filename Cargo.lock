@@ -1283,6 +1283,7 @@ dependencies = [
  "iceberg-rust",
  "iceberg-sql-catalog",
  "jemalloc_pprof",
+ "libc",
  "object_store",
  "once_cell",
  "opentelemetry",

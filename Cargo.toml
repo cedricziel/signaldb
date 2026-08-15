@@ -232,6 +232,10 @@ criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 
 chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.39"
+# Process-level CPU time by mode (user/system) for the process.cpu.utilization
+# self-monitoring gauge (Unix only) — sysinfo has no per-mode breakdown, only
+# a single combined percentage, so this reads the OS accounting API directly.
+libc = "0.2"
 sqlx = { version = "0.8", default-features = false, features = [
     "postgres",
     "sqlite",

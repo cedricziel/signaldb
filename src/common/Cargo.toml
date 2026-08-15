@@ -92,6 +92,12 @@ pyroscope.workspace = true
 jemalloc_pprof = { version = "0.9", optional = true }
 backtrace = { version = "0.3", optional = true }
 
+# Per-mode (user/system) process CPU time for the process.cpu.utilization
+# self-monitoring gauge — see self_monitoring/metrics.rs's
+# process_cpu_time_by_mode. Unix only; Windows reports zero (unimplemented).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 # Optional dependencies for benchmarks
 criterion = { workspace = true, optional = true }
 
