@@ -121,6 +121,34 @@ impl IcebergTableManager {
         .map(|_| ())
     }
 
+    /// Brings an already-existing table's metadata up to date: backfills
+    /// pruning properties, evolves its schema to the current `schemas.toml`
+    /// version, and reloads on success. Used both for the common
+    /// load-existing path and for a lost create race (see [`Self::ensure_table`]),
+    /// since a race winner's table is just as likely to predate this
+    /// writer's schema expectations as one loaded on a later call.
+    async fn reconcile_existing_table(
+        &self,
+        table_name: &str,
+        ident: &Identifier,
+        mut table: Table,
+    ) -> Table {
+        self.backfill_metadata_pruning_properties(&mut table).await;
+
+        if let Err(e) = self.ensure_schema_evolved(table_name, ident).await {
+            tracing::warn!(
+                error = %e,
+                table = %ident,
+                "Failed to evolve table schema to current version; will retry on next load"
+            );
+        } else if let Ok(Tabular::Table(refreshed)) = self.catalog.clone().load_tabular(ident).await
+        {
+            table = refreshed;
+        }
+
+        table
+    }
+
     /// Load an existing table or create it if it doesn't exist.
     ///
     /// This method:
@@ -136,7 +164,7 @@ impl IcebergTableManager {
     ) -> Result<Table> {
         let ident = names::build_table_identifier(tenant_slug, dataset_slug, table_name);
         if let Ok(tabular) = self.catalog.clone().load_tabular(&ident).await {
-            let mut table = match tabular {
+            let table = match tabular {
                 Tabular::Table(table) => table,
                 _ => {
                     return Err(anyhow::anyhow!(
@@ -146,21 +174,9 @@ impl IcebergTableManager {
                 }
             };
 
-            self.backfill_metadata_pruning_properties(&mut table).await;
-
-            if let Err(e) = self.ensure_schema_evolved(table_name, &ident).await {
-                tracing::warn!(
-                    error = %e,
-                    table = %ident,
-                    "Failed to evolve table schema to current version; will retry on next load"
-                );
-            } else if let Ok(Tabular::Table(refreshed)) =
-                self.catalog.clone().load_tabular(&ident).await
-            {
-                table = refreshed;
-            }
-
-            return Ok(table);
+            return Ok(self
+                .reconcile_existing_table(table_name, &ident, table)
+                .await);
         }
 
         let table_schema = match table_name {
@@ -295,7 +311,7 @@ impl IcebergTableManager {
                         )
                     })?;
 
-                    match tabular {
+                    let table = match tabular {
                         Tabular::Table(table) => table,
                         _ => {
                             return Err(anyhow::anyhow!(
@@ -303,7 +319,15 @@ impl IcebergTableManager {
                                 ident
                             ));
                         }
-                    }
+                    };
+
+                    // Lost the create race to another writer -- that writer's
+                    // table may predate this one's schema (e.g. a pre-upgrade
+                    // Writer). Reconcile it the same way the load-existing
+                    // path above does, rather than handing back whatever
+                    // schema happened to win the race.
+                    self.reconcile_existing_table(table_name, &ident, table)
+                        .await
                 } else {
                     return Err(create_err.into());
                 }
@@ -428,6 +452,45 @@ mod tests {
                 &MaterializedLabels::default(),
             )
             .await?;
+
+        let schema = table.current_schema()?;
+        assert!(
+            schema.fields().iter().any(|f| f.name == "span_kind"),
+            "missing field should have been added by evolution"
+        );
+        assert_eq!(
+            table
+                .metadata()
+                .properties
+                .get(evolution::SCHEMA_VERSION_PROPERTY),
+            Some(&SCHEMA_DEFINITIONS.current_trace_version().to_string()),
+            "schema version property should be stamped to current after evolving"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_existing_table_evolves_a_table_handed_back_after_a_lost_create_race()
+    -> anyhow::Result<()> {
+        // `ensure_table`'s AlreadyExists branch (another writer won the
+        // create race) hands its reloaded `Table` to the same
+        // `reconcile_existing_table` helper the load-existing path uses --
+        // exercise that helper directly against a stale table to prove a
+        // race loser's handle gets evolved too, not returned as-is.
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        create_stale_traces_table(&catalog).await?;
+
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        let ident = names::build_table_identifier("evo_tenant", "evo_dataset", "traces");
+        let loaded = match catalog.clone().load_tabular(&ident).await? {
+            Tabular::Table(table) => table,
+            _ => panic!("expected a table"),
+        };
+
+        let table = table_manager
+            .reconcile_existing_table("traces", &ident, loaded)
+            .await;
 
         let schema = table.current_schema()?;
         assert!(
