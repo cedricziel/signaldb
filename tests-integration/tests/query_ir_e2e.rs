@@ -599,6 +599,130 @@ async fn traces_ir_query_end_to_end() {
 }
 
 #[tokio::test]
+async fn traces_ir_query_resolves_numeric_span_kind_status_and_dropped_counts() {
+    // iceberg-schema-evolution (#1208) tasks 6.1/6.3: span_kind_number/
+    // status_code_number/dropped_*_count are registered in
+    // LogicalSchema::core() and given a real physical column + read/write
+    // path -- prove the full ingest-through-query-IR path actually
+    // surfaces real values for them, not silently-always-zero/null.
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    let mut server_span = span("GET /checkout", 9, 100_000_000);
+    server_span.kind = 2; // Server
+    server_span.status = Some(Status {
+        code: 2, // Error
+        message: "boom".to_string(),
+    });
+    server_span.dropped_attributes_count = 3;
+    server_span.dropped_events_count = 5;
+    server_span.dropped_links_count = 7;
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(&ctx, traces_request("checkout", vec![server_span]))
+        .await
+        .expect("ingest server span");
+
+    let app = build_router(&services).await;
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "traces",
+            "range": range(),
+            "result": "rows",
+            "fields": [
+                "span_kind_number",
+                "status_code_number",
+                "dropped_attributes_count",
+                "dropped_events_count",
+                "dropped_links_count"
+            ],
+            "pipeline": [
+                { "where": { "field": "service.name", "op": "eq", "value": "checkout" } }
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "numeric fields IR query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected exactly the one ingested span: {body}"
+    );
+    let row = &rows[0];
+    assert_eq!(
+        row[0], 2,
+        "span_kind_number should be the raw OTel int: {body}"
+    );
+    assert_eq!(
+        row[1], 2,
+        "status_code_number should be the raw OTel int: {body}"
+    );
+    assert_eq!(row[2], 3, "dropped_attributes_count: {body}");
+    assert_eq!(row[3], 5, "dropped_events_count: {body}");
+    assert_eq!(row[4], 7, "dropped_links_count: {body}");
+}
+
+#[tokio::test]
+async fn traces_ir_query_string_span_kind_and_status_still_resolve_post_1208() {
+    // task 6.2: the pre-existing string convenience fields (span_kind/
+    // status.code, what TraceQL-style queries filter on) must keep
+    // resolving correctly now that they're derived from the numeric
+    // columns instead of being the read/write source of truth themselves.
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    let mut server_span = span("GET /checkout", 9, 100_000_000);
+    server_span.kind = 2; // Server
+    server_span.status = Some(Status {
+        code: 2, // Error
+        message: "boom".to_string(),
+    });
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(&ctx, traces_request("checkout", vec![server_span]))
+        .await
+        .expect("ingest server span");
+
+    let app = build_router(&services).await;
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "traces",
+            "range": range(),
+            "result": "rows",
+            "fields": ["span.name"],
+            "pipeline": [
+                { "where": { "field": "span_kind", "op": "eq", "value": "Server" } },
+                { "where": { "field": "status.code", "op": "eq", "value": "Error" } }
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "string span_kind/status.code IR query: {body}"
+    );
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected the Server/Error span to match: {body}"
+    );
+    assert_eq!(rows[0][0], "GET /checkout", "{body}");
+}
+
+#[tokio::test]
 async fn trace_heatmap_end_to_end_uses_native_query_ir_without_list_limit() {
     let services = setup().await;
     let ctx = test_tenant_context();
