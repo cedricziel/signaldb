@@ -88,7 +88,7 @@
 
 ## 6. SDK, CLI, MCP
 
-- [ ] 6.1 Failing SDK tests for `schema()` methods; implement over the
+- [x] 6.1 Failing SDK tests for `schema()` methods; implement over the
       regenerated client
 - [x] 6.1a Sweep every key-creation call site for the now-required `scopes`
       (no compat shim): CLI `admin api-key create` + TUI admin client
@@ -104,14 +104,14 @@
       `admin api-key update`; MCP admin `create_api_key` takes `scopes`/
       `dataset_id` and `update_api_key_scopes` exists; key listings show scopes
       on all surfaces; implement
-- [ ] 6.2 Failing CLI tests: `signaldb schema registry list|get`,
+- [x] 6.2 Failing CLI tests: `signaldb schema registry list|get`,
       `schema attribute|entity|metric get|search`,
       `admin schema create|replace|delete --file` (YAML and JSON); implement
-- [ ] 6.3 Failing MCP tests: tools `list_schema_registries`,
+- [x] 6.3 Failing MCP tests: tools `list_schema_registries`,
       `resolve_attribute`, `resolve_entity`, `resolve_metric`,
       `search_schema`, admin `create/replace/delete_schema_registry`; result
       shape equals HTTP; implement (tool descriptions steer resolve-before-query)
-- [ ] 6.4 tests-integration: end-to-end — create custom registry via CLI,
+- [x] 6.4 tests-integration: end-to-end — create custom registry via CLI,
       resolve via HTTP and MCP, precedence and alternatives verified
 
 ## 7. Explore UI semantic labels

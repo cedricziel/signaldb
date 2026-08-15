@@ -592,7 +592,7 @@ curl http://localhost:3000/health   # Router
 
 ## CLI Tool
 
-`signaldb-cli` provides command-line management (under `admin`) for tenants, API keys, and datasets, a `query` command for every query language, plus an interactive terminal UI (ratatui-based). It is a pure `signaldb-sdk` consumer:
+`signaldb-cli` provides command-line management (under `admin`) for tenants, API keys, datasets, and custom schema registries, a `query` command for every query language, `schema` lookup (registries, attributes, entities, metrics), plus an interactive terminal UI (ratatui-based). It is a pure `signaldb-sdk` consumer:
 
 ```bash
 signaldb-cli admin tenant list
@@ -600,6 +600,11 @@ signaldb-cli admin tenant create acme --name "Acme Corp"
 signaldb-cli admin api-key create acme --name "Production Key" --scope traces:write --scope schema:read
 signaldb-cli admin api-key update acme <key-id> --scope traces:write --scope schema:write
 signaldb-cli admin dataset create acme --name production
+
+# Schema registry (tenant API key: schema:read for lookup, schema:write for admin schema):
+signaldb-cli schema attribute get k8s.pod.uid
+signaldb-cli schema metric search k8s.pod. --limit 20
+signaldb-cli admin schema create --file conventions.yaml
 
 # Query in any language (exactly one flag):
 signaldb-cli query --sql "SELECT * FROM traces LIMIT 10"
