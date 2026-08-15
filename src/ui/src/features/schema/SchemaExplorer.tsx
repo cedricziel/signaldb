@@ -46,7 +46,7 @@ export function SchemaExplorer() {
 
   return (
     <div className="schema-explorer-page">
-      <h1 className="schema-explorer-title">Schema</h1>
+      <h2 className="schema-explorer-title">Storage schema</h2>
       <p className="schema-explorer-subtitle">
         The registered logical (query-facing) field model and the resolved
         physical (storage) schema for every signal source.
