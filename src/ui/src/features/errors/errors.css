@@ -69,15 +69,29 @@
   margin-top: 20px;
 }
 
+.errors-sparkline-host {
+  margin: 8px 0 4px;
+}
+
 .errors-sparkline {
   display: block;
   width: 100%;
   height: 32px;
-  margin: 8px 0 4px;
 }
 
 .errors-sparkline-bar {
   fill: var(--svc-a);
+}
+
+/* Invisible full-height hit targets; focus tints the column. */
+.errors-sparkline-hit {
+  fill: transparent;
+  outline: none;
+}
+
+.errors-sparkline-hit:focus-visible {
+  fill: var(--accent);
+  fill-opacity: 0.12;
 }
 
 .errors-sparkline-empty {

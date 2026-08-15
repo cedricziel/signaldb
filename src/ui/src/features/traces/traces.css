@@ -60,6 +60,17 @@
   vector-effect: non-scaling-stroke;
 }
 
+/* Invisible per-bucket hit targets; focus tints the column. */
+.trace-area-hit {
+  fill: transparent;
+  outline: none;
+}
+
+.trace-area-hit:focus-visible {
+  fill: var(--accent);
+  fill-opacity: 0.12;
+}
+
 .trace-area-ylabel,
 .trace-area-xlabel {
   fill: var(--faint);
@@ -116,6 +127,12 @@
 .trace-heatmap-cell {
   stroke: var(--surface);
   stroke-width: 0.5;
+  outline: none;
+}
+
+.trace-heatmap-cell:focus-visible {
+  stroke: var(--accent);
+  stroke-width: 1.5;
 }
 
 .trace-heatmap-ylabel,

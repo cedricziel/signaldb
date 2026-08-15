@@ -317,6 +317,22 @@ Point at any bucket — anywhere in its column, however short the bar — for it
 timestamp, a per-series breakdown, and the bucket total. Buckets are also
 focusable, so the same detail is reachable with the keyboard.
 
+### Chart tooltips
+
+Every chart in the UI reads back the exact data under the pointer through the
+same tooltip: the metrics chart lists every series at the pointed timestamp
+with its colour swatch and value (a dash where a series has a gap); the trace
+volume area chart and the logs histogram show the bucket's time range,
+per-series values, and total; the latency heatmap shows a cell's time bucket,
+latency range, span count, and share of its column; the error sparkline shows a
+bucket's occurrences; the catalog's dependency bar shows a category's time,
+share, and call count; and the flame graph names a frame with its self/total
+time. The tooltip follows the pointer, flips to stay inside the panel, and
+never gets in the way of the data. Bars, cells, and segments are keyboard
+focusable and announce the same content to assistive technology; the metrics
+chart, drawn on a canvas, is pointer-only. Pointing at an empty region shows
+nothing.
+
 Two controls sit beside the time axis. **Bucket width** sets the chart's
 resolution — it defaults to a width chosen for the selected window, and each
 offer states how many buckets it produces, so "finer" and "coarser" are

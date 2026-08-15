@@ -471,3 +471,87 @@ select:focus-visible {
 .sem-tip-deprecated {
   color: var(--warn);
 }
+
+/* ---------- viz tooltip (components/VizTooltip.tsx) ---------- */
+
+/* Every visualization panel that shows a tooltip is a positioning context. */
+.viz-host {
+  position: relative;
+}
+
+.viz-tip {
+  /* Positioned from JS: follows the pointer, flipping side near the edges. */
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  /* Size to content rather than to the space left of the container edge,
+     which shrinks as the pointer moves right. */
+  width: max-content;
+  min-width: 132px;
+  max-width: 320px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+  font-size: 11px;
+  color: var(--text);
+  pointer-events: none;
+}
+
+.viz-tip-t {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-bottom: 3px;
+  white-space: nowrap;
+}
+
+.viz-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.viz-tip-row i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.viz-tip-row span {
+  flex: 1;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.viz-tip-muted span,
+.viz-tip-muted b {
+  color: var(--faint);
+  font-weight: 400;
+}
+
+.viz-tip-row b,
+.viz-tip-footer b {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+  /* Set from JS to the widest value the panel can show, so every point's
+     tooltip is the same width and the numbers stay column-aligned. */
+  min-width: calc(var(--viz-val-ch, 6) * 1ch);
+  text-align: right;
+}
+
+.viz-tip-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+  color: var(--dim);
+}

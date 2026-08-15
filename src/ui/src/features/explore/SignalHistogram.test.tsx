@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
   bucketizeSeries,
-  compactCount,
   padBuckets,
   SignalHistogram,
   type VolumeSeries,
@@ -182,7 +181,7 @@ describe("SignalHistogram interaction", () => {
     const user = userEvent.setup();
     renderChart(series);
     await user.hover(screen.getAllByTestId("svol-col")[1]!);
-    const tip = screen.getByRole("status");
+    const tip = screen.getByRole("tooltip");
     expect(within(tip).getByText("info")).toBeInTheDocument();
     expect(within(tip).getByText("525 lines")).toBeInTheDocument();
     expect(within(tip).getByText("error")).toBeInTheDocument();
@@ -200,7 +199,7 @@ describe("SignalHistogram interaction", () => {
     ).toBe(1);
     await user.hover(cols[1]!);
     expect(
-      within(screen.getByRole("status")).getByText("537 lines"),
+      within(screen.getByRole("tooltip")).getByText("537 lines"),
     ).toBeInTheDocument();
   });
 
@@ -209,9 +208,9 @@ describe("SignalHistogram interaction", () => {
     renderChart(series);
     const col = screen.getAllByTestId("svol-col")[1]!;
     await user.hover(col);
-    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
     await user.unhover(col);
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 
   it("reaches the same detail from the keyboard", async () => {
@@ -222,7 +221,7 @@ describe("SignalHistogram interaction", () => {
     await user.tab();
     expect(screen.getAllByTestId("svol-col")[1]).toHaveFocus();
     expect(
-      within(screen.getByRole("status")).getByText("537 lines"),
+      within(screen.getByRole("tooltip")).getByText("537 lines"),
     ).toBeInTheDocument();
   });
 
@@ -310,13 +309,13 @@ describe("SignalHistogram tooltip placement", () => {
     renderChart(series);
     const col = screen.getAllByTestId("svol-col")[1]!;
     fireEvent.mouseEnter(col, { clientX: 220, clientY: 40 });
-    const tip = screen.getByRole("status");
+    const tip = screen.getByRole("tooltip");
     // jsdom reports a zero-origin container, so offsets equal the client point.
     expect(tip.style.left).toBe("220px");
     expect(tip.style.top).toBe("40px");
 
     fireEvent.mouseMove(col, { clientX: 260, clientY: 55 });
-    expect(screen.getByRole("status").style.left).toBe("260px");
+    expect(screen.getByRole("tooltip").style.left).toBe("260px");
   });
 
   it("flips to the left of the pointer past the midline", () => {
@@ -324,31 +323,14 @@ describe("SignalHistogram tooltip placement", () => {
     const col = screen.getAllByTestId("svol-col")[1]!;
     // The suite stubs a 1200px-wide container (src/test/setup.ts).
     fireEvent.mouseEnter(col, { clientX: 900, clientY: 30 });
-    expect(screen.getByRole("status").style.transform).toContain("-100%");
+    expect(screen.getByRole("tooltip").style.transform).toContain("-100%");
   });
 
   it("anchors to the column when focused without a pointer", () => {
     renderChart(series);
     fireEvent.focus(screen.getAllByTestId("svol-col")[1]!);
     // Anchored to the column's horizontal centre, not to a pointer.
-    expect(screen.getByRole("status").style.left).toBe("600px");
-  });
-});
-
-describe("compactCount", () => {
-  // Intl's `notation: "compact"` is locale-dependent — in `de` it does not
-  // compact at all — so the axis uses an explicit, locale-stable formatter.
-  it("compacts deterministically regardless of locale", () => {
-    expect(compactCount(0)).toBe("0");
-    expect(compactCount(610)).toBe("610");
-    expect(compactCount(999)).toBe("999");
-    expect(compactCount(1000)).toBe("1K");
-    expect(compactCount(1500)).toBe("1.5K");
-    expect(compactCount(9949)).toBe("9.9K");
-    expect(compactCount(186_665)).toBe("187K");
-    expect(compactCount(373_329)).toBe("373K");
-    expect(compactCount(1_500_000)).toBe("1.5M");
-    expect(compactCount(2_400_000_000)).toBe("2.4B");
+    expect(screen.getByRole("tooltip").style.left).toBe("600px");
   });
 });
 
@@ -443,10 +425,10 @@ describe("SignalHistogram tooltip width", () => {
       clientX: 10,
       clientY: 10,
     });
-    const tip = screen.getByRole("status");
+    const tip = screen.getByRole("tooltip");
     // "382,969 lines" — the window maximum, not the hovered bucket's value.
     const widest = `${new Intl.NumberFormat().format(382_969)} lines`;
-    expect(tip.style.getPropertyValue("--svol-val-ch")).toBe(
+    expect(tip.style.getPropertyValue("--viz-val-ch")).toBe(
       String(widest.length),
     );
   });
@@ -456,12 +438,12 @@ describe("SignalHistogram tooltip width", () => {
     const cols = screen.getAllByTestId("svol-col");
     fireEvent.mouseEnter(cols[1]!, { clientX: 10, clientY: 10 });
     const wide = screen
-      .getByRole("status")
-      .style.getPropertyValue("--svol-val-ch");
+      .getByRole("tooltip")
+      .style.getPropertyValue("--viz-val-ch");
     fireEvent.mouseLeave(cols[1]!);
     fireEvent.mouseEnter(cols[2]!, { clientX: 20, clientY: 10 });
     expect(
-      screen.getByRole("status").style.getPropertyValue("--svol-val-ch"),
+      screen.getByRole("tooltip").style.getPropertyValue("--viz-val-ch"),
     ).toBe(wide);
   });
 });

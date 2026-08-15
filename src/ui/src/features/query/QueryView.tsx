@@ -9,8 +9,13 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { runIrQuery } from "../../api/queryIr";
+import { irSeriesToPromSeries } from "../../api/metricsIr";
 import { AttributeValue } from "../../components/AttributeValue";
 import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
+import type { PromSeries } from "../../api/prom";
+import { seriesColorVar } from "../../lib/promSeries";
+import { MetricsChart } from "../metrics/MetricsChart";
+import "../metrics/metrics.css";
 import { FilterChips } from "../logs/FilterChips";
 import type { LabelFilter } from "../../lib/filters";
 import { msToNanos, type TimeRange } from "../../lib/time";
@@ -184,22 +189,35 @@ function RowsTable({ data, topN }: { data: QueryIrResponse; topN: boolean }) {
   );
 }
 
+const irSeriesLabel = (s: PromSeries) => labelString(s.labels);
+
+/**
+ * A `series` envelope is a time-series chart: adapt it to `PromSeries` and
+ * reuse the metrics chart, so it carries the same cursor tooltip.
+ */
 function SeriesChart({ data }: { data: QueryIrResponse }) {
-  const series = data.series ?? [];
+  const series = useMemo(() => irSeriesToPromSeries(data), [data]);
   return (
     <div className="ir-series">
       {series.length === 0 && <div>No series</div>}
-      {series.map((s, i) => {
-        const labels = labelString(s.labels);
-        return (
-          <div key={i} className="ir-series-row">
-            <span className="ir-series-label">
-              <AttributeValue value={labels} label={`series ${labels}`} />
-            </span>
-            <span className="ir-series-points">{s.points.length} points</span>
-          </div>
-        );
-      })}
+      {series.length > 0 && (
+        <div className="mchart-wrap">
+          <MetricsChart series={series} labelOf={irSeriesLabel} />
+        </div>
+      )}
+      <ul className="mlegend" aria-label="Series">
+        {series.map((s, i) => {
+          const labels = labelString(s.labels);
+          return (
+            <li key={i} className="ir-series-row">
+              <i style={{ background: seriesColorVar(i) }} />
+              <span className="ir-series-label">
+                <AttributeValue value={labels} label={`series ${labels}`} />
+              </span>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
