@@ -1,0 +1,86 @@
+# Weaver-clean twin of ../acme.yaml: no namespaced re-description of an
+# upstream key (Weaver rejects that as a duplicate id; SignalDB allows it by
+# namespacing). Everything else — attribute_group, entity, metric, extension of
+# an upstream entity — is identical. Checked by scripts/weaver-check-fixtures.sh
+# in CI so the validator's accept-set stays a subset of Weaver's for
+# everything except that one deliberate widening.
+name: acme
+version: 1.0.0
+schema_url: https://acme.example/schemas/1.0.0
+description: Acme Corp conventions layered on OpenTelemetry semconv.
+dependencies:
+  - name: otel
+    registry_path: https://github.com/open-telemetry/semantic-conventions@v1.43.0[model]
+groups:
+  - id: registry.acme.order
+    type: attribute_group
+    display_name: Acme Order Attributes
+    brief: Attributes describing an Acme order.
+    attributes:
+      - id: acme.order.id
+        type: string
+        stability: development
+        brief: Internal order identifier (see the order-service runbook).
+        examples: ["ord_8f21a"]
+      - id: acme.order.total
+        type: double
+        stability: development
+        brief: Order total in the tenant's billing currency.
+        examples: [12.5, 199.0]
+      - id: acme.order.channel
+        type:
+          members:
+            - id: web
+              value: "web"
+              brief: Placed through the web storefront.
+              stability: development
+            - id: pos
+              value: "pos"
+              brief: Placed at a point-of-sale terminal.
+              stability: development
+        stability: development
+        brief: Sales channel the order came through.
+  - id: registry.acme.infra
+    type: attribute_group
+    display_name: Acme Infrastructure Attributes
+    brief: Attributes for Acme's own data-centre layout.
+    attributes:
+      - id: acme.rack.id
+        type: string
+        stability: development
+        brief: Rack the pod's node is mounted in.
+        examples: ["dc1-r07"]
+  - id: entity.acme.order
+    type: entity
+    name: acme.order
+    stability: development
+    brief: A customer order flowing through Acme's checkout.
+    attributes:
+      - ref: acme.order.id
+        role: identifying
+        requirement_level: required
+      - ref: acme.order.total
+        role: descriptive
+      - ref: acme.order.channel
+        role: descriptive
+  - id: entity.acme.k8s.pod
+    type: entity
+    name: acme.k8s.pod
+    extends: entity.k8s.pod
+    stability: development
+    brief: A Kubernetes Pod annotated with Acme's rack placement.
+    attributes:
+      - ref: acme.rack.id
+        role: descriptive
+  - id: metric.acme.checkout.latency
+    type: metric
+    metric_name: acme.checkout.latency
+    stability: development
+    brief: End-to-end checkout latency per order.
+    instrument: histogram
+    unit: "s"
+    entity_associations:
+      - acme.order
+    attributes:
+      - ref: acme.order.channel
+        requirement_level: recommended

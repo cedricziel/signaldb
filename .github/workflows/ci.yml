@@ -266,6 +266,11 @@ jobs:
           docker run --rm -v "$PWD/otel/registry:/registry" \
             otel/weaver:v0.25.1 registry check -r /registry
 
+      # The sample custom registries schema-model's validator accepts must
+      # pass Weaver too (accept-set ⊆ Weaver, modulo namespaced re-description).
+      - name: Weaver check schema-model fixtures
+        run: scripts/weaver-check-fixtures.sh
+
       # Dependency audits ride along here instead of in their own job: the
       # tools are prebuilt binaries (no `cargo install`, no extra target-dir
       # cache), and none of them needs a compiled workspace.
