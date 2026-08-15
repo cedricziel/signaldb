@@ -1,6 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserRouter } from "react-router";
+import { getTenantContext } from "./api/http";
 import { AppRoutes } from "./routes";
 import {
   emptyLabels,
@@ -81,6 +82,34 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /acme/ })).toHaveTextContent(
       "acme·prod",
     );
+  });
+
+  it("keeps the last tenant/dataset when navigating to a route without them in the URL", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/api/v1/schema/registries", body: { registries: [] } },
+      {
+        match: "/api/v1/whoami",
+        body: {
+          user: { id: "u1", email: "a@b", display_name: "A", is_instance_admin: false },
+          memberships: [{ tenant_id: "acme", role: "admin" }],
+          tenant: { id: "acme", slug: "acme", name: "Acme" },
+          dataset: "prod",
+          datasets: [],
+        },
+      },
+    ]);
+    renderApp("/logs?tenant=acme&dataset=prod");
+    await screen.findByRole("button", { name: /acme/ });
+    expect(getTenantContext()).toEqual({ tenant: "acme", dataset: "prod" });
+    // A link that carries no search params (user menu → Schema, /manage, …)
+    window.history.pushState(null, "", "/schema/conventions");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() =>
+      expect(window.location.search).toContain("tenant=acme"),
+    );
+    expect(getTenantContext()).toEqual({ tenant: "acme", dataset: "prod" });
   });
 
   it("switches signals via tabs, updating the path", async () => {
