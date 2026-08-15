@@ -10,22 +10,36 @@ to admin introspection. `iceberg-schema-evolution` found this and deferred
 the entire consolidation here rather than doing it partially — this
 change owns all of it, not just a shared two-schema prerequisite.
 
-- [ ] 1.1 Failing test: resolving each of `metrics_gauge`/`metrics_sum`/
+- [x] 1.1 Failing test: resolving each of `metrics_gauge`/`metrics_sum`/
       `metrics_histogram`/`metrics_exponential_histogram`/`metrics_summary`/
       `profiles` from `SCHEMA_DEFINITIONS` produces the same field set
       (name, type, nullability) as the corresponding
       `iceberg::schemas::create_*_schema_with` function produces today.
-- [ ] 1.2 Add `schemas.toml` sections for `metrics_exponential_histogram`,
-      `metrics_summary`, and `profiles` (new — no section exists today);
-      correct the existing `metrics_gauge`/`metrics_sum`/`metrics_histogram`
-      sections if they've drifted from what `iceberg::schemas` actually
-      builds (they were never used for physical creation, so treat them as
-      unverified rather than assume they're already right).
-- [ ] 1.3 Change all six `create_*_schema_with` functions in
-      `iceberg::schemas` to resolve from `SCHEMA_DEFINITIONS` instead of
-      hand-built `StructField` lists, reusing the `mapify_attr_fields`/
-      `append_materialized_label_fields` post-processing steps as needed.
-      Test from 1.1 passes for all six.
+      **Confirmed the drift this task suspected**: `metrics_gauge`/
+      `metrics_sum`/`metrics_histogram`'s existing sections typed their
+      three attribute fields as plain `string`, but the real hand-written
+      functions convert them to `Map<String,String>` via `mapify_attr_fields`
+      afterward — using the TOML declarations verbatim would have been a
+      silent behavior change, not a safe swap.
+- [x] 1.2 Added `schemas.toml` sections for `metrics_exponential_histogram`,
+      `metrics_summary`, and `profiles` (new); corrected the three existing
+      metrics sections' attribute fields to `map<string,string>`.
+- [x] 1.3 Changed all six `create_*_schema_with` functions in
+      `iceberg::schemas` to resolve from `SCHEMA_DEFINITIONS` via
+      `ResolvedSchema::to_iceberg_schema_with_labels`, which already
+      handles both the map-typing and materialized-label-column injection
+      `mapify_attr_fields`/`append_materialized_label_fields` used to do by
+      hand — those two functions (and the `required_field`/`optional_field`
+      helpers only they used) are now dead code, deleted. Test from 1.1
+      passes for all six (name/type/nullability parity); a new test
+      (`metrics_and_profiles_schemas_inject_labels_now_that_theyre_schemas_toml_sourced`)
+      confirms label injection still works, noting one harmless divergence:
+      label columns for metrics/profiles now get field IDs _after_ map
+      key/value IDs (matching how `ResolvedSchema` already orders traces/
+      logs) instead of _before_ (the old hand-written order) — ID
+      uniqueness/stability holds either way, nothing depends on the exact
+      numbering, and this only affects tables created from this point
+      forward, never an existing one.
 
 ## 2. Golden references (prove zero behavior change before touching anything)
 

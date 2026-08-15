@@ -289,12 +289,12 @@ Because both paths call the same constructor, a provisioned table is indistingui
 | ------------------------ | ------------------------------- | --------------- | -------------------------------- |
 | Traces                   | `traces`                        | `WriteTraces`   | `schemas.toml` (v2, inherits v1) |
 | Logs                     | `logs`                          | `WriteLogs`     | `schemas.toml` (v1)              |
-| Metrics (Gauge)          | `metrics_gauge`                 | `WriteMetrics`  | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Sum)            | `metrics_sum`                   | `WriteMetrics`  | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Histogram)      | `metrics_histogram`             | `WriteMetrics`  | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Exp. Histogram) | `metrics_exponential_histogram` | `WriteMetrics`  | `iceberg/schemas.rs` (hardcoded) |
-| Metrics (Summary)        | `metrics_summary`               | `WriteMetrics`  | `iceberg/schemas.rs` (hardcoded) |
-| Profiles                 | `profiles`                      | `WriteProfiles` | `iceberg/schemas.rs` (hardcoded) |
+| Metrics (Gauge)          | `metrics_gauge`                 | `WriteMetrics`  | `schemas.toml` (v1)              |
+| Metrics (Sum)            | `metrics_sum`                   | `WriteMetrics`  | `schemas.toml` (v1)              |
+| Metrics (Histogram)      | `metrics_histogram`             | `WriteMetrics`  | `schemas.toml` (v1)              |
+| Metrics (Exp. Histogram) | `metrics_exponential_histogram` | `WriteMetrics`  | `schemas.toml` (v1)              |
+| Metrics (Summary)        | `metrics_summary`               | `WriteMetrics`  | `schemas.toml` (v1)              |
+| Profiles                 | `profiles`                      | `WriteProfiles` | `schemas.toml` (v1)              |
 
 For metrics, the target table name is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics_gauge`.
 
@@ -315,10 +315,16 @@ Hour-level partitioning automatically enables day/month/year pruning in DataFusi
 
 ### Table Schemas
 
-Schema definitions come from two sources:
-
-- **`schemas.toml`** (compiled into the binary): Traces and Logs schemas with versioning and inheritance
-- **`src/common/src/iceberg/schemas.rs`** (hardcoded): Metric table schemas
+`schemas.toml` (compiled into the binary via `include_str!`) is the physical
+schema source of truth for all six built-in table types — traces, logs, and
+all five metrics representations plus profiles — resolved with versioning
+and inheritance via `SchemaDefinitions`/`ResolvedSchema`
+(`src/common/src/schema/schema_parser.rs`). `src/common/src/iceberg/schemas.rs`'s
+`create_*_schema_with()` functions are thin wrappers around that resolution
+(`ResolvedSchema::to_iceberg_schema_with_labels`), not hand-built field
+lists — metrics/profiles only gained this in the same change that added
+their `schemas.toml` sections; before that, only traces/logs resolved from
+TOML and metrics/profiles were hand-written Rust.
 
 #### Traces Table (v2 -- current)
 

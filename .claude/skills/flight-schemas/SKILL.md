@@ -92,20 +92,25 @@ Plus, when `[schema.materialized_labels].<signal>` is configured, a nullable `la
 
 On new tables the metric/profile attribute columns are `Map<String,String>` (`mapify_attr_fields`, nested IDs after labels); legacy JSON strings. Two definitions coexist:
 
-- `schemas.toml` defines physical-v1 schemas for `metrics_gauge`, `metrics_sum`, and
-  `metrics_histogram` (used by the TOML schema parser / wire side).
-- The **Iceberg** metrics table schemas are built by hardcoded Rust functions in
-  `src/common/src/iceberg/schemas.rs` (`create_metrics_*_schema()`) that do
-  **not** read the TOML. `metrics_exponential_histogram` and `metrics_summary`
-  exist only in Rust -- they have no schemas.toml entry.
+`schemas.toml` defines `physical-v1` for all five metrics representations
+(`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
+`metrics_exponential_histogram`, `metrics_summary`) and for `profiles`.
+`iceberg::schemas`'s `create_*_schema_with()` functions resolve from it via
+`ResolvedSchema::to_iceberg_schema_with_labels` — the same path traces/logs
+already used — rather than building `StructField` lists by hand. (Until
+this consolidation, only `metrics_gauge`/`metrics_sum`/`metrics_histogram`
+had a `schemas.toml` section at all, and even those were wired only to
+admin introspection, not the real tables; the sections had also drifted —
+attribute fields were typed `string` there but built as
+`Map<String,String>` in the real hand-written functions.)
 
 Tables:
 
 - `metrics_gauge`: timestamp, service_name, metric_name, value, attributes
 - `metrics_sum`: extends gauge with `aggregation_temporality`, `is_monotonic`
 - `metrics_histogram`: count, sum, min, max, bucket_counts, explicit_bounds
-- `metrics_exponential_histogram`: scale, zero_count, positive/negative buckets (Rust only)
-- `metrics_summary`: count, sum, quantile_values (Rust only)
+- `metrics_exponential_histogram`: scale, zero_count, positive/negative buckets
+- `metrics_summary`: count, sum, quantile_values
 
 All partitioned by `Hour(timestamp)`.
 
