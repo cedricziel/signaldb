@@ -11,7 +11,7 @@
 
 ## 2. Panels
 
-- [ ] 2.1 Failing test + implement: `metrics/MetricsChart` uPlot cursor
+- [x] 2.1 Failing test + implement: `metrics/MetricsChart` uPlot cursor
       plugin → `VizTooltip` (timestamp, every series with swatch/value/unit,
       `–` for gaps); export pure `rowsForCursorIndex`
 - [ ] 2.2 Failing test + implement: `traces/TraceVolumeAreaChart` bucket
@@ -23,7 +23,7 @@
 - [ ] 2.5 Failing test + implement: `errors/ErrorSparkline` point tooltip
 - [ ] 2.6 Failing test + implement: `catalog/DependencyBreakdown` bar tooltip
       (category, value, share)
-- [ ] 2.7 Failing test + implement: `query/QueryView` `series` envelope →
+- [x] 2.7 Failing test + implement: `query/QueryView` `series` envelope →
       `MetricsChart` (adapter to `PromSeries`) so it inherits the tooltip
 
 ## 3. Docs and guidance

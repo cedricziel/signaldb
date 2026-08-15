@@ -6,7 +6,21 @@ import { renderWithClient } from "../../test/render";
 import { resetApiClient, stubApiFetch } from "../../test/apiClient";
 import { QueryView } from "./QueryView";
 
-afterEach(resetApiClient);
+// uPlot needs a real <canvas> 2D context, which jsdom doesn't implement; the
+// series chart's wiring is what these tests exercise (see MetricsChart.test).
+const { uPlotCtor } = vi.hoisted(() => {
+  const uPlotCtor = vi.fn(function uPlotMock() {
+    return { destroy: vi.fn() };
+  });
+  return { uPlotCtor };
+});
+vi.mock("uplot", () => ({ default: uPlotCtor }));
+vi.mock("uplot/dist/uPlot.min.css", () => ({}));
+
+afterEach(() => {
+  resetApiClient();
+  uPlotCtor.mockClear();
+});
 
 describe("QueryView", () => {
   // Task 9.2 — the view is chosen from the declared envelope before results.
@@ -140,5 +154,53 @@ describe("QueryView", () => {
     );
 
     expect(writeText).toHaveBeenCalledWith("service_name=checkout");
+  });
+
+  it("charts a series envelope through the metrics chart", async () => {
+    stubApiFetch({
+      result: "series",
+      window: { start_ns: 0, end_ns: 120_000_000_000 },
+      step_ns: 60_000_000_000,
+      series: [
+        {
+          labels: { service_name: "checkout" },
+          points: [
+            ["0", 1],
+            ["60000000000", 2],
+          ],
+        },
+        {
+          labels: { service_name: "payments" },
+          points: [
+            ["0", 3],
+            ["60000000000", 4],
+          ],
+        },
+      ],
+    });
+    renderWithClient(<QueryView />);
+
+    fireEvent.change(screen.getByLabelText("result"), {
+      target: { value: "series" },
+    });
+    fireEvent.click(screen.getByText("Run"));
+
+    expect(await screen.findByTestId("metrics-chart")).toBeInTheDocument();
+    await waitFor(() => expect(uPlotCtor).toHaveBeenCalled());
+    const [opts, data] = uPlotCtor.mock.calls[0]! as unknown as [
+      { series: { label?: string }[]; hooks: { setCursor: unknown[] } },
+      number[][],
+    ];
+    // x-axis slot + two coloured series, with the cursor→tooltip hook wired.
+    expect(opts.series).toHaveLength(3);
+    expect(opts.series.map((s) => s.label)).toEqual([
+      undefined,
+      "service_name=checkout",
+      "service_name=payments",
+    ]);
+    expect(opts.hooks.setCursor).toHaveLength(1);
+    // Nanosecond timestamps became milliseconds on the shared axis.
+    expect(data[0]).toEqual([0, 60_000]);
+    expect(data[2]).toEqual([3, 4]);
   });
 });
