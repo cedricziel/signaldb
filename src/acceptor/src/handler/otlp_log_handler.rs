@@ -80,7 +80,7 @@ impl LogHandler {
         tenant_context: &TenantContext,
         request: ExportLogsServiceRequest,
     ) -> anyhow::Result<()> {
-        tracing::info!(
+        tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
             "Handling OTLP log request"

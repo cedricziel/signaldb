@@ -89,7 +89,7 @@ impl MetricsHandler {
         tenant_context: &TenantContext,
         request: ExportMetricsServiceRequest,
     ) -> anyhow::Result<()> {
-        tracing::info!(
+        tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
             "Handling OTLP metrics request"
@@ -117,7 +117,7 @@ impl MetricsHandler {
         // Metric types that failed before reaching WAL durability
         let mut undurable: Vec<String> = Vec::new();
 
-        tracing::info!(
+        tracing::debug!(
             partition_count = partitions.len(),
             metric_types = %partitions.keys().cloned().collect::<Vec<_>>().join(", "),
             "Partitioned metrics by type"
@@ -258,7 +258,7 @@ impl MetricsHandler {
             );
         }
 
-        tracing::info!("Completed processing metrics request for all types");
+        tracing::debug!("Completed processing metrics request for all types");
         Ok(())
     }
 }

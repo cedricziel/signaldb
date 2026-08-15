@@ -170,7 +170,10 @@ impl OrphanCleaner {
             for candidate in &validated_batch {
                 if self.config.dry_run {
                     // Dry-run mode: log without deleting
-                    tracing::info!(
+                    // Per-file lines are debug: a backlog run deletes tens of
+                    // thousands of files and would flood the log at boot; the
+                    // per-batch and per-run summaries below stay at info.
+                    tracing::debug!(
                         path = %candidate.path,
                         size_bytes = candidate.size_bytes,
                         last_modified = %candidate.last_modified,
@@ -185,7 +188,7 @@ impl OrphanCleaner {
                     // Actually delete the file
                     match self.delete_file(&candidate.path).await {
                         Ok(_) => {
-                            tracing::info!(
+                            tracing::debug!(
                                 path = %candidate.path,
                                 size_bytes = candidate.size_bytes,
                                 table = %candidate.table_identifier,

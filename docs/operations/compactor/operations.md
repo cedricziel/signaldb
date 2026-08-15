@@ -230,9 +230,16 @@ Look for:
 ```text
 INFO compactor::orphan::detector: Starting orphan detection tenant_id=acme dataset_id=prod table_name=traces
 INFO compactor::orphan::detector: Identified orphan candidates tenant_id=acme dataset_id=prod table_name=traces orphan_candidates=42
-INFO compactor::orphan::cleaner: [DRY-RUN] Would delete orphan file path=acme/prod/traces/data/orphan-001.parquet size_bytes=10485760 last_modified=2026-02-04T10:00:00Z table=acme/prod/traces
+INFO compactor::orphan::cleaner: Starting batch deletion of orphan files signaldb.job.candidates=42 signaldb.job.dry_run=true signaldb.job.batch_size=100
 INFO compactor::orphan::cleaner: Batch deletion complete would_delete=42 would_free_bytes=2147483648 failed=0 dry_run=true
 ```
+
+The per-file lines (`[DRY-RUN] Would delete orphan file …` / `Deleted orphan
+file …`, one per candidate with `path`, `size_bytes`, `table`) are logged at
+`DEBUG` — a backlog run can delete tens of thousands of files in one pass,
+which would otherwise flood the log at startup. Enable them with
+`RUST_LOG=compactor::orphan::cleaner=debug` when auditing individual
+deletions; the per-batch and per-run summaries above stay at `INFO`.
 
 **Validate:**
 

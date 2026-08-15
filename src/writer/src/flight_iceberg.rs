@@ -209,7 +209,7 @@ impl IcebergWriterFlightService {
 /// the latter previously leaked `Some("...")`/`None` into the log's
 /// attributes, and from there into query results grouped by those fields (#1072).
 fn log_received_data(metadata: &FlightMetadata) {
-    tracing::info!(
+    tracing::debug!(
         schema_version = %metadata.schema_version,
         signal_type = metadata.signal_type.as_deref(),
         target_table = metadata.target_table.as_deref(),

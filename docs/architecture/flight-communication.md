@@ -335,6 +335,15 @@ Flight schemas are defined in `src/common/src/flight/schema.rs` with conversions
 - OTLP metrics → Arrow schema
 - OTLP logs → Arrow schema
 
+A resource without `service.name` is stored as `unknown`
+(`common::flight::conversion::UNKNOWN_SERVICE_NAME`) on every signal — the
+acceptor substitutes it for traces at conversion time and the writer's
+schema transform for metrics and logs — because the Iceberg `service_name`
+column is non-nullable and a missing attribute must not dead-letter the batch.
+The writer's per-`do_put` "Received data" line is `DEBUG`; per-request
+handler lines on the acceptor are `DEBUG` too — steady-state `INFO` shows WAL
+batch commits, not individual requests.
+
 #### Dictionary-Safe Encode/Decode
 
 RecordBatch encoding goes through `common::flight::batches_to_compressed_flight_data`,

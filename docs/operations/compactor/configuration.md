@@ -370,6 +370,8 @@ metrics = "3d"
 
 ## Orphan Cleanup Configuration
 
+Per-file deletion lines are logged at `DEBUG` (see [Operations](operations.md#enabling-orphan-cleanup)); the per-batch and per-run summaries at `INFO`.
+
 ### `[compactor.orphan_cleanup]`
 
 Controls automatic detection and deletion of orphaned files: data
