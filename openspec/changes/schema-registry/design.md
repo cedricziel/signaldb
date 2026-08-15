@@ -172,9 +172,18 @@ GET    /api/v1/schema/metrics?prefix=&limit=
 GET    /api/v1/schema/metrics/{name}
 ```
 
-Tenant scoping via the existing request context (`X-Tenant-ID`/API key). Read
-endpoints require a valid tenant key; mutations require the tenant admin
-role. utoipa-annotated → OpenAPI → regenerated Rust SDK + TS client (parity gate
+Tenant scoping via the existing request context (`X-Tenant-ID`/API key).
+Authorization adds two scopes to `common::auth`: `SCHEMA_READ_SCOPE =
+"schema:read"`, `SCHEMA_WRITE_SCOPE = "schema:write"`, with
+`TenantContext::can_read_schema()` / `can_write_schema()` following the
+`can_read`/`can_ingest` shape (explicit scopes → must contain; `None` →
+unrestricted; sessions → any role reads, Admin/instance-admin writes). The
+management API's key-creation allow-list becomes `INGEST_SCOPES ∪
+SCHEMA_SCOPES`; the ApiKeys UI, CLI `admin api-key create --scope`, and MCP
+admin toolset expose both. `READ_SCOPES` (OAuth default grant / consent) gains
+`schema:read`; `schema:write` stays outside it so `granted_read_scopes` rejects
+it. Read endpoints require `schema:read`; mutations and `:validate` require
+`schema:write`; bundled registries additionally 409 on mutation. utoipa-annotated → OpenAPI → regenerated Rust SDK + TS client (parity gate
 enforces coverage). Response envelope for resolve: `{ key, primary, hits: [...]}`
 where each hit carries `namespace, version, source` + the definition.
 

@@ -192,6 +192,46 @@ keys, entity names, and metric names for autocomplete.
 - **THEN** every attribute key visible to the tenant that starts with that
   prefix is returned with its primary brief, bounded by a documented page size
 
+### Requirement: Schema-registry access is governed by `schema:read` and `schema:write`
+
+Two API-key scopes SHALL govern the schema registry. `schema:read` SHALL be
+required for listing and reading registries and for every resolved lookup and
+search; `schema:write` SHALL be required for creating, replacing, validating,
+and deleting custom registries. Enforcement SHALL follow the existing scope
+model: a key carrying explicit scopes is allowed only what its scopes name; a
+legacy key with no explicit scopes is unrestricted; a human session may read
+with any tenant membership role and may write only as tenant admin or instance
+admin. Bundled registries are readable with `schema:read` and never writable.
+Both scopes SHALL be selectable when creating an API key and SHALL be listed
+with the key. `schema:read` SHALL be an OAuth-grantable read scope;
+`schema:write` SHALL NOT be grantable via OAuth.
+
+#### Scenario: Read scope permits lookup, denies mutation
+
+- **WHEN** a key carrying `schema:read` (and not `schema:write`) resolves an
+  attribute and then attempts to create a custom registry
+- **THEN** the lookup succeeds and the create is rejected with an authorization
+  error
+
+#### Scenario: Write scope permits custom-registry mutation
+
+- **WHEN** a key carrying `schema:write` creates, replaces, validates, or deletes
+  a custom registry in its tenant
+- **THEN** the operations succeed; the same key attempting to replace `otel` is
+  rejected as read-only regardless of scope
+
+#### Scenario: Ingest-only key cannot read the registry
+
+- **WHEN** a key carrying only `traces:write` calls a schema lookup endpoint
+- **THEN** the request is rejected with an authorization error
+
+#### Scenario: Viewer session reads, admin session writes
+
+- **WHEN** a user with the Viewer role opens the schema hub and a user with the
+  Admin role uploads a custom registry
+- **THEN** the Viewer's reads succeed and any mutation by the Viewer is denied,
+  while the Admin's upload succeeds
+
 ### Requirement: Registry lookup is reachable through all client surfaces
 
 The registry list/get and resolved lookup operations, and custom-registry

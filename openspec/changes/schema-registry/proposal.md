@@ -41,6 +41,11 @@ builds on. Do it first so the consumers can be thin.
   version, ordered by precedence (tenant custom → `signaldb` → `otel`), and
   including deprecation/rename hints and entity relationships (attribute
   ↔ entity roles, metric → entity associations).
+- **Access control**: two new API-key scopes, `schema:read` (list/get
+  registries, resolve/search) and `schema:write` (create/replace/validate/delete
+  custom registries), enforced like the existing `<signal>:read|write` scopes;
+  selectable in the API-key UI/API/CLI; `schema:read` is OAuth-grantable and part
+  of the default read grant, `schema:write` is not.
 - **Surface parity**: SDK, CLI (`signaldb schema …`) and MCP tools for the
   registry list/get/lookup and the custom CRUD, per `client-surface-parity`.
 - **v0 UX**: wherever the Explore UI renders an attribute key as a label — field
@@ -83,6 +88,10 @@ No OTLP ingest, Tempo/LogQL/PromQL, Flight, or on-disk changes. Not BREAKING.
   list/get/lookup; custom registry create/replace/delete under `admin schema`).
 - `mcp-tool-surface`: MCP tools SHALL additionally cover schema-registry lookup
   and custom-registry management.
+- `api-key-management`: API keys can be created with `schema:read` /
+  `schema:write` scopes.
+- `mcp-oauth`: `schema:read` joins the read scopes (default grant, consent);
+  `schema:write` is not OAuth-grantable.
 
 ## Impact
 

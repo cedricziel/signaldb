@@ -58,9 +58,19 @@
 
 ## 5. HTTP API (router)
 
+- [ ] 5.0 Failing tests in `common::auth`: `can_read_schema`/`can_write_schema`
+      for explicit scopes, legacy `None`, Viewer/Member/Admin sessions,
+      instance admin; add `schema:read`/`schema:write` constants and
+      `schema:read` to `READ_SCOPES`; implement
+- [ ] 5.0b Failing tests: management API accepts `schema:read`/`schema:write`
+      on key creation and lists them; OAuth `granted_read_scopes` grants
+      `schema:read` by default and rejects a `schema:write`-only request;
+      implement
+
 - [ ] 5.1 Failing router tests for `/api/v1/schema/registries` (list, create
       JSON+YAML, get, replace, delete; 409 on bundled; 422 with error paths;
-      403 for non-admin mutation; tenant scoping)
+      403 for non-admin session, for keys lacking `schema:write`, and for
+      ingest-only keys on read endpoints; tenant scoping)
 - [ ] 5.1b Failing router tests for `registries:validate` (errors with paths;
       counts; nothing stored) and list counts; implement
 - [ ] 5.2 Failing router tests for resolve/search endpoints (attributes,
@@ -74,6 +84,9 @@
 
 - [ ] 6.1 Failing SDK tests for `schema()` methods; implement over the
       regenerated client
+- [ ] 6.1b Failing tests: ApiKeys UI scope picker groups Ingestion and Schema
+      scopes with descriptions; CLI `admin api-key create --scope schema:read`;
+      MCP admin key-creation tool accepts the new scopes; implement
 - [ ] 6.2 Failing CLI tests: `signaldb schema registry list|get`,
       `schema attribute|entity|metric get|search`,
       `admin schema create|replace|delete --file` (YAML and JSON); implement
