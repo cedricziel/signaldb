@@ -44,8 +44,14 @@ builds on. Do it first so the consumers can be thin.
 - **Access control**: two new API-key scopes, `schema:read` (list/get
   registries, resolve/search) and `schema:write` (create/replace/validate/delete
   custom registries), enforced like the existing `<signal>:read|write` scopes;
-  selectable in the API-key UI/API/CLI; `schema:read` is OAuth-grantable and part
-  of the default read grant, `schema:write` is not.
+  `schema:read` is OAuth-grantable and part of the default read grant,
+  `schema:write` is not.
+- **Scopes on every key-management surface**: the admin HTTP API used by the CLI
+  and MCP creates keys with no scopes today (legacy-unrestricted). Key creation
+  on every surface (UI, admin/management API, SDK, CLI, MCP) SHALL take an
+  explicit scope set (required, validated against one vocabulary) and optional
+  dataset; an existing key's scopes SHALL be updatable without rotating the
+  secret.
 - **Surface parity**: SDK, CLI (`signaldb schema …`) and MCP tools for the
   registry list/get/lookup and the custom CRUD, per `client-surface-parity`.
 - **v0 UX**: wherever the Explore UI renders an attribute key as a label — field
@@ -89,7 +95,9 @@ No OTLP ingest, Tempo/LogQL/PromQL, Flight, or on-disk changes. Not BREAKING.
 - `mcp-tool-surface`: MCP tools SHALL additionally cover schema-registry lookup
   and custom-registry management.
 - `api-key-management`: API keys can be created with `schema:read` /
-  `schema:write` scopes.
+  `schema:write` scopes; scopes are required and selectable on every
+  key-management surface (admin API, CLI, MCP too); existing keys' scopes can be
+  updated.
 - `mcp-oauth`: `schema:read` joins the read scopes (default grant, consent);
   `schema:write` is not OAuth-grantable.
 
@@ -98,6 +106,9 @@ No OTLP ingest, Tempo/LogQL/PromQL, Flight, or on-disk changes. Not BREAKING.
 - **common**: schema-registry model, Weaver-format parser + subset validator,
   bundled registry loading (vendored semconv + `otel/registry/`), catalog tables
   for custom registries and flattened lookup indexes.
+- **router / signaldb-api**: admin `POST /tenants/{id}/api-keys` gains
+  `scopes` (required) + `dataset_id`; new `PATCH …/api-keys/{key_id}` (scopes,
+  dataset) on admin and management APIs; one shared scope vocabulary.
 - **router**: `/api/v1/schema/*` endpoints (list/get, custom CRUD, resolved
   lookup); OpenAPI + generated SDK/TS client regenerated.
 - **signaldb-sdk / signaldb-cli / mcp-server**: new methods, `schema` commands,

@@ -183,7 +183,21 @@ SCHEMA_SCOPES`; the ApiKeys UI, CLI `admin api-key create --scope`, and MCP
 admin toolset expose both. `READ_SCOPES` (OAuth default grant / consent) gains
 `schema:read`; `schema:write` stays outside it so `granted_read_scopes` rejects
 it. Read endpoints require `schema:read`; mutations and `:validate` require
-`schema:write`; bundled registries additionally 409 on mutation. utoipa-annotated → OpenAPI → regenerated Rust SDK + TS client (parity gate
+`schema:write`; bundled registries additionally 409 on mutation.
+
+Key management gets one vocabulary: `common::auth::API_KEY_SCOPES =
+INGEST_SCOPES ∪ READ_SCOPES ∪ SCHEMA_SCOPES` with a `validate_scopes()` used by
+both the admin API (`signaldb-api::CreateApiKeyRequest` gains `scopes:
+Vec<String>` (required, non-empty) and `dataset_id`) and the management API.
+New `PATCH /tenants/{id}/api-keys/{key_id}` (admin + management) with
+`{scopes?, dataset_id?}`; catalog `update_api_key_scopes` (rejects revoked).
+The `TenantContext` is built per request from the key row, so updates apply on
+the next request with no cache to invalidate. CLI: `--scope <s>` (repeatable),
+`--dataset`; `admin api-key update <tenant> <key_id> --scope … --dataset …`.
+MCP admin toolset: `create_api_key` gains `scopes`/`dataset_id`,
+`update_api_key_scopes` added. Making `scopes` required on the admin API is a
+BREAKING change to that endpoint's request body (acceptable per project policy;
+no compat shim). utoipa-annotated → OpenAPI → regenerated Rust SDK + TS client (parity gate
 enforces coverage). Response envelope for resolve: `{ key, primary, hits: [...]}`
 where each hit carries `namespace, version, source` + the definition.
 
@@ -249,6 +263,9 @@ definition page; `/catalog`'s hardcoded `entityTypes.ts` becomes derivable from
   loaded, LRU-evicted; a registry document is capped (e.g. 2 MB) at upload.
 - [Group `display_name` is missing on many upstream groups] → title falls back
   to a humanized namespace prefix (`k8s.pod` → "K8s Pod"); brief always exists.
+- [Requiring scopes on the admin key-creation API breaks scripts that POST
+  `{name}` only] → clear 422 naming the field; CLI/MCP updated in the same
+  change; documented in the release notes.
 - [Moving the storage explorer under a tab changes a route users may have
   bookmarked] → `/schema` still renders the hub with Storage selectable and
   `/schema/storage` deep-links to it; no redirect needed.
