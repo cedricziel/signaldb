@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { fetchFacet, type FacetValue } from "../../api/traceFacets";
+import { SemanticInfo } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
+import { useSemantics } from "../../hooks/useSemantics";
 import type { ResolvedRange } from "../../lib/time";
 import {
   FACET_FIELDS,
@@ -10,6 +12,11 @@ import {
 } from "../../lib/traceFilters";
 
 const NUM = new Intl.NumberFormat();
+
+/** Registry keys behind the facet headers (`FacetField.field` is the wire
+ * attribute for attribute-backed facets; built-ins like `name` resolve to
+ * nothing and simply carry no info glyph). */
+const FACET_KEYS = FACET_FIELDS.map((f) => f.field);
 
 interface Props {
   range: ResolvedRange;
@@ -35,6 +42,7 @@ export function TraceFacets({
   onRemoveFilter,
 }: Props) {
   const [open, setOpen] = useState<string | null>(null);
+  const semantics = useSemantics(FACET_KEYS);
 
   return (
     <aside className="sidebar" aria-label="Facets">
@@ -45,18 +53,24 @@ export function TraceFacets({
           const active = filters.filter((f) => f.field === facet.field);
           return (
             <div key={facet.field}>
-              <button
-                className={`field ${open === facet.field ? "open" : ""}`}
-                aria-expanded={open === facet.field}
-                onClick={() =>
-                  setOpen(open === facet.field ? null : facet.field)
-                }
-              >
-                <span>{facet.label}</span>
-                {active.length > 0 && (
-                  <span className="facet-active">{active.length}</span>
-                )}
-              </button>
+              <div className="field-row">
+                <button
+                  className={`field ${open === facet.field ? "open" : ""}`}
+                  aria-expanded={open === facet.field}
+                  onClick={() =>
+                    setOpen(open === facet.field ? null : facet.field)
+                  }
+                >
+                  <span>{facet.label}</span>
+                  {active.length > 0 && (
+                    <span className="facet-active">{active.length}</span>
+                  )}
+                </button>
+                <SemanticInfo
+                  name={facet.label}
+                  semantics={semantics.get(facet.field)}
+                />
+              </div>
               {open === facet.field && (
                 <FacetValues
                   facet={facet}

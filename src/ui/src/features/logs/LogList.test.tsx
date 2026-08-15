@@ -1,8 +1,15 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LogRow } from "../../api/loki";
+import { resetSemanticsCache } from "../../hooks/useSemantics";
+import { stubFetchRoutes } from "../../test/render";
 import { LogList, traceIdOf } from "./LogList";
+
+afterEach(() => {
+  resetSemanticsCache();
+  vi.unstubAllGlobals();
+});
 
 const row = (over: Partial<LogRow>): LogRow => ({
   tsNs: "1000000000",
@@ -251,5 +258,75 @@ describe("LogList structured metadata", () => {
     expect(copied.span_id).toBe("def456");
     expect(copied.service_name).toBe("checkout");
     vi.unstubAllGlobals();
+  });
+});
+
+describe("LogList semantic labels", () => {
+  const podUid = {
+    key: "k8s.pod.uid",
+    brief: "The UID of the Pod.",
+    type: "string",
+    group_id: "registry.k8s.pod",
+    group_display_name: "Kubernetes Attributes",
+    namespace: "otel",
+    version: "1.43.0",
+    source: "bundled",
+  };
+  const semRow = row({
+    line: "pod started",
+    labels: { service_name: "api" },
+    metadata: { "k8s.pod.uid": "275ecb36", "app.order.id": "o-1" },
+  });
+
+  it("enriches known per-line keys and leaves unknown ones bare", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/schema/attributes",
+        body: {
+          hits: [],
+          resolutions: [
+            { key: "k8s.pod.uid", hits: [podUid], primary: podUid },
+            { key: "app.order.id", hits: [] },
+            { key: "service_name", hits: [] },
+          ],
+        },
+      },
+    ]);
+    const { container } = render(
+      <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+    );
+    await userEvent.click(screen.getByText("pod started"));
+    expect(await screen.findByText("The UID of the Pod.")).toBeInTheDocument();
+    expect(screen.getByText("Kubernetes Attributes")).toBeInTheDocument();
+    expect(screen.getByText("otel")).toBeInTheDocument();
+    expect(screen.getByText("Other")).toBeInTheDocument();
+    // Unknown key: bare text, as before.
+    const orderDt = [
+      ...container.querySelectorAll(".attr-row[data-scope='metadata'] dt"),
+    ].find((el) => el.textContent === "app.order.id");
+    expect(orderDt).toBeDefined();
+    // The label scope had nothing resolvable: no title, bare key.
+    expect(
+      container.querySelector(".attr-row[data-scope='label'] dt")!.textContent,
+    ).toBe("service_name");
+  });
+
+  it("shows raw keys and no error when the registry fails", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/schema/attributes",
+        body: { error: "boom" },
+        status: 500,
+      },
+    ]);
+    const { container } = render(
+      <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+    );
+    await userEvent.click(screen.getByText("pod started"));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(screen.queryByText(/boom/)).not.toBeInTheDocument();
+    expect(
+      [...container.querySelectorAll(".attr-row dt")].map((el) => el.textContent),
+    ).toEqual(["service_name", "app.order.id", "k8s.pod.uid"]);
   });
 });

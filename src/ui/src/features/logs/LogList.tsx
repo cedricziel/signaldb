@@ -1,9 +1,12 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useRef, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 import type { LogRow } from "../../api/loki";
 import { AttributeValue } from "../../components/AttributeValue";
 import { CopyValueButton } from "../../components/CopyValueButton";
+import { SemanticKey } from "../../components/SemanticKey";
+import { useSemantics } from "../../hooks/useSemantics";
 import type { LabelFilter } from "../../lib/filters";
+import { groupBySemanticTitle } from "../../lib/semantics";
 import { formatTimestamp } from "../../lib/time";
 import { normalizeLevel } from "./Histogram";
 
@@ -110,53 +113,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                       Copy JSON
                     </button>
                   </div>
-                  <dl className="attr-grid">
-                    {Object.entries(row.labels)
-                      .sort(([a], [b]) => a.localeCompare(b))
-                      .map(([k, v]) => (
-                      <div className="attr-row" data-scope="label" key={k}>
-                        <dt>{k}</dt>
-                        <dd>
-                          <AttributeValue value={v} label={`value for ${k}`} />
-                        </dd>
-                        <span className="attr-actions">
-                          <button
-                            aria-label={`Filter for ${k} = ${v}`}
-                            onClick={() =>
-                              onAddFilter({ label: k, op: "=", value: v })
-                            }
-                          >
-                            + filter
-                          </button>
-                          <button
-                            aria-label={`Filter out ${k} = ${v}`}
-                            onClick={() =>
-                              onAddFilter({ label: k, op: "!=", value: v })
-                            }
-                          >
-                            − exclude
-                          </button>
-                        </span>
-                      </div>
-                      ))}
-                    {/* Per-line fields: `trace_id`/`span_id` plus the row's
-                        log and resource attributes. Shown without filter
-                        actions for now — the label-filter model compiles to a
-                        stream selector, which is the wrong shape for these.
-                        Filtering on them arrives with the Query IR migration,
-                        where the predicate is built server-side. */}
-                    {Object.entries(row.metadata)
-                      .sort(([a], [b]) => a.localeCompare(b))
-                      .map(([k, v]) => (
-                      <div className="attr-row" data-scope="metadata" key={k}>
-                        <dt>{k}</dt>
-                        <dd>
-                          <AttributeValue value={v} label={`value for ${k}`} />
-                        </dd>
-                        <span className="attr-scope">per-line</span>
-                      </div>
-                      ))}
-                  </dl>
+                  <LogAttributes row={row} onAddFilter={onAddFilter} />
                 </div>
               )}
             </div>
@@ -164,5 +121,85 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
         })}
       </div>
     </div>
+  );
+}
+
+const sortedEntries = (bag: Record<string, string>): [string, string][] =>
+  Object.entries(bag).sort(([a], [b]) => a.localeCompare(b));
+
+/**
+ * The expanded row's attribute table: stream labels (with filter actions)
+ * then per-line fields. Keys the schema registry knows carry their brief and
+ * namespace and are grouped under their semantic title; a scope where
+ * nothing resolved renders exactly as before.
+ */
+function LogAttributes({
+  row,
+  onAddFilter,
+}: {
+  row: LogRow;
+  onAddFilter: (filter: LabelFilter) => void;
+}) {
+  const labels = useMemo(() => sortedEntries(row.labels), [row.labels]);
+  const metadata = useMemo(() => sortedEntries(row.metadata), [row.metadata]);
+  const keys = useMemo(
+    () => [...labels, ...metadata].map(([k]) => k),
+    [labels, metadata],
+  );
+  const semantics = useSemantics(keys);
+
+  return (
+    <dl className="attr-grid">
+      {groupBySemanticTitle(labels, semantics).map((group) => (
+        <Fragment key={`label:${group.title ?? ""}`}>
+          {group.title && <div className="attr-grid-title">{group.title}</div>}
+          {group.entries.map(([k, v]) => (
+            <div className="attr-row" data-scope="label" key={k}>
+              <dt>
+                <SemanticKey name={k} semantics={semantics.get(k)} />
+              </dt>
+              <dd>
+                <AttributeValue value={v} label={`value for ${k}`} />
+              </dd>
+              <span className="attr-actions">
+                <button
+                  aria-label={`Filter for ${k} = ${v}`}
+                  onClick={() => onAddFilter({ label: k, op: "=", value: v })}
+                >
+                  + filter
+                </button>
+                <button
+                  aria-label={`Filter out ${k} = ${v}`}
+                  onClick={() => onAddFilter({ label: k, op: "!=", value: v })}
+                >
+                  − exclude
+                </button>
+              </span>
+            </div>
+          ))}
+        </Fragment>
+      ))}
+      {/* Per-line fields: `trace_id`/`span_id` plus the row's log and
+          resource attributes. Shown without filter actions for now — the
+          label-filter model compiles to a stream selector, which is the
+          wrong shape for these. Filtering on them arrives with the Query IR
+          migration, where the predicate is built server-side. */}
+      {groupBySemanticTitle(metadata, semantics).map((group) => (
+        <Fragment key={`meta:${group.title ?? ""}`}>
+          {group.title && <div className="attr-grid-title">{group.title}</div>}
+          {group.entries.map(([k, v]) => (
+            <div className="attr-row" data-scope="metadata" key={k}>
+              <dt>
+                <SemanticKey name={k} semantics={semantics.get(k)} />
+              </dt>
+              <dd>
+                <AttributeValue value={v} label={`value for ${k}`} />
+              </dd>
+              <span className="attr-scope">per-line</span>
+            </div>
+          ))}
+        </Fragment>
+      ))}
+    </dl>
   );
 }

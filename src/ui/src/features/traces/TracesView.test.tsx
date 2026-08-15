@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
+import { resetSemanticsCache } from "../../hooks/useSemantics";
 import { TracesView } from "./TracesView";
 import * as traceGroupsApi from "../../api/traceGroups";
 import type { TraceGroup } from "../../api/traceGroups";
@@ -45,6 +46,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   localStorage.clear();
+  resetSemanticsCache();
 });
 
 beforeEach(() => {
@@ -875,6 +877,111 @@ describe("TracesView detail", () => {
       "service.name",
       "telemetry.sdk.version",
     ]);
+  });
+
+  it("enriches resolved attribute keys with brief, title and namespace; unknown keys stay bare", async () => {
+    const podUid = {
+      key: "k8s.pod.uid",
+      brief: "The UID of the Pod.",
+      type: "string",
+      group_id: "registry.k8s.pod",
+      group_display_name: "Kubernetes Attributes",
+      namespace: "otel",
+      version: "1.43.0",
+      source: "bundled",
+    };
+    stubFetchRoutes([
+      {
+        match: "/api/v1/schema/attributes",
+        body: {
+          hits: [],
+          resolutions: [
+            { key: "k8s.pod.uid", hits: [podUid], primary: podUid },
+            { key: "app.order.id", hits: [] },
+            { key: "payment.provider", hits: [] },
+          ],
+        },
+      },
+      {
+        match: "/tempo/api/traces/tsem",
+        body: {
+          ...TRACE_BODY,
+          traceID: "tsem",
+          spanSets: [
+            {
+              matched: 1,
+              spans: [
+                {
+                  spanID: "root",
+                  startTimeUnixNano: "1000000000",
+                  durationNanos: "412000000",
+                  name: "POST /api/checkout",
+                  serviceName: "gateway",
+                  status: "ok",
+                  attributes: {
+                    "payment.provider": {
+                      key: "payment.provider",
+                      value: { stringValue: "stripe" },
+                    },
+                    "resource.k8s.pod.uid": {
+                      key: "resource.k8s.pod.uid",
+                      value: { stringValue: "275ecb36" },
+                    },
+                    "resource.app.order.id": {
+                      key: "resource.app.order.id",
+                      value: { stringValue: "o-1" },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    renderView({ trace: "tsem" });
+
+    const detail = await screen.findByLabelText("Span details");
+    expect(
+      await within(detail).findByText("The UID of the Pod."),
+    ).toBeInTheDocument();
+    expect(within(detail).getByText("Kubernetes Attributes")).toBeInTheDocument();
+    expect(within(detail).getByText("otel")).toBeInTheDocument();
+    // Unknown keys stay bare, grouped under "Other" after the titled group.
+    expect(within(detail).getByText("Other")).toBeInTheDocument();
+    const orderTerm = within(detail)
+      .getAllByRole("term")
+      .find((el) => el.textContent === "app.order.id");
+    expect(orderTerm).toBeDefined();
+    // The Span section had nothing resolvable, so it renders as before: no
+    // sub-heading, key text only.
+    expect(
+      within(detail)
+        .getAllByRole("term")
+        .find((el) => el.textContent === "payment.provider"),
+    ).toBeDefined();
+    expect(within(detail).getAllByText("Other")).toHaveLength(1);
+  });
+
+  it("renders raw keys and no error when the schema endpoint fails", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/schema/attributes",
+        body: { error: "boom" },
+        status: 500,
+      },
+      { match: "/tempo/api/traces/t1cafe", body: TRACE_BODY },
+    ]);
+    renderView({ trace: "t1cafe" });
+    const detail = await screen.findByLabelText("Span details");
+    expect(
+      await within(detail).findByText("payment.provider"),
+    ).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 60));
+    expect(within(detail).queryByText(/boom/)).not.toBeInTheDocument();
+    expect(within(detail).getByText("payment.provider").textContent).toBe(
+      "payment.provider",
+    );
   });
 
   it("resizes the span-detail sidebar by dragging the resizer, clamped and persisted", async () => {

@@ -363,6 +363,27 @@
   display: block;
 }
 
+/* Field/facet header row: the toggle button plus, when the registry knows
+   the key, an info glyph outside the button (its own hover/focus target). */
+.field-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.field-row .field {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.field-row .sem-info {
+  padding-right: 10px;
+}
+
+.field-row:hover {
+  background: var(--surface2);
+}
+
 .field:hover,
 .field.open {
   background: var(--surface2);
@@ -549,6 +570,14 @@ span.level-debug {
   flex-direction: column;
   gap: 2px;
   max-width: 720px;
+}
+
+/* Semantic-title sub-heading when the registry resolved keys in a scope. */
+.attr-grid-title {
+  font-size: 10.5px;
+  color: var(--dim);
+  font-weight: 600;
+  margin: 6px 0 1px;
 }
 
 .attr-row {
