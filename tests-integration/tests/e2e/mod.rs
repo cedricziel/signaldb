@@ -1,0 +1,7 @@
+mod component_integration_tests;
+mod database_tenant_namespace_parity;
+mod dataset_table_provisioning;
+mod end_to_end_logs_metrics_tests;
+mod end_to_end_profiles_tests;
+mod end_to_end_trace_tests;
+mod flight_rpc_tests;
