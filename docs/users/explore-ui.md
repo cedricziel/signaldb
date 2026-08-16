@@ -256,10 +256,16 @@ a filter; filters appear as removable chips and narrow the trace list, the group
 table, and the volume chart together, so the chart always describes what the
 table shows. Filters live in the URL, so a narrowed view is shareable.
 
-Facets currently cover `service.name`, `span.name`, `status`, and `span.kind`.
-These are the fields the query API can enumerate exactly today; attribute
-facets follow once [#1073](https://github.com/cedricziel/signaldb/issues/1073)
-lands, and will appear in the same sidebar without changing how it works.
+Facets currently cover `service.name`, `span.name`, `status`, and `span.kind`,
+plus a curated set of common resource/span identity attributes (`host.name`,
+the `k8s.*` fields, `db.namespace`, …) — a defined TraceQL selector and
+quoting rule per field, not an enumeration limit; a facet for another
+attribute is a UI addition, not a backend one. To slice by any other
+attribute today, use the "Group by attribute" custom dimension field below
+the group table: it now suggests the attribute keys actually observed in
+the current window (merged with schema-registry hits), backed by the same
+tag-discovery API that also powers `/api/search/tags` and the MCP/CLI
+`discover` surfaces ([#1073](https://github.com/cedricziel/signaldb/issues/1073)).
 
 Both the facet sidebar and the traces' span-detail panel are resizable: drag
 the handle on the sidebar's trailing edge. The facet/field sidebar's width is
