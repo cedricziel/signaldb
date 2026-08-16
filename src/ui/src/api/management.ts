@@ -38,10 +38,14 @@ export type IngestScope =
 /** Schema-registry scopes an API key may be granted. */
 export type SchemaScope = "schema:read" | "schema:write";
 
+/** Tenant self-management scope: the key may call the management API for
+ * its own tenant. Explicit only — a legacy unscoped key never gains it. */
+export type ManagementScope = "tenant:manage";
+
 /** Every scope selectable on the management UI. Narrower than the generated
  * `string[]`, this drives the scope picker; the vocabulary mirrors
  * `common::auth::API_KEY_SCOPES` (the read scopes are OAuth-only). */
-export type ApiKeyScope = IngestScope | SchemaScope;
+export type ApiKeyScope = IngestScope | SchemaScope | ManagementScope;
 
 /** Scope picker groups with one-line descriptions, in display order. */
 export const SCOPE_GROUPS: ReadonlyArray<{
@@ -68,6 +72,16 @@ export const SCOPE_GROUPS: ReadonlyArray<{
       {
         scope: "schema:write",
         description: "Create, replace, validate, and delete custom registries",
+      },
+    ],
+  },
+  {
+    name: "Management",
+    scopes: [
+      {
+        scope: "tenant:manage",
+        description:
+          "Manage this tenant's datasets, keys, and members through the management API (explicit only; automation stand-in for a tenant admin)",
       },
     ],
   },

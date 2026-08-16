@@ -71,10 +71,28 @@ const TENANT_SELF_TOOLS: &[&str] = &[
     "tenant_upsert_membership",
     "tenant_remove_membership",
     "tenant_get_schema",
+    "tenant_info",
     "tenant_list_tables",
     "tenant_create_tables",
     "tenant_list_table_schemas",
     "list_available_table_schemas",
+];
+
+/// The tenant tools that wrap the `authorize_tenant`-gated management API:
+/// reachable by a human session with the tenant-admin role or by an API key
+/// carrying `tenant:manage`.
+const TENANT_MANAGE_TOOLS: &[&str] = &[
+    "tenant_list_datasets",
+    "tenant_create_dataset",
+    "tenant_delete_dataset",
+    "tenant_list_api_keys",
+    "tenant_create_api_key",
+    "tenant_revoke_api_key",
+    "tenant_update_api_key",
+    "tenant_list_memberships",
+    "tenant_upsert_membership",
+    "tenant_remove_membership",
+    "tenant_get_schema",
 ];
 
 const SCHEMA_EXTRA_TOOLS: &[&str] = &["get_schema_registry", "validate_schema_registry"];
@@ -111,6 +129,7 @@ async fn destructive_and_read_only_tools_carry_the_right_annotations() {
         "tenant_list_api_keys",
         "tenant_list_memberships",
         "tenant_get_schema",
+        "tenant_info",
         "tenant_list_tables",
         "tenant_list_table_schemas",
         "list_available_table_schemas",
@@ -156,6 +175,49 @@ async fn destructive_and_read_only_tools_carry_the_right_annotations() {
         );
     }
 
+    client.cancel().await.ok();
+}
+
+#[tokio::test]
+async fn tenant_manage_tools_name_the_scope_and_drop_the_human_session_caveat() {
+    let client = connect().await;
+    let tools = client.list_tools(None).await.expect("tools/list succeeds");
+    for name in TENANT_MANAGE_TOOLS {
+        let tool = tools
+            .tools
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("{name} listed"));
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(
+            description.contains("tenant:manage"),
+            "{name} must name the tenant:manage scope: {description}"
+        );
+        for stale in [
+            "human-authenticated",
+            "plain API key is denied",
+            "INSTANCE administrator",
+        ] {
+            assert!(
+                !description.contains(stale),
+                "{name} still carries the stale caveat `{stale}`: {description}"
+            );
+        }
+    }
+    // The key-creating tools spell out the scope vocabulary including the
+    // new management scope.
+    for name in ["create_api_key", "tenant_create_api_key"] {
+        let tool = tools
+            .tools
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("{name} listed"));
+        let schema = serde_json::to_string(&tool.input_schema).expect("schema serializes");
+        assert!(
+            schema.contains("tenant:manage"),
+            "{name} scope help must include tenant:manage: {schema}"
+        );
+    }
     client.cancel().await.ok();
 }
 
@@ -207,6 +269,35 @@ async fn behaviour(
     method: axum::http::Method,
 ) -> Response {
     let path = uri.path();
+    if path == "/api/v1/tenants/acme" && method == axum::http::Method::GET {
+        return axum::Json(serde_json::json!({
+            "tenant_id": "acme", "enabled": true, "schema": null
+        }))
+        .into_response();
+    }
+    // Scope enforcement stand-in for `authorize_tenant`: only the key that
+    // carries `tenant:manage` may create a dataset.
+    if path == "/api/v1/manage/tenants/acme/datasets" && method == axum::http::Method::POST {
+        let bearer = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        return if bearer == "Bearer sk-acme-manage" {
+            (
+                StatusCode::CREATED,
+                axum::Json(serde_json::json!({"id": "staging", "name": "staging"})),
+            )
+                .into_response()
+        } else {
+            (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": "Tenant administrator role or tenant:manage scope required"
+                })),
+            )
+                .into_response()
+        };
+    }
     if path.contains("/manage/tenants/denied/") {
         return (
             StatusCode::FORBIDDEN,
@@ -270,12 +361,16 @@ async fn spawn_mock_router() -> String {
     format!("http://{addr}")
 }
 
-fn mcp_request(session_id: Option<&str>, body: serde_json::Value) -> Request<Body> {
+fn mcp_request_with_key(
+    api_key: &str,
+    session_id: Option<&str>,
+    body: serde_json::Value,
+) -> Request<Body> {
     let mut builder = Request::builder()
         .method("POST")
         .uri("/mcp")
         .header("host", "localhost")
-        .header("authorization", "Bearer sk-acme")
+        .header("authorization", format!("Bearer {api_key}"))
         .header("x-tenant-id", "acme")
         .header("content-type", "application/json")
         .header("accept", "application/json, text/event-stream");
@@ -313,14 +408,20 @@ async fn read_jsonrpc_response(response: Response, id: u64) -> serde_json::Value
 
 struct McpSession {
     app: axum::Router,
+    api_key: String,
     session_id: String,
     next_id: u64,
 }
 
 impl McpSession {
     async fn open(app: axum::Router) -> Self {
+        Self::open_with_key(app, "sk-acme").await
+    }
+
+    async fn open_with_key(app: axum::Router, api_key: &str) -> Self {
         use tower::ServiceExt;
-        let init = mcp_request(
+        let init = mcp_request_with_key(
+            api_key,
             None,
             serde_json::json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -342,7 +443,8 @@ impl McpSession {
             .to_string();
         let _ = read_jsonrpc_response(response, 1).await;
 
-        let initialized = mcp_request(
+        let initialized = mcp_request_with_key(
+            api_key,
             Some(&session_id),
             serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
         );
@@ -355,6 +457,7 @@ impl McpSession {
 
         Self {
             app,
+            api_key: api_key.to_string(),
             session_id,
             next_id: 2,
         }
@@ -363,7 +466,8 @@ impl McpSession {
     async fn call_tool(&mut self, tool: &str, arguments: serde_json::Value) -> serde_json::Value {
         let id = self.next_id;
         self.next_id += 1;
-        let request = mcp_request(
+        let request = mcp_request_with_key(
+            &self.api_key,
             Some(&self.session_id),
             serde_json::json!({
                 "jsonrpc": "2.0", "id": id, "method": "tools/call",
@@ -501,6 +605,51 @@ async fn tenant_list_tables_returns_datasets_grouping() {
         text.contains("\"dataset\":\"production\"") || text.contains("\"dataset\": \"production\""),
         "grouped entry must carry its dataset id: {text}"
     );
+}
+
+#[tokio::test]
+async fn tenant_manage_key_session_creates_a_dataset_and_ingest_key_is_denied() {
+    let app = app().await;
+    let mut manage = McpSession::open_with_key(app.clone(), "sk-acme-manage").await;
+    let reply = manage
+        .call_tool(
+            "tenant_create_dataset",
+            serde_json::json!({"tenant_id": "acme", "name": "staging"}),
+        )
+        .await;
+    assert!(
+        !tool_is_error(&reply),
+        "tenant:manage key succeeds: {reply}"
+    );
+    assert!(
+        tool_error_message(&reply).contains("staging"),
+        "SDK-shaped dataset result: {reply}"
+    );
+
+    let mut ingest = McpSession::open_with_key(app, "sk-acme-ingest").await;
+    let reply = ingest
+        .call_tool(
+            "tenant_create_dataset",
+            serde_json::json!({"tenant_id": "acme", "name": "staging"}),
+        )
+        .await;
+    assert!(tool_is_error(&reply), "ingest-only key is denied: {reply}");
+    assert!(
+        tool_error_message(&reply).contains("tenant:manage"),
+        "denial names the required scope: {reply}"
+    );
+}
+
+#[tokio::test]
+async fn tenant_info_returns_the_callers_tenant() {
+    let mut session = McpSession::open(app().await).await;
+    let reply = session
+        .call_tool("tenant_info", serde_json::json!({"tenant_id": "acme"}))
+        .await;
+    assert!(!tool_is_error(&reply), "tenant_info succeeds: {reply}");
+    let text = tool_error_message(&reply);
+    assert!(text.contains("\"tenant_id\""), "{text}");
+    assert!(text.contains("acme"), "{text}");
 }
 
 #[tokio::test]

@@ -20,7 +20,7 @@ function selectedScopes(data: FormData): ApiKeyScope[] {
   return ALL_SCOPES.filter((scope) => data.has(scope));
 }
 
-/** The grouped scope picker (Ingestion / Schema) shared by the create form
+/** The grouped scope picker (Ingestion / Schema / Management) shared by the create form
  * and the per-key editor. `idPrefix` keeps input ids unique per instance. */
 function ScopePicker({
   idPrefix,

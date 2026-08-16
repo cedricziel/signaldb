@@ -35,7 +35,7 @@ flowchart LR
 
 - **DTOs** live in [`signaldb-api`](../../src/signaldb-api/src/schemas.rs) as
   hand-written structs deriving `utoipa::ToSchema` (admin surface) and, for the
-  session-authenticated management surface, in
+  management surface (tenant-admin session or `tenant:manage` key), in
   `src/router/src/endpoints/management.rs`. Field names and serde attributes
   define the JSON wire format; `ToSchema` makes each struct an OpenAPI
   component.

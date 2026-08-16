@@ -62,6 +62,14 @@ const API_KEYS = [
     created_at: "2026-07-01T00:00:00Z",
     revoked: true,
   },
+  {
+    id: "key-4",
+    name: "ci-provisioner",
+    dataset_id: null,
+    scopes: ["tenant:manage"],
+    created_at: "2026-08-10T00:00:00Z",
+    revoked: false,
+  },
 ];
 
 /** Find a fetch mock call whose Request matches a URL substring and method. */
@@ -124,6 +132,12 @@ describe("ApiKeys page", () => {
         content.startsWith("all datasets · legacy unrestricted"),
       ),
     ).toBeInTheDocument();
+    // A management key lists its tenant:manage scope like any other scope.
+    expect(
+      screen.getByText((content) =>
+        content.startsWith("all datasets · tenant:manage"),
+      ),
+    ).toBeInTheDocument();
 
     // Revoked key row is dimmed via the "revoked" CSS class on the <li>
     // (jsdom doesn't apply stylesheet rules, so we check the class).
@@ -176,6 +190,45 @@ describe("ApiKeys page", () => {
     expect(ingestion).toHaveTextContent(/ingest traces/i);
   });
 
+  it("offers the tenant:manage scope with a description", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+    const management = screen.getByRole("group", { name: "Management" });
+    expect(management).toContainElement(
+      screen.getByLabelText("tenant:manage"),
+    );
+    expect(management).toHaveTextContent(/datasets, keys, and members/i);
+  });
+
+  it("creates a key with the tenant:manage scope", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: [] },
+      { match: API_KEYS_PATH, method: "POST", body: { key: "sdbk_manage" } },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getByLabelText("metrics:write"));
+    await userEvent.click(screen.getByLabelText("tenant:manage"));
+    await userEvent.click(screen.getByText("Create API key"));
+
+    await waitFor(() =>
+      expect(findFetchCall(fetchMock, "/api-keys", "POST")).toBeDefined(),
+    );
+    const post = findFetchCall(fetchMock, "/api-keys", "POST")!;
+    expect(await post.clone().json()).toEqual({ scopes: ["tenant:manage"] });
+  });
+
   it("creates a key with schema scopes", async () => {
     const fetchMock = stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
@@ -219,7 +272,7 @@ describe("ApiKeys page", () => {
 
     // Revoked keys offer no editor; live keys do.
     const editButtons = screen.getAllByText("Edit scopes");
-    expect(editButtons).toHaveLength(2);
+    expect(editButtons).toHaveLength(3);
     await userEvent.click(editButtons[0]!);
 
     const editor = screen.getByRole("form", { name: "Edit scopes" });

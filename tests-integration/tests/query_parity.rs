@@ -29,74 +29,7 @@ const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "manage_create_tenant",
-        "requires a signed-in human instance-administrator session (`TenantContext::is_instance_admin`, set only by password login); unreachable from any API-key-authenticated client, which is the only auth the CLI supports (the MCP server can reach it via an OAuth-authenticated session, but no CLI surface is possible)",
-    ),
-    (
-        "list_tenants_self",
-        "tenant.rs's self-view tenant list, filtered to exactly the caller's own tenant — redundant with `whoami`/`server_info` identity lookup; not given a dedicated CLI/MCP surface (mcp-admin-tool-parity rescoping)",
-    ),
-    (
-        "get_tenant_self",
-        "tenant.rs's self-view tenant get — same rationale as `list_tenants_self`",
-    ),
-    // The following ten `manage_*` operations (datasets, API keys,
-    // memberships) and `manage_get_schema` are gated by
-    // `router::endpoints::management::authorize_tenant` (or, for
-    // `manage_get_schema`, the stricter `ctx.is_instance_admin`), which
-    // requires a human-authenticated principal — a browser session cookie or
-    // an OAuth access token carrying a real per-tenant membership role — and
-    // explicitly rejects a bare API key. This is deliberate and tested
-    // (`ingestion_api_key_cannot_use_human_management_endpoints` in
-    // `router/src/endpoints/session.rs`), discovered while implementing this
-    // change's CLI `tenant` group (which was scoped down to `tenant table`
-    // as a result — see `signaldb_cli::commands::tenant_self`'s module doc).
-    // The CLI has no session/OAuth login, only `--api-key`, so no CLI
-    // command can ever reach these; MCP keeps `tenant_*` tools for them
-    // (functional for an OAuth-authenticated MCP session), so they are
-    // excluded here rather than mapped with a nonexistent CLI surface.
-    (
-        "manage_list_datasets",
-        "human-session-only management endpoint (authorize_tenant); no CLI surface possible — see the block comment above",
-    ),
-    (
-        "manage_create_dataset",
-        "human-session-only management endpoint (authorize_tenant); no CLI surface possible",
-    ),
-    (
-        "manage_delete_dataset",
-        "human-session-only management endpoint (authorize_tenant); no CLI surface possible",
-    ),
-    (
-        "manage_list_api_keys",
-        "human-session-only management endpoint (authorize_tenant); no CLI surface possible",
-    ),
-    (
-        "manage_create_api_key",
-        "human-session-only management endpoint (authorize_tenant); no CLI surface possible",
-    ),
-    (
-        "manage_update_api_key",
-        "human-session-only management endpoint (authorize_tenant); no CLI surface possible",
-    ),
-    (
-        "manage_revoke_api_key",
-        "human-session-only management endpoint (authorize_tenant); no CLI surface possible",
-    ),
-    (
-        "manage_list_memberships",
-        "human-session-only management endpoint (authorize_tenant); no CLI surface possible",
-    ),
-    (
-        "manage_upsert_membership",
-        "human-session-only management endpoint (authorize_tenant); no CLI surface possible",
-    ),
-    (
-        "manage_remove_membership",
-        "human-session-only management endpoint (authorize_tenant); no CLI surface possible",
-    ),
-    (
-        "manage_get_schema",
-        "human-session-only, and stricter still: requires ctx.is_instance_admin, not just a tenant-admin role; no CLI surface possible",
+        "human self-serve tenant creation by a signed-in instance administrator (`TenantContext::is_instance_admin`); API-key clients create tenants through the admin API's `create_tenant` (`admin tenant create` / MCP `create_tenant`), so no `tenant`-group surface is owed (management-api-key-scope, design D5)",
     ),
     (
         "search_tags_v2",
@@ -188,18 +121,78 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         CliSurface::Path(&["admin", "api-key", "revoke"]),
         "revoke_api_key",
     ),
-    // ---- Tenant self-management: tables/schemas only (tenant self-service
-    // API, works with a plain tenant API key). manage_list_datasets,
-    // manage_create_dataset, manage_delete_dataset, manage_list_api_keys,
-    // manage_create_api_key, manage_update_api_key, manage_revoke_api_key,
-    // manage_list_memberships, manage_upsert_membership,
-    // manage_remove_membership, and manage_get_schema are EXCLUDED below,
-    // not mapped here — the management API's `authorize_tenant` requires a
-    // human-authenticated principal and rejects a bare API key, which is
-    // the CLI's only auth mechanism. Their MCP `tenant_*` tools still exist
-    // (functional for an OAuth-authenticated MCP session) but the CLI has
-    // no matching command, so the whole-SDK check cannot require both
-    // surfaces for them. ----
+    // ---- Tenant self-management (management API; an API key carrying
+    // `tenant:manage`, or a tenant-admin session) ----
+    (
+        "manage_list_datasets",
+        CliSurface::Path(&["tenant", "dataset", "list"]),
+        "tenant_list_datasets",
+    ),
+    (
+        "manage_create_dataset",
+        CliSurface::Path(&["tenant", "dataset", "create"]),
+        "tenant_create_dataset",
+    ),
+    (
+        "manage_delete_dataset",
+        CliSurface::Path(&["tenant", "dataset", "delete"]),
+        "tenant_delete_dataset",
+    ),
+    (
+        "manage_list_api_keys",
+        CliSurface::Path(&["tenant", "api-key", "list"]),
+        "tenant_list_api_keys",
+    ),
+    (
+        "manage_create_api_key",
+        CliSurface::Path(&["tenant", "api-key", "create"]),
+        "tenant_create_api_key",
+    ),
+    (
+        "manage_update_api_key",
+        CliSurface::Path(&["tenant", "api-key", "update"]),
+        "tenant_update_api_key",
+    ),
+    (
+        "manage_revoke_api_key",
+        CliSurface::Path(&["tenant", "api-key", "revoke"]),
+        "tenant_revoke_api_key",
+    ),
+    (
+        "manage_list_memberships",
+        CliSurface::Path(&["tenant", "membership", "list"]),
+        "tenant_list_memberships",
+    ),
+    (
+        "manage_upsert_membership",
+        CliSurface::Path(&["tenant", "membership", "set"]),
+        "tenant_upsert_membership",
+    ),
+    (
+        "manage_remove_membership",
+        CliSurface::Path(&["tenant", "membership", "remove"]),
+        "tenant_remove_membership",
+    ),
+    (
+        "manage_get_schema",
+        CliSurface::Path(&["tenant", "schema", "get"]),
+        "tenant_get_schema",
+    ),
+    // ---- Tenant self view (tenant self-service API; any valid key of the
+    // tenant). `list_tenants_self` is the caller's own tenant as a
+    // single-item list, so it shares `tenant show` / `tenant_info` with
+    // `get_tenant_self` (design D4). ----
+    (
+        "list_tenants_self",
+        CliSurface::Path(&["tenant", "show"]),
+        "tenant_info",
+    ),
+    (
+        "get_tenant_self",
+        CliSurface::Path(&["tenant", "show"]),
+        "tenant_info",
+    ),
+    // ---- Tenant signal tables (tenant self-service API) ----
     (
         "list_tenant_tables",
         CliSurface::Path(&["tenant", "table", "list"]),

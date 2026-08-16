@@ -44,7 +44,9 @@ never hidden.
 - An API key (or a signed-in session). Reading the registry needs the
   `schema:read` scope; creating, replacing, validating, or deleting custom
   registries needs `schema:write` (sessions: any tenant role reads, tenant
-  admins write). See [Authentication](authentication.md) for scopes.
+  admins write). See [Authentication](authentication.md#api-key-scopes) for
+  the full scope vocabulary (which also includes the unrelated
+  `tenant:manage` management scope).
 - For custom registries: a registry document in the
   [OpenTelemetry Weaver semantic-convention model](https://github.com/open-telemetry/weaver)
   — the same YAML you would run `weaver registry check` on.

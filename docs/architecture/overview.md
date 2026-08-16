@@ -355,6 +355,12 @@ its own tenant and read scopes (tenant-from-token, `X-Tenant-ID` ignored),
 audience-bound to the configured MCP resource. See `docs/users/mcp.md` and the
 `multi-tenancy` skill.
 
+The tenant management API (`/api/v1/manage/*`, `endpoints/management.rs`)
+accepts a human principal (session or OAuth) with the tenant-admin role or
+instance-admin flag, or an API key carrying the explicit `tenant:manage` scope
+(`TenantContext::can_manage_via_key`); legacy unscoped keys stay out. Tenant
+creation remains instance-admin-only.
+
 ### Isolation Layers
 
 | Layer                 | Isolation Mechanism                                                          |

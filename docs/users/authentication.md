@@ -7,7 +7,9 @@ sources:
   - src/acceptor/src/middleware/auth.rs
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/session.rs
+  - src/router/src/endpoints/management.rs
   - src/common/src/auth/session.rs
+  - src/common/src/auth/mod.rs
   - src/common/src/bootstrap.rs
 ---
 
@@ -123,11 +125,17 @@ The vocabulary is shared:
 | `traces:read`, `logs:read`, `metrics:read`, `profiles:read`     | Query access to that signal (Tempo/Loki/Prometheus/Pyroscope APIs, MCP)   |
 | `schema:read`                                                   | Reading the schema registry (registries, attribute/entity/metric lookups) |
 | `schema:write`                                                  | Creating, replacing, validating, and deleting custom schema registries    |
+| `tenant:manage`                                                 | The [tenant management API](#tenant-management-api) for the key's own tenant: datasets, API keys, memberships, schema view |
 
 Keys may additionally be restricted to one dataset (`--dataset` / `dataset_id`).
 Keys defined in `signaldb.toml` (and keys that predate scopes) carry no scope
-list and remain unrestricted. Human sessions read the schema with any tenant
-role and write it as tenant admin or instance admin.
+list and remain unrestricted for ingest, query, and schema access — with one
+deliberate exception: `tenant:manage` is **explicit only**. A legacy unscoped
+key never gains tenant management, because those keys were minted before
+management existed for keys and silently widening them would be a security
+surprise. `tenant:manage` is also never grantable through OAuth consent (like
+`schema:write`). Human sessions read the schema with any tenant role and
+write it as tenant admin or instance admin.
 
 The scopes and dataset restriction of a live key can be changed without
 rotating its secret; the change applies to the key's next request:
@@ -179,22 +187,67 @@ each is reachable through `signaldb-sdk`, not only raw HTTP:
 | Method | Path                                        | Returns                                                                          | SDK operation            | CLI / MCP                                                                      |
 | ------ | ------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------ |
 | GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset | `whoami`                 | `signaldb-cli whoami` / `server_info`                                          |
-| GET    | `/api/v1/tenants`                           | All configured tenants, filtered to the caller's own                             | `list_tenants_self`      | none — redundant with `whoami`/`server_info`; not exposed separately           |
-| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   | `get_tenant_self`        | none — same rationale                                                          |
+| GET    | `/api/v1/tenants`                           | All configured tenants, filtered to the caller's own                             | `list_tenants_self`      | `signaldb-cli tenant show` / `tenant_info` (single-item view of the same tenant) |
+| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   | `get_tenant_self`        | `signaldb-cli tenant show` / `tenant_info`                                     |
 | GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's provisioned tables, grouped by dataset                              | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                        |
 | POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                   | `create_tenant_tables`   | `signaldb-cli tenant table provision` / `tenant_create_tables`                 |
 | GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's configured table schema types                                       | `list_tenant_schemas`    | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`              |
 | GET    | `/api/v1/schemas/available`                 | Every table schema type SignalDB can provision                                   | `list_available_schemas` | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas` |
 
 `GET /tenants` and `GET /tenants/{tenant_id}` return only the caller's own
-tenant — a single-entry view — so they duplicate what `whoami` already tells
-you; they are not given their own CLI command or MCP tool.
+tenant — a single-entry view — so both map to `signaldb-cli tenant show` and
+the `tenant_info` MCP tool.
 
-This is distinct from the **management API** (`/api/v1/manage/...`,
-`manage_*` operations), which requires a human-authenticated session — a
-browser session cookie or an OAuth access token with a real per-tenant
-role — not a plain API key; see [MCP tenant self-management](mcp.md#tenant-self-management)
-for the exact boundary and the two credential types it maps to.
+This is distinct from the **management API** below, which needs a stronger
+credential than any valid tenant key.
+
+## Tenant management API
+
+`/api/v1/manage/...` (the `manage_*` SDK operations) manages one tenant from
+the inside: its datasets, API keys, user memberships, and the registered
+logical/physical schema. Every request acts on the tenant of the caller's
+context; the path `tenant_id` must match it (`403` otherwise), so a caller can
+never reach another tenant. It accepts either of two credentials:
+
+- a **human principal** — a browser session cookie or an OAuth access token —
+  holding the tenant-admin role in that tenant or the instance-admin flag
+  (this is what the web UI's management area uses), or
+- an **API key carrying `tenant:manage`** for that tenant. Ingest-only keys,
+  read-only keys, and legacy unscoped keys are refused with `403` and the
+  message `Tenant administrator role or tenant:manage scope required`.
+
+Tenant *creation* (`POST /api/v1/manage/tenants`) stays instance-admin-only;
+API-key automation creates tenants through the admin API
+(`signaldb-cli admin tenant create`).
+
+| Method | Path                                                     | SDK operation              | CLI / MCP                                                                    |
+| ------ | -------------------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------- |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/datasets`            | `manage_list_datasets`     | `signaldb-cli tenant dataset list` / `tenant_list_datasets`                  |
+| POST   | `/api/v1/manage/tenants/{tenant_id}/datasets`            | `manage_create_dataset`    | `signaldb-cli tenant dataset create <name>` / `tenant_create_dataset`        |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/datasets/{name}`     | `manage_delete_dataset`    | `signaldb-cli tenant dataset delete <name>` / `tenant_delete_dataset`        |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/api-keys`            | `manage_list_api_keys`     | `signaldb-cli tenant api-key list` / `tenant_list_api_keys`                  |
+| POST   | `/api/v1/manage/tenants/{tenant_id}/api-keys`            | `manage_create_api_key`    | `signaldb-cli tenant api-key create --scope ...` / `tenant_create_api_key`   |
+| PATCH  | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`   | `manage_update_api_key`    | `signaldb-cli tenant api-key update <key-id>` / `tenant_update_api_key`      |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`   | `manage_revoke_api_key`    | `signaldb-cli tenant api-key revoke <key-id>` / `tenant_revoke_api_key`      |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/memberships`         | `manage_list_memberships`  | `signaldb-cli tenant membership list` / `tenant_list_memberships`            |
+| PUT    | `/api/v1/manage/tenants/{tenant_id}/memberships`         | `manage_upsert_membership` | `signaldb-cli tenant membership set <email> --role ...` / `tenant_upsert_membership` |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/memberships/{user}`  | `manage_remove_membership` | `signaldb-cli tenant membership remove <user-id>` / `tenant_remove_membership` |
+| GET    | `/api/v1/manage/schema`                                  | `manage_get_schema`        | `signaldb-cli tenant schema get` / `tenant_get_schema`                       |
+
+Example — CI provisioning a dataset and an ingest key with a `tenant:manage`
+key (`--api-key`/`SIGNALDB_API_KEY`, `--tenant-id`/`SIGNALDB_TENANT_ID`):
+
+```bash
+signaldb-cli tenant dataset create staging
+signaldb-cli tenant api-key create --name ci-collector \
+  --scope traces:write --scope logs:write --dataset staging
+signaldb-cli tenant dataset delete old-staging --yes   # destructive verbs prompt on a TTY unless --yes
+```
+
+A `tenant:manage` key may mint another `tenant:manage` key for the same
+tenant (delegation within the tenant, exactly as a tenant admin can); it can
+never mint a key for a different tenant. Treat such keys like a tenant-admin
+credential: a leaked one can revoke keys and delete datasets.
 
 ### Creating a tenant's signal tables
 
@@ -202,8 +255,9 @@ for the exact boundary and the two credential types it maps to.
 for every signal type enabled for the tenant, across all of its datasets,
 before returning `201`. It requires tenant-administrator privileges — in
 practice any valid tenant API key, since `can_manage_tenant()` treats API-key
-possession as sufficient trust for this endpoint (unlike the management
-API above) — and returns `500` if any table could not be created.
+possession as sufficient trust for this endpoint (unlike the management API
+above, which needs `tenant:manage`) — and returns `500` if any table could not
+be created.
 
 You rarely need it: SignalDB provisions those tables on its own, shortly after
 a tenant or dataset is created, and a query against a dataset with no tables

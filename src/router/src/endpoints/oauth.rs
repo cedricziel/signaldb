@@ -1490,6 +1490,19 @@ mod tests {
         assert_eq!(super::granted_read_scopes(Some("schema:write")), None);
     }
 
+    #[test]
+    fn oauth_consent_never_grants_tenant_manage() {
+        use common::auth::TENANT_MANAGE_SCOPE;
+        let granted = super::granted_read_scopes(None).expect("default grant");
+        assert!(!granted.iter().any(|s| s == TENANT_MANAGE_SCOPE));
+        assert_eq!(super::granted_read_scopes(Some(TENANT_MANAGE_SCOPE)), None);
+        assert_eq!(
+            super::granted_read_scopes(Some("traces:read tenant:manage")),
+            Some(vec!["traces:read".to_string()])
+        );
+        assert!(!common::auth::READ_SCOPES.contains(&TENANT_MANAGE_SCOPE));
+    }
+
     #[tokio::test]
     async fn decision_rejects_schema_write_only_scope() {
         let (app, catalog) = app_and_catalog().await;

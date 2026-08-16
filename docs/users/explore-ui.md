@@ -494,9 +494,12 @@ the current tenant rather than requiring instance-admin privileges.
 
 Every key carries explicit scopes chosen in a picker grouped into
 **Ingestion** (`metrics:write`, `logs:write`, `traces:write`,
-`profiles:write`) and **Schema** (`schema:read`, `schema:write`), each
-with a one-line description; at least one scope is required, and an
-optional dataset restriction can be set. The list shows each key's scopes,
+`profiles:write`), **Schema** (`schema:read`, `schema:write`), and
+**Management** (`tenant:manage` — lets the key manage this tenant's
+datasets, keys, and members through the same management API this page
+uses; see [Authentication](authentication.md#api-key-scopes)), each with a
+one-line description; at least one scope is required, and an optional
+dataset restriction can be set. The list shows each key's scopes,
 and **Edit scopes** on a live key changes them in place (via
 `PATCH /api/v1/manage/tenants/{id}/api-keys/{key_id}`) without rotating
 the secret; the change applies to the key's next request.
