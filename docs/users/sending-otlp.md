@@ -137,12 +137,12 @@ uncompressed.
 A successful export returns `200 OK` with an `Export*ServiceResponse`
 body in the same encoding as the request. Error responses:
 
-| Status                  | Meaning                                                                      |
-| ----------------------- | ---------------------------------------------------------------------------- |
-| `400 Bad Request`       | Malformed payload, or malformed `Authorization` / `X-Tenant-ID` headers      |
-| `401 Unauthorized`      | Missing `Authorization` / `X-Tenant-ID` headers, or API key wrong or revoked |
-| `403 Forbidden`         | Key does not belong to the tenant/dataset you named                          |
-| `429 Too Many Requests` | Per-tenant ingest rate limit or storage quota hit                            |
+| Status                  | Meaning                                                                                                                                                                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `400 Bad Request`       | Malformed payload, or malformed `Authorization` / `X-Tenant-ID` headers                                                                                                                                                                          |
+| `401 Unauthorized`      | Missing `Authorization` / `X-Tenant-ID` headers, or API key wrong or revoked                                                                                                                                                                     |
+| `403 Forbidden`         | Key does not belong to the tenant/dataset you named                                                                                                                                                                                              |
+| `429 Too Many Requests` | Per-tenant ingest rate limit or storage quota hit; a rate-limit `429` carries `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` computed from the tenant's actual budget state, so a client can back off precisely instead of guessing |
 
 To use OTLP/HTTP from the OpenTelemetry Collector:
 

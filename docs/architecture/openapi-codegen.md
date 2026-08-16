@@ -150,6 +150,27 @@ null`, in `to_schema.rs`) — the panic was in client generation, so
   `endpoints/management.rs` still converts `AttributeLevel` to a plain
   `Option<String>` at the handler boundary, but that's no longer required to
   avoid this panic; it predates the fix and can be revisited independently.
+- **An operation with more than one distinct non-2xx body type breaks the
+  Rust SDK generator.** progenitor's `extract_responses` asserts
+  `response_types.len() <= 1` when building a method's signature — it can't
+  express "one of several possible error shapes" (a `TODO` in
+  `progenitor-impl` acknowledges this needs an enum type it doesn't
+  generate). The router's shared `429` rate-limit response
+  (`components.responses.RateLimited`, body `ApiErrorBody`) collides with
+  this whenever an operation's other declared errors use a different type
+  (e.g. `management.rs`'s `ManageError`, `schema.rs`'s `SchemaError`), or
+  whenever a previously-error-free operation gets its first typed error at
+  all — the latter would silently flip the generated method's `Error<E>`
+  from `Error<()>` to something concrete, breaking hand-written
+  `signaldb-sdk` callers (`mcp-server`, `signaldb-cli`) that use bare `?`.
+  `homogenize_error_response_bodies` in `xtask/src/main.rs` fixes this for
+  progenitor's input only (never the served spec or the committed
+  `api/signaldb-api.json`, and never the TypeScript client, which has no
+  such limitation): it retargets an operation's `429` to reuse an
+  already-homogeneous sibling error type where one exists, so existing
+  callers see no signature change, and otherwise strips the `429` body
+  (keeping its headers) so the operation's error type stays exactly what it
+  was.
 - The Tempo (trace), Loki (LogQL), and Prometheus (PromQL) instant/range query
   endpoints are all annotated. Tempo responses are **typed** (`SearchResult`,
   `Trace`, …). The PromQL and LogQL responses, however, are declared with a
