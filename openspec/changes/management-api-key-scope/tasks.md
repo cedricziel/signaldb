@@ -13,7 +13,7 @@
 
 ## 3. MCP + UI
 
-- [ ] 3.1 Failing tests then implement: `tenant_*` tool descriptions drop the human-session caveat and name `tenant:manage`; new `tenant_info` tool (wraps `get_tenant_self`); a `tenant:manage` API-key session's `tenant_create_dataset` succeeds against a mock router that enforces the scope; scope validation text in the key tools includes `tenant:manage`
+- [x] 3.1 Failing tests then implement: `tenant_*` tool descriptions drop the human-session caveat and name `tenant:manage`; new `tenant_info` tool (wraps `get_tenant_self`); a `tenant:manage` API-key session's `tenant_create_dataset` succeeds against a mock router that enforces the scope; scope validation text in the key tools includes `tenant:manage`
 - [ ] 3.2 UI: failing test then implement — the API-key creation scope picker offers `tenant:manage` with a description; listing shows it (`pnpm --filter signaldb-ui test`)
 
 ## 4. Parity

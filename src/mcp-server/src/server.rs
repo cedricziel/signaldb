@@ -47,20 +47,22 @@
 //!     `tenant_list_tables` / `tenant_create_tables` /
 //!     `tenant_list_table_schemas`, and the
 //!     tenant-scoped-but-credential-agnostic `list_available_table_schemas`.
+//!   - The tenant self view (`tenant_info`, tenant self-service API, any
+//!     valid key of the tenant — the CLI's `tenant show`).
 //!   - Datasets/API-keys/memberships/schema (management API,
 //!     `authorize_tenant`-gated): `tenant_list_datasets` /
 //!     `tenant_create_dataset` / `tenant_delete_dataset`,
 //!     `tenant_list_api_keys` / `tenant_create_api_key` /
 //!     `tenant_update_api_key` / `tenant_revoke_api_key`,
 //!     `tenant_list_memberships` / `tenant_upsert_membership` /
-//!     `tenant_remove_membership`, `tenant_get_schema`. These require a
-//!     human-authenticated principal (browser session or OAuth access
-//!     token with a real tenant role — `tenant_get_schema` needs an
-//!     INSTANCE administrator specifically); a plain API key is denied.
-//!     This is deliberate, pre-existing, and tested
-//!     (`ingestion_api_key_cannot_use_human_management_endpoints` in
-//!     `router/src/endpoints/session.rs`), so the CLI (API-key-only) has
-//!     no commands for this sub-group — see `signaldb_cli::commands::tenant_self`.
+//!     `tenant_remove_membership`, `tenant_get_schema`. The router accepts
+//!     a human principal (browser session or OAuth access token) holding
+//!     the tenant-admin role or instance-admin flag, or an API key that
+//!     explicitly carries the `tenant:manage` scope. Ingest-only keys and
+//!     legacy unscoped keys get a clean access-denied error (management is
+//!     opt-in; `router::endpoints::management::authorize_tenant`). The
+//!     CLI's `tenant dataset|api-key|membership|schema` verbs reach the
+//!     same endpoints — see `signaldb_cli::commands::tenant_self`.
 //!
 //! Tools that delete or revoke carry the MCP destructive annotation and
 //! require a `confirm` argument equal to the identifier being destroyed;
@@ -200,7 +202,9 @@ struct CreateApiKeyParams {
     /// Scopes the key carries (required, at least one). Vocabulary:
     /// `metrics:write`, `logs:write`, `traces:write`, `profiles:write`,
     /// `traces:read`, `logs:read`, `metrics:read`, `profiles:read`,
-    /// `schema:read`, `schema:write`.
+    /// `schema:read`, `schema:write`, `tenant:manage` (manage the key's own
+    /// tenant — datasets, API keys, memberships, schema — through the
+    /// management API; explicit only, never implied by an unscoped key).
     scopes: Vec<String>,
     /// Optional dataset the key is restricted to.
     #[serde(default)]
@@ -620,9 +624,9 @@ struct RevokeApiKeyParams {
 // ---- Tenant self-management tool parameters (management API; the caller's
 // own tenant credential) ----
 
-/// Parameters for `tenant_list_datasets`, `tenant_list_api_keys`,
-/// `tenant_list_memberships`, `tenant_list_tables`, `tenant_create_tables`,
-/// `tenant_list_table_schemas`.
+/// Parameters for `tenant_info`, `tenant_list_datasets`,
+/// `tenant_list_api_keys`, `tenant_list_memberships`, `tenant_list_tables`,
+/// `tenant_create_tables`, `tenant_list_table_schemas`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct TenantOnlyParams {
@@ -652,7 +656,11 @@ struct TenantCreateApiKeyParams {
     /// Optional human-readable key name.
     #[serde(default)]
     name: Option<String>,
-    /// Scopes the key carries (required, at least one).
+    /// Scopes the key carries (required, at least one). Vocabulary:
+    /// `metrics:write`, `logs:write`, `traces:write`, `profiles:write`,
+    /// `traces:read`, `logs:read`, `metrics:read`, `profiles:read`,
+    /// `schema:read`, `schema:write`, `tenant:manage` (manage this tenant's
+    /// datasets, API keys, memberships, and schema view; explicit only).
     scopes: Vec<String>,
     /// Optional dataset the key is restricted to.
     #[serde(default)]
@@ -1466,22 +1474,16 @@ impl McpServer {
     // own identity within its tenant — `tenant_id` must match the
     // authenticated tenant).
     //
-    // Unlike the tenant table tools below (and unlike the CLI's `tenant`
-    // group, which does not attempt these), every tool in this block wraps
-    // an endpoint gated by `authorize_tenant` (or, for `tenant_get_schema`,
-    // `ctx.is_instance_admin` — stricter still), which requires a
-    // human-authenticated principal (browser session cookie or OAuth access
-    // token carrying a real per-tenant membership role) and explicitly
-    // rejects a bare API key. This is deliberate and tested
-    // (`ingestion_api_key_cannot_use_human_management_endpoints` in
-    // `router/src/endpoints/session.rs`). These tools still work correctly
-    // for an OAuth-authenticated MCP session (a real, already-supported
-    // credential); a session forwarding only a static API key gets a clean
-    // access-denied error, per the `mcp-tool-surface` spec's "Unauthorized
-    // management call is denied cleanly" scenario. ----
+    // Every tool in this block wraps an endpoint gated by
+    // `authorize_tenant` (or the same rule for `tenant_get_schema`): the
+    // router accepts a human principal (browser session or OAuth token)
+    // with the tenant-admin role or instance-admin flag, or an API key that
+    // explicitly carries `tenant:manage`. An ingest-only or legacy unscoped
+    // key gets a clean access-denied error, per the `mcp-tool-surface`
+    // spec's "Unauthorized management call is denied cleanly" scenario. ----
 
     #[tool(
-        description = "List the caller's own tenant's datasets (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied).",
+        description = "List the caller's own tenant's datasets (management API; tenant-admin session or an API key carrying `tenant:manage`).",
         annotations(read_only_hint = true)
     )]
     async fn tenant_list_datasets(
@@ -1495,12 +1497,12 @@ impl McpServer {
             .tenant_id(&p.tenant_id)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_list_datasets"))?;
+            .map_err(|e| map_manage_err(e, "tenant_list_datasets"))?;
         json_result(&resp.into_inner())
     }
 
     #[tool(
-        description = "Create a dataset for the caller's own tenant (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied)."
+        description = "Create a dataset for the caller's own tenant (management API; tenant-admin session or an API key carrying `tenant:manage`)."
     )]
     async fn tenant_create_dataset(
         &self,
@@ -1514,12 +1516,12 @@ impl McpServer {
             .body(signaldb_sdk::types::ManageCreateDatasetRequest { name: p.name })
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_create_dataset"))?;
+            .map_err(|e| map_manage_err(e, "tenant_create_dataset"))?;
         json_result(&resp.into_inner())
     }
 
     #[tool(
-        description = "Delete a dataset from the caller's own tenant, by name (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied). Requires `confirm` equal to `dataset_name`.",
+        description = "Delete a dataset from the caller's own tenant, by name (management API; tenant-admin session or an API key carrying `tenant:manage`). Requires `confirm` equal to `dataset_name`.",
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn tenant_delete_dataset(
@@ -1535,12 +1537,12 @@ impl McpServer {
             .dataset_name(&p.dataset_name)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_delete_dataset"))?;
+            .map_err(|e| map_manage_err(e, "tenant_delete_dataset"))?;
         json_result(&serde_json::json!({ "deleted": true, "dataset_name": p.dataset_name }))
     }
 
     #[tool(
-        description = "List the caller's own tenant's API keys with their scopes (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied). Raw secrets are never returned.",
+        description = "List the caller's own tenant's API keys with their scopes (management API; tenant-admin session or an API key carrying `tenant:manage`). Raw secrets are never returned.",
         annotations(read_only_hint = true)
     )]
     async fn tenant_list_api_keys(
@@ -1554,12 +1556,12 @@ impl McpServer {
             .tenant_id(&p.tenant_id)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_list_api_keys"))?;
+            .map_err(|e| map_manage_err(e, "tenant_list_api_keys"))?;
         json_result(&resp.into_inner())
     }
 
     #[tool(
-        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to `dataset_id` (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied). The raw secret is returned once."
+        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to `dataset_id` (management API; tenant-admin session or an API key carrying `tenant:manage`). The raw secret is returned once."
     )]
     async fn tenant_create_api_key(
         &self,
@@ -1583,12 +1585,12 @@ impl McpServer {
             })
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_create_api_key"))?;
+            .map_err(|e| map_manage_err(e, "tenant_create_api_key"))?;
         json_result(&resp.into_inner())
     }
 
     #[tool(
-        description = "Revoke one of the caller's own tenant's API keys (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied). Requires `confirm` equal to `key_id`.",
+        description = "Revoke one of the caller's own tenant's API keys (management API; tenant-admin session or an API key carrying `tenant:manage`). Requires `confirm` equal to `key_id`.",
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn tenant_revoke_api_key(
@@ -1604,12 +1606,12 @@ impl McpServer {
             .key_id(&p.key_id)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_revoke_api_key"))?;
+            .map_err(|e| map_manage_err(e, "tenant_revoke_api_key"))?;
         json_result(&serde_json::json!({ "revoked": true, "key_id": p.key_id }))
     }
 
     #[tool(
-        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied)."
+        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; tenant-admin session or an API key carrying `tenant:manage`)."
     )]
     async fn tenant_update_api_key(
         &self,
@@ -1633,12 +1635,12 @@ impl McpServer {
             })
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_update_api_key"))?;
+            .map_err(|e| map_manage_err(e, "tenant_update_api_key"))?;
         json_result(&resp.into_inner())
     }
 
     #[tool(
-        description = "List the caller's own tenant's memberships (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied).",
+        description = "List the caller's own tenant's memberships (management API; tenant-admin session or an API key carrying `tenant:manage`).",
         annotations(read_only_hint = true)
     )]
     async fn tenant_list_memberships(
@@ -1652,12 +1654,12 @@ impl McpServer {
             .tenant_id(&p.tenant_id)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_list_memberships"))?;
+            .map_err(|e| map_manage_err(e, "tenant_list_memberships"))?;
         json_result(&resp.into_inner())
     }
 
     #[tool(
-        description = "Create or update a member's role in the caller's own tenant (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied)."
+        description = "Create or update a member's role in the caller's own tenant (management API; tenant-admin session or an API key carrying `tenant:manage`)."
     )]
     async fn tenant_upsert_membership(
         &self,
@@ -1679,12 +1681,12 @@ impl McpServer {
             })
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_upsert_membership"))?;
+            .map_err(|e| map_manage_err(e, "tenant_upsert_membership"))?;
         json_result(&resp.into_inner())
     }
 
     #[tool(
-        description = "Remove a member from the caller's own tenant (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied). Requires `confirm` equal to `user_id`.",
+        description = "Remove a member from the caller's own tenant (management API; tenant-admin session or an API key carrying `tenant:manage`). Requires `confirm` equal to `user_id`.",
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn tenant_remove_membership(
@@ -1700,12 +1702,12 @@ impl McpServer {
             .user_id(&p.user_id)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_remove_membership"))?;
+            .map_err(|e| map_manage_err(e, "tenant_remove_membership"))?;
         json_result(&serde_json::json!({ "removed": true, "user_id": p.user_id }))
     }
 
     #[tool(
-        description = "The caller's own tenant's logical + physical schema: materialized labels and custom fields per signal (management API; requires a human-authenticated session belonging to an INSTANCE administrator specifically — stricter than the other tenant_* tools; a tenant-admin role is not sufficient, and a plain API key is denied).",
+        description = "The registered logical (client-visible) and physical (storage) schema for every signal source (management API; tenant-admin session or an API key carrying `tenant:manage`).",
         annotations(read_only_hint = true)
     )]
     async fn tenant_get_schema(
@@ -1717,7 +1719,26 @@ impl McpServer {
             .manage_get_schema()
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_get_schema"))?;
+            .map_err(|e| map_manage_err(e, "tenant_get_schema"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "The caller's own tenant: id, enabled flag, and schema configuration (tenant self-service API; any valid key of the tenant).",
+        annotations(read_only_hint = true)
+    )]
+    async fn tenant_info(
+        &self,
+        Parameters(p): Parameters<TenantOnlyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .get_tenant_self()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_info"))?;
         json_result(&resp.into_inner())
     }
 
@@ -2448,6 +2469,26 @@ fn throttled_error(what: &str, retry_after: Option<std::time::Duration>) -> Erro
             "retryAfterMs": retry_after.map(|w| w.as_millis() as u64),
         })),
     )
+}
+
+/// Map a management-API error to an MCP error, keeping the router's typed
+/// `error` text on a `403` so a model learns *why* it was denied — the
+/// message names the required role or `tenant:manage` scope; other statuses
+/// fall back to [`map_sdk_err`].
+fn map_manage_err(
+    err: signaldb_sdk::Error<signaldb_sdk::types::ManageError>,
+    what: &str,
+) -> ErrorData {
+    match err {
+        signaldb_sdk::Error::ErrorResponse(response) if response.status().as_u16() == 403 => {
+            let body = response.into_inner();
+            with_http_status(
+                ErrorData::invalid_request(format!("{what}: access denied: {}", body.error), None),
+                403,
+            )
+        }
+        other => map_sdk_err(other, what),
+    }
 }
 
 /// Map a schema-API error to an MCP error, keeping the router's typed body
