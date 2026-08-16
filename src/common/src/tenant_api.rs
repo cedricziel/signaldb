@@ -276,27 +276,34 @@ impl TenantApi {
     }
 
     /// List tables for a tenant, grouped by dataset.
+    ///
+    /// `datasets` carries every dataset the tenant is known to have — one
+    /// with nothing provisioned yet appears with an empty `tables` array
+    /// rather than being omitted, so a caller (the UI's Tables section, in
+    /// particular) can show it as a provisioning target. The flat `tables`
+    /// list is unaffected: it contains only tables that actually exist.
     pub async fn list_tables(&mut self, tenant_id: &str) -> Result<ListTablesResponse> {
         let dataset_tables = self.registry.list_tables_for_tenant(tenant_id).await?;
 
-        let mut tables = Vec::with_capacity(dataset_tables.len());
-        let mut by_dataset: Vec<DatasetTables> = Vec::new();
-        for (dataset, name) in dataset_tables {
-            let (schema_type, description) = table_schema_type_and_description(&name);
-            let info = TableInfo {
-                name,
-                schema_type: schema_type.to_string(),
-                description: description.to_string(),
-                dataset: dataset.clone(),
-            };
-            match by_dataset.iter_mut().find(|d| d.dataset == dataset) {
-                Some(entry) => entry.tables.push(info.clone()),
-                None => by_dataset.push(DatasetTables {
+        let mut tables = Vec::new();
+        let mut by_dataset = Vec::with_capacity(dataset_tables.len());
+        for (dataset, names) in dataset_tables {
+            let mut group_tables = Vec::with_capacity(names.len());
+            for name in names {
+                let (schema_type, description) = table_schema_type_and_description(&name);
+                let info = TableInfo {
+                    name,
+                    schema_type: schema_type.to_string(),
+                    description: description.to_string(),
                     dataset: dataset.clone(),
-                    tables: vec![info.clone()],
-                }),
+                };
+                group_tables.push(info.clone());
+                tables.push(info);
             }
-            tables.push(info);
+            by_dataset.push(DatasetTables {
+                dataset,
+                tables: group_tables,
+            });
         }
 
         Ok(ListTablesResponse {

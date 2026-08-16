@@ -61,7 +61,8 @@ flowchart LR
   the raw registry document is typed as an opaque object), and
   `endpoints/tenant.rs` (the tenant self-service surface: `GET /api/v1/tenants{,/{id}}`,
   `GET`/`POST /api/v1/tenants/{id}/tables{,/create}`, `GET /api/v1/tenants/{id}/schemas`,
-  `GET /api/v1/schemas/available`, response DTOs in `common::tenant_api`).
+  `GET /api/v1/schemas/available`, response DTOs in `common::tenant_api`,
+  including `DatasetTables` for `ListTablesResponse`'s per-dataset grouping).
   Paths are absolute; operationIds on the
   management handlers are prefixed `manage_*` and their colliding component
   schemas aliased `Manage*` (via `#[schema(as = ...)]`) so admin and manage

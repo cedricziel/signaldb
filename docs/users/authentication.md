@@ -97,10 +97,10 @@ shown again; if any tenant already exists, nothing is generated.
 Beyond that, tenants, datasets, and API keys are managed by your SignalDB
 operator via one of:
 
-| Method        | Where                                                                                                                                                            |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                                     |
-| Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                          |
+| Method        | Where                                                                                                                                                                                                                                                                                |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                                                                                                                                                         |
+| Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                                                                                                                                              |
 | CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`; `--no-retry` / `SIGNALDB_NO_RETRY=1` to fail fast on throttling, exit code 4 — see [client retry](client-retry.md)) |
 
 Example (operator-side):
@@ -181,7 +181,7 @@ each is reachable through `signaldb-sdk`, not only raw HTTP:
 | GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset | `whoami`                 | `signaldb-cli whoami` / `server_info`                                          |
 | GET    | `/api/v1/tenants`                           | All configured tenants, filtered to the caller's own                             | `list_tenants_self`      | none — redundant with `whoami`/`server_info`; not exposed separately           |
 | GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   | `get_tenant_self`        | none — same rationale                                                          |
-| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's tables                                                              | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                        |
+| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's provisioned tables, grouped by dataset                              | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                        |
 | POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                   | `create_tenant_tables`   | `signaldb-cli tenant table provision` / `tenant_create_tables`                 |
 | GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's configured table schema types                                       | `list_tenant_schemas`    | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`              |
 | GET    | `/api/v1/schemas/available`                 | Every table schema type SignalDB can provision                                   | `list_available_schemas` | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas` |
