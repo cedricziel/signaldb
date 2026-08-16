@@ -6,7 +6,9 @@ sources:
   - src/router/src/openapi.rs
   - src/router/src/endpoints/admin.rs
   - src/router/src/endpoints/management.rs
+  - src/router/src/endpoints/tenant.rs
   - src/signaldb-api/src/**
+  - src/common/src/tenant_api.rs
   - xtask/src/main.rs
   - src/ui/openapi-ts.config.ts
   - api/signaldb-api.json
@@ -56,10 +58,18 @@ flowchart LR
   CRUD + `:validate`, and attribute/entity/metric resolution and prefix search
   under `/api/v1/schema/{attributes,entities,metrics}`; its resolved-definition
   DTOs derive `ToSchema` in `common::schema_registry` and `schema-model`, and
-  the raw registry document is typed as an opaque object). Paths are absolute; operationIds on the
+  the raw registry document is typed as an opaque object), and
+  `endpoints/tenant.rs` (the tenant self-service surface: `GET /api/v1/tenants{,/{id}}`,
+  `GET`/`POST /api/v1/tenants/{id}/tables{,/create}`, `GET /api/v1/tenants/{id}/schemas`,
+  `GET /api/v1/schemas/available`, response DTOs in `common::tenant_api`).
+  Paths are absolute; operationIds on the
   management handlers are prefixed `manage_*` and their colliding component
   schemas aliased `Manage*` (via `#[schema(as = ...)]`) so admin and manage
-  names don't clash. The same technique disambiguates the Tempo v1/v2 tag
+  names don't clash — `tenant.rs`'s `list_tenants`/`get_tenant` collide with
+  `admin.rs`'s the same way and are aliased `list_tenants_self`/`get_tenant_self`,
+  and `common::tenant_api::ListTenantsResponse` collides with
+  `signaldb_api::ListTenantsResponse` and is aliased `TenantSelfListResponse`.
+  The same technique disambiguates the Tempo v1/v2 tag
   types in `tempo-api` (`tempo_api::TagSearchResponse` vs.
   `tempo_api::v2::TagSearchResponse`, …): utoipa registers schemas by bare
   type name, so the v2 module's types carry `#[schema(as =
@@ -73,6 +83,22 @@ tempo_api::v2::TagSearchResponse)]` etc. to keep their own component
 
 The router serves this document live at `/api/v1/openapi.json`
 (`openapi_document()`), so the served spec is always exactly the code.
+
+### Route-vs-OpenAPI drift guard
+
+axum 0.8 has no public route-introspection API, so `router::openapi`'s tests
+(`known_routes_match_router_fn_source`, `every_known_route_has_an_openapi_operation`)
+extract the route literals straight out of the endpoint `router()` fn source
+for the modules whose `router()` is a plain list of `.route(...)` calls under
+one fixed mount prefix, and diff them against a hand-maintained
+`KNOWN_ROUTES`/`ALLOWLISTED_ROUTES` pair — catching both directions of drift
+(a route added to source without an OpenAPI operation, or a stale list
+entry). `admin.rs` (assembled inline in `lib.rs::create_router`, not through
+a standalone `router()` fn) and public/infra routes (`/health`, the spec
+endpoint itself, session, OAuth) are trusted by inspection instead of
+extracted. Pre-existing Tempo v2/echo/metrics, Loki `series`/`detected_fields`,
+and Prometheus `label_stats`/`series` routes are `ALLOWLISTED_ROUTES` (not yet
+in the OpenAPI contract, tracked separately) rather than annotated.
 
 Cross-cutting response headers that apply to every operation — the
 `Server-Timing`/`traceresponse` trace-context headers the shared middleware
@@ -109,6 +135,16 @@ true`; `"oneOf": [{"type": "null"}, X]` (emitted for `Option<T>` where `T`
   `@hey-api/openapi-ts` (config in `src/ui/openapi-ts.config.ts`), which
   consumes 3.1 directly. In `check` mode xtask regenerates into a temp directory
   and compares, so it never mutates the tree.
+
+xtask also appends `pub const OPERATIONS: &[&str]` to the end of
+`generated.rs` — every operation id in the document, alphabetized, extracted
+from the same (pre-downconversion) spec value the Rust client is generated
+from. `signaldb-sdk`'s own test asserts it matches `api/signaldb-api.json`
+directly, independent of the generation step. This is the manifest
+`tests-integration/tests/query_parity.rs` iterates for the whole-SDK
+surface-parity check (`client-surface-parity` spec): every operation must
+have a CLI command and an MCP tool, or a reviewed entry in that test's
+`EXCLUDED` list explaining why not.
 
 xtask also owns one non-OpenAPI generation task: `cargo xtask vendor-semconv`
 copies the OpenTelemetry semantic-conventions `model/` tree at the version

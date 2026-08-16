@@ -501,6 +501,39 @@ pub mod types {
             Default::default()
         }
     }
+    ///Response body for `GET /schemas/available`.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Response body for `GET /schemas/available`.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "schemas"
+    ///  ],
+    ///  "properties": {
+    ///    "schemas": {
+    ///      "description": "All table schema types SignalDB knows how to provision.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/TableInfo"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AvailableSchemasResponse {
+        ///All table schema types SignalDB knows how to provision.
+        pub schemas: ::std::vec::Vec<TableInfo>,
+    }
+    impl AvailableSchemasResponse {
+        pub fn builder() -> builder::AvailableSchemasResponse {
+            Default::default()
+        }
+    }
     /**Context the consent screen renders: the requesting client and the tenants
     the signed-in user may grant.*/
     ///
@@ -915,6 +948,43 @@ pub mod types {
     }
     impl CreateTenantRequest {
         pub fn builder() -> builder::CreateTenantRequest {
+            Default::default()
+        }
+    }
+    ///Response body for `POST /tenants/{tenant_id}/tables/create`.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Response body for `POST /tenants/{tenant_id}/tables/create`.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "message",
+    ///    "tenant_id"
+    ///  ],
+    ///  "properties": {
+    ///    "message": {
+    ///      "description": "Human-readable confirmation message.",
+    ///      "type": "string"
+    ///    },
+    ///    "tenant_id": {
+    ///      "description": "The tenant the tables were created for.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct CreateTenantTablesResponse {
+        ///Human-readable confirmation message.
+        pub message: ::std::string::String,
+        ///The tenant the tables were created for.
+        pub tenant_id: ::std::string::String,
+    }
+    impl CreateTenantTablesResponse {
+        pub fn builder() -> builder::CreateTenantTablesResponse {
             Default::default()
         }
     }
@@ -1821,6 +1891,46 @@ pub mod types {
     }
     impl ListDatasetsResponse {
         pub fn builder() -> builder::ListDatasetsResponse {
+            Default::default()
+        }
+    }
+    ///API response for listing tables
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "API response for listing tables",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "tables",
+    ///    "tenant_id"
+    ///  ],
+    ///  "properties": {
+    ///    "tables": {
+    ///      "description": "List of tables for the tenant",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/TableInfo"
+    ///      }
+    ///    },
+    ///    "tenant_id": {
+    ///      "description": "Tenant ID",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ListTablesResponse {
+        ///List of tables for the tenant
+        pub tables: ::std::vec::Vec<TableInfo>,
+        ///Tenant ID
+        pub tenant_id: ::std::string::String,
+    }
+    impl ListTablesResponse {
+        pub fn builder() -> builder::ListTablesResponse {
             Default::default()
         }
     }
@@ -4030,6 +4140,50 @@ pub mod types {
             Default::default()
         }
     }
+    ///API response for table information
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "API response for table information",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "description",
+    ///    "name",
+    ///    "schema_type"
+    ///  ],
+    ///  "properties": {
+    ///    "description": {
+    ///      "description": "Table description",
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "description": "Table name",
+    ///      "type": "string"
+    ///    },
+    ///    "schema_type": {
+    ///      "description": "Table schema type",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TableInfo {
+        ///Table description
+        pub description: ::std::string::String,
+        ///Table name
+        pub name: ::std::string::String,
+        ///Table schema type
+        pub schema_type: ::std::string::String,
+    }
+    impl TableInfo {
+        pub fn builder() -> builder::TableInfo {
+            Default::default()
+        }
+    }
     /**GET /api/search/tags?scope=<resource|span|intrinsic>
 
     `rename_all = "lowercase"` matters here: the Tempo API (and Grafana's
@@ -4308,6 +4462,69 @@ pub mod types {
             Default::default()
         }
     }
+    ///API response for tenant information
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "API response for tenant information",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "enabled",
+    ///    "schema",
+    ///    "tenant_id"
+    ///  ],
+    ///  "properties": {
+    ///    "custom_schemas": {
+    ///      "description": "Custom schema definitions",
+    ///      "type": [
+    ///        "object",
+    ///        "null"
+    ///      ],
+    ///      "additionalProperties": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "enabled": {
+    ///      "description": "Whether tenant is enabled",
+    ///      "type": "boolean"
+    ///    },
+    ///    "schema": {
+    ///      "description": "Tenant-specific schema configuration",
+    ///      "type": [
+    ///        "object",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "tenant_id": {
+    ///      "description": "Tenant ID",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TenantInfo {
+        ///Custom schema definitions
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub custom_schemas: ::std::option::Option<
+            ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+        >,
+        ///Whether tenant is enabled
+        pub enabled: bool,
+        ///Tenant-specific schema configuration
+        pub schema:
+            ::std::option::Option<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+        ///Tenant ID
+        pub tenant_id: ::std::string::String,
+    }
+    impl TenantInfo {
+        pub fn builder() -> builder::TenantInfo {
+            Default::default()
+        }
+    }
     ///Tenant information returned by the API.
     ///
     /// <details><summary>JSON schema</summary>
@@ -4373,6 +4590,52 @@ pub mod types {
     }
     impl TenantResponse {
         pub fn builder() -> builder::TenantResponse {
+            Default::default()
+        }
+    }
+    /**API response for listing tenants
+
+    Renamed in the OpenAPI document (`#[schema(as = ...)]`) to avoid
+    colliding with `signaldb_api::ListTenantsResponse` (the admin API's
+    tenant list, a different shape) — both are plain Rust structs named
+    `ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust
+    type name unless told otherwise.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "API response for listing tenants\n\nRenamed in the OpenAPI document (`#[schema(as = ...)]`) to avoid\ncolliding with `signaldb_api::ListTenantsResponse` (the admin API's\ntenant list, a different shape) — both are plain Rust structs named\n`ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust\ntype name unless told otherwise.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "default_tenant",
+    ///    "tenants"
+    ///  ],
+    ///  "properties": {
+    ///    "default_tenant": {
+    ///      "description": "Default tenant ID",
+    ///      "type": "string"
+    ///    },
+    ///    "tenants": {
+    ///      "description": "List of tenants",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/TenantInfo"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TenantSelfListResponse {
+        ///Default tenant ID
+        pub default_tenant: ::std::string::String,
+        ///List of tenants
+        pub tenants: ::std::vec::Vec<TenantInfo>,
+    }
+    impl TenantSelfListResponse {
+        pub fn builder() -> builder::TenantSelfListResponse {
             Default::default()
         }
     }
@@ -5753,6 +6016,47 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct AvailableSchemasResponse {
+            schemas:
+                ::std::result::Result<::std::vec::Vec<super::TableInfo>, ::std::string::String>,
+        }
+        impl ::std::default::Default for AvailableSchemasResponse {
+            fn default() -> Self {
+                Self {
+                    schemas: Err("no value supplied for schemas".to_string()),
+                }
+            }
+        }
+        impl AvailableSchemasResponse {
+            pub fn schemas<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::TableInfo>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.schemas = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for schemas: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AvailableSchemasResponse> for super::AvailableSchemasResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AvailableSchemasResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    schemas: value.schemas?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AvailableSchemasResponse> for AvailableSchemasResponse {
+            fn from(value: super::AvailableSchemasResponse) -> Self {
+                Self {
+                    schemas: Ok(value.schemas),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ConsentContextResponse {
             client_name: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -6370,6 +6674,60 @@ pub mod types {
                     default_dataset: Ok(value.default_dataset),
                     id: Ok(value.id),
                     name: Ok(value.name),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct CreateTenantTablesResponse {
+            message: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for CreateTenantTablesResponse {
+            fn default() -> Self {
+                Self {
+                    message: Err("no value supplied for message".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                }
+            }
+        }
+        impl CreateTenantTablesResponse {
+            pub fn message<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.message = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for message: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<CreateTenantTablesResponse> for super::CreateTenantTablesResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: CreateTenantTablesResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    message: value.message?,
+                    tenant_id: value.tenant_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::CreateTenantTablesResponse> for CreateTenantTablesResponse {
+            fn from(value: super::CreateTenantTablesResponse) -> Self {
+                Self {
+                    message: Ok(value.message),
+                    tenant_id: Ok(value.tenant_id),
                 }
             }
         }
@@ -7843,6 +8201,60 @@ pub mod types {
             fn from(value: super::ListDatasetsResponse) -> Self {
                 Self {
                     datasets: Ok(value.datasets),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ListTablesResponse {
+            tables: ::std::result::Result<::std::vec::Vec<super::TableInfo>, ::std::string::String>,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ListTablesResponse {
+            fn default() -> Self {
+                Self {
+                    tables: Err("no value supplied for tables".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                }
+            }
+        }
+        impl ListTablesResponse {
+            pub fn tables<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::TableInfo>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tables = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tables: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ListTablesResponse> for super::ListTablesResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ListTablesResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    tables: value.tables?,
+                    tenant_id: value.tenant_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ListTablesResponse> for ListTablesResponse {
+            fn from(value: super::ListTablesResponse) -> Self {
+                Self {
+                    tables: Ok(value.tables),
+                    tenant_id: Ok(value.tenant_id),
                 }
             }
         }
@@ -11068,6 +11480,74 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct TableInfo {
+            description: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            schema_type: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for TableInfo {
+            fn default() -> Self {
+                Self {
+                    description: Err("no value supplied for description".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    schema_type: Err("no value supplied for schema_type".to_string()),
+                }
+            }
+        }
+        impl TableInfo {
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn schema_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.schema_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for schema_type: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<TableInfo> for super::TableInfo {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: TableInfo,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    description: value.description?,
+                    name: value.name?,
+                    schema_type: value.schema_type?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::TableInfo> for TableInfo {
+            fn from(value: super::TableInfo) -> Self {
+                Self {
+                    description: Ok(value.description),
+                    name: Ok(value.name),
+                    schema_type: Ok(value.schema_type),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct TagSearchResponse {
             tag_names: ::std::result::Result<
                 ::std::vec::Vec<::std::string::String>,
@@ -11351,6 +11831,109 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct TenantInfo {
+            custom_schemas: ::std::result::Result<
+                ::std::option::Option<
+                    ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+                >,
+                ::std::string::String,
+            >,
+            enabled: ::std::result::Result<bool, ::std::string::String>,
+            schema: ::std::result::Result<
+                ::std::option::Option<
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
+                ::std::string::String,
+            >,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for TenantInfo {
+            fn default() -> Self {
+                Self {
+                    custom_schemas: Ok(Default::default()),
+                    enabled: Err("no value supplied for enabled".to_string()),
+                    schema: Err("no value supplied for schema".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                }
+            }
+        }
+        impl TenantInfo {
+            pub fn custom_schemas<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<
+                            ::std::collections::HashMap<
+                                ::std::string::String,
+                                ::std::string::String,
+                            >,
+                        >,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.custom_schemas = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for custom_schemas: {e}")
+                });
+                self
+            }
+            pub fn enabled<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.enabled = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for enabled: {e}"));
+                self
+            }
+            pub fn schema<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<
+                            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                        >,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.schema = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for schema: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<TenantInfo> for super::TenantInfo {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: TenantInfo,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    custom_schemas: value.custom_schemas?,
+                    enabled: value.enabled?,
+                    schema: value.schema?,
+                    tenant_id: value.tenant_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::TenantInfo> for TenantInfo {
+            fn from(value: super::TenantInfo) -> Self {
+                Self {
+                    custom_schemas: Ok(value.custom_schemas),
+                    enabled: Ok(value.enabled),
+                    schema: Ok(value.schema),
+                    tenant_id: Ok(value.tenant_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct TenantResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
             default_dataset: ::std::result::Result<
@@ -11460,6 +12043,61 @@ pub mod types {
                     name: Ok(value.name),
                     source: Ok(value.source),
                     updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct TenantSelfListResponse {
+            default_tenant: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tenants:
+                ::std::result::Result<::std::vec::Vec<super::TenantInfo>, ::std::string::String>,
+        }
+        impl ::std::default::Default for TenantSelfListResponse {
+            fn default() -> Self {
+                Self {
+                    default_tenant: Err("no value supplied for default_tenant".to_string()),
+                    tenants: Err("no value supplied for tenants".to_string()),
+                }
+            }
+        }
+        impl TenantSelfListResponse {
+            pub fn default_tenant<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.default_tenant = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for default_tenant: {e}")
+                });
+                self
+            }
+            pub fn tenants<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::TenantInfo>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenants = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenants: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<TenantSelfListResponse> for super::TenantSelfListResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: TenantSelfListResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    default_tenant: value.default_tenant?,
+                    tenants: value.tenants?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::TenantSelfListResponse> for TenantSelfListResponse {
+            fn from(value: super::TenantSelfListResponse) -> Self {
+                Self {
+                    default_tenant: Ok(value.default_tenant),
+                    tenants: Ok(value.tenants),
                 }
             }
         }
@@ -12833,6 +13471,102 @@ impl Client {
     ```*/
     pub fn schema_validate_registry(&self) -> builder::SchemaValidateRegistry<'_> {
         builder::SchemaValidateRegistry::new(self)
+    }
+    /**GET /schemas/available
+
+    List all available table schema types
+
+    Sends a `GET` request to `/api/v1/schemas/available`
+
+    ```ignore
+    let response = client.list_available_schemas()
+        .send()
+        .await;
+    ```*/
+    pub fn list_available_schemas(&self) -> builder::ListAvailableSchemas<'_> {
+        builder::ListAvailableSchemas::new(self)
+    }
+    /**GET /tenants
+
+    List all configured tenants
+
+    Sends a `GET` request to `/api/v1/tenants`
+
+    ```ignore
+    let response = client.list_tenants_self()
+        .send()
+        .await;
+    ```*/
+    pub fn list_tenants_self(&self) -> builder::ListTenantsSelf<'_> {
+        builder::ListTenantsSelf::new(self)
+    }
+    /**GET /tenants/:tenant_id
+
+    Get information about a specific tenant
+
+    Sends a `GET` request to `/api/v1/tenants/{tenant_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier (must match the authenticated tenant)
+    ```ignore
+    let response = client.get_tenant_self()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn get_tenant_self(&self) -> builder::GetTenantSelf<'_> {
+        builder::GetTenantSelf::new(self)
+    }
+    /**GET /tenants/:tenant_id/schemas
+
+    List available table schemas for a tenant
+
+    Sends a `GET` request to `/api/v1/tenants/{tenant_id}/schemas`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier (must match the authenticated tenant)
+    ```ignore
+    let response = client.list_tenant_schemas()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn list_tenant_schemas(&self) -> builder::ListTenantSchemas<'_> {
+        builder::ListTenantSchemas::new(self)
+    }
+    /**GET /tenants/:tenant_id/tables
+
+    List all tables for a specific tenant
+
+    Sends a `GET` request to `/api/v1/tenants/{tenant_id}/tables`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier (must match the authenticated tenant)
+    ```ignore
+    let response = client.list_tenant_tables()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn list_tenant_tables(&self) -> builder::ListTenantTables<'_> {
+        builder::ListTenantTables::new(self)
+    }
+    /**POST /tenants/:tenant_id/tables/create
+
+    Create default tables for a tenant
+
+    Sends a `POST` request to `/api/v1/tenants/{tenant_id}/tables/create`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier (must match the authenticated tenant)
+    ```ignore
+    let response = client.create_tenant_tables()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn create_tenant_tables(&self) -> builder::CreateTenantTables<'_> {
+        builder::CreateTenantTables::new(self)
     }
     /**GET /api/v1/whoami
 
@@ -16569,6 +17303,348 @@ pub mod builder {
             }
         }
     }
+    /**Builder for [`Client::list_available_schemas`]
+
+    [`Client::list_available_schemas`]: super::Client::list_available_schemas*/
+    #[derive(Debug, Clone)]
+    pub struct ListAvailableSchemas<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> ListAvailableSchemas<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/schemas/available`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::AvailableSchemasResponse>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/schemas/available", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_available_schemas",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_tenants_self`]
+
+    [`Client::list_tenants_self`]: super::Client::list_tenants_self*/
+    #[derive(Debug, Clone)]
+    pub struct ListTenantsSelf<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> ListTenantsSelf<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/tenants`
+        pub async fn send(self) -> Result<ResponseValue<types::TenantSelfListResponse>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/tenants", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_tenants_self",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::get_tenant_self`]
+
+    [`Client::get_tenant_self`]: super::Client::get_tenant_self*/
+    #[derive(Debug, Clone)]
+    pub struct GetTenantSelf<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> GetTenantSelf<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/tenants/{tenant_id}`
+        pub async fn send(self) -> Result<ResponseValue<types::TenantInfo>, Error<()>> {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "get_tenant_self",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_tenant_schemas`]
+
+    [`Client::list_tenant_schemas`]: super::Client::list_tenant_schemas*/
+    #[derive(Debug, Clone)]
+    pub struct ListTenantSchemas<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ListTenantSchemas<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/tenants/{tenant_id}/schemas`
+        pub async fn send(self) -> Result<ResponseValue<types::ListTablesResponse>, Error<()>> {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/schemas",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_tenant_schemas",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                500u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_tenant_tables`]
+
+    [`Client::list_tenant_tables`]: super::Client::list_tenant_tables*/
+    #[derive(Debug, Clone)]
+    pub struct ListTenantTables<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ListTenantTables<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/tenants/{tenant_id}/tables`
+        pub async fn send(self) -> Result<ResponseValue<types::ListTablesResponse>, Error<()>> {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/tables",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_tenant_tables",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                500u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::create_tenant_tables`]
+
+    [`Client::create_tenant_tables`]: super::Client::create_tenant_tables*/
+    #[derive(Debug, Clone)]
+    pub struct CreateTenantTables<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> CreateTenantTables<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/tenants/{tenant_id}/tables/create`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::CreateTenantTablesResponse>, Error<()>> {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/tables/create",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "create_tenant_tables",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                500u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
     /**Builder for [`Client::whoami`]
 
     [`Client::whoami`]: super::Client::whoami*/
@@ -18167,3 +19243,72 @@ pub mod builder {
 pub mod prelude {
     pub use self::super::Client;
 }
+
+/// Every operation id declared in the OpenAPI document, alphabetized.
+/// Regenerated by `cargo xtask generate`; see `client-surface-parity`.
+pub const OPERATIONS: &[&str] = &[
+    "create_api_key",
+    "create_dataset",
+    "create_tenant",
+    "create_tenant_tables",
+    "create_user",
+    "delete_dataset",
+    "delete_tenant",
+    "get_tenant",
+    "get_tenant_self",
+    "list_api_keys",
+    "list_available_schemas",
+    "list_datasets",
+    "list_tenant_schemas",
+    "list_tenant_tables",
+    "list_tenants",
+    "list_tenants_self",
+    "logql_label_values",
+    "logql_labels",
+    "logql_query",
+    "logql_query_range",
+    "manage_create_api_key",
+    "manage_create_dataset",
+    "manage_create_tenant",
+    "manage_delete_dataset",
+    "manage_get_schema",
+    "manage_list_api_keys",
+    "manage_list_datasets",
+    "manage_list_memberships",
+    "manage_remove_membership",
+    "manage_revoke_api_key",
+    "manage_update_api_key",
+    "manage_upsert_membership",
+    "oauth_consent_context",
+    "oauth_consent_decision",
+    "ops_compact",
+    "ops_compact_dry_run",
+    "ops_compact_status",
+    "promql_label_values",
+    "promql_labels",
+    "promql_query",
+    "promql_query_range",
+    "query_ir",
+    "query_single_trace",
+    "revoke_api_key",
+    "schema_create_registry",
+    "schema_delete_registry",
+    "schema_get_registry",
+    "schema_list_registries",
+    "schema_replace_registry",
+    "schema_resolve_attribute",
+    "schema_resolve_entity",
+    "schema_resolve_metric",
+    "schema_search_attributes",
+    "schema_search_entities",
+    "schema_search_metrics",
+    "schema_validate_registry",
+    "search",
+    "search_tag_values",
+    "search_tag_values_v2",
+    "search_tags",
+    "search_tags_v2",
+    "update_api_key",
+    "update_tenant",
+    "whoami",
+];

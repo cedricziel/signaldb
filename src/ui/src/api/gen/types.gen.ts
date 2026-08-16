@@ -131,6 +131,16 @@ export type AttributeSearchResponse = {
 };
 
 /**
+ * Response body for `GET /schemas/available`.
+ */
+export type AvailableSchemasResponse = {
+    /**
+     * All table schema types SignalDB knows how to provision.
+     */
+    schemas: Array<TableInfo>;
+};
+
+/**
  * Context the consent screen renders: the requesting client and the tenants
  * the signed-in user may grant.
  */
@@ -290,6 +300,20 @@ export type CreateTenantRequest = {
      * Human-readable tenant name.
      */
     name: string;
+};
+
+/**
+ * Response body for `POST /tenants/{tenant_id}/tables/create`.
+ */
+export type CreateTenantTablesResponse = {
+    /**
+     * Human-readable confirmation message.
+     */
+    message: string;
+    /**
+     * The tenant the tables were created for.
+     */
+    tenant_id: string;
 };
 
 /**
@@ -514,6 +538,20 @@ export type ListDatasetsResponse = {
      * List of dataset records.
      */
     datasets: Array<DatasetResponse>;
+};
+
+/**
+ * API response for listing tables
+ */
+export type ListTablesResponse = {
+    /**
+     * List of tables for the tenant
+     */
+    tables: Array<TableInfo>;
+    /**
+     * Tenant ID
+     */
+    tenant_id: string;
 };
 
 /**
@@ -952,6 +990,24 @@ export type SpanSet = {
 };
 
 /**
+ * API response for table information
+ */
+export type TableInfo = {
+    /**
+     * Table description
+     */
+    description: string;
+    /**
+     * Table name
+     */
+    name: string;
+    /**
+     * Table schema type
+     */
+    schema_type: string;
+};
+
+/**
  * GET /api/search/tags?scope=<resource|span|intrinsic>
  *
  * `rename_all = "lowercase"` matters here: the Tempo API (and Grafana's
@@ -967,6 +1023,32 @@ export type TagSearchResponse = {
 
 export type TagValuesResponse = {
     tagValues: Array<string>;
+};
+
+/**
+ * API response for tenant information
+ */
+export type TenantInfo = {
+    /**
+     * Custom schema definitions
+     */
+    custom_schemas?: {
+        [key: string]: string;
+    } | null;
+    /**
+     * Whether tenant is enabled
+     */
+    enabled: boolean;
+    /**
+     * Tenant-specific schema configuration
+     */
+    schema: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Tenant ID
+     */
+    tenant_id: string;
 };
 
 /**
@@ -997,6 +1079,26 @@ export type TenantResponse = {
      * ISO 8601 last-updated timestamp.
      */
     updated_at: string;
+};
+
+/**
+ * API response for listing tenants
+ *
+ * Renamed in the OpenAPI document (`#[schema(as = ...)]`) to avoid
+ * colliding with `signaldb_api::ListTenantsResponse` (the admin API's
+ * tenant list, a different shape) — both are plain Rust structs named
+ * `ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust
+ * type name unless told otherwise.
+ */
+export type TenantSelfListResponse = {
+    /**
+     * Default tenant ID
+     */
+    default_tenant: string;
+    /**
+     * List of tenants
+     */
+    tenants: Array<TenantInfo>;
 };
 
 /**
@@ -3166,6 +3268,166 @@ export type SchemaValidateRegistryResponses = {
 };
 
 export type SchemaValidateRegistryResponse = SchemaValidateRegistryResponses[keyof SchemaValidateRegistryResponses];
+
+export type ListAvailableSchemasData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/schemas/available';
+};
+
+export type ListAvailableSchemasResponses = {
+    /**
+     * All table schema types SignalDB knows how to provision
+     */
+    200: AvailableSchemasResponse;
+};
+
+export type ListAvailableSchemasResponse = ListAvailableSchemasResponses[keyof ListAvailableSchemasResponses];
+
+export type ListTenantsSelfData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/tenants';
+};
+
+export type ListTenantsSelfResponses = {
+    /**
+     * The caller's own tenant, as a single-entry list
+     */
+    200: TenantSelfListResponse;
+};
+
+export type ListTenantsSelfResponse = ListTenantsSelfResponses[keyof ListTenantsSelfResponses];
+
+export type GetTenantSelfData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier (must match the authenticated tenant)
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}';
+};
+
+export type GetTenantSelfErrors = {
+    /**
+     * Requested tenant does not match the authenticated tenant
+     */
+    403: unknown;
+    /**
+     * Tenant not found
+     */
+    404: unknown;
+};
+
+export type GetTenantSelfResponses = {
+    /**
+     * Tenant information
+     */
+    200: TenantInfo;
+};
+
+export type GetTenantSelfResponse = GetTenantSelfResponses[keyof GetTenantSelfResponses];
+
+export type ListTenantSchemasData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier (must match the authenticated tenant)
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/schemas';
+};
+
+export type ListTenantSchemasErrors = {
+    /**
+     * Requested tenant does not match the authenticated tenant
+     */
+    403: unknown;
+    /**
+     * Failed to list schemas
+     */
+    500: unknown;
+};
+
+export type ListTenantSchemasResponses = {
+    /**
+     * The tenant's configured table schemas
+     */
+    200: ListTablesResponse;
+};
+
+export type ListTenantSchemasResponse = ListTenantSchemasResponses[keyof ListTenantSchemasResponses];
+
+export type ListTenantTablesData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier (must match the authenticated tenant)
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/tables';
+};
+
+export type ListTenantTablesErrors = {
+    /**
+     * Requested tenant does not match the authenticated tenant
+     */
+    403: unknown;
+    /**
+     * Failed to list tables
+     */
+    500: unknown;
+};
+
+export type ListTenantTablesResponses = {
+    /**
+     * The tenant's provisioned signal tables
+     */
+    200: ListTablesResponse;
+};
+
+export type ListTenantTablesResponse = ListTenantTablesResponses[keyof ListTenantTablesResponses];
+
+export type CreateTenantTablesData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier (must match the authenticated tenant)
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/tables/create';
+};
+
+export type CreateTenantTablesErrors = {
+    /**
+     * Requested tenant mismatch, or tenant administrator privileges required
+     */
+    403: unknown;
+    /**
+     * Failed to create tables
+     */
+    500: unknown;
+};
+
+export type CreateTenantTablesResponses = {
+    /**
+     * The tenant's enabled signal tables were created
+     */
+    201: CreateTenantTablesResponse;
+};
+
+export type CreateTenantTablesResponse2 = CreateTenantTablesResponses[keyof CreateTenantTablesResponses];
 
 export type WhoamiData = {
     body?: never;

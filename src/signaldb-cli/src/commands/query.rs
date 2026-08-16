@@ -22,7 +22,7 @@ use signaldb_sdk::{Client, QueryClient};
     clap::ArgGroup::new("lang")
         .required(true)
         .multiple(false)
-        .args(["sql", "promql", "logql", "traceql", "ir"])
+        .args(["sql", "promql", "logql", "traceql", "ir", "trace_id"])
 ))]
 pub struct QueryArgs {
     /// The query string (SQL/PromQL/LogQL/TraceQL), or — with `--ir` — the IR
@@ -33,10 +33,12 @@ pub struct QueryArgs {
     /// Run as SQL over Arrow Flight; returns tabular rows.
     #[arg(long)]
     sql: bool,
-    /// Run as PromQL; returns native Prometheus JSON.
+    /// Run as PromQL; returns native Prometheus JSON. With `--start`/`--end`,
+    /// runs a range query instead of an instant one.
     #[arg(long)]
     promql: bool,
-    /// Run as LogQL; returns native Loki JSON.
+    /// Run as LogQL; returns native Loki JSON. With `--start`/`--end`, runs a
+    /// range query instead of an instant one.
     #[arg(long)]
     logql: bool,
     /// Run as TraceQL; returns native Tempo JSON.
@@ -45,11 +47,26 @@ pub struct QueryArgs {
     /// Execute a native Query IR JSON document (`POST /api/v1/query`).
     #[arg(long)]
     ir: bool,
+    /// Fetch one trace by ID instead of running a query
+    /// (`GET /tempo/api/traces/{trace_id}`).
+    #[arg(long, value_name = "TRACE_ID")]
+    trace_id: Option<String>,
 
     /// With `--ir`: read the IR document from a file instead of the
     /// argument/stdin.
     #[arg(long, short = 'f', requires = "ir")]
     file: Option<PathBuf>,
+    /// Range start (unix seconds/ns or RFC3339). With `--promql`/`--logql`,
+    /// presence of `--start` or `--end` switches to a range query.
+    #[arg(long)]
+    start: Option<String>,
+    /// Range end (unix seconds/ns or RFC3339). See `--start`.
+    #[arg(long)]
+    end: Option<String>,
+    /// Range query resolution step (Go duration or seconds). Ignored for an
+    /// instant query.
+    #[arg(long)]
+    step: Option<String>,
 
     /// Router base URL (used by `--promql`/`--logql`/`--traceql`/`--ir`).
     #[arg(long, env = "SIGNALDB_URL", default_value = "http://localhost:3000")]
@@ -92,6 +109,9 @@ impl QueryArgs {
         if self.ir {
             return self.run_ir().await;
         }
+        if let Some(trace_id) = self.trace_id.clone() {
+            return self.run_get_trace(&trace_id).await;
+        }
 
         let query = self.query.clone().ok_or_else(|| {
             anyhow::anyhow!("a query string is required (pass it as the positional argument)")
@@ -100,16 +120,43 @@ impl QueryArgs {
         if self.sql {
             self.run_sql(&query).await
         } else if self.promql {
-            let v = self
-                .http_client()?
-                .promql_query()
-                .query(&query)
-                .send()
-                .await;
-            print_json_response(v.map(|r| r.into_inner()), "promql_query")
+            let client = self.http_client()?;
+            if self.start.is_some() || self.end.is_some() {
+                let mut req = client.promql_query_range().query(&query);
+                if let Some(start) = &self.start {
+                    req = req.start(start);
+                }
+                if let Some(end) = &self.end {
+                    req = req.end(end);
+                }
+                if let Some(step) = &self.step {
+                    req = req.step(step);
+                }
+                let v = req.send().await;
+                print_json_response(v.map(|r| r.into_inner()), "promql_query_range")
+            } else {
+                let v = client.promql_query().query(&query).send().await;
+                print_json_response(v.map(|r| r.into_inner()), "promql_query")
+            }
         } else if self.logql {
-            let v = self.http_client()?.logql_query().query(&query).send().await;
-            print_json_response(v.map(|r| r.into_inner()), "logql_query")
+            let client = self.http_client()?;
+            if self.start.is_some() || self.end.is_some() {
+                let mut req = client.logql_query_range().query(&query);
+                if let Some(start) = &self.start {
+                    req = req.start(start);
+                }
+                if let Some(end) = &self.end {
+                    req = req.end(end);
+                }
+                if let Some(step) = &self.step {
+                    req = req.step(step);
+                }
+                let v = req.send().await;
+                print_json_response(v.map(|r| r.into_inner()), "logql_query_range")
+            } else {
+                let v = client.logql_query().query(&query).send().await;
+                print_json_response(v.map(|r| r.into_inner()), "logql_query")
+            }
         } else if self.traceql {
             let v = self.http_client()?.search().q(&query).send().await;
             print_json_response(v.map(|r| r.into_inner()), "tempo search")
@@ -117,6 +164,17 @@ impl QueryArgs {
             // clap's required ArgGroup guarantees exactly one flag is set.
             unreachable!("a language flag is required")
         }
+    }
+
+    /// `--trace-id`: fetch one trace by ID (`query_single_trace`).
+    async fn run_get_trace(&self, trace_id: &str) -> anyhow::Result<()> {
+        let v = self
+            .http_client()?
+            .query_single_trace()
+            .trace_id(trace_id)
+            .send()
+            .await;
+        print_json_response(v.map(|r| r.into_inner()), "query_single_trace")
     }
 
     /// Build the SDK HTTP client, carrying bearer/tenant/dataset on every
@@ -452,7 +510,11 @@ mod tests {
             logql: false,
             traceql: false,
             ir: false,
+            trace_id: None,
             file: None,
+            start: None,
+            end: None,
+            step: None,
             url: "http://localhost:3000".to_string(),
             flight_url: flight_url.to_string(),
             api_key: None,
@@ -477,5 +539,83 @@ mod tests {
         args.sql = false;
         args.promql = true;
         assert!(args.run().await.is_err());
+    }
+
+    #[derive(clap::Parser)]
+    struct Harness {
+        #[command(flatten)]
+        args: QueryArgs,
+    }
+
+    use clap::Parser as _;
+
+    #[test]
+    fn trace_id_is_a_language_group_member() {
+        let parsed =
+            Harness::try_parse_from(["h", "--trace-id", "abc123"]).expect("--trace-id parses");
+        assert_eq!(parsed.args.trace_id.as_deref(), Some("abc123"));
+
+        // Mutually exclusive with the other language flags.
+        assert!(
+            Harness::try_parse_from(["h", "--trace-id", "abc123", "--sql", "SELECT 1"]).is_err()
+        );
+    }
+
+    #[test]
+    fn start_end_step_parse_alongside_promql() {
+        let parsed = Harness::try_parse_from([
+            "h", "--promql", "up", "--start", "0", "--end", "60", "--step", "15s",
+        ])
+        .expect("range flags parse");
+        assert_eq!(parsed.args.start.as_deref(), Some("0"));
+        assert_eq!(parsed.args.end.as_deref(), Some("60"));
+        assert_eq!(parsed.args.step.as_deref(), Some("15s"));
+    }
+
+    #[tokio::test]
+    async fn trace_id_fetches_one_trace_via_sdk() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/tempo/api/traces/abc123")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"traceID":"abc123","rootServiceName":"api","rootTraceName":"GET /","durationMs":5,"startTimeUnixNano":"0","spanSets":[]}"#,
+            )
+            .create_async()
+            .await;
+
+        let mut args = sql_args(&server.url(), None);
+        args.sql = false;
+        args.trace_id = Some("abc123".to_string());
+        args.url = server.url();
+        args.run().await.expect("trace fetch succeeds");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn promql_with_start_uses_the_range_endpoint() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/prometheus/api/v1/query_range")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("query".into(), "up".into()),
+                mockito::Matcher::UrlEncoded("start".into(), "0".into()),
+                mockito::Matcher::UrlEncoded("end".into(), "60".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#)
+            .create_async()
+            .await;
+
+        let mut args = sql_args(&server.url(), Some("up"));
+        args.sql = false;
+        args.promql = true;
+        args.url = server.url();
+        args.start = Some("0".to_string());
+        args.end = Some("60".to_string());
+        args.run().await.expect("promql range query succeeds");
+        mock.assert_async().await;
     }
 }

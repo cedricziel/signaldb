@@ -7,8 +7,28 @@ use axum::{
     routing::{get, post},
 };
 use common::auth::TenantContextExtractor;
-use common::tenant_api::TenantApi;
+use common::tenant_api::{
+    ListTablesResponse, ListTenantsResponse, TableInfo, TenantApi, TenantInfo,
+};
+use serde::Serialize;
 use serde_json::json;
+use utoipa::ToSchema;
+
+/// Response body for `POST /tenants/{tenant_id}/tables/create`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateTenantTablesResponse {
+    /// Human-readable confirmation message.
+    pub message: String,
+    /// The tenant the tables were created for.
+    pub tenant_id: String,
+}
+
+/// Response body for `GET /schemas/available`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AvailableSchemasResponse {
+    /// All table schema types SignalDB knows how to provision.
+    pub schemas: Vec<TableInfo>,
+}
 
 /// Create tenant management routes
 pub fn router<S: RouterState>() -> Router<S> {
@@ -30,6 +50,16 @@ pub fn router<S: RouterState>() -> Router<S> {
 /// GET /tenants
 ///
 /// List all configured tenants
+#[utoipa::path(
+    get,
+    path = "/api/v1/tenants",
+    tag = "tenants",
+    operation_id = "list_tenants_self",
+    security(("bearerAuth" = [])),
+    responses(
+        (status = 200, description = "The caller's own tenant, as a single-entry list", body = ListTenantsResponse),
+    )
+)]
 #[tracing::instrument(skip_all)]
 pub async fn list_tenants<S: RouterState>(
     state: State<S>,
@@ -47,6 +77,19 @@ pub async fn list_tenants<S: RouterState>(
 /// GET /tenants/:tenant_id
 ///
 /// Get information about a specific tenant
+#[utoipa::path(
+    get,
+    path = "/api/v1/tenants/{tenant_id}",
+    tag = "tenants",
+    operation_id = "get_tenant_self",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier (must match the authenticated tenant)")),
+    responses(
+        (status = 200, description = "Tenant information", body = TenantInfo),
+        (status = 403, description = "Requested tenant does not match the authenticated tenant"),
+        (status = 404, description = "Tenant not found"),
+    )
+)]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
 pub async fn get_tenant<S: RouterState>(
     state: State<S>,
@@ -78,6 +121,19 @@ pub async fn get_tenant<S: RouterState>(
 /// GET /tenants/:tenant_id/tables
 ///
 /// List all tables for a specific tenant
+#[utoipa::path(
+    get,
+    path = "/api/v1/tenants/{tenant_id}/tables",
+    tag = "tenants",
+    operation_id = "list_tenant_tables",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier (must match the authenticated tenant)")),
+    responses(
+        (status = 200, description = "The tenant's provisioned signal tables", body = ListTablesResponse),
+        (status = 403, description = "Requested tenant does not match the authenticated tenant"),
+        (status = 500, description = "Failed to list tables"),
+    )
+)]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
 pub async fn list_tenant_tables<S: RouterState>(
     state: State<S>,
@@ -109,6 +165,19 @@ pub async fn list_tenant_tables<S: RouterState>(
 /// POST /tenants/:tenant_id/tables/create
 ///
 /// Create default tables for a tenant
+#[utoipa::path(
+    post,
+    path = "/api/v1/tenants/{tenant_id}/tables/create",
+    tag = "tenants",
+    operation_id = "create_tenant_tables",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier (must match the authenticated tenant)")),
+    responses(
+        (status = 201, description = "The tenant's enabled signal tables were created", body = CreateTenantTablesResponse),
+        (status = 403, description = "Requested tenant mismatch, or tenant administrator privileges required"),
+        (status = 500, description = "Failed to create tables"),
+    )
+)]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
 pub async fn create_tenant_tables<S: RouterState>(
     state: State<S>,
@@ -133,10 +202,10 @@ pub async fn create_tenant_tables<S: RouterState>(
     match api.create_default_tables(&tenant_id).await {
         Ok(()) => (
             StatusCode::CREATED,
-            Json(json!({
-                "message": format!("Default tables created for tenant '{}'", tenant_id),
-                "tenant_id": tenant_id
-            })),
+            Json(CreateTenantTablesResponse {
+                message: format!("Default tables created for tenant '{tenant_id}'"),
+                tenant_id,
+            }),
         )
             .into_response(),
         Err(e) => (
@@ -153,6 +222,19 @@ pub async fn create_tenant_tables<S: RouterState>(
 /// GET /tenants/:tenant_id/schemas
 ///
 /// List available table schemas for a tenant
+#[utoipa::path(
+    get,
+    path = "/api/v1/tenants/{tenant_id}/schemas",
+    tag = "tenants",
+    operation_id = "list_tenant_schemas",
+    security(("bearerAuth" = [])),
+    params(("tenant_id" = String, Path, description = "Tenant identifier (must match the authenticated tenant)")),
+    responses(
+        (status = 200, description = "The tenant's configured table schemas", body = ListTablesResponse),
+        (status = 403, description = "Requested tenant does not match the authenticated tenant"),
+        (status = 500, description = "Failed to list schemas"),
+    )
+)]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
 pub async fn list_tenant_schemas<S: RouterState>(
     state: State<S>,
@@ -191,12 +273,20 @@ fn forbidden_tenant() -> (StatusCode, Json<serde_json::Value>) {
 /// GET /schemas/available
 ///
 /// List all available table schema types
+#[utoipa::path(
+    get,
+    path = "/api/v1/schemas/available",
+    tag = "tenants",
+    operation_id = "list_available_schemas",
+    security(("bearerAuth" = [])),
+    responses(
+        (status = 200, description = "All table schema types SignalDB knows how to provision", body = AvailableSchemasResponse),
+    )
+)]
 #[tracing::instrument(skip_all)]
-pub async fn list_available_schemas() -> Json<serde_json::Value> {
+pub async fn list_available_schemas() -> Json<AvailableSchemasResponse> {
     let schemas = TenantApi::get_available_table_schemas();
-    Json(json!({
-        "schemas": schemas
-    }))
+    Json(AvailableSchemasResponse { schemas })
 }
 
 #[cfg(test)]

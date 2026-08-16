@@ -72,6 +72,13 @@ impl Modify for SecurityAddon {
         crate::endpoints::admin::create_dataset,
         crate::endpoints::admin::delete_dataset,
         crate::endpoints::admin::create_user,
+        // Tenant self-service endpoints (the caller's own tenant, via API key)
+        crate::endpoints::tenant::list_tenants,
+        crate::endpoints::tenant::get_tenant,
+        crate::endpoints::tenant::list_tenant_tables,
+        crate::endpoints::tenant::create_tenant_tables,
+        crate::endpoints::tenant::list_tenant_schemas,
+        crate::endpoints::tenant::list_available_schemas,
         crate::endpoints::management::create_tenant,
         crate::endpoints::management::list_datasets,
         crate::endpoints::management::create_dataset,
@@ -142,6 +149,13 @@ impl Modify for SecurityAddon {
         signaldb_api::ListDatasetsResponse,
         signaldb_api::CreateUserRequest,
         signaldb_api::UserResponse,
+        // Tenant self-service DTOs
+        common::tenant_api::TenantInfo,
+        common::tenant_api::ListTenantsResponse,
+        common::tenant_api::TableInfo,
+        common::tenant_api::ListTablesResponse,
+        crate::endpoints::tenant::CreateTenantTablesResponse,
+        crate::endpoints::tenant::AvailableSchemasResponse,
         // management (session-authenticated) DTOs
         crate::endpoints::management::CreateTenantRequest,
         crate::endpoints::management::ManageCreatedTenant,
@@ -239,6 +253,241 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tenant self-service endpoints (`endpoints/tenant.rs`) used to have
+    /// no `#[utoipa::path]` annotations at all, so they were invisible to the
+    /// OpenAPI document and therefore to every generated client (SDK, CLI,
+    /// MCP, UI). This is the failing-test-first guard for
+    /// `mcp-admin-tool-parity` task 1.1: every one of the six routes must have
+    /// an operation in the document.
+    #[test]
+    fn tenant_self_service_routes_are_in_openapi_document() {
+        let doc = openapi_document();
+        let paths = &doc.paths.paths;
+
+        for path in [
+            "/api/v1/tenants",
+            "/api/v1/tenants/{tenant_id}",
+            "/api/v1/tenants/{tenant_id}/tables",
+            "/api/v1/tenants/{tenant_id}/tables/create",
+            "/api/v1/tenants/{tenant_id}/schemas",
+            "/api/v1/schemas/available",
+        ] {
+            assert!(
+                paths.contains_key(path),
+                "OpenAPI document is missing operation for {path}"
+            );
+        }
+    }
+
+    /// Route-vs-OpenAPI drift guard (design D4). axum 0.8 does not expose a
+    /// public route-introspection API, so this mirrors the route nesting
+    /// declared in `lib.rs::create_router` by hand for the endpoint modules
+    /// whose `router()` function is a plain, greppable list of
+    /// `.route("path", ...)` calls under one fixed mount prefix.
+    /// `known_routes_match_router_fn_source` below extracts the actual route
+    /// paths straight out of those source files and cross-checks them
+    /// against `KNOWN_ROUTES` / `ALLOWLISTED_ROUTES` bidirectionally, so a
+    /// route added to one of those files without updating this list fails
+    /// loudly instead of silently escaping the guard. `admin.rs` (assembled
+    /// inline in `lib.rs`, not a standalone `router()` fn) and the
+    /// public/infra routes (`/health`, `/api/v1/openapi.json`, session,
+    /// OAuth) are out of scope for the extraction and are trusted by
+    /// inspection instead.
+    const KNOWN_ROUTES: &[&str] = &[
+        // endpoints/tempo.rs, mounted at /tempo
+        "/tempo/api/search",
+        "/tempo/api/traces/{trace_id}",
+        "/tempo/api/search/tags",
+        "/tempo/api/search/tag/{tag_name}/values",
+        "/tempo/api/v2/search/tags",
+        "/tempo/api/v2/search/tag/{tag_name}/values",
+        // endpoints/loki (logql.rs), mounted at /loki
+        "/loki/api/v1/query",
+        "/loki/api/v1/query_range",
+        "/loki/api/v1/labels",
+        "/loki/api/v1/label/{name}/values",
+        // endpoints/promql.rs, mounted at /prometheus
+        "/prometheus/api/v1/query",
+        "/prometheus/api/v1/query_range",
+        "/prometheus/api/v1/labels",
+        "/prometheus/api/v1/label/{name}/values",
+        // endpoints/admin.rs, mounted at /api/v1/admin (assembled inline in
+        // lib.rs, not extracted — see `known_routes_match_router_fn_source`)
+        "/api/v1/admin/tenants",
+        "/api/v1/admin/tenants/{tenant_id}",
+        "/api/v1/admin/tenants/{tenant_id}/api-keys",
+        "/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}",
+        "/api/v1/admin/tenants/{tenant_id}/datasets",
+        "/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}",
+        "/api/v1/admin/users",
+        // endpoints/ops.rs, mounted at /api/v1/ops
+        "/api/v1/ops/compact",
+        "/api/v1/ops/compact/status",
+        "/api/v1/ops/compact/dry-run",
+        // endpoints/tenant.rs, mounted at /api/v1
+        "/api/v1/tenants",
+        "/api/v1/tenants/{tenant_id}",
+        "/api/v1/tenants/{tenant_id}/tables",
+        "/api/v1/tenants/{tenant_id}/tables/create",
+        "/api/v1/tenants/{tenant_id}/schemas",
+        "/api/v1/schemas/available",
+        // endpoints/query.rs, mounted at /api/v1
+        "/api/v1/query",
+        // endpoints/management.rs, mounted at /api/v1/manage
+        "/api/v1/manage/tenants",
+        "/api/v1/manage/tenants/{tenant_id}/datasets",
+        "/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}",
+        "/api/v1/manage/tenants/{tenant_id}/api-keys",
+        "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}",
+        "/api/v1/manage/tenants/{tenant_id}/memberships",
+        "/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}",
+        "/api/v1/manage/schema",
+        // endpoints/schema.rs, mounted at /api/v1/schema
+        "/api/v1/schema/registries",
+        "/api/v1/schema/registries:validate",
+        "/api/v1/schema/registries/{namespace}/{version}",
+        "/api/v1/schema/attributes",
+        "/api/v1/schema/attributes/{key}",
+        "/api/v1/schema/entities",
+        "/api/v1/schema/entities/{name}",
+        "/api/v1/schema/metrics",
+        "/api/v1/schema/metrics/{name}",
+    ];
+
+    /// Routes registered by the auto-extracted files (see
+    /// `known_routes_match_router_fn_source`) that are deliberately outside
+    /// the OpenAPI document: pre-existing Tempo/Loki/Prometheus compat
+    /// surface not yet in the API contract (tracked separately — not part of
+    /// this change's scope). `/pyroscope/**`, `/api/profiles/**`, session
+    /// login/logout, OAuth 2.1 endpoints, `/health`, and
+    /// `/api/v1/openapi.json` are outside the extraction entirely (assembled
+    /// directly in `lib.rs`, not through one of the extracted `router()`
+    /// functions) and need no allowlist entry.
+    const ALLOWLISTED_ROUTES: &[&str] = &[
+        "/tempo/api/echo",
+        "/tempo/api/v2/traces/{trace_id}",
+        "/tempo/api/metrics/query",
+        "/tempo/api/metrics/query_range",
+        "/loki/api/v1/series",
+        "/loki/api/v1/detected_fields",
+        "/prometheus/api/v1/label_stats",
+        "/prometheus/api/v1/series",
+    ];
+
+    /// Extracts the literal path strings passed to `.route(` in a router
+    /// source file, e.g. `.route("/tenants", get(...))` or the multi-line
+    /// form `.route(\n    "/tenants/{id}",\n    get(...),\n)`. Chained verbs
+    /// (`.route("/x", get(a).post(b))`) contribute the path once, matching
+    /// how axum treats them as one route with multiple methods.
+    fn extract_route_paths(content: &str) -> Vec<String> {
+        let mut paths = Vec::new();
+        let mut rest = content;
+        while let Some(idx) = rest.find(".route(") {
+            let after = &rest[idx + ".route(".len()..];
+            let quote_start = after.find('"').unwrap_or_else(|| {
+                panic!("`.route(` not followed by a quoted path literal near: {after:.80}")
+            });
+            let after_quote = &after[quote_start + 1..];
+            let quote_end = after_quote
+                .find('"')
+                .expect("unterminated string literal after `.route(`");
+            paths.push(after_quote[..quote_end].to_string());
+            rest = &after_quote[quote_end + 1..];
+        }
+        paths
+    }
+
+    /// Cross-checks `KNOWN_ROUTES`/`ALLOWLISTED_ROUTES` against the actual
+    /// `.route(...)` calls in the endpoint modules whose `router()` function
+    /// registers routes under one fixed mount prefix, catching drift in both
+    /// directions: a route added to source without a list entry, or a list
+    /// entry for a route that no longer exists.
+    #[test]
+    fn known_routes_match_router_fn_source() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let files_with_prefix = [
+            ("src/endpoints/tempo.rs", "/tempo"),
+            ("src/endpoints/logql.rs", "/loki"),
+            ("src/endpoints/promql.rs", "/prometheus"),
+            ("src/endpoints/ops.rs", "/api/v1/ops"),
+            ("src/endpoints/tenant.rs", "/api/v1"),
+            ("src/endpoints/query.rs", "/api/v1"),
+            ("src/endpoints/management.rs", "/api/v1/manage"),
+            ("src/endpoints/schema.rs", "/api/v1/schema"),
+        ];
+
+        let known: std::collections::HashSet<&str> = KNOWN_ROUTES.iter().copied().collect();
+        let allowlisted: std::collections::HashSet<&str> =
+            ALLOWLISTED_ROUTES.iter().copied().collect();
+
+        let mut actual: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (file, prefix) in files_with_prefix {
+            let path = format!("{manifest_dir}/{file}");
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+            for relative in extract_route_paths(&content) {
+                actual.insert(format!("{prefix}{relative}"));
+            }
+        }
+
+        let mut undeclared: Vec<&String> = actual
+            .iter()
+            .filter(|route| {
+                !known.contains(route.as_str()) && !allowlisted.contains(route.as_str())
+            })
+            .collect();
+        undeclared.sort();
+        assert!(
+            undeclared.is_empty(),
+            "routes registered in source but missing from KNOWN_ROUTES/ALLOWLISTED_ROUTES \
+             (add an OpenAPI operation and a KNOWN_ROUTES entry, or an ALLOWLISTED_ROUTES entry \
+             with a reason): {undeclared:?}"
+        );
+
+        // admin.rs routes are assembled inline in lib.rs (not one of the
+        // extracted `router()` functions above) and are trusted by
+        // inspection rather than extracted; exclude them from the
+        // stale-entry check.
+        let mut stale: Vec<&str> = known
+            .iter()
+            .chain(allowlisted.iter())
+            .filter(|route| !route.starts_with("/api/v1/admin/"))
+            .filter(|route| !actual.contains(**route))
+            .copied()
+            .collect();
+        stale.sort();
+        assert!(
+            stale.is_empty(),
+            "KNOWN_ROUTES/ALLOWLISTED_ROUTES entries no longer present in source: {stale:?}"
+        );
+    }
+
+    /// `/pyroscope/**`, `/api/profiles/**` (trace-to-profile correlation, not
+    /// yet in the API contract — tracked separately), session login/logout,
+    /// OAuth 2.1 connector endpoints, `/health`, and `/api/v1/openapi.json`
+    /// itself are deliberately outside the OpenAPI document: they are either
+    /// not part of the tenant/admin HTTP contract (Pyroscope compat, health)
+    /// or are public infrastructure endpoints the SDK has no business calling
+    /// (session cookies, OAuth redirects, the spec document itself). Routes
+    /// in `ALLOWLISTED_ROUTES` are pre-existing gaps out of this change's
+    /// scope, not required to have an operation.
+    #[test]
+    fn every_known_route_has_an_openapi_operation() {
+        let doc = openapi_document();
+        let paths = &doc.paths.paths;
+
+        let mut missing = Vec::new();
+        for route in KNOWN_ROUTES {
+            if !paths.contains_key(*route) {
+                missing.push(*route);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "routes registered in the router but missing an OpenAPI operation: {missing:?}"
+        );
+    }
 
     #[test]
     fn openapi_spec_is_up_to_date() {

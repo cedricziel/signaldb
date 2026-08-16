@@ -164,34 +164,50 @@ SIGNALDB_USER_PASSWORD='a-long-bootstrap-password' \
   --tenant acme --role admin --instance-admin
 ```
 
-The `signaldb-sdk` Rust crate is a client for this admin API only; it is
-not an ingestion or query SDK.
+The `signaldb-sdk` Rust crate is the single client for the whole HTTP API —
+admin, management, tenant self-service, and the PromQL/LogQL/TraceQL/Query-IR
+query-compat endpoints (SQL is separate, served over Arrow Flight). The CLI
+and MCP server are both built on it and expose no capability it doesn't.
 
 ## Tenant self-service API
 
 With a regular tenant API key (the three headers above), the router
 exposes tenant-scoped endpoints under `/api/v1` (read-only, plus one
-table-creation endpoint):
+table-creation endpoint). Every row below is in the OpenAPI document, so
+each is reachable through `signaldb-sdk`, not only raw HTTP:
 
-| Method | Path                                        | Returns                                                                          |
-| ------ | ------------------------------------------- | -------------------------------------------------------------------------------- |
-| GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset |
-| GET    | `/api/v1/tenants`                           | All configured tenants                                                           |
-| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   |
-| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's tables                                                              |
-| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                   |
-| GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's schema configuration                                                |
-| GET    | `/api/v1/schemas/available`                 | Available schema definitions                                                     |
+| Method | Path                                        | Returns                                                                          | SDK operation            | CLI / MCP                                                                      |
+| ------ | ------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------ |
+| GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset | `whoami`                 | `signaldb-cli whoami` / `server_info`                                          |
+| GET    | `/api/v1/tenants`                           | All configured tenants, filtered to the caller's own                             | `list_tenants_self`      | none — redundant with `whoami`/`server_info`; not exposed separately           |
+| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   | `get_tenant_self`        | none — same rationale                                                          |
+| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's tables                                                              | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                        |
+| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                   | `create_tenant_tables`   | `signaldb-cli tenant table provision` / `tenant_create_tables`                 |
+| GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's configured table schema types                                       | `list_tenant_schemas`    | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`              |
+| GET    | `/api/v1/schemas/available`                 | Every table schema type SignalDB can provision                                   | `list_available_schemas` | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas` |
+
+`GET /tenants` and `GET /tenants/{tenant_id}` return only the caller's own
+tenant — a single-entry view — so they duplicate what `whoami` already tells
+you; they are not given their own CLI command or MCP tool.
+
+This is distinct from the **management API** (`/api/v1/manage/...`,
+`manage_*` operations), which requires a human-authenticated session — a
+browser session cookie or an OAuth access token with a real per-tenant
+role — not a plain API key; see [MCP tenant self-management](mcp.md#tenant-self-management)
+for the exact boundary and the two credential types it maps to.
 
 ### Creating a tenant's signal tables
 
 `POST /api/v1/tenants/{tenant_id}/tables/create` provisions an Iceberg table
 for every signal type enabled for the tenant, across all of its datasets,
-before returning `201`. It requires tenant-administrator privileges and
-returns `500` if any table could not be created.
+before returning `201`. It requires tenant-administrator privileges — in
+practice any valid tenant API key, since `can_manage_tenant()` treats API-key
+possession as sufficient trust for this endpoint (unlike the management
+API above) — and returns `500` if any table could not be created.
 
 You rarely need it: SignalDB provisions those tables on its own, shortly after
 a tenant or dataset is created, and a query against a dataset with no tables
-yet returns an empty result rather than an error. Use the endpoint when you
-want the tables to exist _now_ — see
-[Signal table provisioning](../operations/table-provisioning.md).
+yet returns an empty result rather than an error. Use the endpoint (or
+`signaldb-cli tenant table provision` / the `tenant_create_tables` MCP tool,
+or the web UI's management area) when you want the tables to exist _now_ —
+see [Signal table provisioning](../operations/table-provisioning.md).

@@ -6,6 +6,7 @@ pub mod ops;
 pub mod query;
 pub mod schema;
 pub mod tenant;
+pub mod tenant_self;
 pub mod user;
 
 use std::path::PathBuf;
@@ -61,6 +62,12 @@ enum Commands {
         #[command(subcommand)]
         action: AdminAction,
     },
+    /// The caller's own tenant, through the management API (datasets, API
+    /// keys, memberships, schema, signal tables)
+    Tenant {
+        #[command(subcommand)]
+        action: tenant_self::TenantSelfAction,
+    },
     /// Operational control (compaction)
     Ops {
         #[command(subcommand)]
@@ -71,6 +78,9 @@ enum Commands {
         #[command(subcommand)]
         action: user::UserAction,
     },
+    /// Report the authenticated identity (tenant, dataset, user) for the
+    /// given credential
+    Whoami(discover::ConnectArgs),
     /// Generate a shell completion script on stdout
     ///
     /// Install it with your shell's completion mechanism, e.g.:
@@ -172,6 +182,18 @@ impl Cli {
             return action.run().await;
         }
 
+        // The `tenant` group and `whoami` authenticate with a tenant API key
+        // (management API / `/api/v1/whoami`), like `discover` and `schema`
+        // above — never the instance admin key `admin` uses.
+        if let Commands::Tenant { action } = self.command {
+            return action.run().await;
+        }
+
+        if let Commands::Whoami(connect) = self.command {
+            let v = connect.build_client()?.whoami().send().await;
+            return query::print_json_response(v.map(|r| r.into_inner()), "whoami");
+        }
+
         // Custom-registry management authenticates with a tenant API key
         // carrying `schema:write` (the schema API is tenant-scoped), not the
         // instance admin key the other `admin` nouns use.
@@ -244,6 +266,8 @@ impl Cli {
             Commands::Schema { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
+            Commands::Tenant { .. } => unreachable!(),
+            Commands::Whoami(_) => unreachable!(),
         }
     }
 

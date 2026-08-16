@@ -587,7 +587,7 @@ to an attribute extraction — same query, same result either way.
   ```
 
   (`--ir` is one of the mutually-exclusive language flags on `query`, alongside
-  `--sql`/`--promql`/`--logql`/`--traceql`.)
+  `--sql`/`--promql`/`--logql`/`--traceql`/`--trace-id`.)
 
 - **UI:** the Explore view's **Query** tab builds an IR document structurally and
   renders the declared envelope.
