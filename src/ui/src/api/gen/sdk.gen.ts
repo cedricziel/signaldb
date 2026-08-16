@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, LogqlLabelsData, LogqlLabelsResponses, LogqlLabelValuesData, LogqlLabelValuesResponses, LogqlQueryData, LogqlQueryRangeData, LogqlQueryRangeResponses, LogqlQueryResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageGetSchemaData, ManageGetSchemaErrors, ManageGetSchemaResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpdateApiKeyData, ManageUpdateApiKeyErrors, ManageUpdateApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, PromqlLabelsData, PromqlLabelsResponses, PromqlLabelValuesData, PromqlLabelValuesResponses, PromqlQueryData, PromqlQueryRangeData, PromqlQueryRangeResponses, PromqlQueryResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SchemaCreateRegistryData, SchemaCreateRegistryErrors, SchemaCreateRegistryResponses, SchemaDeleteRegistryData, SchemaDeleteRegistryErrors, SchemaDeleteRegistryResponses, SchemaGetRegistryData, SchemaGetRegistryErrors, SchemaGetRegistryResponses, SchemaListRegistriesData, SchemaListRegistriesErrors, SchemaListRegistriesResponses, SchemaReplaceRegistryData, SchemaReplaceRegistryErrors, SchemaReplaceRegistryResponses, SchemaResolveAttributeData, SchemaResolveAttributeErrors, SchemaResolveAttributeResponses, SchemaResolveEntityData, SchemaResolveEntityErrors, SchemaResolveEntityResponses, SchemaResolveMetricData, SchemaResolveMetricErrors, SchemaResolveMetricResponses, SchemaSearchAttributesData, SchemaSearchAttributesErrors, SchemaSearchAttributesResponses, SchemaSearchEntitiesData, SchemaSearchEntitiesErrors, SchemaSearchEntitiesResponses, SchemaSearchMetricsData, SchemaSearchMetricsErrors, SchemaSearchMetricsResponses, SchemaValidateRegistryData, SchemaValidateRegistryErrors, SchemaValidateRegistryResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsErrors, SearchTagsResponses, SearchTagsV2Data, SearchTagsV2Errors, SearchTagsV2Responses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, SearchTagValuesV2Data, SearchTagValuesV2Errors, SearchTagValuesV2Responses, UpdateApiKeyData, UpdateApiKeyErrors, UpdateApiKeyResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
+import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantsData, ListTenantsResponses, LogqlLabelsData, LogqlLabelsErrors, LogqlLabelsResponses, LogqlLabelValuesData, LogqlLabelValuesErrors, LogqlLabelValuesResponses, LogqlQueryData, LogqlQueryErrors, LogqlQueryRangeData, LogqlQueryRangeErrors, LogqlQueryRangeResponses, LogqlQueryResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageGetSchemaData, ManageGetSchemaErrors, ManageGetSchemaResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpdateApiKeyData, ManageUpdateApiKeyErrors, ManageUpdateApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, PromqlLabelsData, PromqlLabelsErrors, PromqlLabelsResponses, PromqlLabelValuesData, PromqlLabelValuesErrors, PromqlLabelValuesResponses, PromqlQueryData, PromqlQueryErrors, PromqlQueryRangeData, PromqlQueryRangeErrors, PromqlQueryRangeResponses, PromqlQueryResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SchemaCreateRegistryData, SchemaCreateRegistryErrors, SchemaCreateRegistryResponses, SchemaDeleteRegistryData, SchemaDeleteRegistryErrors, SchemaDeleteRegistryResponses, SchemaGetRegistryData, SchemaGetRegistryErrors, SchemaGetRegistryResponses, SchemaListRegistriesData, SchemaListRegistriesErrors, SchemaListRegistriesResponses, SchemaReplaceRegistryData, SchemaReplaceRegistryErrors, SchemaReplaceRegistryResponses, SchemaResolveAttributeData, SchemaResolveAttributeErrors, SchemaResolveAttributeResponses, SchemaResolveEntityData, SchemaResolveEntityErrors, SchemaResolveEntityResponses, SchemaResolveMetricData, SchemaResolveMetricErrors, SchemaResolveMetricResponses, SchemaSearchAttributesData, SchemaSearchAttributesErrors, SchemaSearchAttributesResponses, SchemaSearchEntitiesData, SchemaSearchEntitiesErrors, SchemaSearchEntitiesResponses, SchemaSearchMetricsData, SchemaSearchMetricsErrors, SchemaSearchMetricsResponses, SchemaValidateRegistryData, SchemaValidateRegistryErrors, SchemaValidateRegistryResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsErrors, SearchTagsResponses, SearchTagsV2Data, SearchTagsV2Errors, SearchTagsV2Responses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, SearchTagValuesV2Data, SearchTagValuesV2Errors, SearchTagValuesV2Responses, UpdateApiKeyData, UpdateApiKeyErrors, UpdateApiKeyResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -362,7 +362,7 @@ export const whoami = <ThrowOnError extends boolean = false>(options?: Options<W
 /**
  * GET /loki/api/v1/label/{name}/values — list values of one label.
  */
-export const logqlLabelValues = <ThrowOnError extends boolean = false>(options: Options<LogqlLabelValuesData, ThrowOnError>): RequestResult<LogqlLabelValuesResponses, unknown, ThrowOnError> => (options.client ?? client).get<LogqlLabelValuesResponses, unknown, ThrowOnError>({
+export const logqlLabelValues = <ThrowOnError extends boolean = false>(options: Options<LogqlLabelValuesData, ThrowOnError>): RequestResult<LogqlLabelValuesResponses, LogqlLabelValuesErrors, ThrowOnError> => (options.client ?? client).get<LogqlLabelValuesResponses, LogqlLabelValuesErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/loki/api/v1/label/{name}/values',
     ...options
@@ -371,7 +371,7 @@ export const logqlLabelValues = <ThrowOnError extends boolean = false>(options: 
 /**
  * GET /loki/api/v1/labels — list label names.
  */
-export const logqlLabels = <ThrowOnError extends boolean = false>(options?: Options<LogqlLabelsData, ThrowOnError>): RequestResult<LogqlLabelsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<LogqlLabelsResponses, unknown, ThrowOnError>({
+export const logqlLabels = <ThrowOnError extends boolean = false>(options?: Options<LogqlLabelsData, ThrowOnError>): RequestResult<LogqlLabelsResponses, LogqlLabelsErrors, ThrowOnError> => (options?.client ?? client).get<LogqlLabelsResponses, LogqlLabelsErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/loki/api/v1/labels',
     ...options
@@ -385,7 +385,7 @@ export const logqlLabels = <ThrowOnError extends boolean = false>(options?: Opti
  * default one-hour lookback, matching how Grafana renders instant log
  * panels.
  */
-export const logqlQuery = <ThrowOnError extends boolean = false>(options: Options<LogqlQueryData, ThrowOnError>): RequestResult<LogqlQueryResponses, unknown, ThrowOnError> => (options.client ?? client).get<LogqlQueryResponses, unknown, ThrowOnError>({
+export const logqlQuery = <ThrowOnError extends boolean = false>(options: Options<LogqlQueryData, ThrowOnError>): RequestResult<LogqlQueryResponses, LogqlQueryErrors, ThrowOnError> => (options.client ?? client).get<LogqlQueryResponses, LogqlQueryErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/loki/api/v1/query',
     ...options
@@ -394,7 +394,7 @@ export const logqlQuery = <ThrowOnError extends boolean = false>(options: Option
 /**
  * GET /loki/api/v1/query_range — range query.
  */
-export const logqlQueryRange = <ThrowOnError extends boolean = false>(options: Options<LogqlQueryRangeData, ThrowOnError>): RequestResult<LogqlQueryRangeResponses, unknown, ThrowOnError> => (options.client ?? client).get<LogqlQueryRangeResponses, unknown, ThrowOnError>({
+export const logqlQueryRange = <ThrowOnError extends boolean = false>(options: Options<LogqlQueryRangeData, ThrowOnError>): RequestResult<LogqlQueryRangeResponses, LogqlQueryRangeErrors, ThrowOnError> => (options.client ?? client).get<LogqlQueryRangeResponses, LogqlQueryRangeErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/loki/api/v1/query_range',
     ...options
@@ -427,7 +427,7 @@ export const oauthConsentContext = <ThrowOnError extends boolean = false>(option
 /**
  * GET /prometheus/api/v1/label/{name}/values — distinct values of a label.
  */
-export const promqlLabelValues = <ThrowOnError extends boolean = false>(options: Options<PromqlLabelValuesData, ThrowOnError>): RequestResult<PromqlLabelValuesResponses, unknown, ThrowOnError> => (options.client ?? client).get<PromqlLabelValuesResponses, unknown, ThrowOnError>({
+export const promqlLabelValues = <ThrowOnError extends boolean = false>(options: Options<PromqlLabelValuesData, ThrowOnError>): RequestResult<PromqlLabelValuesResponses, PromqlLabelValuesErrors, ThrowOnError> => (options.client ?? client).get<PromqlLabelValuesResponses, PromqlLabelValuesErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/prometheus/api/v1/label/{name}/values',
     ...options
@@ -436,7 +436,7 @@ export const promqlLabelValues = <ThrowOnError extends boolean = false>(options:
 /**
  * GET /prometheus/api/v1/labels — metric label names.
  */
-export const promqlLabels = <ThrowOnError extends boolean = false>(options?: Options<PromqlLabelsData, ThrowOnError>): RequestResult<PromqlLabelsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<PromqlLabelsResponses, unknown, ThrowOnError>({
+export const promqlLabels = <ThrowOnError extends boolean = false>(options?: Options<PromqlLabelsData, ThrowOnError>): RequestResult<PromqlLabelsResponses, PromqlLabelsErrors, ThrowOnError> => (options?.client ?? client).get<PromqlLabelsResponses, PromqlLabelsErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/prometheus/api/v1/labels',
     ...options
@@ -448,7 +448,7 @@ export const promqlLabels = <ThrowOnError extends boolean = false>(options?: Opt
  * Evaluated as a one-bucket range at `time`, returning the latest sample
  * per series as a vector.
  */
-export const promqlQuery = <ThrowOnError extends boolean = false>(options: Options<PromqlQueryData, ThrowOnError>): RequestResult<PromqlQueryResponses, unknown, ThrowOnError> => (options.client ?? client).get<PromqlQueryResponses, unknown, ThrowOnError>({
+export const promqlQuery = <ThrowOnError extends boolean = false>(options: Options<PromqlQueryData, ThrowOnError>): RequestResult<PromqlQueryResponses, PromqlQueryErrors, ThrowOnError> => (options.client ?? client).get<PromqlQueryResponses, PromqlQueryErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/prometheus/api/v1/query',
     ...options
@@ -457,7 +457,7 @@ export const promqlQuery = <ThrowOnError extends boolean = false>(options: Optio
 /**
  * GET|POST /prometheus/api/v1/query_range.
  */
-export const promqlQueryRange = <ThrowOnError extends boolean = false>(options: Options<PromqlQueryRangeData, ThrowOnError>): RequestResult<PromqlQueryRangeResponses, unknown, ThrowOnError> => (options.client ?? client).get<PromqlQueryRangeResponses, unknown, ThrowOnError>({
+export const promqlQueryRange = <ThrowOnError extends boolean = false>(options: Options<PromqlQueryRangeData, ThrowOnError>): RequestResult<PromqlQueryRangeResponses, PromqlQueryRangeErrors, ThrowOnError> => (options.client ?? client).get<PromqlQueryRangeResponses, PromqlQueryRangeErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/prometheus/api/v1/query_range',
     ...options

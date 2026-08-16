@@ -70,6 +70,14 @@ fn sample_trace_request() -> ExportTraceServiceRequest {
 /// Returns the router, the WAL manager (to verify durability), and the
 /// temp dir keeping catalog/WAL files alive.
 async fn setup_traces_test() -> (axum::Router, Arc<WalManager>, TempDir) {
+    setup_traces_test_with_limits(common::config::TenantLimits::default()).await
+}
+
+/// [`setup_traces_test`] with a configurable per-tenant rate limit, so a
+/// test can exercise the ingest rate limiter's `429` path.
+async fn setup_traces_test_with_limits(
+    limits: common::config::TenantLimits,
+) -> (axum::Router, Arc<WalManager>, TempDir) {
     let temp_dir = TempDir::new().unwrap();
 
     let catalog_db_path = temp_dir.path().join("catalog.db");
@@ -93,7 +101,7 @@ async fn setup_traces_test() -> (axum::Router, Arc<WalManager>, TempDir) {
     config.auth = common::config::AuthConfig {
         admin_api_key: None,
         internal_service_key: None,
-        default_limits: Default::default(),
+        default_limits: limits,
         storage_usage_refresh_interval: Duration::from_secs(60),
         tenants: vec![common::config::TenantConfig {
             id: TEST_TENANT.to_string(),
@@ -326,4 +334,57 @@ async fn otlp_http_traces_malformed_json_is_bad_request() {
         "Expected 400 Bad Request for a malformed JSON payload"
     );
     assert_eq!(traces_wal_entry_count(&wal_manager).await, 0);
+}
+
+#[tokio::test]
+async fn otlp_http_traces_rate_limited_carries_retry_after_and_limit_headers() {
+    let (app, wal_manager, _temp_dir) =
+        setup_traces_test_with_limits(common::config::TenantLimits {
+            max_ingest_requests_per_sec: Some(1),
+            burst_seconds: 1.0,
+            ..Default::default()
+        })
+        .await;
+
+    let request = ExportTraceServiceRequest::default();
+    let build_request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/traces")
+            .header(header::CONTENT_TYPE, "application/x-protobuf")
+            .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+            .header("X-Tenant-ID", TEST_TENANT)
+            .body(Body::from(request.encode_to_vec()))
+            .unwrap()
+    };
+
+    // First request consumes the single-request burst.
+    let first = app.clone().oneshot(build_request()).await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    // Second request is rejected with the retry-after contract.
+    let second = app.clone().oneshot(build_request()).await.unwrap();
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after: u64 = second
+        .headers()
+        .get(header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .expect("Retry-After header present and numeric");
+    assert!(retry_after >= 1);
+    assert_eq!(
+        second
+            .headers()
+            .get("x-ratelimit-limit")
+            .and_then(|v| v.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(
+        second
+            .headers()
+            .get("x-ratelimit-burst")
+            .and_then(|v| v.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(traces_wal_entry_count(&wal_manager).await, 1);
 }

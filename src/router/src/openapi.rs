@@ -223,6 +223,10 @@ impl Modify for SecurityAddon {
         schema_model::MetricDef,
         schema_model::EnumMember,
         schema_model::Role,
+        // Rate-limit rejection envelope (change: query-throttle-signalling)
+        crate::endpoints::api_error::ApiErrorBody,
+    ), responses(
+        crate::endpoints::api_error::RateLimited,
     )),
 )]
 struct ApiDoc;
@@ -249,6 +253,68 @@ mod tests {
             assert_eq!(
                 on_disk, generated,
                 "api/signaldb-api.json is stale — run UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date"
+            );
+        }
+    }
+
+    /// Drift guard (change: query-throttle-signalling): every operation
+    /// mounted behind the router's rate limiters — the query budget
+    /// (`query_rate_layer`, see `lib.rs`) and the admin per-tenant quotas
+    /// (`endpoints::admin`) — must declare a `429` response carrying at
+    /// least the `Retry-After` header, so a new rate-limited endpoint can't
+    /// silently ship without the retry contract.
+    #[test]
+    fn every_rate_limited_path_declares_429_with_retry_after() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
+        let components_responses = spec
+            .pointer("/components/responses")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        // (path, method) pairs mounted under `query_rate_layer` in
+        // `create_router` (tempo/pyroscope/loki/prometheus/api-profiles and
+        // the `/api/v1` tenant-scoped nest: query IR, whoami, management,
+        // schema) plus the admin per-tenant count quotas, which answer 429
+        // via the same header contract (see `endpoints::admin`).
+        let rate_limited: &[(&str, &str)] = &[
+            ("/tempo/api/search", "get"),
+            ("/tempo/api/traces/{trace_id}", "get"),
+            ("/tempo/api/search/tags", "get"),
+            ("/tempo/api/search/tag/{tag_name}/values", "get"),
+            ("/prometheus/api/v1/query", "get"),
+            ("/prometheus/api/v1/query_range", "get"),
+            ("/prometheus/api/v1/labels", "get"),
+            ("/prometheus/api/v1/label/{name}/values", "get"),
+            ("/loki/api/v1/query", "get"),
+            ("/loki/api/v1/query_range", "get"),
+            ("/loki/api/v1/labels", "get"),
+            ("/loki/api/v1/label/{name}/values", "get"),
+            ("/api/v1/query", "post"),
+            ("/api/v1/whoami", "get"),
+            ("/api/v1/admin/tenants/{tenant_id}/api-keys", "post"),
+            ("/api/v1/admin/tenants/{tenant_id}/datasets", "post"),
+        ];
+
+        for (path, method) in rate_limited {
+            let response = spec
+                .pointer(&format!(
+                    "/paths/{}/{method}/responses/429",
+                    path.replace('/', "~1")
+                ))
+                .unwrap_or_else(|| panic!("{method} {path}: no 429 response declared"));
+            let resolved = match response.get("$ref").and_then(|v| v.as_str()) {
+                Some(r) => {
+                    let name = r.rsplit('/').next().unwrap();
+                    components_responses
+                        .get(name)
+                        .unwrap_or_else(|| panic!("{method} {path}: unresolved $ref {r}"))
+                }
+                None => response,
+            };
+            assert!(
+                resolved.pointer("/headers/Retry-After").is_some(),
+                "{method} {path}: 429 response is missing the Retry-After header"
             );
         }
     }

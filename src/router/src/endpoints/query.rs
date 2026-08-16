@@ -220,6 +220,7 @@ pub struct QueryIrResponse {
         (status = 200, description = "The enveloped query result", body = QueryIrResponse),
         (status = 400, description = "Invalid IR document"),
         (status = 401, description = "Missing or invalid credentials"),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 503, description = "No querier service available"),
     )
 )]

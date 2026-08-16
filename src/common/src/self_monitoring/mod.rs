@@ -17,7 +17,7 @@ pub mod suppress;
 
 pub use app_metrics::{
     AppMetrics, ServerTimings, app_metrics, http_metrics_middleware, http_trace_context_middleware,
-    should_count_tenant,
+    record_rate_limit_rejection, should_count_tenant,
 };
 pub use profiling::{ProfilingHandle, init_profiling};
 #[cfg(not(target_os = "windows"))]

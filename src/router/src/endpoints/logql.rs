@@ -145,6 +145,7 @@ fn validate_direction(direction: &str) -> Result<(), ApiError> {
     ),
     responses(
         (status = 200, description = "Loki instant-query response (streams or matrix)", body = serde_json::Value),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 #[tracing::instrument(
@@ -196,6 +197,7 @@ pub async fn query<S: RouterState>(
     ),
     responses(
         (status = 200, description = "Loki range-query response (streams or matrix)", body = serde_json::Value),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 #[tracing::instrument(
@@ -254,6 +256,7 @@ pub async fn query_range<S: RouterState>(
     ),
     responses(
         (status = 200, description = "Known log label names", body = serde_json::Value),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 #[tracing::instrument(
@@ -293,6 +296,7 @@ pub async fn labels<S: RouterState>(
     ),
     responses(
         (status = 200, description = "Distinct values for the label", body = serde_json::Value),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 #[tracing::instrument(

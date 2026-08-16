@@ -16,6 +16,32 @@ use signaldb_api::{
 use std::str::FromStr;
 use uuid::Uuid;
 
+/// Build a `429` for an exhausted per-tenant count quota (`max_api_keys`,
+/// `max_datasets`): the existing `quota_exceeded` JSON body plus the
+/// `Retry-After` / `X-RateLimit-Limit` headers every SignalDB rate-limit
+/// rejection carries (see `common::ratelimit`). A count quota has no token
+/// bucket to refill from, so `Retry-After` is a fixed floor of 1 second —
+/// enough to tell the client "wait and retry", which is the header's whole
+/// job here; there is no burst allowance to report.
+fn quota_exceeded_response(limit: u32, message: String) -> axum::response::Response {
+    common::self_monitoring::record_rate_limit_rejection("admin", "quota");
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(serde_json::to_value(ApiError::new("quota_exceeded", message)).unwrap()),
+    )
+        .into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from(1u64),
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("x-ratelimit-limit"),
+        axum::http::HeaderValue::from(u64::from(limit)),
+    );
+    response
+}
+
 // ── Tenant endpoints ────────────────────────────────────────────────────
 
 /// List all tenants
@@ -486,7 +512,11 @@ pub async fn list_api_keys<S: RouterState>(
     responses(
         (status = 201, description = "API key created", body = CreateApiKeyResponse),
         (status = 404, description = "Tenant not found", body = ApiError),
-        (status = 429, description = "Tenant API key quota exceeded", body = ApiError),
+        (status = 429, description = "Tenant API key quota exceeded", body = ApiError,
+            headers(
+                ("Retry-After" = i64, description = "Fixed at 1 second: a count quota has no token bucket to refill from"),
+                ("X-RateLimit-Limit" = i64, description = "The tenant's max_api_keys quota"),
+            )),
         (status = 400, description = "Dataset does not exist", body = ApiError),
         (status = 422, description = "Invalid or empty scopes", body = ApiError),
     )
@@ -528,20 +558,13 @@ pub async fn create_api_key<S: RouterState>(
             Ok(keys) => {
                 let active = keys.iter().filter(|k| k.revoked_at.is_none()).count();
                 if active as u64 >= u64::from(max_keys) {
-                    return (
-                        StatusCode::TOO_MANY_REQUESTS,
-                        Json(
-                            serde_json::to_value(ApiError::new(
-                                "quota_exceeded",
-                                format!(
-                                    "Tenant '{tenant_id}' already has {active} active API keys \
-                                     (limit {max_keys}); revoke a key or raise max_api_keys"
-                                ),
-                            ))
-                            .unwrap(),
+                    return quota_exceeded_response(
+                        max_keys,
+                        format!(
+                            "Tenant '{tenant_id}' already has {active} active API keys \
+                             (limit {max_keys}); revoke a key or raise max_api_keys"
                         ),
-                    )
-                        .into_response();
+                    );
                 }
             }
             Err(e) => {
@@ -918,7 +941,11 @@ pub async fn list_datasets<S: RouterState>(
     responses(
         (status = 201, description = "Dataset created", body = DatasetResponse),
         (status = 404, description = "Tenant not found", body = ApiError),
-        (status = 429, description = "Tenant dataset quota exceeded", body = ApiError),
+        (status = 429, description = "Tenant dataset quota exceeded", body = ApiError,
+            headers(
+                ("Retry-After" = i64, description = "Fixed at 1 second: a count quota has no token bucket to refill from"),
+                ("X-RateLimit-Limit" = i64, description = "The tenant's max_datasets quota"),
+            )),
     )
 )]
 pub async fn create_dataset<S: RouterState>(
@@ -971,21 +998,14 @@ pub async fn create_dataset<S: RouterState>(
             Ok(datasets) => {
                 let count = datasets.len();
                 if count as u64 >= u64::from(max_datasets) {
-                    return (
-                        StatusCode::TOO_MANY_REQUESTS,
-                        Json(
-                            serde_json::to_value(ApiError::new(
-                                "quota_exceeded",
-                                format!(
-                                    "Tenant '{tenant_id}' already has {count} datasets \
-                                     (limit {max_datasets}); delete a dataset or raise \
-                                     max_datasets"
-                                ),
-                            ))
-                            .unwrap(),
+                    return quota_exceeded_response(
+                        max_datasets,
+                        format!(
+                            "Tenant '{tenant_id}' already has {count} datasets \
+                             (limit {max_datasets}); delete a dataset or raise \
+                             max_datasets"
                         ),
-                    )
-                        .into_response();
+                    );
                 }
             }
             Err(e) => {
@@ -1592,6 +1612,20 @@ mod tests {
         // Third key exceeds the quota.
         let response = app.clone().oneshot(create("three")).await.unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("1")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-ratelimit-limit")
+                .and_then(|v| v.to_str().ok()),
+            Some("2")
+        );
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .unwrap();
@@ -1641,6 +1675,20 @@ mod tests {
 
         let response = app.clone().oneshot(create("staging")).await.unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("1")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-ratelimit-limit")
+                .and_then(|v| v.to_str().ok()),
+            Some("1")
+        );
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .unwrap();

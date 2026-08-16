@@ -70,6 +70,69 @@ pub mod types {
             Default::default()
         }
     }
+    /**The JSON envelope every query-surface error responds with: `status` is
+    always `"error"`, `errorType` a stable low-cardinality code, `error` a
+    human-readable message, and `retryAfterMs` present only on rate-limit
+    rejections. Exists as a real (rather than `serde_json::json!`-built)
+    type so the OpenAPI document can declare its schema on the `429`
+    response of every rate-limited operation.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The JSON envelope every query-surface error responds with: `status` is\nalways `\"error\"`, `errorType` a stable low-cardinality code, `error` a\nhuman-readable message, and `retryAfterMs` present only on rate-limit\nrejections. Exists as a real (rather than `serde_json::json!`-built)\ntype so the OpenAPI document can declare its schema on the `429`\nresponse of every rate-limited operation.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "error",
+    ///    "errorType",
+    ///    "status"
+    ///  ],
+    ///  "properties": {
+    ///    "error": {
+    ///      "type": "string"
+    ///    },
+    ///    "errorType": {
+    ///      "type": "string"
+    ///    },
+    ///    "retryAfterMs": {
+    ///      "description": "Milliseconds until the request would be admitted; present only when\n`errorType` is `\"rate_limited\"`.",
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "format": "int64",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "status": {
+    ///      "description": "Always `\"error\"`.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ApiErrorBody {
+        pub error: ::std::string::String,
+        #[serde(rename = "errorType")]
+        pub error_type: ::std::string::String,
+        /**Milliseconds until the request would be admitted; present only when
+        `errorType` is `"rate_limited"`.*/
+        #[serde(
+            rename = "retryAfterMs",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub retry_after_ms: ::std::option::Option<i64>,
+        ///Always `"error"`.
+        pub status: ::std::string::String,
+    }
+    impl ApiErrorBody {
+        pub fn builder() -> builder::ApiErrorBody {
+            Default::default()
+        }
+    }
     ///API key information (without the raw key).
     ///
     /// <details><summary>JSON schema</summary>
@@ -4842,6 +4905,89 @@ pub mod types {
                 Self {
                     error: Ok(value.error),
                     message: Ok(value.message),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ApiErrorBody {
+            error: ::std::result::Result<::std::string::String, ::std::string::String>,
+            error_type: ::std::result::Result<::std::string::String, ::std::string::String>,
+            retry_after_ms:
+                ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            status: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ApiErrorBody {
+            fn default() -> Self {
+                Self {
+                    error: Err("no value supplied for error".to_string()),
+                    error_type: Err("no value supplied for error_type".to_string()),
+                    retry_after_ms: Ok(Default::default()),
+                    status: Err("no value supplied for status".to_string()),
+                }
+            }
+        }
+        impl ApiErrorBody {
+            pub fn error<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error: {e}"));
+                self
+            }
+            pub fn error_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error_type: {e}"));
+                self
+            }
+            pub fn retry_after_ms<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.retry_after_ms = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for retry_after_ms: {e}")
+                });
+                self
+            }
+            pub fn status<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.status = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for status: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ApiErrorBody> for super::ApiErrorBody {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ApiErrorBody,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    error: value.error?,
+                    error_type: value.error_type?,
+                    retry_after_ms: value.retry_after_ms?,
+                    status: value.status?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ApiErrorBody> for ApiErrorBody {
+            fn from(value: super::ApiErrorBody) -> Self {
+                Self {
+                    error: Ok(value.error),
+                    error_type: Ok(value.error_type),
+                    retry_after_ms: Ok(value.retry_after_ms),
+                    status: Ok(value.status),
                 }
             }
         }
@@ -14142,6 +14288,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -14229,6 +14378,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -14299,6 +14451,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
@@ -14414,6 +14569,9 @@ pub mod builder {
                 422u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -14499,6 +14657,9 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
@@ -14631,6 +14792,9 @@ pub mod builder {
                 422u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -14701,6 +14865,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
@@ -14814,6 +14981,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -14901,6 +15071,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -14971,6 +15144,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
@@ -15082,6 +15258,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -15170,6 +15349,9 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
@@ -15384,6 +15566,7 @@ pub mod builder {
                 200u16 => ResponseValue::from_response(response).await,
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
@@ -15481,6 +15664,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -15545,6 +15731,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -15642,6 +15831,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -15706,6 +15898,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -15803,6 +15998,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -15869,6 +16067,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -15915,6 +16116,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -15990,6 +16194,9 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -16076,6 +16283,9 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -16190,6 +16400,9 @@ pub mod builder {
                 422u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16277,6 +16490,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16346,6 +16562,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16390,6 +16609,7 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16482,6 +16702,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16553,6 +16774,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16657,6 +16879,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16789,6 +17012,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17015,6 +17239,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17086,6 +17311,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17161,6 +17387,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17264,6 +17491,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17533,6 +17761,7 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17607,6 +17836,7 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17720,6 +17950,7 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

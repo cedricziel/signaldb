@@ -143,7 +143,10 @@ A failed query returns the Prometheus error envelope
 `{"status":"error","errorType":"...","error":"..."}` with a non-2xx status; the
 `error` field carries the reason (e.g. a rejected query is `400` with
 `errorType` `bad_data`), so the message names the actual cause rather than
-leaving you with a bare status code.
+leaving you with a bare status code. A `429` (`errorType` `rate_limited`,
+per-tenant query rate limit exceeded) additionally carries `retryAfterMs`
+in the body and `Retry-After`/`X-RateLimit-Limit`/`X-RateLimit-Burst`
+headers computed from the tenant's actual budget state.
 
 ## Troubleshooting
 

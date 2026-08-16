@@ -104,15 +104,23 @@ internal_service_key = "sk-internal"     # Shared secret for service-to-service
 
 # Default per-tenant rate limits and quotas; unset fields = unlimited.
 # Rate limits return 429 / RESOURCE_EXHAUSTED; count quotas return
-# 429 with error code "quota_exceeded".
+# 429 with error code "quota_exceeded". Every HTTP 429 (router query
+# surfaces, admin quotas, acceptor OTLP/HTTP and Prometheus remote_write)
+# carries Retry-After (whole seconds, rounded up, >= 1), X-RateLimit-Limit,
+# and X-RateLimit-Burst computed from the token bucket's actual state; the
+# router's query 429 body is the JSON ApiError envelope
+# ({"status":"error","errorType":"rate_limited","error":"...","retryAfterMs":N}).
 [auth.default_limits]
 max_ingest_requests_per_sec = 100
 max_ingest_bytes_per_sec = 10485760   # 10 MiB/s
-max_query_requests_per_sec = 50       # router HTTP query API
+max_query_requests_per_sec = 100      # router HTTP query API
 max_api_keys = 10                     # active (non-revoked) keys
 max_datasets = 25
 max_storage_bytes = 107374182400      # 100 GiB live Iceberg data files (eventually consistent)
-burst_seconds = 2.0
+burst_seconds = 10.0                  # seconds of budget a tenant may burst;
+                                       # generous by default so an Explore page
+                                       # load or an agent's multi-tool
+                                       # investigation isn't throttled
 
 [[auth.tenants]]
 id = "acme"
@@ -138,7 +146,7 @@ name = "Production Key"
 # Per-tenant override; takes precedence over [auth.default_limits]
 [auth.tenants.limits]
 max_ingest_requests_per_sec = 500
-max_query_requests_per_sec = 200
+max_query_requests_per_sec = 500
 ```
 
 ### Compactor

@@ -587,7 +587,7 @@ curl http://localhost:3000/health   # Router
 
 - **API Key Authentication**: SHA-256 hashed keys with config-based and database-backed storage
 - **Internal Flight Auth**: Optional `[auth].internal_service_key` shared secret gates service-to-service Flight calls (writer 50051, router 50053, querier 50054, compactor 50055); when unset, the Flight ports accept unauthenticated calls and must be restricted to a trusted network
-- **Rate Limits**: `[auth].default_limits` sets default per-tenant ingest limits, overridable per tenant
+- **Rate Limits**: `[auth].default_limits` sets default per-tenant ingest and query limits, overridable per tenant; token-bucket `burst_seconds` (default 10.0) sets how much burst a tenant may spend at once. Every rate-limit `429` (router query, acceptor OTLP/HTTP, Prometheus `remote_write`) carries `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` computed from the bucket's actual state; the router's query `429` uses the standard JSON `ApiError` envelope with `retryAfterMs`
 - **Storage Quotas**: `max_storage_bytes` caps a tenant's live Iceberg data-file bytes; usage is refreshed periodically from table metadata and over-quota ingest is rejected with 429 / RESOURCE_EXHAUSTED (`quota_exceeded`)
 - **Admin API**: Separate admin key for tenant/dataset management
 - **Input Validation**: Tenant/dataset slugs validated against alphanumeric + hyphen pattern; path traversal checks (`../`)
