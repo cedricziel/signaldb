@@ -164,8 +164,28 @@ fn cli(base_url: &str, extra: &[&str]) -> signaldb_cli::commands::Cli {
     signaldb_cli::commands::Cli::try_parse_from(args).expect("parses")
 }
 
+/// Restores the process-wide `--no-retry` switch (`signaldb_cli::retry`,
+/// shared by every test in this binary's process — see
+/// `tests-integration/tests/main.rs`) to what it was before the guard was
+/// created, even if the holder panics: `Drop` still runs during unwind,
+/// unlike a plain statement at the end of the test function.
+struct NoRetryGuard(bool);
+
+impl NoRetryGuard {
+    fn capture() -> Self {
+        Self(signaldb_cli::retry::no_retry())
+    }
+}
+
+impl Drop for NoRetryGuard {
+    fn drop(&mut self) {
+        signaldb_cli::retry::set_no_retry(self.0);
+    }
+}
+
 #[tokio::test]
 async fn cli_retries_router_throttling_and_no_retry_fails_fast() {
+    let _no_retry_guard = NoRetryGuard::capture();
     let base_url = serve_throttling_router().await;
     // Three back-to-back invocations all succeed: the SDK policy absorbs the
     // throttled ones.
@@ -189,8 +209,7 @@ async fn cli_retries_router_throttling_and_no_retry_fails_fast() {
     let throttled = signaldb_cli::retry::throttled(&err).expect("main maps this to EXIT_THROTTLED");
     assert!(throttled.retry_after.is_some());
     assert_eq!(signaldb_cli::retry::EXIT_THROTTLED, 4);
-    // Leave the process-wide switch as we found it for other tests.
-    signaldb_cli::retry::set_no_retry(false);
+    // `_no_retry_guard` restores the switch on drop, including on panic.
 }
 
 // ---- parity ----------------------------------------------------------------
