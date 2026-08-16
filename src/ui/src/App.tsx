@@ -38,6 +38,8 @@ export function App() {
   const effective = state.tenant ? state : { ...state, ...remembered.current };
   // Keep the API clients' tenant headers in sync with the (effective) state.
   setTenantContext({ tenant: effective.tenant, dataset: effective.dataset });
+  // `update` keeps the current path off the explore routes (see
+  // useExploreState), so this only adds the search params.
   useEffect(() => {
     if (!state.tenant && remembered.current.tenant) {
       update(remembered.current);

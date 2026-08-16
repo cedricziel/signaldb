@@ -373,6 +373,19 @@ export type UpdateFn = (
  * of navigation but goes through `<Link>` instead — see the signal tabs in
  * `ExploreView` and `crossSignalSearch`.
  */
+const PATH_STATE_KEYS: ReadonlyArray<keyof ExploreState> = [
+  "signal",
+  "trace",
+  "catalogEntity",
+  "catalogPrimary",
+  "catalogSecondary",
+];
+
+/** True when the patch sets any state that lives in the path, not the search. */
+function patchEntersExploreView(patch: Partial<ExploreState>): boolean {
+  return PATH_STATE_KEYS.some((key) => key in patch);
+}
+
 export function useExploreState(): [ExploreState, UpdateFn] {
   const location = useLocation();
   const navigate = useNavigate();
@@ -398,18 +411,35 @@ export function useExploreState(): [ExploreState, UpdateFn] {
     trace: traceId !== undefined ? traceId : "",
   };
 
+  // Off the explore routes (/schema, /manage, /api-keys, …) the signal is
+  // only the "logs" default, not something the URL says. A patch that leaves
+  // path state alone (tenant/dataset from the top bar or the sticky-context
+  // write-back, a range, …) must then keep the current path rather than
+  // rebuild it as /logs; only a patch that explicitly enters an explore view
+  // (signal, trace, catalog selection) moves away.
+  const onExploreRoute =
+    signalParam !== undefined || traceId !== undefined || onCatalogRoute;
+
   const update = useCallback<UpdateFn>(
     (patch, opts) => {
       const next = { ...state, ...patch };
-      navigate(
-        `${buildPath(next.signal, next.trace, next)}${buildSearch(next)}`,
-        { replace: !opts?.push },
-      );
+      const path =
+        onExploreRoute || patchEntersExploreView(patch)
+          ? buildPath(next.signal, next.trace, next)
+          : location.pathname;
+      navigate(`${path}${buildSearch(next)}`, { replace: !opts?.push });
     },
     // `state` is recomputed each render from location.search/pathname/
     // signalParam/traceId, so depending on those (not `state` itself) still
     // recreates `update` exactly when its captured `state` would go stale.
-    [navigate, location.search, location.pathname, signalParam, traceId],
+    [
+      navigate,
+      location.search,
+      location.pathname,
+      signalParam,
+      traceId,
+      onExploreRoute,
+    ],
   );
 
   return [state, update];

@@ -106,6 +106,25 @@ describe("App", () => {
     );
   });
 
+  it("changing the tenant context from the top bar stays on a non-explore route", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/api/v1/schema/registries", body: { registries: [] } },
+    ]);
+    renderApp("/schema/conventions?tenant=acme&dataset=prod");
+    const user = (await import("@testing-library/user-event")).default;
+    await user.click(
+      screen.getByTitle("Tenant / dataset context for all queries"),
+    );
+    await user.clear(screen.getByLabelText("Dataset"));
+    await user.type(screen.getByLabelText("Dataset"), "staging");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(window.location.search).toContain("dataset=staging");
+    // Only the context changed; the route must not fall back to /logs.
+    expect(window.location.pathname).toBe("/schema/conventions");
+  });
+
   it("keeps the last tenant/dataset when navigating to a route without them in the URL", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
@@ -114,7 +133,12 @@ describe("App", () => {
       {
         match: "/api/v1/whoami",
         body: {
-          user: { id: "u1", email: "a@b", display_name: "A", is_instance_admin: false },
+          user: {
+            id: "u1",
+            email: "a@b",
+            display_name: "A",
+            is_instance_admin: false,
+          },
           memberships: [{ tenant_id: "acme", role: "admin" }],
           tenant: { id: "acme", slug: "acme", name: "Acme" },
           dataset: "prod",
@@ -131,6 +155,10 @@ describe("App", () => {
     await waitFor(() =>
       expect(window.location.search).toContain("tenant=acme"),
     );
+    // Writing the context back must not rewrite the path: /schema is not
+    // an explore route, and rebuilding it via the explore state would send
+    // the user to /logs.
+    expect(window.location.pathname).toBe("/schema/conventions");
     expect(getTenantContext()).toEqual({ tenant: "acme", dataset: "prod" });
   });
 
@@ -143,7 +171,12 @@ describe("App", () => {
       {
         match: "/api/v1/whoami",
         body: {
-          user: { id: "u1", email: "a@b", display_name: "A", is_instance_admin: true },
+          user: {
+            id: "u1",
+            email: "a@b",
+            display_name: "A",
+            is_instance_admin: true,
+          },
           memberships: [{ tenant_id: "acme", role: "admin" }],
           tenant: { id: "acme", slug: "acme", name: "Acme" },
           dataset: "prod",
@@ -161,6 +194,7 @@ describe("App", () => {
     await waitFor(() =>
       expect(window.location.search).toContain("tenant=acme"),
     );
+    expect(window.location.pathname).toBe("/schema/storage");
     expect(getTenantContext()).toEqual({ tenant: "acme", dataset: "prod" });
   });
 

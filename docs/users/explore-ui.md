@@ -433,7 +433,9 @@ page JavaScript, `localStorage`, or URLs. Sessions expire after 12 hours;
 Once signed in, the tenant/dataset selector offers the user's tenant
 memberships and the selected tenant's datasets. The chosen values are sent
 as `X-Tenant-ID`/`X-Dataset-ID`; the server validates the tenant against the
-current user's memberships.
+current user's memberships. Switching tenant or dataset only changes the
+context — you stay on the page you are on (a signal view, the Schema hub,
+`/api-keys`, …); it never routes you elsewhere.
 
 In development the Vite proxy injects credentials from `.env.local`
 instead, so no sign-in is needed.
