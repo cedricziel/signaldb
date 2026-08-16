@@ -258,6 +258,76 @@ enum Signal {
     Logs,
     /// Prometheus metric labels.
     Metrics,
+    /// Pyroscope profile labels.
+    Profiles,
+}
+
+/// Parameters for `discover_profile_types`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DiscoverProfileTypesParams {
+    /// Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
+    /// Omit for the server's default window.
+    #[serde(default)]
+    from: Option<String>,
+    /// Range end, same forms as `from`.
+    #[serde(default)]
+    until: Option<String>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+/// Parameters for `search_profiles`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct SearchProfilesParams {
+    /// Pyroscope selector, e.g.
+    /// `process_cpu:cpu:nanoseconds{service_name="checkout"}`.
+    query: String,
+    /// Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
+    #[serde(default)]
+    from: Option<String>,
+    /// Range end, same forms as `from`.
+    #[serde(default)]
+    until: Option<String>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+/// Parameters for `compare_profiles`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct CompareProfilesParams {
+    /// Pyroscope selector shared by both ranges.
+    query: String,
+    /// Baseline range start.
+    #[serde(default)]
+    left_from: Option<String>,
+    /// Baseline range end.
+    #[serde(default)]
+    left_until: Option<String>,
+    /// Comparison range start.
+    #[serde(default)]
+    right_from: Option<String>,
+    /// Comparison range end.
+    #[serde(default)]
+    right_until: Option<String>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+/// Parameters for `profiles_for_trace`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ProfilesForTraceParams {
+    /// Trace ID to fetch correlated profiles for.
+    trace_id: String,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
 }
 
 /// Parameters for `discover_attributes`.
@@ -941,7 +1011,104 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Discover queryable attributes for your tenant. Call with no arguments to list trace tag names; pass `tag` to list the known values for that tag. Pass `signal: \"logs\"` or `signal: \"metrics\"` to discover Loki log labels or Prometheus metric labels instead. Use this to construct valid `search_traces`/`search_logs`/`query_metrics` queries."
+        description = "Discover the profile types with data for your tenant (e.g. CPU, heap). Optional `from`/`until` narrow the window (unix seconds/milliseconds, or `now[-<N><s|m|h|d>]`). Use this to construct a `search_profiles` selector.",
+        annotations(read_only_hint = true)
+    )]
+    async fn discover_profile_types(
+        &self,
+        Parameters(p): Parameters<DiscoverProfileTypesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let mut req = client.pyroscope_profile_types();
+        if let Some(v) = p.from {
+            req = req.from(v);
+        }
+        if let Some(v) = p.until {
+            req = req.until(v);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "discover_profile_types"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Search profiles with a Pyroscope selector (e.g. `process_cpu:cpu:nanoseconds{service_name=\"checkout\"}`) and a time range. Returns the aggregated flame graph (flamebearer encoding) for your tenant.",
+        annotations(read_only_hint = true)
+    )]
+    async fn search_profiles(
+        &self,
+        Parameters(p): Parameters<SearchProfilesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let mut req = client.pyroscope_render().query(p.query);
+        if let Some(v) = p.from {
+            req = req.from(v);
+        }
+        if let Some(v) = p.until {
+            req = req.until(v);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "search_profiles"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Compare profiles between two time ranges with a shared Pyroscope selector. Returns the differential flame graph (baseline vs comparison) for your tenant.",
+        annotations(read_only_hint = true)
+    )]
+    async fn compare_profiles(
+        &self,
+        Parameters(p): Parameters<CompareProfilesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let mut req = client.pyroscope_render_diff().query(p.query);
+        if let Some(v) = p.left_from {
+            req = req.left_from(v);
+        }
+        if let Some(v) = p.left_until {
+            req = req.left_until(v);
+        }
+        if let Some(v) = p.right_from {
+            req = req.right_from(v);
+        }
+        if let Some(v) = p.right_until {
+            req = req.right_until(v);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "compare_profiles"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "List the profiles correlated with a trace ID, scoped to your tenant.",
+        annotations(read_only_hint = true)
+    )]
+    async fn profiles_for_trace(
+        &self,
+        Parameters(p): Parameters<ProfilesForTraceParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let resp = client
+            .profiles_by_trace()
+            .trace_id(p.trace_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "profiles_for_trace"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Discover queryable attributes for your tenant. Call with no arguments to list trace tag names; pass `tag` to list the known values for that tag. Pass `signal: \"logs\"`, `signal: \"metrics\"`, or `signal: \"profiles\"` to discover Loki log labels, Prometheus metric labels, or Pyroscope profile labels instead. Use this to construct valid `search_traces`/`search_logs`/`query_metrics`/`search_profiles` queries."
     )]
     async fn discover_attributes(
         &self,
@@ -996,6 +1163,23 @@ impl McpServer {
             (Signal::Metrics, None) => {
                 let resp = client
                     .promql_labels()
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
+                json_result(&resp.into_inner())
+            }
+            (Signal::Profiles, Some(label)) => {
+                let resp = client
+                    .pyroscope_label_values()
+                    .label(label)
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
+                json_result(&resp.into_inner())
+            }
+            (Signal::Profiles, None) => {
+                let resp = client
+                    .pyroscope_label_names()
                     .send()
                     .await
                     .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
@@ -2615,6 +2799,220 @@ mod tests {
         }));
         let err = flamegraph_or_not_found(response).expect_err("no flamegraph means not found");
         assert!(err.message.contains("not found"), "got {}", err.message);
+    }
+
+    // ---- Pyroscope profile tools (change: pyroscope-openapi-parity) ----
+
+    /// A `Parts` carrying a bearer credential, as if forwarded from a real
+    /// session (mirrors the `server_info`/`completion` tests below).
+    fn valid_parts() -> axum::http::request::Parts {
+        RequestBuilder::new()
+            .header(AUTHORIZATION, "Bearer valid-token")
+            .body(())
+            .expect("build request")
+            .into_parts()
+            .0
+    }
+
+    /// Spawn a one-shot mock router that asserts the request line starts
+    /// with `expected_prefix`, replies with `body` as a 200 JSON response,
+    /// and returns the base URL to point an `McpServer` at plus the task
+    /// handle to await for a clean shutdown.
+    async fn mock_json_router(
+        expected_prefix: &'static str,
+        body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(
+                std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .starts_with(expected_prefix),
+                "unexpected request, wanted prefix {expected_prefix:?}: {:?}",
+                std::str::from_utf8(&request[..request_len])
+            );
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write response headers");
+            socket.write_all(body.as_bytes()).await.expect("write body");
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    fn text_json(result: &CallToolResult) -> serde_json::Value {
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("expected a text content block");
+        };
+        serde_json::from_str(&text.text).expect("tool result is JSON")
+    }
+
+    #[tokio::test]
+    async fn discover_profile_types_lists_types_via_router() {
+        let (base_url, router) = mock_json_router(
+            "GET /pyroscope/profile-types",
+            r#"[{"ID":"cpu:cpu:nanoseconds","name":"cpu","sampleType":"cpu","sampleUnit":"nanoseconds"}]"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_profile_types(
+                Parameters(DiscoverProfileTypesParams::default()),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("discover_profile_types succeeds");
+
+        let types = text_json(&result);
+        assert_eq!(types[0]["name"], "cpu");
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn search_profiles_returns_the_flamegraph() {
+        let (base_url, router) = mock_json_router(
+            "GET /pyroscope/render?",
+            r#"{"flamebearer":{"names":["total"],"levels":[[0,10,0,0]],"numTicks":10,"maxSelf":10},"metadata":{"format":"single","sampleRate":100,"units":"samples","name":"cpu"}}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .search_profiles(
+                Parameters(SearchProfilesParams {
+                    query: "cpu".to_string(),
+                    from: Some("now-1h".to_string()),
+                    until: None,
+                    dataset: None,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("search_profiles succeeds");
+
+        let flamegraph = text_json(&result);
+        assert_eq!(flamegraph["flamebearer"]["numTicks"], 10);
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn compare_profiles_returns_the_diff() {
+        let (base_url, router) = mock_json_router(
+            "GET /pyroscope/render-diff?",
+            r#"{"flamebearer":{"names":[],"levels":[],"numTicks":0,"maxSelf":0},"metadata":{"format":"double","sampleRate":0,"units":"","name":""},"leftTicks":5,"rightTicks":10}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .compare_profiles(
+                Parameters(CompareProfilesParams {
+                    query: "cpu".to_string(),
+                    left_from: Some("now-2h".to_string()),
+                    left_until: Some("now-1h".to_string()),
+                    right_from: Some("now-1h".to_string()),
+                    right_until: Some("now".to_string()),
+                    dataset: None,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("compare_profiles succeeds");
+
+        let diff = text_json(&result);
+        assert_eq!(diff["leftTicks"], 5);
+        assert_eq!(diff["rightTicks"], 10);
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn profiles_for_trace_lists_correlated_profiles() {
+        let (base_url, router) = mock_json_router(
+            "GET /api/profiles/trace/abc123",
+            r#"[{"profileID":"p1","timeUnixNano":"1","durationNano":"1","sampleType":"cpu","sampleUnit":"nanoseconds","serviceName":"checkout"}]"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .profiles_for_trace(
+                Parameters(ProfilesForTraceParams {
+                    trace_id: "abc123".to_string(),
+                    dataset: None,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("profiles_for_trace succeeds");
+
+        let profiles = text_json(&result);
+        assert_eq!(profiles[0]["profileID"], "p1");
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn discover_attributes_profiles_signal_without_tag_lists_label_names() {
+        let (base_url, router) = mock_json_router(
+            "GET /pyroscope/label-names",
+            r#"{"names":["service_name"]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_attributes(
+                Parameters(DiscoverAttributesParams {
+                    signal: Signal::Profiles,
+                    tag: None,
+                    dataset: None,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("discover_attributes succeeds");
+
+        let names = text_json(&result);
+        assert_eq!(names["names"][0], "service_name");
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn discover_attributes_profiles_signal_with_tag_lists_label_values() {
+        let (base_url, router) =
+            mock_json_router("GET /pyroscope/label-values?", r#"{"names":["checkout"]}"#).await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_attributes(
+                Parameters(DiscoverAttributesParams {
+                    signal: Signal::Profiles,
+                    tag: Some("service_name".to_string()),
+                    dataset: None,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("discover_attributes succeeds");
+
+        let values = text_json(&result);
+        assert_eq!(values["names"][0], "checkout");
+        router.await.expect("mock router task panicked");
     }
 
     #[tokio::test]
