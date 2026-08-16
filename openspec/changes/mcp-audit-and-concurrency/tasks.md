@@ -17,8 +17,7 @@
 
 ## 4. Trace continuity MCP → router
 
-- [ ] 4.1 Failing test in `signaldb-sdk`: an outbound request made inside an OTel-backed span carries `traceparent`; with no OTel layer no header is added
-- [ ] 4.2 Implement W3C context injection in the SDK's exec path (`signaldb-sdk/tracing` feature, default on); tests-integration: an MCP `get_trace` call produces a router server span whose trace id equals the tool span's
+- [ ] 4.1 (Depends on `sdk-retry-on-throttle`, which makes the SDK inject W3C trace context on outbound requests.) tests-integration: an MCP `get_trace` call produces a router server span whose trace id equals the tool span's; if the SDK change has not merged yet, land this task in a follow-up PR once it has
 
 ## 5. Per-session concurrency bound
 

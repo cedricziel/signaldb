@@ -8,7 +8,8 @@
 - [ ] 2.2 Implement `signaldb_sdk::retry`: `RetryPolicy` (defaults per design D2), `execute(client, policy, request, info)`, `Retry-After` parsing (seconds + HTTP-date), jittered backoff, one `tracing::debug!` per retry, `retry_after()` helper
 - [ ] 2.3 xtask: `with_inner_type(crate::retry::RetryPolicy)` and the asserted rewrite of the generated `impl ClientHooks … for &Client {}` into an `exec` override; regenerate `src/signaldb-sdk/src/generated.rs`; add a test that the generated file contains the override (drift guard); document the shim at the top of `generated.rs` and in `xtask`
 - [ ] 2.4 Failing tests then implement `signaldb_sdk::ClientBuilder` (base URL, bearer, tenant, dataset, timeouts, retry policy) → `Client`; existing `Client::new`/`new_with_client` keep working with the default policy
-- [ ] 2.5 Open an upstream progenitor issue for a `with_client_hooks` setting; link it from the xtask comment
+- [ ] 2.5 Failing test then implement W3C trace-context injection in the exec path: an outbound request made inside an OTel-backed span carries `traceparent`/`tracestate`; with no OTel layer no header is added (`signaldb-sdk/tracing` feature, default on; uses the workspace `opentelemetry` + `tracing-opentelemetry`)
+- [ ] 2.6 Open an upstream progenitor issue for a `with_client_hooks` setting; link it from the xtask comment
 
 ## 3. CLI
 
