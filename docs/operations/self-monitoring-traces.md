@@ -101,9 +101,11 @@ flowchart LR
   failed call — a router `4xx` (denied) or throttled outcome leaves it
   unset. Arguments and results are never recorded. The MCP HTTP requests
   themselves are `POST /mcp` SERVER spans like every other HTTP boundary.
-  The MCP and GenAI attribute names are mirrored into `otel/registry/`
-  because the pinned semconv snapshot moved them to the GenAI conventions
-  repository. Alongside the span, each call emits one audit event
+  The pinned semconv snapshot keeps the MCP and GenAI attribute names only
+  as deprecated shells (moved to the GenAI conventions repository);
+  `otel/registry/` references `mcp.session.id` and declares the
+  `signaldb.mcp.outcome` label, and the factory pins all names to the
+  semconv crate. Alongside the span, each call emits one audit event
   (`signaldb_mcp::audit`: `tool`, `tenant_id`, `dataset`, `session_id`,
   `outcome`, `duration_ms`, `error.type`) and records the
   `signaldb.mcp.tool_calls` counter (by `gen_ai.tool.name` and

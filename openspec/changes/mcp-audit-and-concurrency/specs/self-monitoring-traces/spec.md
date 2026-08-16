@@ -8,9 +8,10 @@ conventions (span name `{mcp.method.name} {gen_ai.tool.name}`) and carrying
 `mcp.method.name = "tools/call"`, `gen_ai.tool.name` (the tool), the
 session identity under `mcp.session.id`, and `signaldb.tenant.id` /
 `signaldb.dataset.id`; because the pinned semconv snapshot has moved the
-MCP attributes to the GenAI conventions repository, SignalDB SHALL declare
-the ones it emits in its own convention registry so the conformance check
-still validates them; downstream SDK calls to the router are children of it,
+MCP attributes to the GenAI conventions repository, SignalDB SHALL keep
+the emitted names pinned to the semconv constants and covered by its own
+convention registry (referencing the upstream definitions where the
+snapshot allows it) so the conformance checks still validate them; downstream SDK calls to the router are children of it,
 so an agent's tool call is traceable end-to-end into the query it caused.
 The span SHALL set status Error only for a failed call — never for a
 denied (`4xx`) or throttled outcome — and SHALL then carry `error.type`.

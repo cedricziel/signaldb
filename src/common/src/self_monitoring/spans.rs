@@ -250,9 +250,10 @@ pub fn job_span(job_kind: &str, tenant_id: &str, dataset_id: &str, table: Option
 /// outcome is the caller's problem and leaves the status unset. Tool
 /// arguments and results are never recorded.
 ///
-/// `mcp.method.name`, `gen_ai.tool.name`, and `mcp.session.id` are declared
-/// in `otel/registry/signaldb.yaml` because the pinned semconv snapshot moved
-/// them out of the core registry.
+/// The pinned semconv snapshot keeps `mcp.method.name`, `gen_ai.tool.name`,
+/// and `mcp.session.id` only as deprecated shells (moved to the GenAI
+/// conventions repository); `otel/registry/signaldb.yaml` references what
+/// it can and the unit tests below pin the literals to the semconv crate.
 pub fn mcp_tool_span(
     tool: &str,
     tenant_id: &str,

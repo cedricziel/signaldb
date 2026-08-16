@@ -193,32 +193,27 @@ groups:
 
   # MCP tool-call attributes. The pinned upstream semconv snapshot (1.43)
   # moved the MCP and GenAI conventions to the GenAI conventions repository
-  # (see vendor/otel-semconv/1.43.0/model/mcp/deprecated/), so the attributes
-  # the `tools/call {tool}` span emits are declared here, mirroring the
-  # upstream definitions (stability development). They migrate back to the
-  # upstream dependency once the pin includes them again.
+  # and keeps only deprecated shells (see
+  # vendor/otel-semconv/1.43.0/model/mcp/deprecated/). The `tools/call {tool}`
+  # span emits `mcp.method.name`, `mcp.session.id`, and `gen_ai.tool.name`
+  # from those shells. Only `mcp.session.id` can be referenced here:
+  # `mcp.method.name` and `gen_ai.tool.name` are annotated
+  # `dependency_resolution: exclude`, so a `ref` fails resolution, while a
+  # local redeclaration collides with the upstream shells under
+  # `live-check --include-unreferenced` (weaver 0.25.1). They stay pinned by
+  # the semconv-crate constants in common::self_monitoring::spans and are
+  # validated by live-check through the upstream shells; when the pin follows
+  # the GenAI registry, reference them here too.
   - id: registry.signaldb.mcp
     type: attribute_group
-    display_name: MCP Tool-Call Attributes (mirrored)
+    display_name: MCP Tool-Call Attributes
     brief: >
-      Attributes on the MCP server's per-tool-call span, mirrored from the
-      OpenTelemetry GenAI conventions repository.
+      Attributes on the MCP server's per-tool-call span (`tools/call {tool}`),
+      plus the SignalDB-specific audit outcome.
     attributes:
-      - id: mcp.method.name
-        type: string
-        stability: development
-        brief: The name of the request or notification method.
-        examples: ["tools/call"]
-      - id: mcp.session.id
-        type: string
-        stability: development
-        brief: Identifies the MCP session.
+      - ref: mcp.session.id
+        brief: The MCP session (`stdio` on the stdio transport).
         examples: ["191c4850af6c49e08843a3f6c80e5046", "stdio"]
-      - id: gen_ai.tool.name
-        type: string
-        stability: development
-        brief: Name of the tool utilized by the agent.
-        examples: ["get_trace", "search_logs"]
       - id: signaldb.mcp.outcome
         type:
           members:
