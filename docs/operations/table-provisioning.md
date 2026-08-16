@@ -128,8 +128,9 @@ The call provisions the tenant's datasets before returning `201`, and returns
 required — in practice any valid tenant API key, since a tenant-scoped key is
 already trusted to shape its own tenant's infrastructure (see
 `TenantContext::can_manage_tenant`); this is a lower bar than the
-[management API](../users/authentication.md)'s dataset/API-key/membership
-endpoints, which require a human-authenticated session.
+[management API](../users/authentication.md#tenant-management-api)'s
+dataset/API-key/membership endpoints, which require a tenant-admin session or
+a key carrying `tenant:manage`.
 
 `GET /api/v1/tenants/{id}/tables` (`tenant table list` / `tenant_list_tables`)
 lists what is really in the Iceberg catalog — the same place provisioning

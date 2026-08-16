@@ -90,25 +90,30 @@ Unprefixed, admin-authenticated (the administrative API key can manage
 `tenant_`-prefixed; act as the caller's own identity within its own tenant.
 Two sub-groups, by which endpoint they wrap:
 
-**Tables and schemas** (tenant self-service API) — work with a plain tenant
-API key, exactly like the query tools above:
+**Tenant view, tables, and schemas** (tenant self-service API) — work with a
+plain tenant API key, exactly like the query tools above:
 
 | Tool                           | Purpose                                                                                                                                    |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tenant_info`                  | The caller's own tenant: id, enabled flag, schema configuration (mirrors `signaldb-cli tenant show`).                                      |
 | `tenant_list_tables`           | List the tenant's provisioned signal tables.                                                                                               |
 | `tenant_create_tables`         | Provision (create) the tenant's enabled signal tables — the manual trigger from [table provisioning](../operations/table-provisioning.md). |
 | `tenant_list_table_schemas`    | List the tenant's configured table schema types (distinct from `tenant_list_tables`, which lists what is actually provisioned).            |
 | `list_available_table_schemas` | List every table schema type SignalDB knows how to provision, regardless of tenant configuration.                                          |
 
-**Datasets, API keys, and memberships** (management API) — **require a
-human-authenticated session**: a browser session cookie, or an OAuth
-access token (see [Claude.ai and ChatGPT](#claudeai-and-chatgpt-oauth-connector)
-below) carrying a real per-tenant role. A plain API key is denied — this is
-a deliberate privilege boundary, not a bug: an API key can already write any
-signal data and provision tables, but minting or revoking _other_ API keys,
-deleting datasets, or changing memberships is reserved for a human with a
-real role in the tenant. Calling one of these with a plain-API-key session
-returns a clean access-denied error rather than succeeding or 404ing.
+**Datasets, API keys, memberships, and schema** (management API) — need a
+management credential: either a human session (a browser session cookie, or
+an OAuth access token — see [Claude.ai and ChatGPT](#claudeai-and-chatgpt-oauth-connector)
+below) holding the tenant-admin role or the instance-admin flag, or an API
+key that carries the **`tenant:manage`** scope for that tenant. Ingest-only
+keys and legacy unscoped keys are denied — a deliberate privilege boundary:
+an ingest key can write signal data and provision tables, but minting or
+revoking _other_ API keys, deleting datasets, or changing memberships is
+opt-in, granted only to a tenant admin or a key explicitly scoped for it.
+Calling one of these with a key that lacks the scope returns a clean
+access-denied error naming the required scope rather than succeeding or
+404ing. `tenant:manage` is never granted through OAuth consent; see
+[API-key scopes](authentication.md#api-key-scopes).
 
 | Tool                                                   | Purpose                                                                                                                                            |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -120,7 +125,7 @@ returns a clean access-denied error rather than succeeding or 404ing.
 | `tenant_revoke_api_key`                                | Revoke one of the caller's own tenant's API keys. **Destructive**: requires `confirm` equal to `key_id`.                                           |
 | `tenant_list_memberships` / `tenant_upsert_membership` | List the caller's own tenant's memberships, or create/update a member's role.                                                                      |
 | `tenant_remove_membership`                             | Remove a member from the caller's own tenant. **Destructive**: requires `confirm` equal to `user_id`.                                              |
-| `tenant_get_schema`                                    | The caller's own tenant's logical + physical schema. Stricter still: requires an **instance** administrator session, not just a tenant-admin role. |
+| `tenant_get_schema`                                    | The registered logical (client-visible) and physical (storage) schema for every signal source.                                                     |
 
 Destructive tools carry the MCP `destructiveHint` annotation; read-only tools
 carry `readOnlyHint` — a client that inspects `tools/list` annotations can
@@ -485,16 +490,21 @@ signaldb-cli query --promql 'up' --start 0 --end 3600 --step 15s
 signaldb-cli query --trace-id 4bf92f3577b34da6a3ce929d0e0e4736
 ```
 
-`tenant_list_tables`/`tenant_create_tables` (and the two schema-listing
-tools) mirror `signaldb-cli tenant table`, the only `tenant` subcommand the
-CLI has — datasets/API-keys/memberships/schema management need a human
-session, which the CLI cannot present (see the table above):
+The `tenant_*` tools mirror `signaldb-cli tenant`: `tenant_info` is `tenant
+show`, the table tools are `tenant table ...` (any valid key of the tenant),
+and the management tools are `tenant dataset|api-key|membership|schema ...`
+(a key carrying `tenant:manage`; destructive verbs prompt on a TTY unless
+`--yes`):
 
 ```bash
+signaldb-cli tenant show --api-key sk-your-key --tenant-id your-tenant
 signaldb-cli tenant table list --api-key sk-your-key --tenant-id your-tenant
 signaldb-cli tenant table provision --api-key sk-your-key --tenant-id your-tenant
 signaldb-cli tenant table schemas --api-key sk-your-key --tenant-id your-tenant
 signaldb-cli tenant table available-schemas --api-key sk-your-key
+signaldb-cli tenant dataset create staging --api-key sk-manage-key --tenant-id your-tenant
+signaldb-cli tenant api-key create --name ci --scope traces:write --api-key sk-manage-key --tenant-id your-tenant
+signaldb-cli tenant membership set alice@example.com --role member --api-key sk-manage-key --tenant-id your-tenant
 ```
 
 Platform administration (`list_tenants`, `create_dataset`, `revoke_api_key`,

@@ -102,7 +102,7 @@ unprefixed platform-admin tools (`list_tenants`, `create_tenant`,
 `revoke_api_key`, ...) — not only raw HTTP.
 
 A separate tenant self-service API is mounted at `/api/v1`, and a
-human-session-only management API at `/api/v1/manage` (see the
+management API at `/api/v1/manage` for tenant admins and `tenant:manage` keys (see the
 `multi-tenancy` skill for both, including which CLI/MCP surfaces reach
 each).
 
