@@ -32,7 +32,6 @@ use opentelemetry_proto::tonic::{
     resource::v1::Resource,
 };
 use querier::flight::QuerierFlightService;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use router::{RouterState, create_flight_service, create_router, discovery::ServiceRegistry};
 use signaldb_sdk::{Client, QueryClient};
 use std::path::PathBuf;
@@ -362,17 +361,11 @@ async fn serve_router(services: &TestServices) -> (String, String) {
 /// Build an SDK HTTP client that carries the bearer key and tenant header on
 /// every request, mirroring how the CLI/MCP construct it.
 fn sdk_http_client(base_url: &str) -> Client {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {API_KEY}")).unwrap(),
-    );
-    headers.insert("x-tenant-id", HeaderValue::from_static(TENANT));
-    let http = reqwest::Client::builder()
-        .default_headers(headers)
+    signaldb_sdk::ClientBuilder::new(base_url)
+        .bearer(API_KEY)
+        .tenant(TENANT)
         .build()
-        .unwrap();
-    Client::new_with_client(base_url, http)
+        .unwrap()
 }
 
 #[tokio::test]

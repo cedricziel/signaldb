@@ -20,7 +20,6 @@ use common::catalog::Catalog;
 use common::config::{ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, TenantConfig};
 use futures::StreamExt;
 use mcp_server::{McpAppState, mcp_http_router};
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use router::{RouterAppState, create_router};
 use serde_json::{Value, json};
 use signaldb_sdk::Client;
@@ -190,17 +189,11 @@ async fn serve_router() -> String {
 /// An SDK client carrying the scoped key and tenant header on every request,
 /// exactly as the CLI and MCP server construct it.
 fn sdk_client(base_url: &str) -> Client {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {WRITE_KEY}")).unwrap(),
-    );
-    headers.insert("x-tenant-id", HeaderValue::from_static(TENANT));
-    let http = reqwest::Client::builder()
-        .default_headers(headers)
+    signaldb_sdk::ClientBuilder::new(base_url)
+        .bearer(WRITE_KEY)
+        .tenant(TENANT)
         .build()
-        .unwrap();
-    Client::new_with_client(base_url, http)
+        .unwrap()
 }
 
 /// Assert the resolve envelope for `service.name`: the tenant's `acme`
