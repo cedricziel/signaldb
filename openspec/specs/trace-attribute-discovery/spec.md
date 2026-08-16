@@ -1,8 +1,10 @@
+# trace-attribute-discovery Specification
+
 ## Purpose
 
 Lets a tenant discover which trace attributes exist in its data and which values they take, so people and agents can build TraceQL queries and filters from what is actually there rather than from a fixed list.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Tag names reflect the tenant's data
 
@@ -63,7 +65,7 @@ Tag discovery SHALL not scan a tenant's entire history: it SHALL be limited to t
 
 ### Requirement: Every discovery surface sees the same names and values
 
-The MCP `discover_attributes` tool with `signal: "traces"`, the CLI `discover` command for traces, Grafana's Tempo datasource, and the UI's traces filter-key suggestions SHALL all be backed by these endpoints, so a key that appears in one appears in all.
+The MCP `discover_attributes` tool with `signal: "traces"`, the CLI `discover` command for traces, Grafana's Tempo datasource, and the UI's traces attribute-key suggestions SHALL all be backed by these endpoints, so a key that appears in one appears in all.
 
 #### Scenario: MCP and CLI agree with the API
 
@@ -72,5 +74,5 @@ The MCP `discover_attributes` tool with `signal: "traces"`, the CLI `discover` c
 
 #### Scenario: UI suggests observed keys
 
-- **WHEN** a user types a filter key on the traces tab
+- **WHEN** a user types an attribute key on the traces tab (the "group by attribute" input)
 - **THEN** the suggestions include the attribute keys observed in the current window, merged with registry hits as on the logs tab

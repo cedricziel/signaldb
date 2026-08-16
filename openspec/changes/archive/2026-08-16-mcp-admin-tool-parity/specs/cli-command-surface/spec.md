@@ -6,8 +6,10 @@ The CLI SHALL organize commands into top-level capability groups: a single
 `query` command that takes the query language as a mutually-exclusive flag
 (`--sql`, `--promql`, `--logql`, `--traceql`), `admin <noun> <verb>` for
 platform administration through the admin API, `tenant <noun> <verb>` for the
-caller's own tenant through the management API (datasets, API keys,
-memberships, schema, and signal tables), `ops <verb>` for operational control,
+caller's own tenant with its API key (today: signal tables and table schemas —
+the management API's dataset/API-key/membership operations require a human
+session, which the CLI does not hold, so they are MCP/UI-only), `ops <verb>`
+for operational control,
 and `schema <noun> <verb>` for schema-registry lookup — plus the existing
 `tui`, `completions`, and user-bootstrap utilities. Tenant, API-key, dataset,
 user, and custom schema-registry administration SHALL live under `admin`;

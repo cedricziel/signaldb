@@ -44,7 +44,7 @@ Every rate-limit rejection issued by SignalDB over HTTP SHALL carry a `Retry-Aft
 
 ### Requirement: Throttled responses use the surface's error envelope
 
-A router `429` SHALL be a JSON body in the same error envelope as the surface's other errors — `status: "error"`, `errorType: "rate_limited"`, a human-readable `error`, and `retryAfterMs` (the same wait as the header, in milliseconds) — never a bare text body, so clients that already parse the envelope for `bad_data`/`not_found` need no special case for throttling. The OpenAPI document SHALL declare the `429` response and its headers on every rate-limited operation, so generated clients expose them typed.
+A router `429` SHALL be a JSON body in the same error envelope as the surface's other errors — `status: "error"`, `errorType: "rate_limited"`, a human-readable `error`, and `retryAfterMs` (the same wait as the header, in milliseconds) — never a bare text body, so clients that already parse the envelope for `bad_data`/`not_found` need no special case for throttling. The OpenAPI document SHALL declare the `429` response and its headers on every rate-limited operation it describes, so generated clients expose them typed (the Pyroscope compat endpoints are rate-limited at runtime but are not yet part of the OpenAPI document; they answer with the same headers).
 
 #### Scenario: Structured 429 on a query surface
 
@@ -54,7 +54,7 @@ A router `429` SHALL be a JSON body in the same error envelope as the surface's 
 #### Scenario: Generated clients see the 429 contract
 
 - **WHEN** the OpenAPI document is regenerated
-- **THEN** every rate-limited operation declares a `429` response with the `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` headers and the envelope schema, and both generated clients (Rust SDK, TypeScript) build without hand edits
+- **THEN** every rate-limited operation in the document declares a `429` response with the `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` headers and the envelope schema, and both generated clients (Rust SDK, TypeScript) build without hand edits
 
 ### Requirement: Rejections are observable
 
