@@ -661,8 +661,9 @@ async fn test_tempo_search_endpoint() {
     );
     println!("✅ Search endpoint returned valid results");
 
-    // Tag values: supported tags come from real data, unsupported tags
-    // are an explicit 501 (issue #552).
+    // Tag values: real data-backed for every tag now (#1073) — an
+    // attribute never observed in the window answers 200 with an empty
+    // list, never 501.
     let request = Request::builder()
         .uri("/api/search/tag/service.name/values")
         .header("Authorization", "Bearer test-key-123")
@@ -691,29 +692,50 @@ async fn test_tempo_search_endpoint() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(
         response.status(),
-        StatusCode::NOT_IMPLEMENTED,
-        "unsupported tag value lookups must be 501, not an empty 200"
+        StatusCode::OK,
+        "an attribute never observed in the window is a 200 with an empty list, not 501"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let values: tempo_api::TagValuesResponse =
+        serde_json::from_slice(&body).expect("tag values should be valid JSON");
+    assert!(
+        values.tag_values.is_empty(),
+        "the test trace never set http.method, so its values must be empty: {:?}",
+        values.tag_values
     );
 
     println!("✅ Tempo search endpoint test completed");
 }
 
-/// Test the tag search endpoints
+/// Test the tag search endpoints, backed by the querier's real tag
+/// discovery (#1073) — no more hardcoded three-name stub.
 #[tokio::test]
 async fn test_tempo_tag_endpoints() {
     println!("🚀 Testing Tempo tag endpoints...");
 
-    // Tag endpoints don't require complex service setup
-    let catalog = common::catalog::Catalog::new("sqlite::memory:")
-        .await
-        .unwrap();
-    let config = Configuration::default();
-    let state = RouterAppState::new(catalog, config);
-    let app: Router = tempo::router().with_state(state);
+    let services = setup_test_services().await;
+    let router_state = create_router_state(&services).await;
 
-    // Test tags endpoint
+    let authenticator = router_state.authenticator().clone();
+    let app: Router = tempo::router()
+        .with_state(router_state)
+        .layer(middleware::from_fn(move |req, next| {
+            auth_middleware(authenticator.clone(), req, next)
+        }));
+
+    send_test_trace(&services, "tag-endpoints-test-span").await;
+    wait_for_data_persistence(&services).await;
+
+    // Test tags endpoint. `send_test_trace` stamps its span at
+    // start_time_unix_nano=1e9 (1970-01-01T00:00:01Z) — outside the
+    // endpoint's default 1-hour-before-now lookback — so a wide explicit
+    // window is required to observe it, not just the fixed intrinsics.
     let request = Request::builder()
-        .uri("/api/search/tags")
+        .uri("/api/search/tags?start=0&end=4102444800")
+        .header("Authorization", "Bearer test-key-123")
+        .header("X-Tenant-ID", "test-tenant")
         .body(Body::empty())
         .unwrap();
 
@@ -725,17 +747,264 @@ async fn test_tempo_tag_endpoints() {
         .unwrap();
     let tag_response: tempo_api::TagSearchResponse =
         serde_json::from_slice(&body).expect("Should be valid JSON");
-    // The searchable tags: service.name (resource), name and status
-    // (intrinsics). Never fabricated, never an empty stub.
+    // The searchable tags: service.name (resource, observed on the
+    // ingested span), plus the fixed intrinsics. Never fabricated, never
+    // an empty stub.
     assert!(
         tag_response.tag_names.contains(&"service.name".to_string()),
         "tags must include service.name (got {:?})",
         tag_response.tag_names
     );
-    assert!(tag_response.tag_names.contains(&"name".to_string()));
-    assert!(tag_response.tag_names.contains(&"status".to_string()));
+    for intrinsic in [
+        "name",
+        "status",
+        "kind",
+        "duration",
+        "rootServiceName",
+        "rootName",
+    ] {
+        assert!(
+            tag_response.tag_names.contains(&intrinsic.to_string()),
+            "tags must include the intrinsic '{intrinsic}' (got {:?})",
+            tag_response.tag_names
+        );
+    }
 
     println!("✅ Tag endpoints test completed");
+}
+
+/// Custom resource and span attributes must be discoverable through the
+/// Tempo tag endpoints — v1 and v2 names, and values for both — mirroring
+/// the acceptance scenario in the `trace-attribute-discovery` spec (#1073).
+#[tokio::test]
+async fn test_tag_discovery_reflects_custom_attributes() {
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+    use opentelemetry_proto::tonic::resource::v1::Resource;
+
+    println!("🚀 Testing tag discovery over custom attributes...");
+
+    let services = setup_test_services().await;
+    let router_state = create_router_state(&services).await;
+
+    let authenticator = router_state.authenticator().clone();
+    let app: Router = tempo::router()
+        .with_state(router_state)
+        .layer(middleware::from_fn(move |req, next| {
+            auth_middleware(authenticator.clone(), req, next)
+        }));
+
+    let trace_id_bytes = vec![0xAB; 16];
+    let span_id = vec![0xCD; 8];
+
+    let trace_request = ExportTraceServiceRequest {
+        resource_spans: vec![ResourceSpans {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key_strindex: 0,
+                    key: "deployment.environment.name".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue("production".to_string())),
+                    }),
+                }],
+                dropped_attributes_count: 0,
+                entity_refs: vec![],
+            }),
+            scope_spans: vec![ScopeSpans {
+                scope: None,
+                spans: vec![Span {
+                    trace_id: trace_id_bytes.clone(),
+                    span_id: span_id.clone(),
+                    parent_span_id: vec![],
+                    name: "tag-discovery-span".to_string(),
+                    kind: 1, // Server
+                    start_time_unix_nano: 1_000_000_000,
+                    end_time_unix_nano: 2_000_000_000,
+                    attributes: vec![KeyValue {
+                        key_strindex: 0,
+                        key: "http.route".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("/api/orders".to_string())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                    events: vec![],
+                    dropped_events_count: 0,
+                    links: vec![],
+                    dropped_links_count: 0,
+                    status: Some(Status {
+                        code: 1, // Ok
+                        message: "".to_string(),
+                    }),
+                    trace_state: String::new(),
+                    flags: 0,
+                }],
+                schema_url: "".to_string(),
+            }],
+            schema_url: "".to_string(),
+        }],
+    };
+
+    let endpoint = format!("http://{}", services.acceptor_addr);
+    let mut otlp_client =
+        opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient::connect(endpoint)
+            .await
+            .unwrap();
+    let _response = timeout(Duration::from_secs(5), otlp_client.export(trace_request))
+        .await
+        .expect("OTLP export timed out")
+        .expect("OTLP export failed");
+
+    wait_for_data_persistence(&services).await;
+
+    let get = |uri: String| {
+        Request::builder()
+            .uri(uri)
+            .header("Authorization", "Bearer test-key-123")
+            .header("X-Tenant-ID", "test-tenant")
+            .body(Body::empty())
+            .unwrap()
+    };
+    // v1 tag names include both custom keys alongside the intrinsics.
+    let response = app
+        .clone()
+        .oneshot(get("/api/search/tags?start=0&end=4102444800".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let tags: tempo_api::TagSearchResponse =
+        serde_json::from_slice(&body).expect("valid tag search response");
+    assert!(
+        tags.tag_names
+            .contains(&"deployment.environment.name".to_string()),
+        "v1 tags must include the resource attribute, got {:?}",
+        tags.tag_names
+    );
+    assert!(
+        tags.tag_names.contains(&"http.route".to_string()),
+        "v1 tags must include the span attribute, got {:?}",
+        tags.tag_names
+    );
+
+    // v2 places them under their respective scopes.
+    let response = app
+        .clone()
+        .oneshot(get(
+            "/api/v2/search/tags?scope=resource&start=0&end=4102444800".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let scoped: tempo_api::v2::TagSearchResponse =
+        serde_json::from_slice(&body).expect("valid v2 tag search response");
+    let resource_scope = scoped
+        .scopes
+        .iter()
+        .find(|s| s.scope == "resource")
+        .expect("a resource scope entry");
+    assert!(
+        resource_scope
+            .tags
+            .contains(&"deployment.environment.name".to_string()),
+        "v2 resource scope must include the resource attribute, got {:?}",
+        resource_scope.tags
+    );
+
+    let response = app
+        .clone()
+        .oneshot(get(
+            "/api/v2/search/tags?scope=span&start=0&end=4102444800".to_string()
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let scoped: tempo_api::v2::TagSearchResponse =
+        serde_json::from_slice(&body).expect("valid v2 tag search response");
+    let span_scope = scoped
+        .scopes
+        .iter()
+        .find(|s| s.scope == "span")
+        .expect("a span scope entry");
+    assert!(
+        span_scope.tags.contains(&"http.route".to_string()),
+        "v2 span scope must include the span attribute, got {:?}",
+        span_scope.tags
+    );
+
+    // Values: v1 for the unscoped name, v2 for the scoped name.
+    let response = app
+        .clone()
+        .oneshot(get(
+            "/api/search/tag/http.route/values?start=0&end=4102444800".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let values: tempo_api::TagValuesResponse =
+        serde_json::from_slice(&body).expect("valid tag values response");
+    assert_eq!(values.tag_values, vec!["/api/orders".to_string()]);
+
+    let response = app
+        .clone()
+        .oneshot(get(
+            "/api/v2/search/tag/span.http.route/values?start=0&end=4102444800".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let scoped_values: tempo_api::v2::TagValuesResponse =
+        serde_json::from_slice(&body).expect("valid v2 tag values response");
+    assert_eq!(scoped_values.tag_values.len(), 1);
+    assert_eq!(scoped_values.tag_values[0].tag, "span.http.route");
+    assert_eq!(scoped_values.tag_values[0].value, "/api/orders");
+
+    // An unknown/unobserved attribute is an empty list, never an error.
+    let response = app
+        .clone()
+        .oneshot(get(
+            "/api/search/tag/no.such.attribute/values?start=0&end=4102444800".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let values: tempo_api::TagValuesResponse =
+        serde_json::from_slice(&body).expect("valid tag values response");
+    assert!(values.tag_values.is_empty());
+
+    // Intrinsic enums stay static regardless of data.
+    let response = app
+        .oneshot(get("/api/search/tag/status/values".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let values: tempo_api::TagValuesResponse =
+        serde_json::from_slice(&body).expect("valid tag values response");
+    assert_eq!(
+        values.tag_values,
+        vec!["ok".to_string(), "error".to_string(), "unset".to_string()]
+    );
+
+    println!("✅ Tag discovery over custom attributes test completed");
 }
 
 /// Test the new metrics query endpoints
