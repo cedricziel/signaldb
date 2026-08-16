@@ -47,6 +47,22 @@ pub fn env_value_disables_retry(value: Option<&str>) -> bool {
     )
 }
 
+/// Apply [`NO_RETRY_ENV`] to the process-wide switch from the current
+/// process environment.
+///
+/// `main` calls this before `clap_complete::CompleteEnv::complete()` runs:
+/// dynamic shell completion builds its own client (see
+/// `commands::completions::tenant_id_completer`) and exits the process
+/// before `Cli::run` ever gets a chance to apply the switch, so without this
+/// early call `SIGNALDB_NO_RETRY=1` would be silently ignored during
+/// completion. `Cli::run` calls it again (there ORed with `--no-retry`,
+/// which isn't parsed yet at this point) — both calls are idempotent.
+pub fn init_no_retry_from_env() {
+    set_no_retry(env_value_disables_retry(
+        std::env::var(NO_RETRY_ENV).ok().as_deref(),
+    ));
+}
+
 /// The retry policy for the current invocation: disabled under
 /// `--no-retry`, otherwise the SDK default with an interactive stderr note
 /// per retry when stderr is a terminal.
@@ -161,5 +177,39 @@ mod tests {
         assert!(!policy().is_enabled());
         set_no_retry(false);
         assert!(policy().is_enabled());
+    }
+
+    /// `main` calls `init_no_retry_from_env` before dynamic shell completion
+    /// runs, so `SIGNALDB_NO_RETRY` reaches the completer's client even
+    /// though `Cli::run` (which used to be the only caller of this switch)
+    /// hasn't executed yet. Mutates the same process-wide switch as
+    /// `no_retry_switch_disables_the_policy`, so it restores both the env
+    /// var and the switch on every exit path to avoid leaking state into
+    /// whichever test runs next.
+    #[test]
+    fn init_no_retry_from_env_applies_the_env_var_switch() {
+        // SAFETY: no other thread reads/writes this process's env in a way
+        // that races with this test; std::env mutation just requires the
+        // caller to reason about that themselves.
+        unsafe {
+            std::env::set_var(NO_RETRY_ENV, "1");
+        }
+        init_no_retry_from_env();
+        let enabled_after_set = no_retry();
+
+        unsafe {
+            std::env::remove_var(NO_RETRY_ENV);
+        }
+        init_no_retry_from_env();
+        let enabled_after_unset = no_retry();
+
+        assert!(
+            enabled_after_set,
+            "SIGNALDB_NO_RETRY=1 should disable retry"
+        );
+        assert!(
+            !enabled_after_unset,
+            "unset SIGNALDB_NO_RETRY should leave retry enabled"
+        );
     }
 }

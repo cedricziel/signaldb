@@ -2,6 +2,11 @@ use clap::{CommandFactory, Parser};
 use signaldb_cli::commands::Cli;
 
 fn main() {
+    // Apply SIGNALDB_NO_RETRY before dynamic completion runs: the tenant-ID
+    // completer below builds its own client, and does so before `Cli::run`
+    // (which normally applies this switch) ever executes.
+    signaldb_cli::retry::init_no_retry_from_env();
+
     // Handle dynamic shell completion requests (COMPLETE=<shell> signaldb-cli ...)
     // before argument parsing and before the async runtime starts: the tenant-ID
     // completer builds its own single-threaded runtime, which must not nest
