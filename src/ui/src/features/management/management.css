@@ -90,6 +90,18 @@
   font-size: 11px;
 }
 
+.dataset-tables h4 {
+  margin: 14px 0 4px;
+  color: var(--dim);
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dataset-tables:first-of-type h4 {
+  margin-top: 6px;
+}
+
 .manage-panel fieldset {
   display: grid;
   grid-template-columns: 1fr 1fr;

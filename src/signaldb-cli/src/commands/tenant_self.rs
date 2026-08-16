@@ -32,10 +32,11 @@
 //! both the `X-Tenant-Id` header and the path parameter these operations
 //! require.
 
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 
 use super::discover::ConnectArgs;
 use super::query::print_json_response;
+use signaldb_sdk::types::ListTablesResponse;
 
 /// `signaldb-cli tenant <noun> <verb>`.
 #[derive(Subcommand)]
@@ -64,10 +65,20 @@ fn require_tenant_id(connect: &ConnectArgs) -> anyhow::Result<&str> {
     })
 }
 
+/// `tenant table list` connection args plus the output-format toggle.
+#[derive(Args)]
+pub struct TableListArgs {
+    #[command(flatten)]
+    connect: ConnectArgs,
+    /// Print raw JSON instead of the DATASET/TABLE/TYPE table
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Subcommand)]
 pub enum TableAction {
     /// List the tenant's provisioned signal tables
-    List(ConnectArgs),
+    List(TableListArgs),
     /// Provision (create) the tenant's enabled signal tables
     Provision(ConnectArgs),
     /// List the tenant's configured table schema types
@@ -77,18 +88,70 @@ pub enum TableAction {
     AvailableSchemas(ConnectArgs),
 }
 
+/// Render `DATASET  TABLE  TYPE` rows, column-aligned, sorted by
+/// dataset then table name.
+fn format_table_list(response: &ListTablesResponse) -> String {
+    if response.tables.is_empty() {
+        return "No signal tables provisioned yet.".to_string();
+    }
+
+    let mut rows: Vec<(&str, &str, &str)> = response
+        .tables
+        .iter()
+        .map(|t| {
+            (
+                t.dataset.as_deref().unwrap_or(""),
+                t.name.as_str(),
+                t.schema_type.as_str(),
+            )
+        })
+        .collect();
+    rows.sort();
+
+    let dataset_width = rows
+        .iter()
+        .map(|(d, _, _)| d.len())
+        .chain(std::iter::once("DATASET".len()))
+        .max()
+        .unwrap_or(0);
+    let table_width = rows
+        .iter()
+        .map(|(_, t, _)| t.len())
+        .chain(std::iter::once("TABLE".len()))
+        .max()
+        .unwrap_or(0);
+
+    let mut out = format!(
+        "{:dataset_width$}  {:table_width$}  TYPE\n",
+        "DATASET", "TABLE"
+    );
+    for (dataset, table, schema_type) in rows {
+        out.push_str(&format!(
+            "{dataset:dataset_width$}  {table:table_width$}  {schema_type}\n"
+        ));
+    }
+    out.trim_end().to_string()
+}
+
 impl TableAction {
     pub async fn run(self) -> anyhow::Result<()> {
         match self {
-            TableAction::List(connect) => {
+            TableAction::List(TableListArgs { connect, json }) => {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
                     .list_tenant_tables()
                     .tenant_id(tenant_id)
                     .send()
-                    .await;
-                print_json_response(v.map(|r| r.into_inner()), "list_tenant_tables")
+                    .await
+                    .map_err(|e| anyhow::Error::new(e).context("list_tenant_tables failed"))?
+                    .into_inner();
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                } else {
+                    println!("{}", format_table_list(&v));
+                }
+                Ok(())
             }
             TableAction::Provision(connect) => {
                 let tenant_id = require_tenant_id(&connect)?;
@@ -154,11 +217,14 @@ mod tests {
 
     #[tokio::test]
     async fn table_list_requires_tenant_id() {
-        let result = TableAction::List(ConnectArgs {
-            url: "http://127.0.0.1:1".to_string(),
-            api_key: Some("sk-test".to_string()),
-            tenant_id: None,
-            dataset_id: None,
+        let result = TableAction::List(TableListArgs {
+            connect: ConnectArgs {
+                url: "http://127.0.0.1:1".to_string(),
+                api_key: Some("sk-test".to_string()),
+                tenant_id: None,
+                dataset_id: None,
+            },
+            json: false,
         })
         .run()
         .await;
@@ -174,20 +240,84 @@ mod tests {
             .match_header("x-tenant-id", "acme")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"tenant_id":"acme","tables":[]}"#)
+            .with_body(r#"{"tenant_id":"acme","tables":[],"datasets":[]}"#)
             .create_async()
             .await;
 
-        TableAction::List(ConnectArgs {
-            url: server.url(),
-            api_key: Some("sk-test".to_string()),
-            tenant_id: Some("acme".to_string()),
-            dataset_id: None,
+        TableAction::List(TableListArgs {
+            connect: ConnectArgs {
+                url: server.url(),
+                api_key: Some("sk-test".to_string()),
+                tenant_id: Some("acme".to_string()),
+                dataset_id: None,
+            },
+            json: false,
         })
         .run()
         .await
         .expect("table list succeeds");
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn table_list_json_flag_prints_raw_json() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/api/v1/tenants/acme/tables")
+            .match_header("authorization", "Bearer sk-test")
+            .match_header("x-tenant-id", "acme")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"tenant_id":"acme","tables":[{"name":"traces","schema_type":"traces","description":"d","dataset":"production"}],"datasets":[{"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d","dataset":"production"}]}]}"#,
+            )
+            .create_async()
+            .await;
+
+        TableAction::List(TableListArgs {
+            connect: ConnectArgs {
+                url: server.url(),
+                api_key: Some("sk-test".to_string()),
+                tenant_id: Some("acme".to_string()),
+                dataset_id: None,
+            },
+            json: true,
+        })
+        .run()
+        .await
+        .expect("table list --json succeeds");
+    }
+
+    #[test]
+    fn format_table_list_prints_dataset_table_type_columns() {
+        let response: ListTablesResponse = serde_json::from_str(
+            r#"{"tenant_id":"acme","tables":[
+                {"name":"traces","schema_type":"traces","description":"d","dataset":"production"},
+                {"name":"logs","schema_type":"logs","description":"d","dataset":"production"},
+                {"name":"profiles","schema_type":"profiles","description":"d","dataset":"archive"}
+            ],"datasets":[]}"#,
+        )
+        .unwrap();
+
+        let rendered = format_table_list(&response);
+
+        assert!(rendered.starts_with("DATASET"));
+        assert!(rendered.contains("TABLE"));
+        assert!(rendered.contains("TYPE"));
+        assert!(rendered.contains("production") && rendered.contains("traces"));
+        assert!(rendered.contains("archive") && rendered.contains("profiles"));
+        // Sorted by dataset then table: "archive" precedes "production".
+        assert!(rendered.find("archive").unwrap() < rendered.find("production").unwrap());
+    }
+
+    #[test]
+    fn format_table_list_reports_empty_state() {
+        let response: ListTablesResponse =
+            serde_json::from_str(r#"{"tenant_id":"acme","tables":[],"datasets":[]}"#).unwrap();
+        assert_eq!(
+            format_table_list(&response),
+            "No signal tables provisioned yet."
+        );
     }
 
     #[tokio::test]

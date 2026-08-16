@@ -50,11 +50,12 @@ async fn serve_router() -> (String, common::testing::TempCatalog, common::Catalo
             tenants: vec![tenant_config()],
             ..Default::default()
         },
-        // `TenantSchemaRegistry::get_catalog_for_tenant` (used by
-        // `list_tenant_tables`, unlike `create_tenant_tables`) checks
-        // `Configuration::is_tenant_enabled`, which reads this legacy
-        // `tenants` map/`default_tenant`, not `auth.tenants` — a pre-existing
-        // split between the two tenant registries this test has to satisfy.
+        // `list_tenant_tables`'s primary resolution path is
+        // `datasets_for_tenant` over `auth.tenants` (the same source
+        // `create_tenant_tables` uses), so this is not strictly required for
+        // listing to work — kept anyway so the tenant is also enabled per
+        // the legacy `Configuration::is_tenant_enabled` fallback, matching
+        // what a real deployment's `[tenants]` section would set.
         tenants: TenantsConfig {
             default_tenant: TENANT.to_string(),
             ..Default::default()
@@ -104,14 +105,10 @@ fn cli_args<'a>(router_url: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
 
 #[tokio::test]
 async fn tenant_table_list_and_provision_succeed_with_a_tenant_key() {
-    let (router_url, _temp_catalog, manager) = serve_router().await;
+    let (router_url, _temp_catalog, _manager) = serve_router().await;
 
     // `tenant table list` succeeds with just a tenant API key carrying the
     // required (any valid) scopes — no table has been provisioned yet.
-    // (`GET /tenants/{id}/tables` is itself a stub that always answers `[]`
-    // — see `TenantSchemaRegistry::list_tables_for_tenant` — so this call
-    // only proves the command reaches the endpoint without an auth error;
-    // real provisioning is verified against the Iceberg catalog below.)
     let list_before = signaldb_cli::commands::Cli::try_parse_from(cli_args(&router_url, &["list"]))
         .expect("tenant table list parses");
     list_before
@@ -128,21 +125,48 @@ async fn tenant_table_list_and_provision_succeed_with_a_tenant_key() {
         .await
         .expect("tenant table provision succeeds");
 
-    // Verify against the Iceberg catalog directly that the tables now exist
-    // (mirrors `create_tenant_tables_actually_creates_them` in
-    // `router/src/endpoints/tenant.rs`).
-    let namespace = manager.build_namespace(TENANT, "production").unwrap();
-    let mut tables: Vec<String> = manager
-        .catalog()
-        .list_tabulars(&namespace)
+    // Assert through the same tenant self-service surface the CLI's `tenant
+    // table list` command uses (the SDK client `list_tenant_tables`
+    // operation, not a direct read of the Iceberg catalog): the listing
+    // reflects exactly what provisioning just created, grouped by dataset.
+    let client = signaldb_sdk::ClientBuilder::new(&router_url)
+        .bearer(KEY)
+        .tenant(TENANT)
+        .build()
+        .expect("build SDK client");
+    let listed = client
+        .list_tenant_tables()
+        .tenant_id(TENANT)
+        .send()
         .await
-        .unwrap()
-        .iter()
-        .map(|identifier| identifier.name().to_string())
-        .collect();
-    tables.sort();
+        .expect("list_tenant_tables succeeds")
+        .into_inner();
+
+    let mut names: Vec<&str> = listed.tables.iter().map(|t| t.name.as_str()).collect();
+    names.sort();
     assert!(
-        tables.contains(&"traces".to_string()),
-        "provisioned tables must include 'traces': {tables:?}"
+        names.contains(&"traces"),
+        "provisioned tables must include 'traces': {names:?}"
+    );
+    assert!(
+        listed
+            .tables
+            .iter()
+            .all(|t| t.dataset.as_deref() == Some("production")),
+        "every listed table must be tagged with dataset 'production': {:?}",
+        listed.tables
+    );
+
+    let datasets = listed.datasets;
+    assert_eq!(
+        datasets.len(),
+        1,
+        "exactly one dataset has been provisioned: {datasets:?}"
+    );
+    assert_eq!(datasets[0].dataset, "production");
+    assert!(
+        datasets[0].tables.iter().any(|t| t.name == "traces"),
+        "the 'production' group must include 'traces': {:?}",
+        datasets[0].tables
     );
 }

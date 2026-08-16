@@ -484,15 +484,53 @@ impl TenantSchemaRegistry {
         })
     }
 
-    /// List all tables for a tenant
-    pub async fn list_tables_for_tenant(&mut self, tenant_id: &str) -> Result<Vec<String>> {
-        // Get the catalog
-        let _ = self.get_catalog_for_tenant(tenant_id).await?;
+    /// List every table actually provisioned for a tenant, across all of its
+    /// datasets, as `(dataset, table)` pairs.
+    ///
+    /// Reads from the same place [`Self::create_default_tables_for_tenant`]
+    /// writes to — the Iceberg catalog, per dataset namespace — so a listing
+    /// agrees with what provisioning created. Never invents entries: a
+    /// dataset whose namespace has nothing in it (or does not exist yet)
+    /// lists as empty, not as an error.
+    ///
+    /// A tenant that resolves only through the legacy
+    /// [`Configuration::is_tenant_enabled`] fallback (the unconfigured
+    /// `"default"` tenant, or one named only in `[tenants.tenants]`) but is
+    /// absent from `datasets_for_tenant`'s registry has no datasets to list
+    /// yet, which is an empty result rather than an error. A tenant absent
+    /// from *both* registries is genuinely unknown and stays an error.
+    pub async fn list_tables_for_tenant(
+        &mut self,
+        tenant_id: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let manager = self.catalog_manager().await?;
 
-        // For now, return empty list
-        // TODO: Implement table listing
-        tracing::info!("Would list tables for tenant '{tenant_id}' using Iceberg catalog");
-        Ok(vec![])
+        let datasets = match self.datasets_for_tenant(&manager, tenant_id).await {
+            Ok(datasets) => datasets,
+            Err(err) => {
+                if self.config.is_tenant_enabled(tenant_id) {
+                    Vec::new()
+                } else {
+                    return Err(err);
+                }
+            }
+        };
+
+        let mut tables = Vec::new();
+        for dataset in &datasets {
+            let Ok(namespace) = manager.build_namespace(tenant_id, dataset) else {
+                continue;
+            };
+            let tabulars = manager
+                .catalog()
+                .list_tabulars(&namespace)
+                .await
+                .unwrap_or_default();
+            for identifier in tabulars {
+                tables.push((dataset.clone(), identifier.name().to_string()));
+            }
+        }
+        Ok(tables)
     }
 }
 
@@ -1064,5 +1102,71 @@ traces = ["http.method"]
         // List tables for the default tenant should work (even if empty)
         let tables = registry.list_tables_for_tenant("default").await.unwrap();
         assert_eq!(tables.len(), 0); // Should return empty list for default tenant with no tables
+    }
+
+    /// `list_tables_for_tenant` reads the same place `ensure_dataset_tables`
+    /// writes to: a dataset with nothing provisioned lists nothing, and a
+    /// provisioned dataset lists exactly its own tables tagged with its
+    /// dataset id — the other dataset stays empty until it too is
+    /// provisioned.
+    #[tokio::test]
+    async fn list_tables_for_tenant_groups_by_dataset_and_reflects_provisioning() {
+        let mut config = Configuration::default();
+        // A file-backed catalog: a named in-memory database lives only while
+        // a connection to it is open, and the code under test builds and
+        // drops its own pool.
+        let temp_catalog = crate::testing::TempCatalog::new();
+        config.schema.catalog_uri = temp_catalog.uri().to_string();
+        config.auth.tenants = vec![crate::config::TenantConfig {
+            id: "acme".to_string(),
+            slug: "acme".to_string(),
+            name: "Acme".to_string(),
+            default_dataset: Some("alpha".to_string()),
+            datasets: vec![
+                crate::config::DatasetConfig {
+                    id: "alpha".to_string(),
+                    slug: "alpha".to_string(),
+                    is_default: true,
+                    storage: None,
+                },
+                crate::config::DatasetConfig {
+                    id: "beta".to_string(),
+                    slug: "beta".to_string(),
+                    is_default: false,
+                    storage: None,
+                },
+            ],
+            api_keys: vec![],
+            schema_config: None,
+            limits: None,
+        }];
+        let mut registry = TenantSchemaRegistry::new(config.clone());
+        let manager = crate::CatalogManager::new(config).await.unwrap();
+
+        // Nothing provisioned yet in either dataset.
+        let tables = registry.list_tables_for_tenant("acme").await.unwrap();
+        assert!(tables.is_empty(), "{tables:?}");
+
+        // Provision "alpha" only.
+        manager.ensure_dataset_tables("acme", "alpha").await;
+        let tables = registry.list_tables_for_tenant("acme").await.unwrap();
+        assert!(!tables.is_empty());
+        assert!(
+            tables.iter().all(|(dataset, _)| dataset == "alpha"),
+            "only 'alpha' has been provisioned: {tables:?}"
+        );
+        assert!(tables.iter().any(|(_, name)| name == "traces"));
+
+        // Provision "beta" too; both datasets now show up.
+        manager.ensure_dataset_tables("acme", "beta").await;
+        let tables = registry.list_tables_for_tenant("acme").await.unwrap();
+        let datasets: std::collections::BTreeSet<String> =
+            tables.into_iter().map(|(dataset, _)| dataset).collect();
+        assert_eq!(
+            datasets,
+            ["alpha".to_string(), "beta".to_string()]
+                .into_iter()
+                .collect()
+        );
     }
 }

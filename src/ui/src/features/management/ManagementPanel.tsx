@@ -13,10 +13,43 @@ import {
   revokeApiKey,
   upsertMembership,
   type IngestScope,
+  type ManagedTables,
 } from "../../api/management";
 import type { WhoamiResponse } from "../../api/session";
 import { toErrorMessage } from "../../api/http";
 import "./management.css";
+
+/** `ManagedTables["tables"]`'s element type. */
+type ManagedTable = ManagedTables["tables"][number];
+
+/** Group the tenant's tables by dataset for the Tables section.
+ *
+ * Prefers the server's own `datasets` grouping; falls back to grouping the
+ * flat `tables` list client-side by each table's `dataset` field when
+ * `datasets` is absent (an older cached response shape).
+ */
+function tablesByDataset(
+  data: ManagedTables | undefined,
+): { dataset: string; tables: ManagedTable[] }[] {
+  if (!data) return [];
+  if (data.datasets && data.datasets.length > 0) {
+    return data.datasets;
+  }
+  const groups = new Map<string, ManagedTable[]>();
+  for (const table of data.tables) {
+    const key = table.dataset ?? "";
+    const existing = groups.get(key);
+    if (existing) {
+      existing.push(table);
+    } else {
+      groups.set(key, [table]);
+    }
+  }
+  return Array.from(groups.entries()).map(([dataset, tables]) => ({
+    dataset,
+    tables,
+  }));
+}
 
 const scopes: IngestScope[] = [
   "metrics:write",
@@ -270,16 +303,21 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
           {tables.isError && (
             <p className="manage-error">{toErrorMessage(tables.error)}</p>
           )}
-          <ul className="compact-list">
-            {(tables.data?.tables ?? []).map((table) => (
-              <li key={table.name}>
-                <div>
-                  <strong>{table.name}</strong>
-                  <span>{table.description}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
+          {tablesByDataset(tables.data).map((group) => (
+            <div className="dataset-tables" key={group.dataset}>
+              <h4>{group.dataset}</h4>
+              <ul className="compact-list">
+                {group.tables.map((table) => (
+                  <li key={table.name}>
+                    <div>
+                      <strong>{table.name}</strong>
+                      <span>{table.description}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
           {tables.data && tables.data.tables.length === 0 && (
             <p>No signal tables provisioned yet for this dataset.</p>
           )}

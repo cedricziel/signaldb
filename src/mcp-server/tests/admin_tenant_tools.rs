@@ -220,6 +220,20 @@ async fn behaviour(
     if method == axum::http::Method::DELETE {
         return StatusCode::NO_CONTENT.into_response();
     }
+    if path.ends_with("/tables") && method == axum::http::Method::GET {
+        return axum::Json(serde_json::json!({
+            "tenant_id": "acme",
+            "tables": [
+                {"name": "traces", "schema_type": "traces", "description": "d", "dataset": "production"}
+            ],
+            "datasets": [
+                {"dataset": "production", "tables": [
+                    {"name": "traces", "schema_type": "traces", "description": "d", "dataset": "production"}
+                ]}
+            ]
+        }))
+        .into_response();
+    }
     if path.ends_with("/api-keys") && method == axum::http::Method::GET {
         return axum::Json(serde_json::json!([
             {"id": "k1", "name": "ci", "scopes": ["traces:write"], "revoked": false, "created_at": "2026-01-01T00:00:00Z"}
@@ -461,6 +475,31 @@ async fn unauthorized_management_call_is_denied_cleanly() {
                 .contains("forbidden")
             || tool_error_message(&reply).to_lowercase().contains("access"),
         "error must read as access-denied, not an opaque failure: {reply}"
+    );
+}
+
+/// `tenant_list_tables` must return the SDK's grouped shape — `datasets`
+/// alongside the flat `tables` — not just the flat list from before this
+/// change.
+#[tokio::test]
+async fn tenant_list_tables_returns_datasets_grouping() {
+    let mut session = McpSession::open(app().await).await;
+
+    let listed = session
+        .call_tool(
+            "tenant_list_tables",
+            serde_json::json!({"tenant_id": "acme"}),
+        )
+        .await;
+    assert!(!tool_is_error(&listed), "list succeeds: {listed}");
+    let text = tool_error_message(&listed);
+    assert!(
+        text.contains("\"datasets\""),
+        "SDK shape must include the dataset grouping: {text}"
+    );
+    assert!(
+        text.contains("\"dataset\":\"production\"") || text.contains("\"dataset\": \"production\""),
+        "grouped entry must carry its dataset id: {text}"
     );
 }
 

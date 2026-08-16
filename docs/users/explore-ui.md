@@ -470,8 +470,9 @@ survives a bookmark or browser back/forward) covering the tenant's
 self-service surface in one place: **Datasets** (create, delete non-default
 ones), **API keys** (create with a scope picker, revoke; the secret shows
 once), **Members** (add or update a role by email, remove), **Tables**
-(list the dataset's provisioned signal tables, with a **Provision tables**
-action calling the manual-trigger endpoint — see
+(the tenant's provisioned signal tables, grouped by dataset with one heading
+per dataset, refetched immediately after provisioning; a **Provision tables**
+action calls the manual-trigger endpoint — see
 [table provisioning](../operations/table-provisioning.md)), and, for
 instance administrators only, **New tenant**. All of it consumes the
 generated client (`src/ui/src/api/management.ts`), never raw `fetch`.

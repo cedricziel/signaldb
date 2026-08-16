@@ -64,7 +64,7 @@ pub struct ListTenantsResponse {
 }
 
 /// API response for table information
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TableInfo {
     /// Table name
     pub name: String,
@@ -72,15 +72,61 @@ pub struct TableInfo {
     pub schema_type: String,
     /// Table description
     pub description: String,
+    /// The dataset this table belongs to.
+    ///
+    /// Defaulted on deserialization so an older client-recorded response
+    /// (or a hand-written test fixture) that predates this field still
+    /// parses.
+    #[serde(default)]
+    pub dataset: String,
+}
+
+/// The tables provisioned in a single dataset, as part of
+/// [`ListTablesResponse::datasets`].
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct DatasetTables {
+    /// Dataset ID.
+    pub dataset: String,
+    /// Tables provisioned in this dataset.
+    pub tables: Vec<TableInfo>,
 }
 
 /// API response for listing tables
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ListTablesResponse {
-    /// List of tables for the tenant
+    /// List of tables for the tenant, flat across all of its datasets.
     pub tables: Vec<TableInfo>,
     /// Tenant ID
     pub tenant_id: String,
+    /// The same tables, grouped by dataset.
+    ///
+    /// Defaulted on deserialization so an older client-recorded response
+    /// (or a hand-written test fixture) that predates this field still
+    /// parses.
+    #[serde(default)]
+    pub datasets: Vec<DatasetTables>,
+}
+
+/// The `(schema_type, description)` an actually-provisioned table name maps
+/// to. Mirrors [`iceberg_schemas::TableSchema::table_name`]'s known names;
+/// anything else (a `Custom` table, or a name from a signal this build does
+/// not know about) is labeled `"custom"` rather than dropped, per
+/// `tenant-table-listing`'s design (unknown types are surfaced, not hidden).
+fn table_schema_type_and_description(name: &str) -> (&'static str, &'static str) {
+    match name {
+        "traces" => ("traces", "OpenTelemetry traces and spans"),
+        "logs" => ("logs", "OpenTelemetry log entries"),
+        "metrics_gauge" => ("metrics_gauge", "OpenTelemetry gauge metrics"),
+        "metrics_sum" => ("metrics_sum", "OpenTelemetry sum/counter metrics"),
+        "metrics_histogram" => ("metrics_histogram", "OpenTelemetry histogram metrics"),
+        "metrics_exponential_histogram" => (
+            "metrics_exponential_histogram",
+            "OpenTelemetry exponential histogram metrics",
+        ),
+        "metrics_summary" => ("metrics_summary", "OpenTelemetry summary metrics"),
+        "profiles" => ("profiles", "OpenTelemetry profiles"),
+        _ => ("custom", "Custom table"),
+    }
 }
 
 /// Tenant management API
@@ -229,33 +275,34 @@ impl TenantApi {
             .await
     }
 
-    /// List tables for a tenant
+    /// List tables for a tenant, grouped by dataset.
     pub async fn list_tables(&mut self, tenant_id: &str) -> Result<ListTablesResponse> {
-        let table_names = self.registry.list_tables_for_tenant(tenant_id).await?;
+        let dataset_tables = self.registry.list_tables_for_tenant(tenant_id).await?;
 
-        let tables = table_names
-            .into_iter()
-            .map(|name| {
-                let (schema_type, description) = match name.as_str() {
-                    "traces" => ("traces", "OpenTelemetry traces and spans"),
-                    "logs" => ("logs", "OpenTelemetry log entries"),
-                    "metrics_gauge" => ("metrics_gauge", "OpenTelemetry gauge metrics"),
-                    "metrics_sum" => ("metrics_sum", "OpenTelemetry sum/counter metrics"),
-                    "metrics_histogram" => ("metrics_histogram", "OpenTelemetry histogram metrics"),
-                    _ => ("custom", "Custom table"),
-                };
-
-                TableInfo {
-                    name,
-                    schema_type: schema_type.to_string(),
-                    description: description.to_string(),
-                }
-            })
-            .collect();
+        let mut tables = Vec::with_capacity(dataset_tables.len());
+        let mut by_dataset: Vec<DatasetTables> = Vec::new();
+        for (dataset, name) in dataset_tables {
+            let (schema_type, description) = table_schema_type_and_description(&name);
+            let info = TableInfo {
+                name,
+                schema_type: schema_type.to_string(),
+                description: description.to_string(),
+                dataset: dataset.clone(),
+            };
+            match by_dataset.iter_mut().find(|d| d.dataset == dataset) {
+                Some(entry) => entry.tables.push(info.clone()),
+                None => by_dataset.push(DatasetTables {
+                    dataset: dataset.clone(),
+                    tables: vec![info.clone()],
+                }),
+            }
+            tables.push(info);
+        }
 
         Ok(ListTablesResponse {
             tables,
             tenant_id: tenant_id.to_string(),
+            datasets: by_dataset,
         })
     }
 
@@ -284,6 +331,7 @@ impl TenantApi {
                             name: name.clone(),
                             schema_type: "custom".to_string(),
                             description: format!("Custom table: {name}"),
+                            dataset: String::new(),
                         };
                     }
                 };
@@ -292,6 +340,7 @@ impl TenantApi {
                     name: schema.table_name().to_string(),
                     schema_type: schema.table_name().to_string(),
                     description: description.to_string(),
+                    dataset: String::new(),
                 }
             })
             .collect();
@@ -299,6 +348,8 @@ impl TenantApi {
         Ok(ListTablesResponse {
             tables,
             tenant_id: tenant_id.to_string(),
+            // Schema types are not tied to a provisioned dataset.
+            datasets: Vec::new(),
         })
     }
 
@@ -328,6 +379,7 @@ impl TenantApi {
                             name: name.clone(),
                             schema_type: "custom".to_string(),
                             description: format!("Custom table: {name}"),
+                            dataset: String::new(),
                         };
                     }
                 };
@@ -336,6 +388,7 @@ impl TenantApi {
                     name: schema.table_name().to_string(),
                     schema_type: schema.table_name().to_string(),
                     description: description.to_string(),
+                    dataset: String::new(),
                 }
             })
             .collect()
