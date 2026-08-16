@@ -40,15 +40,27 @@
 //!   `create_api_key` / `update_api_key_scopes` / `revoke_api_key`,
 //!   `list_datasets` / `create_dataset` / `delete_dataset`. Keys carry
 //!   explicit scopes from the shared vocabulary (`common::auth::API_KEY_SCOPES`).
-//! - **Tenant self-management** (`tenant_`-prefixed, management API, acts as
-//!   the caller's own identity within its tenant): `tenant_list_datasets` /
-//!   `tenant_create_dataset` / `tenant_delete_dataset`,
-//!   `tenant_list_api_keys` / `tenant_create_api_key` /
-//!   `tenant_update_api_key` / `tenant_revoke_api_key`,
-//!   `tenant_list_memberships` / `tenant_upsert_membership` /
-//!   `tenant_remove_membership`, `tenant_get_schema`, `tenant_list_tables` /
-//!   `tenant_create_tables` / `tenant_list_table_schemas`, and the
-//!   tenant-scoped-but-credential-agnostic `list_available_table_schemas`.
+//! - **Tenant self-management** (`tenant_`-prefixed, acts as the caller's own
+//!   identity within its tenant). Two sub-groups by transport:
+//!   - Tenant tables/schemas (tenant self-service API, works with a plain
+//!     tenant API key — the CLI's `tenant table` group reaches these too):
+//!     `tenant_list_tables` / `tenant_create_tables` /
+//!     `tenant_list_table_schemas`, and the
+//!     tenant-scoped-but-credential-agnostic `list_available_table_schemas`.
+//!   - Datasets/API-keys/memberships/schema (management API,
+//!     `authorize_tenant`-gated): `tenant_list_datasets` /
+//!     `tenant_create_dataset` / `tenant_delete_dataset`,
+//!     `tenant_list_api_keys` / `tenant_create_api_key` /
+//!     `tenant_update_api_key` / `tenant_revoke_api_key`,
+//!     `tenant_list_memberships` / `tenant_upsert_membership` /
+//!     `tenant_remove_membership`, `tenant_get_schema`. These require a
+//!     human-authenticated principal (browser session or OAuth access
+//!     token with a real tenant role — `tenant_get_schema` needs an
+//!     INSTANCE administrator specifically); a plain API key is denied.
+//!     This is deliberate, pre-existing, and tested
+//!     (`ingestion_api_key_cannot_use_human_management_endpoints` in
+//!     `router/src/endpoints/session.rs`), so the CLI (API-key-only) has
+//!     no commands for this sub-group — see `signaldb_cli::commands::tenant_self`.
 //!
 //! Tools that delete or revoke carry the MCP destructive annotation and
 //! require a `confirm` argument equal to the identifier being destroyed;
@@ -1452,10 +1464,24 @@ impl McpServer {
 
     // ---- Tenant self-management tools (management API; act as the caller's
     // own identity within its tenant — `tenant_id` must match the
-    // authenticated tenant, exactly like the CLI's `tenant` group). ----
+    // authenticated tenant).
+    //
+    // Unlike the tenant table tools below (and unlike the CLI's `tenant`
+    // group, which does not attempt these), every tool in this block wraps
+    // an endpoint gated by `authorize_tenant` (or, for `tenant_get_schema`,
+    // `ctx.is_instance_admin` — stricter still), which requires a
+    // human-authenticated principal (browser session cookie or OAuth access
+    // token carrying a real per-tenant membership role) and explicitly
+    // rejects a bare API key. This is deliberate and tested
+    // (`ingestion_api_key_cannot_use_human_management_endpoints` in
+    // `router/src/endpoints/session.rs`). These tools still work correctly
+    // for an OAuth-authenticated MCP session (a real, already-supported
+    // credential); a session forwarding only a static API key gets a clean
+    // access-denied error, per the `mcp-tool-surface` spec's "Unauthorized
+    // management call is denied cleanly" scenario. ----
 
     #[tool(
-        description = "List the caller's own tenant's datasets (management API; the caller's tenant credential).",
+        description = "List the caller's own tenant's datasets (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied).",
         annotations(read_only_hint = true)
     )]
     async fn tenant_list_datasets(
@@ -1474,7 +1500,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create a dataset for the caller's own tenant (management API; the caller's tenant credential)."
+        description = "Create a dataset for the caller's own tenant (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied)."
     )]
     async fn tenant_create_dataset(
         &self,
@@ -1493,7 +1519,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Delete a dataset from the caller's own tenant, by name (management API; the caller's tenant credential). Requires `confirm` equal to `dataset_name`.",
+        description = "Delete a dataset from the caller's own tenant, by name (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied). Requires `confirm` equal to `dataset_name`.",
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn tenant_delete_dataset(
@@ -1514,7 +1540,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the caller's own tenant's API keys with their scopes (management API; the caller's tenant credential). Raw secrets are never returned.",
+        description = "List the caller's own tenant's API keys with their scopes (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied). Raw secrets are never returned.",
         annotations(read_only_hint = true)
     )]
     async fn tenant_list_api_keys(
@@ -1533,7 +1559,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to `dataset_id` (management API; the caller's tenant credential). The raw secret is returned once."
+        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to `dataset_id` (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied). The raw secret is returned once."
     )]
     async fn tenant_create_api_key(
         &self,
@@ -1562,7 +1588,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Revoke one of the caller's own tenant's API keys (management API; the caller's tenant credential). Requires `confirm` equal to `key_id`.",
+        description = "Revoke one of the caller's own tenant's API keys (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied). Requires `confirm` equal to `key_id`.",
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn tenant_revoke_api_key(
@@ -1583,7 +1609,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; the caller's tenant credential)."
+        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied)."
     )]
     async fn tenant_update_api_key(
         &self,
@@ -1612,7 +1638,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the caller's own tenant's memberships (management API; the caller's tenant credential).",
+        description = "List the caller's own tenant's memberships (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied).",
         annotations(read_only_hint = true)
     )]
     async fn tenant_list_memberships(
@@ -1631,7 +1657,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create or update a member's role in the caller's own tenant (management API; the caller's tenant credential)."
+        description = "Create or update a member's role in the caller's own tenant (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied)."
     )]
     async fn tenant_upsert_membership(
         &self,
@@ -1658,7 +1684,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Remove a member from the caller's own tenant (management API; the caller's tenant credential). Requires `confirm` equal to `user_id`.",
+        description = "Remove a member from the caller's own tenant (management API; requires a human-authenticated session — browser session cookie or OAuth access token with a real tenant role; a plain API key is denied). Requires `confirm` equal to `user_id`.",
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn tenant_remove_membership(
@@ -1679,7 +1705,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "The caller's own tenant's logical + physical schema: materialized labels and custom fields per signal (management API; the caller's tenant credential).",
+        description = "The caller's own tenant's logical + physical schema: materialized labels and custom fields per signal (management API; requires a human-authenticated session belonging to an INSTANCE administrator specifically — stricter than the other tenant_* tools; a tenant-admin role is not sufficient, and a plain API key is denied).",
         annotations(read_only_hint = true)
     )]
     async fn tenant_get_schema(
