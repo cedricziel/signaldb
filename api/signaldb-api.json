@@ -3152,7 +3152,7 @@
           "traces"
         ],
         "summary": "GET /api/search/tag/:tag_name/values",
-        "description": "Backed by real data: distinct values from the tenant's traces table\nfor supported tags, static status values for `status`, and an\nexplicit 501 for tags that are not queryable yet.",
+        "description": "Backed by real data: distinct values observed in the tenant's traces\nwithin the window, for any tag — dedicated columns, map-stored\nattributes, and the static `status`/`kind` enums alike. An unknown or\nunobserved tag answers `200` with an empty list, never `501`.",
         "operationId": "search_tag_values",
         "parameters": [
           {
@@ -3198,9 +3198,6 @@
           },
           "400": {
             "description": "start/end are not unix-second timestamps"
-          },
-          "501": {
-            "description": "Tag not queryable yet"
           }
         },
         "security": [
@@ -3218,9 +3215,31 @@
         "summary": "GET /api/search/tags?scope=<resource|span|intrinsic>",
         "description": "See https://grafana.com/docs/tempo/latest/api_docs/#search-tags",
         "operationId": "search_tags",
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Window start (unix seconds); default lookback is 1 hour",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Window end (unix seconds); defaults to now",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Searchable tag names",
+            "description": "Searchable tag names observed in the window",
             "content": {
               "application/json": {
                 "schema": {
@@ -3228,6 +3247,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "start/end are not unix-second timestamps"
           }
         },
         "security": [
@@ -3296,6 +3318,135 @@
           },
           "404": {
             "description": "Trace not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tempo/api/v2/search/tag/{tag_name}/values": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "GET /api/v2/search/tag/{tag_name}/values",
+        "operationId": "search_tag_values_v2",
+        "parameters": [
+          {
+            "name": "tag_name",
+            "in": "path",
+            "description": "Scoped or unscoped tag name to fetch values for",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Window start (unix seconds)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Window end (unix seconds)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Accepted for Tempo API compatibility; unused",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Values for the tag",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/tempo_api.v2.TagValuesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "start/end are not unix-second timestamps"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/tempo/api/v2/search/tags": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "GET /api/v2/search/tags?scope=<resource|span|intrinsic>",
+        "operationId": "search_tags_v2",
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "Restrict to one scope",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/TagScope"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Window start (unix seconds); default lookback is 1 hour",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Window end (unix seconds); defaults to now",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Searchable tag names, grouped by scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/tempo_api.v2.TagSearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "start/end are not unix-second timestamps"
           }
         },
         "security": [
@@ -5303,6 +5454,15 @@
           }
         }
       },
+      "TagScope": {
+        "type": "string",
+        "description": "GET /api/search/tags?scope=<resource|span|intrinsic>\n\n`rename_all = \"lowercase\"` matters here: the Tempo API (and Grafana's\nTempo datasource, which is what actually sends this) uses lowercase\nscope values. Without it, serde only accepts the Rust variant names\n(`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).",
+        "enum": [
+          "resource",
+          "span",
+          "intrinsic"
+        ]
+      },
       "TagSearchResponse": {
         "type": "object",
         "required": [
@@ -5602,6 +5762,68 @@
             "type": "string"
           },
           "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "tempo_api.v2.TagSearchResponse": {
+        "type": "object",
+        "required": [
+          "scopes"
+        ],
+        "properties": {
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/tempo_api.v2.TagSearchScope"
+            }
+          }
+        }
+      },
+      "tempo_api.v2.TagSearchScope": {
+        "type": "object",
+        "required": [
+          "scope",
+          "tags"
+        ],
+        "properties": {
+          "scope": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "tempo_api.v2.TagValuesResponse": {
+        "type": "object",
+        "description": "GET /api/v2/search/tag/.service.name/values\n\nTodo: Add types to values\n\nSee <https://grafana.com/docs/tempo/latest/api_docs/#search-tag-values-v2>",
+        "required": [
+          "tagValues"
+        ],
+        "properties": {
+          "tagValues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/tempo_api.v2.TagWithValue"
+            }
+          }
+        }
+      },
+      "tempo_api.v2.TagWithValue": {
+        "type": "object",
+        "required": [
+          "tag",
+          "value"
+        ],
+        "properties": {
+          "tag": {
+            "type": "string"
+          },
+          "value": {
             "type": "string"
           }
         }

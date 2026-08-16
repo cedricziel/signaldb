@@ -19,10 +19,20 @@ use std::collections::HashMap;
 use tempo_api::{self, MetricsResponse, TraceQueryParams};
 use tracing::Instrument;
 
+/// Query parameters for v1 tag search. `start`/`end` are unix seconds, per
+/// the Tempo API; omitted, discovery defaults to the last hour.
+#[derive(Debug, Default, Deserialize)]
+pub struct TagSearchParams {
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
 /// Query parameters for v2 tag search
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct TagSearchV2Params {
     pub scope: Option<tempo_api::TagScope>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
 }
 
 /// Query parameters for v1 tag value search. `start`/`end` are unix
@@ -47,14 +57,14 @@ pub fn router<S: RouterState>() -> Router<S> {
         .route("/api/echo", get(echo))
         .route("/api/traces/{trace_id}", get(query_single_trace::<S>))
         .route("/api/search", get(search::<S>))
-        .route("/api/search/tags", get(search_tags))
+        .route("/api/search/tags", get(search_tags::<S>))
         .route(
             "/api/search/tag/{tag_name}/values",
             get(search_tag_values::<S>),
         )
         // v2 routes
         .route("/api/v2/traces/{trace_id}", get(query_single_trace::<S>)) // V2 uses same handler for now
-        .route("/api/v2/search/tags", get(search_tags_v2))
+        .route("/api/v2/search/tags", get(search_tags_v2::<S>))
         .route(
             "/api/v2/search/tag/{tag_name}/values",
             get(search_tag_values_v2::<S>),
@@ -963,41 +973,48 @@ fn search_status_to_http(status: &tonic::Status) -> ApiError {
     ApiError::new(code, status.message())
 }
 
-/// Tag names trace search can actually filter on today (see the
-/// querier's search_filter module). Returned instead of an empty stub so
-/// Grafana autocomplete reflects real capability without fabricating
-/// unqueryable tags.
-const RESOURCE_TAGS: &[&str] = &["service.name"];
-const INTRINSIC_TAGS: &[&str] = &["name", "status"];
-
-/// Map a (possibly scoped) tag name to the traces column that backs it.
-fn tag_value_column(tag_name: &str) -> Option<&'static str> {
-    let unscoped = tag_name
-        .strip_prefix("resource.")
-        .or_else(|| tag_name.strip_prefix("span."))
-        .unwrap_or(tag_name)
-        .trim_start_matches('.');
-    match unscoped {
-        "service.name" => Some("service_name"),
-        "name" => Some("span_name"),
-        _ => None,
-    }
+/// Trace attribute tag names discovered in a window, grouped by scope —
+/// the router-side wire mirror of the querier's `TraceTagNames` (decoupled
+/// Rust types on each side of the Flight boundary, connected only by the
+/// JSON shape; see `query_logs_detected_fields`'s `DetectedField` for the
+/// same pattern).
+#[derive(Debug, Default, serde::Deserialize)]
+struct TraceTagNamesWire {
+    #[serde(default)]
+    resource: Vec<String>,
+    #[serde(default)]
+    span: Vec<String>,
+    #[serde(default)]
+    intrinsic: Vec<String>,
 }
 
-/// Fallback lookback for tag-value discovery when the caller sends no
-/// `start`/`end`: bound the scan to the recent window instead of reading
-/// the whole traces table (#929).
-const DEFAULT_TAG_VALUES_WINDOW_SECS: i64 = 24 * 60 * 60;
+/// Flatten the three scopes into one sorted, de-duplicated list for the v1
+/// (unscoped) tag-names endpoint.
+fn flatten_tag_names(names: &TraceTagNamesWire) -> Vec<String> {
+    let mut all: Vec<String> = names
+        .resource
+        .iter()
+        .chain(names.span.iter())
+        .chain(names.intrinsic.iter())
+        .cloned()
+        .collect();
+    all.sort();
+    all.dedup();
+    all
+}
 
-/// Cap on distinct values returned per tag.
-const TAG_VALUES_LIMIT: usize = 1000;
+/// Fallback lookback for tag discovery when the caller sends no
+/// `start`/`end`: bound the scan to the recent window instead of reading
+/// the whole traces table (#929), matching the Loki metadata endpoints'
+/// default.
+const DEFAULT_DISCOVERY_WINDOW_SECS: i64 = 60 * 60;
 
 /// Resolve the caller's optional `start`/`end` (unix seconds) into a
 /// concrete window: `end` defaults to now, `start` trails `end` by
-/// [`DEFAULT_TAG_VALUES_WINDOW_SECS`].
-fn resolve_tag_values_window(start: Option<i64>, end: Option<i64>, now_secs: i64) -> (i64, i64) {
+/// [`DEFAULT_DISCOVERY_WINDOW_SECS`].
+fn resolve_discovery_window(start: Option<i64>, end: Option<i64>, now_secs: i64) -> (i64, i64) {
     let end = end.unwrap_or(now_secs);
-    let start = start.unwrap_or_else(|| end.saturating_sub(DEFAULT_TAG_VALUES_WINDOW_SECS));
+    let start = start.unwrap_or_else(|| end.saturating_sub(DEFAULT_DISCOVERY_WINDOW_SECS));
     (start, end)
 }
 
@@ -1017,73 +1034,39 @@ fn tag_window_seconds_to_nanos(name: &str, seconds: i64) -> Result<i64, String> 
     })
 }
 
-/// Build the DISTINCT-values SQL for one traces column, bounded to
-/// `[start_secs, end_secs]`.
-///
-/// The window is applied twice, mirroring the querier's trace lookup path:
-/// a precise `start_time_unix_nano` row bound, plus an equivalent bound on
-/// the `timestamp` partition column so Iceberg can prune whole hour
-/// partitions (the partition transform is `Hour(timestamp)`, so a filter
-/// on `start_time_unix_nano` alone never engages partition pruning —
-/// without it, `LIMIT` above `DISTINCT` reads every Parquet file).
-fn distinct_values_sql(
-    tenant_slug: &str,
-    dataset_slug: &str,
-    column: &str,
-    start_secs: i64,
-    end_secs: i64,
-) -> Result<String, String> {
-    let start_nanos = tag_window_seconds_to_nanos("start", start_secs)?;
-    let end_nanos = tag_window_seconds_to_nanos("end", end_secs)?;
-    // Slugs are validated at authentication time; quote identifiers so
-    // hyphenated slugs parse.
-    Ok(format!(
-        "SELECT DISTINCT \"{column}\" FROM \"{tenant_slug}\".\"{dataset_slug}\".\"traces\" \
-         WHERE \"timestamp\" >= to_timestamp_seconds({start_secs}) \
-         AND \"timestamp\" <= to_timestamp_seconds({end_secs}) \
-         AND start_time_unix_nano >= {start_nanos} \
-         AND start_time_unix_nano <= {end_nanos} \
-         ORDER BY 1 LIMIT {TAG_VALUES_LIMIT}"
-    ))
+/// Strip a Tempo v2 scope prefix (`resource.`, `span.`, or a leading `.`)
+/// from a tag name — the same key resolves the same way regardless of
+/// scope, so the querier only ever sees the unscoped form.
+fn normalize_tag_name(tag_name: &str) -> String {
+    tag_name
+        .strip_prefix("resource.")
+        .or_else(|| tag_name.strip_prefix("span."))
+        .unwrap_or(tag_name)
+        .trim_start_matches('.')
+        .to_string()
 }
 
-/// Fetch distinct values of a traces column for the tenant via the
-/// querier's Flight SQL path, bounded to the caller's time window.
-async fn distinct_column_values<S: RouterState>(
+/// Send a Flight ticket to a querier and collect the result batches.
+async fn execute_ticket<S: RouterState>(
     state: &S,
-    tenant_ctx: &common::auth::TenantContext,
-    column: &str,
-    start: Option<i64>,
-    end: Option<i64>,
-) -> Result<Vec<String>, ApiError> {
-    let (start_secs, end_secs) =
-        resolve_tag_values_window(start, end, chrono::Utc::now().timestamp());
-    let sql = distinct_values_sql(
-        &tenant_ctx.tenant_slug,
-        &tenant_ctx.dataset_slug,
-        column,
-        start_secs,
-        end_secs,
-    )
-    .map_err(|e| {
-        tracing::warn!(error = %e, "Rejecting tag values query with invalid time bounds");
-        ApiError::bad_request(e)
-    })?;
-
+    ticket_content: String,
+) -> Result<Vec<RecordBatch>, ApiError> {
     let (mut client, server_address) = state
         .service_registry()
         .get_flight_client_and_address_for_capability(ServiceCapability::QueryExecution)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, "Failed to get Flight client for tag values");
+            tracing::error!(error = %e, "Failed to get Flight client for tag discovery");
             ApiError::new(
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 "no querier service available",
             )
         })?;
-    let mut flight_request = tonic::Request::new(Ticket::new(sql));
+
+    let verb = common::self_monitoring::spans::ticket_verb(&ticket_content).map(str::to_owned);
+    let mut flight_request = tonic::Request::new(Ticket::new(ticket_content));
     let rpc_span = common::flight::trace_context::do_get_client_span(
-        None,
+        verb.as_deref(),
         &mut flight_request,
         Some(&server_address),
     );
@@ -1101,7 +1084,7 @@ async fn distinct_column_values<S: RouterState>(
                 common::self_monitoring::spans::RpcBoundary::Client,
                 e.code(),
             );
-            tracing::error!(error = %e, "Tag values query failed");
+            tracing::error!(error = %e, "Tag discovery query failed");
             ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.message())
         })?
         .into_inner();
@@ -1109,7 +1092,7 @@ async fn distinct_column_values<S: RouterState>(
     let mut flight_data = Vec::new();
     while let Some(data) = stream.next().await {
         flight_data.push(data.map_err(|e| {
-            tracing::error!(error = %e, "Error reading tag values flight data");
+            tracing::error!(error = %e, "Error reading tag discovery flight data");
             ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.message())
         })?);
     }
@@ -1118,28 +1101,106 @@ async fn distinct_column_values<S: RouterState>(
     }
 
     // Honor any dictionary batches the querier sent (#951).
-    let batches = flight_data_vec_to_batches(flight_data).await.map_err(|e| {
-        tracing::error!(error = %e, "Failed to decode tag values flight data");
+    flight_data_vec_to_batches(flight_data).await.map_err(|e| {
+        tracing::error!(error = %e, "Failed to decode tag discovery flight data");
         ApiError::new(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to decode tag values returned by the querier",
+            "failed to decode tag discovery response returned by the querier",
         )
-    })?;
+    })
+}
 
-    let mut values = Vec::new();
+/// Collect the non-null string values of `column` across `batches`.
+fn string_column(batches: &[RecordBatch], column: &str) -> Vec<String> {
+    let mut out = Vec::new();
     for batch in batches {
-        if batch.num_columns() == 0 {
-            continue;
-        }
-        if let Some(column) = batch.column(0).as_any().downcast_ref::<StringArray>() {
-            for i in 0..column.len() {
-                if !column.is_null(i) {
-                    values.push(column.value(i).to_string());
+        if let Some(col) = batch.column_by_name(column)
+            && let Some(arr) = col.as_any().downcast_ref::<StringArray>()
+        {
+            for i in 0..arr.len() {
+                if !arr.is_null(i) {
+                    out.push(arr.value(i).to_string());
                 }
             }
         }
     }
-    Ok(values)
+    out
+}
+
+/// Decode the single-row JSON payload the querier's discovery tickets
+/// encode a result as (see `json_to_batch` on the querier side).
+fn decode_json_batch<T: serde::de::DeserializeOwned + Default>(
+    batches: &[RecordBatch],
+    column: &str,
+) -> Result<T, ApiError> {
+    if let Some(value) = string_column(batches, column).into_iter().next() {
+        return serde_json::from_str(&value).map_err(|e| {
+            tracing::error!(error = %e, column, "Failed to decode tag discovery JSON payload");
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to decode tag discovery response returned by the querier",
+            )
+        });
+    }
+    Ok(T::default())
+}
+
+/// Fetch trace tag names for the tenant via the querier's `trace_tags`
+/// Flight ticket, bounded to the caller's (or default) time window.
+async fn fetch_tag_names<S: RouterState>(
+    state: &State<S>,
+    tenant_ctx: &common::auth::TenantContext,
+    scope: Option<tempo_api::TagScope>,
+    start: Option<i64>,
+    end: Option<i64>,
+) -> Result<TraceTagNamesWire, ApiError> {
+    let (start_secs, end_secs) =
+        resolve_discovery_window(start, end, chrono::Utc::now().timestamp());
+    let start_ns = tag_window_seconds_to_nanos("start", start_secs).map_err(|e| {
+        tracing::warn!(error = %e, "Rejecting tag names query with invalid time bounds");
+        ApiError::bad_request(e)
+    })?;
+    let end_ns = tag_window_seconds_to_nanos("end", end_secs).map_err(|e| {
+        tracing::warn!(error = %e, "Rejecting tag names query with invalid time bounds");
+        ApiError::bad_request(e)
+    })?;
+    let payload = serde_json::json!({ "start": start_ns, "end": end_ns, "scope": scope });
+    let ticket = format!(
+        "trace_tags:{}:{}:{payload}",
+        tenant_ctx.tenant_slug, tenant_ctx.dataset_slug
+    );
+    let batches = execute_ticket(&state.0, ticket).await?;
+    decode_json_batch(&batches, "tags")
+}
+
+/// Fetch the distinct values of one (already-unscoped) trace tag for the
+/// tenant via the querier's `trace_tag_values` Flight ticket, bounded to
+/// the caller's (or default) time window.
+async fn tag_values_for<S: RouterState>(
+    state: &State<S>,
+    tenant_ctx: &common::auth::TenantContext,
+    tag_name: &str,
+    start: Option<i64>,
+    end: Option<i64>,
+) -> Result<Vec<String>, ApiError> {
+    let tag = normalize_tag_name(tag_name);
+    let (start_secs, end_secs) =
+        resolve_discovery_window(start, end, chrono::Utc::now().timestamp());
+    let start_ns = tag_window_seconds_to_nanos("start", start_secs).map_err(|e| {
+        tracing::warn!(error = %e, "Rejecting tag values query with invalid time bounds");
+        ApiError::bad_request(e)
+    })?;
+    let end_ns = tag_window_seconds_to_nanos("end", end_secs).map_err(|e| {
+        tracing::warn!(error = %e, "Rejecting tag values query with invalid time bounds");
+        ApiError::bad_request(e)
+    })?;
+    let payload = serde_json::json!({ "start": start_ns, "end": end_ns });
+    let ticket = format!(
+        "trace_tag_values:{}:{}:{tag}:{payload}",
+        tenant_ctx.tenant_slug, tenant_ctx.dataset_slug
+    );
+    let batches = execute_ticket(&state.0, ticket).await?;
+    Ok(string_column(&batches, "value"))
 }
 
 /// GET /api/search/tags?scope=<resource|span|intrinsic>
@@ -1150,27 +1211,33 @@ async fn distinct_column_values<S: RouterState>(
     path = "/tempo/api/search/tags",
     tag = "traces",
     security(("bearerAuth" = [])),
+    params(
+        ("start" = Option<i64>, Query, description = "Window start (unix seconds); default lookback is 1 hour"),
+        ("end" = Option<i64>, Query, description = "Window end (unix seconds); defaults to now"),
+    ),
     responses(
-        (status = 200, description = "Searchable tag names", body = tempo_api::TagSearchResponse),
+        (status = 200, description = "Searchable tag names observed in the window", body = tempo_api::TagSearchResponse),
+        (status = 400, description = "start/end are not unix-second timestamps"),
     )
 )]
-#[tracing::instrument(skip_all)]
-pub async fn search_tags() -> Result<axum::Json<tempo_api::TagSearchResponse>, ApiError> {
-    let response = tempo_api::TagSearchResponse {
-        tag_names: RESOURCE_TAGS
-            .iter()
-            .chain(INTRINSIC_TAGS)
-            .map(|t| t.to_string())
-            .collect(),
-    };
-    Ok(axum::Json(response))
+#[tracing::instrument(skip(state, tenant_ctx, params))]
+pub async fn search_tags<S: RouterState>(
+    state: State<S>,
+    tenant_ctx: TenantContextExtractor,
+    Query(params): Query<TagSearchParams>,
+) -> Result<axum::Json<tempo_api::TagSearchResponse>, ApiError> {
+    let names = fetch_tag_names(&state, &tenant_ctx.0, None, params.start, params.end).await?;
+    Ok(axum::Json(tempo_api::TagSearchResponse {
+        tag_names: flatten_tag_names(&names),
+    }))
 }
 
 /// GET /api/search/tag/:tag_name/values
 ///
-/// Backed by real data: distinct values from the tenant's traces table
-/// for supported tags, static status values for `status`, and an
-/// explicit 501 for tags that are not queryable yet.
+/// Backed by real data: distinct values observed in the tenant's traces
+/// within the window, for any tag — dedicated columns, map-stored
+/// attributes, and the static `status`/`kind` enums alike. An unknown or
+/// unobserved tag answers `200` with an empty list, never `501`.
 #[utoipa::path(
     get,
     path = "/tempo/api/search/tag/{tag_name}/values",
@@ -1184,7 +1251,6 @@ pub async fn search_tags() -> Result<axum::Json<tempo_api::TagSearchResponse>, A
     responses(
         (status = 200, description = "Values for the tag", body = tempo_api::TagValuesResponse),
         (status = 400, description = "start/end are not unix-second timestamps"),
-        (status = 501, description = "Tag not queryable yet"),
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
@@ -1199,54 +1265,84 @@ pub async fn search_tag_values<S: RouterState>(
     Ok(axum::Json(tempo_api::TagValuesResponse { tag_values }))
 }
 
-async fn tag_values_for<S: RouterState>(
-    state: &State<S>,
-    tenant_ctx: &common::auth::TenantContext,
-    tag_name: &str,
-    start: Option<i64>,
-    end: Option<i64>,
-) -> Result<Vec<String>, ApiError> {
-    if let Some(column) = tag_value_column(tag_name) {
-        return distinct_column_values(&state.0, tenant_ctx, column, start, end).await;
-    }
-    let unscoped = tag_name.trim_start_matches('.');
-    if unscoped == "status" || unscoped == "intrinsic.status" {
-        return Ok(vec![
-            "ok".to_string(),
-            "error".to_string(),
-            "unset".to_string(),
-        ]);
-    }
-    // Attribute tag values require an index (#411); saying so beats an
-    // empty list that looks like "no data".
-    tracing::debug!(tag_name = %tag_name, "Tag value lookup not implemented for this tag");
-    Err(ApiError::new(
-        axum::http::StatusCode::NOT_IMPLEMENTED,
-        format!("tag value lookup is not implemented for tag '{tag_name}'"),
-    ))
-}
-
 /// GET /api/v2/search/tags?scope=<resource|span|intrinsic>
-#[tracing::instrument(skip_all)]
-pub async fn search_tags_v2(
-    Query(_params): Query<TagSearchV2Params>,
+#[utoipa::path(
+    get,
+    path = "/tempo/api/v2/search/tags",
+    tag = "traces",
+    security(("bearerAuth" = [])),
+    params(
+        ("scope" = Option<tempo_api::TagScope>, Query, description = "Restrict to one scope"),
+        ("start" = Option<i64>, Query, description = "Window start (unix seconds); default lookback is 1 hour"),
+        ("end" = Option<i64>, Query, description = "Window end (unix seconds); defaults to now"),
+    ),
+    responses(
+        (status = 200, description = "Searchable tag names, grouped by scope", body = tempo_api::v2::TagSearchResponse),
+        (status = 400, description = "start/end are not unix-second timestamps"),
+    )
+)]
+#[tracing::instrument(skip(state, tenant_ctx, params))]
+pub async fn search_tags_v2<S: RouterState>(
+    state: State<S>,
+    tenant_ctx: TenantContextExtractor,
+    Query(params): Query<TagSearchV2Params>,
 ) -> Result<axum::Json<tempo_api::v2::TagSearchResponse>, ApiError> {
-    let response = tempo_api::v2::TagSearchResponse {
-        scopes: vec![
+    let names = fetch_tag_names(
+        &state,
+        &tenant_ctx.0,
+        params.scope,
+        params.start,
+        params.end,
+    )
+    .await?;
+    let scopes = match params.scope {
+        Some(tempo_api::TagScope::Resource) => vec![tempo_api::v2::TagSearchScope {
+            scope: "resource".to_string(),
+            tags: names.resource,
+        }],
+        Some(tempo_api::TagScope::Span) => vec![tempo_api::v2::TagSearchScope {
+            scope: "span".to_string(),
+            tags: names.span,
+        }],
+        Some(tempo_api::TagScope::Intrinsic) => vec![tempo_api::v2::TagSearchScope {
+            scope: "intrinsic".to_string(),
+            tags: names.intrinsic,
+        }],
+        None => vec![
             tempo_api::v2::TagSearchScope {
                 scope: "resource".to_string(),
-                tags: RESOURCE_TAGS.iter().map(|t| t.to_string()).collect(),
+                tags: names.resource,
+            },
+            tempo_api::v2::TagSearchScope {
+                scope: "span".to_string(),
+                tags: names.span,
             },
             tempo_api::v2::TagSearchScope {
                 scope: "intrinsic".to_string(),
-                tags: INTRINSIC_TAGS.iter().map(|t| t.to_string()).collect(),
+                tags: names.intrinsic,
             },
         ],
     };
-    Ok(axum::Json(response))
+    Ok(axum::Json(tempo_api::v2::TagSearchResponse { scopes }))
 }
 
 /// GET /api/v2/search/tag/{tag_name}/values
+#[utoipa::path(
+    get,
+    path = "/tempo/api/v2/search/tag/{tag_name}/values",
+    tag = "traces",
+    security(("bearerAuth" = [])),
+    params(
+        ("tag_name" = String, Path, description = "Scoped or unscoped tag name to fetch values for"),
+        ("start" = Option<i64>, Query, description = "Window start (unix seconds)"),
+        ("end" = Option<i64>, Query, description = "Window end (unix seconds)"),
+        ("q" = Option<String>, Query, description = "Accepted for Tempo API compatibility; unused"),
+    ),
+    responses(
+        (status = 200, description = "Values for the tag", body = tempo_api::v2::TagValuesResponse),
+        (status = 400, description = "start/end are not unix-second timestamps"),
+    )
+)]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
 pub async fn search_tag_values_v2<S: RouterState>(
     state: State<S>,
@@ -1487,14 +1583,24 @@ mod tests {
             );
         }
 
+        /// Every tag now routes through the querier's discovery ticket —
+        /// there is no more "unqueryable" tag that 501s; without a querier
+        /// available the honest answer is 503, same as any other tag.
         #[tokio::test]
-        async fn unqueryable_tag_values_explain_themselves() {
-            let (status, json) = get_error("/tempo/api/search/tag/http.method/values").await;
-            assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-            assert!(
-                json["error"].as_str().unwrap().contains("http.method"),
-                "message should name the tag: {json}"
-            );
+        async fn previously_unqueryable_tags_now_reach_the_querier() {
+            let (status, _) = get_error("/tempo/api/search/tag/http.method/values").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        }
+
+        /// Tag-name discovery (v1 and v2) also goes through the querier now,
+        /// so it fails the same way as any other discovery read when one is
+        /// unavailable — it used to answer a hardcoded 200.
+        #[tokio::test]
+        async fn tag_names_without_a_querier_explains_itself() {
+            let (status, _) = get_error("/tempo/api/search/tags").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            let (status, _) = get_error("/tempo/api/v2/search/tags").await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         }
 
         #[tokio::test]
@@ -1506,69 +1612,83 @@ mod tests {
         }
     }
 
-    /// Tag-value discovery must never scan the whole traces table (#929):
-    /// the SQL needs a bound on the `timestamp` partition column (so
-    /// Iceberg hour partitions prune) plus the precise
-    /// `start_time_unix_nano` row bound, mirroring the trace lookup path.
-    #[test]
-    fn distinct_values_sql_bounds_scan_by_time_window() {
-        let sql = distinct_values_sql("acme", "prod", "service_name", 1_000, 2_000).unwrap();
-        assert!(
-            sql.contains("SELECT DISTINCT \"service_name\" FROM \"acme\".\"prod\".\"traces\""),
-            "unexpected projection/table: {sql}"
-        );
-        assert!(
-            sql.contains("\"timestamp\" >= to_timestamp_seconds(1000)")
-                && sql.contains("\"timestamp\" <= to_timestamp_seconds(2000)"),
-            "missing partition-column bounds: {sql}"
-        );
-        assert!(
-            sql.contains("start_time_unix_nano >= 1000000000000")
-                && sql.contains("start_time_unix_nano <= 2000000000000"),
-            "missing precise row bounds: {sql}"
-        );
-        assert!(
-            sql.ends_with("ORDER BY 1 LIMIT 1000"),
-            "missing order/limit: {sql}"
-        );
-    }
-
     /// #920 class of bug: a caller that sends milliseconds must get a 400,
     /// not a silently empty (or absurd) window. Mirrors the querier's
     /// `unix_seconds_to_nanos` guard.
     #[test]
-    fn distinct_values_sql_rejects_millisecond_timestamps() {
-        let err = distinct_values_sql(
-            "acme",
-            "prod",
-            "service_name",
-            1_753_000_000_000, // unix millis, not seconds
-            1_753_000_060_000,
-        )
-        .unwrap_err();
+    fn tag_window_seconds_to_nanos_rejects_millisecond_timestamps() {
+        let err = tag_window_seconds_to_nanos("start", 1_753_000_000_000).unwrap_err();
         assert!(
             err.contains("seconds"),
             "error must name the expected unit: {err}"
         );
+        assert_eq!(
+            tag_window_seconds_to_nanos("start", 1_753_000_000).unwrap(),
+            1_753_000_000_000_000_000
+        );
     }
 
-    /// Absent `start`/`end` must fall back to a bounded lookback window,
+    /// Absent `start`/`end` must fall back to a bounded lookback window
+    /// (#929) — the same 1-hour default as the Loki metadata endpoints,
     /// never an unbounded full-table scan.
     #[test]
-    fn tag_values_window_defaults_to_bounded_lookback() {
+    fn discovery_window_defaults_to_bounded_lookback() {
         let now = 1_754_000_000;
         assert_eq!(
-            resolve_tag_values_window(None, None, now),
-            (now - DEFAULT_TAG_VALUES_WINDOW_SECS, now)
+            resolve_discovery_window(None, None, now),
+            (now - DEFAULT_DISCOVERY_WINDOW_SECS, now)
         );
-        assert_eq!(resolve_tag_values_window(Some(5), Some(10), now), (5, 10));
+        assert_eq!(resolve_discovery_window(Some(5), Some(10), now), (5, 10));
         // end-only: the default start trails the supplied end
         assert_eq!(
-            resolve_tag_values_window(None, Some(1_000_000), now),
-            (1_000_000 - DEFAULT_TAG_VALUES_WINDOW_SECS, 1_000_000)
+            resolve_discovery_window(None, Some(1_000_000), now),
+            (1_000_000 - DEFAULT_DISCOVERY_WINDOW_SECS, 1_000_000)
         );
         // start-only: end defaults to now
-        assert_eq!(resolve_tag_values_window(Some(7), None, now), (7, now));
+        assert_eq!(resolve_discovery_window(Some(7), None, now), (7, now));
+    }
+
+    /// A scope prefix (or a bare leading dot) resolves to the same
+    /// unscoped key the querier expects; an already-unscoped name passes
+    /// through unchanged.
+    #[test]
+    fn normalize_tag_name_strips_scope_prefixes() {
+        assert_eq!(normalize_tag_name("resource.service.name"), "service.name");
+        assert_eq!(normalize_tag_name("span.http.route"), "http.route");
+        assert_eq!(normalize_tag_name(".status"), "status");
+        assert_eq!(normalize_tag_name("http.route"), "http.route");
+    }
+
+    /// The v1 (unscoped) tag-names endpoint flattens the three v2 scope
+    /// groups into one sorted, de-duplicated list.
+    #[test]
+    fn flatten_tag_names_sorts_and_dedupes_across_scopes() {
+        let names = TraceTagNamesWire {
+            resource: vec!["service.name".to_string(), "deployment.env".to_string()],
+            span: vec!["http.route".to_string()],
+            intrinsic: vec!["status".to_string(), "name".to_string()],
+        };
+        assert_eq!(
+            flatten_tag_names(&names),
+            vec![
+                "deployment.env".to_string(),
+                "http.route".to_string(),
+                "name".to_string(),
+                "service.name".to_string(),
+                "status".to_string(),
+            ]
+        );
+    }
+
+    /// The querier's discovery tickets encode their result as a single-row
+    /// JSON payload; a discovery batch with no rows (e.g. an empty Flight
+    /// stream) decodes to the type's default rather than erroring.
+    #[test]
+    fn decode_json_batch_defaults_on_empty_input() {
+        let decoded: TraceTagNamesWire = decode_json_batch(&[], "tags").unwrap();
+        assert!(decoded.resource.is_empty());
+        assert!(decoded.span.is_empty());
+        assert!(decoded.intrinsic.is_empty());
     }
 
     #[test]
@@ -1731,13 +1851,15 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn search_tag_values_for_unsupported_tag_is_not_implemented() {
-            // "duration" has no queryable column and isn't the synthetic
-            // "status" tag, so it must 501 without ever reaching a querier.
+        async fn search_tag_values_for_any_tag_now_reaches_the_querier() {
+            // "duration" has no dedicated column and isn't a static enum,
+            // but it no longer 501s — every tag routes through the
+            // querier's `trace_tag_values` ticket, so without one it is a
+            // 503 like any other tag.
             let app = test_app().await;
             assert_eq!(
                 authed_get(&app, "/tempo/api/search/tag/duration/values").await,
-                StatusCode::NOT_IMPLEMENTED
+                StatusCode::SERVICE_UNAVAILABLE
             );
         }
 
