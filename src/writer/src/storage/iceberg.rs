@@ -2,9 +2,9 @@ use crate::schema_transform::{
     transform_logs_v1_to_iceberg, transform_metrics_exponential_histogram_v1_to_iceberg,
     transform_metrics_gauge_v1_to_iceberg, transform_metrics_histogram_v1_to_iceberg,
     transform_metrics_sum_v1_to_iceberg, transform_metrics_summary_v1_to_iceberg,
-    transform_profiles_v1_to_iceberg, transform_trace_v1_to_v2,
+    transform_profiles_v1_to_iceberg, transform_trace_v1_to_v2, warm_trace_v1_to_v2_plan,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use common::CatalogManager;
 
 use datafusion::arrow::array::{RecordBatch, new_null_array};
@@ -74,6 +74,16 @@ impl IcebergTableWriter {
         dataset_id: String,
         table_name: String,
     ) -> Result<Self> {
+        // Resolve the trace v1->v2 materialization plan now, not on the
+        // first ingested batch: a bad extraction-rule reference fails
+        // table-writer construction with a clear error instead of
+        // panicking (and, under `panic = "abort"`, killing the process)
+        // mid-ingest.
+        if table_name == "traces" {
+            warm_trace_v1_to_v2_plan()
+                .context("Failed to build trace v1->v2 materialization plan")?;
+        }
+
         let table = catalog_manager
             .ensure_table(&tenant_id, &dataset_id, &table_name)
             .await?;

@@ -98,40 +98,148 @@ pub fn determine_wal_operation(signal_type: Option<&str>) -> common::wal::WalOpe
 }
 
 /// Transform a trace RecordBatch from v1 to v2 schema
-pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
-    let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("physical-v3")?;
-    let arrow_schema = create_arrow_schema_from_resolved(&v2_schema)?;
+/// A compiled column extraction rule: given the incoming v1 batch, produce
+/// the target v2 column. Always whole-batch-in, whole-array-out -- never
+/// per-row dispatch. A boxed closure (not a bare `fn` pointer) because
+/// field-parameterized rules (e.g. "read this UInt64 column, whichever one,
+/// cast to Int64") need to capture the source column name.
+type Extractor = Box<dyn Fn(&RecordBatch) -> Result<ArrayRef> + Send + Sync>;
 
-    // Debug logging to understand the schema mismatch
-    tracing::debug!(
-        "Transforming v1 batch with {} columns to v2 with {} expected fields",
-        batch.num_columns(),
-        v2_schema.fields.len()
-    );
-    tracing::debug!(
-        "v1 columns: {:?}",
-        batch
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| f.name())
-            .collect::<Vec<_>>()
-    );
-    tracing::debug!(
-        "v2 expected fields: {:?}",
-        v2_schema.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
-    );
+/// The compiled v1->v2 materialization plan: one extractor per target
+/// column, in target-schema field order, resolved once and reused for
+/// every batch.
+struct TraceV1ToV2Plan {
+    schema: Arc<Schema>,
+    extractors: Vec<Extractor>,
+}
 
-    let mut new_columns: Vec<ArrayRef> = Vec::new();
+fn direct_extractor(name: &str) -> Extractor {
+    let name = name.to_string();
+    Box::new(move |batch| get_column_by_name(batch, &name))
+}
 
-    // Process each v2 field
+fn nullable_int32_extractor(name: &str) -> Extractor {
+    let name = name.to_string();
+    Box::new(move |batch| get_column_by_name_or_null(batch, &name, &DataType::Int32))
+}
+
+fn nullable_int64_extractor(name: &str) -> Extractor {
+    let name = name.to_string();
+    Box::new(move |batch| get_column_by_name_or_null(batch, &name, &DataType::Int64))
+}
+
+/// Reads a same-named source column and casts UInt64 -> Int64 (Iceberg has
+/// no unsigned type). Also used for a renamed source (`duration_nanos` <-
+/// `duration_nano`) by passing the v1 source name instead of the target's
+/// own name.
+fn cast_uint64_to_int64_extractor(source_name: &str) -> Extractor {
+    let source_name = source_name.to_string();
+    Box::new(move |batch| {
+        let col = get_column_by_name(batch, &source_name)?;
+        let uint_array = col
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or_else(|| anyhow!("{source_name} is not UInt64Array"))?;
+        let values: Vec<Option<i64>> = (0..uint_array.len())
+            .map(|i| {
+                if uint_array.is_null(i) {
+                    None
+                } else {
+                    Some(uint_array.value(i) as i64)
+                }
+            })
+            .collect();
+        Ok(Arc::new(Int64Array::from(values)) as ArrayRef)
+    })
+}
+
+fn serialize_list_extractor(name: &'static str) -> Extractor {
+    Box::new(move |batch| {
+        let col = get_column_by_name(batch, name)?;
+        serialize_list_array_to_json_strings(&col, batch.num_rows(), name)
+    })
+}
+
+fn timestamp_from_start_time_extractor() -> Extractor {
+    Box::new(|batch| {
+        let start_times = get_column_by_name(batch, "start_time_unix_nano")?;
+        let uint_array = start_times
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or_else(|| anyhow!("start_time_unix_nano is not UInt64Array"))?;
+        let timestamps: Vec<Option<i64>> = (0..uint_array.len())
+            .map(|i| {
+                if uint_array.is_null(i) {
+                    None
+                } else {
+                    Some(uint_array.value(i) as i64)
+                }
+            })
+            .collect();
+        Ok(Arc::new(TimestampNanosecondArray::from(timestamps)) as ArrayRef)
+    })
+}
+
+fn date_day_from_start_time_extractor() -> Extractor {
+    Box::new(|batch| {
+        let start_times = get_column_by_name(batch, "start_time_unix_nano")?;
+        let uint_array = start_times
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or_else(|| anyhow!("start_time_unix_nano is not UInt64Array"))?;
+        let dates: Vec<Option<i32>> = (0..uint_array.len())
+            .map(|i| {
+                let nanos = uint_array.value(i);
+                let secs = (nanos / 1_000_000_000) as i64;
+                let dt = DateTime::from_timestamp(secs, 0)?;
+                Some((dt.naive_utc().date().num_days_from_ce() - 719163) as i32)
+            })
+            .collect();
+        Ok(Arc::new(Date32Array::from(dates)) as ArrayRef)
+    })
+}
+
+fn hour_from_start_time_extractor() -> Extractor {
+    Box::new(|batch| {
+        let start_times = get_column_by_name(batch, "start_time_unix_nano")?;
+        let uint_array = start_times
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or_else(|| anyhow!("start_time_unix_nano is not UInt64Array"))?;
+        let hours: Vec<Option<i32>> = (0..uint_array.len())
+            .map(|i| {
+                let nanos = uint_array.value(i);
+                let secs = (nanos / 1_000_000_000) as i64;
+                let dt = DateTime::from_timestamp(secs, 0)?;
+                Some(dt.hour() as i32)
+            })
+            .collect();
+        Ok(Arc::new(Int32Array::from(hours)) as ArrayRef)
+    })
+}
+
+/// Resolves the compiled plan for the current traces schema version.
+fn build_trace_v1_to_v2_plan() -> Result<TraceV1ToV2Plan> {
+    let v2_schema =
+        SCHEMA_DEFINITIONS.resolve_trace_schema(SCHEMA_DEFINITIONS.current_trace_version())?;
+    build_trace_v1_to_v2_plan_for(&v2_schema)
+}
+
+/// Selection logic mirrors what was previously an inline per-batch match
+/// in `transform_trace_v1_to_v2` -- moved here so it runs once, not once
+/// per batch. Returns `Err` (never panics) on a field with no matching
+/// rule, so a bad rule reference fails at plan construction, not
+/// mid-ingest. Split out from [`build_trace_v1_to_v2_plan`] so tests can
+/// exercise selection against a fabricated schema, not just the real one.
+fn build_trace_v1_to_v2_plan_for(v2_schema: &ResolvedSchema) -> Result<TraceV1ToV2Plan> {
+    let schema = create_arrow_schema_from_resolved(v2_schema)?;
+
+    let mut extractors = Vec::with_capacity(v2_schema.fields.len());
     for field in &v2_schema.fields {
-        let column = match field.name.as_str() {
+        let extractor: Extractor = match field.name.as_str() {
             // Direct mappings (same name in v1 and v2)
             "trace_id" | "span_id" | "parent_span_id" | "service_name" | "span_kind"
-            | "status_code" | "status_message" | "is_root" => {
-                get_column_by_name(&batch, &field.name)?
-            }
+            | "status_code" | "status_message" | "is_root" => direct_extractor(&field.name),
 
             // #1208 columns: nullable, and the column itself may be absent
             // entirely from the incoming v1 batch -- a v1 producer older
@@ -139,161 +247,90 @@ pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result
             // fixture building a wire batch by hand) must not be rejected
             // wholesale for it. Missing means "all null", same as any row
             // whose value happens to be null.
-            "span_kind_number" | "status_code_number" => {
-                get_column_by_name_or_null(&batch, &field.name, &DataType::Int32)?
-            }
+            "span_kind_number" | "status_code_number" => nullable_int32_extractor(&field.name),
             "dropped_attributes_count" | "dropped_events_count" | "dropped_links_count" => {
-                get_column_by_name_or_null(&batch, &field.name, &DataType::Int64)?
+                nullable_int64_extractor(&field.name)
             }
 
             // UInt64 fields that need to be converted to Int64 for Iceberg compatibility
             "start_time_unix_nano" | "end_time_unix_nano" => {
-                let col = get_column_by_name(&batch, &field.name)?;
-                let uint_array = col
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .ok_or_else(|| anyhow!("{} is not UInt64Array", field.name))?;
-
-                let int_values: Vec<Option<i64>> = (0..uint_array.len())
-                    .map(|i| {
-                        if uint_array.is_null(i) {
-                            None
-                        } else {
-                            Some(uint_array.value(i) as i64)
-                        }
-                    })
-                    .collect();
-
-                Arc::new(Int64Array::from(int_values))
+                cast_uint64_to_int64_extractor(&field.name)
             }
 
             // Complex types converted to JSON strings
-            "events" => {
-                let col = get_column_by_name(&batch, "events")?;
-                serialize_list_array_to_json_strings(&col, batch.num_rows(), "events")?
-            }
-            "links" => {
-                let col = get_column_by_name(&batch, "links")?;
-                serialize_list_array_to_json_strings(&col, batch.num_rows(), "links")?
-            }
+            "events" => serialize_list_extractor("events"),
+            "links" => serialize_list_extractor("links"),
 
             // Renamed fields
-            "span_name" => get_column_by_name(&batch, "name")?,
-            "duration_nanos" => {
-                // Convert UInt64 to Int64 for Iceberg compatibility
-                let col = get_column_by_name(&batch, "duration_nano")?;
-                let uint_array = col
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .ok_or_else(|| anyhow!("duration_nano is not UInt64Array"))?;
+            "span_name" => direct_extractor("name"),
+            "duration_nanos" => cast_uint64_to_int64_extractor("duration_nano"),
+            "span_attributes" => direct_extractor("attributes_json"),
+            "resource_attributes" => direct_extractor("resource_json"),
 
-                let int_values: Vec<Option<i64>> = (0..uint_array.len())
-                    .map(|i| {
-                        if uint_array.is_null(i) {
-                            None
-                        } else {
-                            Some(uint_array.value(i) as i64)
-                        }
-                    })
-                    .collect();
+            // Computed fields
+            "timestamp" => timestamp_from_start_time_extractor(),
+            "date_day" => date_day_from_start_time_extractor(),
+            "hour" => hour_from_start_time_extractor(),
 
-                Arc::new(Int64Array::from(int_values))
-            }
-            "span_attributes" => get_column_by_name(&batch, "attributes_json")?,
-            "resource_attributes" => get_column_by_name(&batch, "resource_json")?,
-
-            // New computed fields
-            "timestamp" => {
-                // Copy from start_time_unix_nano as TimestampNanosecondArray
-                let start_times = get_column_by_name(&batch, "start_time_unix_nano")?;
-                let uint_array = start_times
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .ok_or_else(|| anyhow!("start_time_unix_nano is not UInt64Array"))?;
-
-                let timestamps: Vec<Option<i64>> = (0..uint_array.len())
-                    .map(|i| {
-                        if uint_array.is_null(i) {
-                            None
-                        } else {
-                            // Unix nanoseconds should fit in i64
-                            Some(uint_array.value(i) as i64)
-                        }
-                    })
-                    .collect();
-
-                Arc::new(TimestampNanosecondArray::from(timestamps))
-            }
-
-            "date_day" => {
-                // Extract date from start_time_unix_nano
-                let start_times = get_column_by_name(&batch, "start_time_unix_nano")?;
-                let uint_array = start_times
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .ok_or_else(|| anyhow!("start_time_unix_nano is not UInt64Array"))?;
-
-                let dates: Vec<Option<i32>> = (0..uint_array.len())
-                    .map(|i| {
-                        let nanos = uint_array.value(i);
-                        let secs = (nanos / 1_000_000_000) as i64;
-                        let dt = DateTime::from_timestamp(secs, 0)?;
-                        // Days since Unix epoch
-                        Some((dt.naive_utc().date().num_days_from_ce() - 719163) as i32)
-                    })
-                    .collect();
-
-                Arc::new(Date32Array::from(dates))
-            }
-
-            "hour" => {
-                // Extract hour from start_time_unix_nano
-                let start_times = get_column_by_name(&batch, "start_time_unix_nano")?;
-                let uint_array = start_times
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .ok_or_else(|| anyhow!("start_time_unix_nano is not UInt64Array"))?;
-
-                let hours: Vec<Option<i32>> = (0..uint_array.len())
-                    .map(|i| {
-                        let nanos = uint_array.value(i);
-                        let secs = (nanos / 1_000_000_000) as i64;
-                        let dt = DateTime::from_timestamp(secs, 0)?;
-                        Some(dt.hour() as i32)
-                    })
-                    .collect();
-
-                Arc::new(Int32Array::from(hours))
-            }
-
-            // Scope and resource metadata fields - now present in v1 schema
+            // Scope and resource metadata fields - present in v1 schema
             "trace_state"
             | "resource_schema_url"
             | "scope_name"
             | "scope_version"
             | "scope_schema_url"
-            | "scope_attributes" => get_column_by_name(&batch, &field.name)?,
+            | "scope_attributes" => direct_extractor(&field.name),
 
-            _ => return Err(anyhow!("Unknown field in v2 schema: {}", field.name)),
+            other => return Err(anyhow!("Unknown field in v2 schema: {other}")),
         };
+        extractors.push(extractor);
+    }
 
-        new_columns.push(column);
+    Ok(TraceV1ToV2Plan { schema, extractors })
+}
+
+static TRACE_V1_TO_V2_PLAN: std::sync::OnceLock<TraceV1ToV2Plan> = std::sync::OnceLock::new();
+
+/// Eagerly builds and caches the trace v1->v2 materialization plan. Called
+/// once at writer startup (`IcebergTableWriter::new`, scoped to the traces
+/// table) so a bad extraction-rule reference fails the process before it
+/// serves traffic, rather than on the first ingested batch under
+/// `panic = "abort"`.
+pub fn warm_trace_v1_to_v2_plan() -> Result<()> {
+    trace_v1_to_v2_plan().map(|_| ())
+}
+
+fn trace_v1_to_v2_plan() -> Result<&'static TraceV1ToV2Plan> {
+    if let Some(plan) = TRACE_V1_TO_V2_PLAN.get() {
+        return Ok(plan);
+    }
+    let plan = build_trace_v1_to_v2_plan()?;
+    let _ = TRACE_V1_TO_V2_PLAN.set(plan);
+    Ok(TRACE_V1_TO_V2_PLAN
+        .get()
+        .expect("just initialized above, or by a racing thread's successful set()"))
+}
+
+pub fn transform_trace_v1_to_v2(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
+    let plan = trace_v1_to_v2_plan()?;
+
+    let mut new_columns: Vec<ArrayRef> = Vec::with_capacity(plan.extractors.len());
+    for extractor in &plan.extractors {
+        new_columns.push(extractor(&batch)?);
     }
 
     // Promote configured attribute keys into `label_<key>` columns (dropped
     // by coercion for tables that predate them).
     let (label_fields, label_columns) =
         materialized_label_columns(&batch, batch.num_rows(), labels)?;
-    let out_schema =
-        extend_schema_with_labels(arrow_schema, label_fields, &mut new_columns, label_columns);
+    let out_schema = extend_schema_with_labels(
+        plan.schema.clone(),
+        label_fields,
+        &mut new_columns,
+        label_columns,
+    );
 
     let result = RecordBatch::try_new(out_schema, new_columns)
         .map_err(|e| anyhow!("Failed to create transformed RecordBatch: {}", e))?;
-
-    tracing::debug!(
-        "Transformation complete: created v2 batch with {} columns",
-        result.num_columns()
-    );
 
     Ok(result)
 }
@@ -2332,6 +2369,193 @@ mod tests {
                 "missing column '{name}' should read as null, not error"
             );
         }
+    }
+
+    #[test]
+    fn build_trace_v1_to_v2_plan_for_errors_on_an_unregistered_field() {
+        use common::schema::schema_parser::ResolvedField;
+
+        let bogus_schema = ResolvedSchema {
+            version: "test-only".to_string(),
+            description: "fixture with a field no extraction rule covers".to_string(),
+            fields: vec![ResolvedField {
+                name: "totally_unregistered_field".to_string(),
+                field_type: "string".to_string(),
+                required: false,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+
+        let Err(err) = build_trace_v1_to_v2_plan_for(&bogus_schema) else {
+            panic!("a field with no matching extraction rule must fail plan construction");
+        };
+        assert!(
+            err.to_string().contains("totally_unregistered_field"),
+            "error should name the offending field: {err}"
+        );
+    }
+
+    #[test]
+    fn trace_v1_to_v2_plan_is_built_once_and_reused() {
+        // OnceLock reuse, proven by pointer identity rather than a call
+        // counter -- the plan is a shared process-wide static regardless of
+        // test execution order, so this must hold no matter which test
+        // (this one or `warm_trace_v1_to_v2_plan` elsewhere) initializes it
+        // first.
+        let first = trace_v1_to_v2_plan().expect("plan should build");
+        let second = trace_v1_to_v2_plan().expect("plan should build");
+        assert!(
+            std::ptr::eq(first, second),
+            "repeated calls must reuse the cached plan, not rebuild it"
+        );
+    }
+
+    #[test]
+    fn warm_trace_v1_to_v2_plan_succeeds_against_the_real_schema() {
+        warm_trace_v1_to_v2_plan().expect("the real current traces schema must resolve a plan");
+    }
+
+    #[test]
+    fn transform_trace_v1_to_v2_produces_the_complete_expected_physical_v3_batch() {
+        // Full-batch golden check (CodeRabbit review, PR #1230): schema
+        // field names/order/types/nullability, not just a hand-picked
+        // values/types/nullability subset for a few fields -- a plan bug
+        // that reorders or drops a field would not be caught by checking
+        // individual field values alone.
+        use common::flight::conversion::otlp_traces_to_arrow;
+        use datafusion::arrow::datatypes::{DataType, TimeUnit};
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::{
+            ResourceSpans, ScopeSpans, Span as OtelSpan, Status,
+        };
+
+        let span = OtelSpan {
+            trace_id: vec![0xab; 16],
+            span_id: vec![0xcd; 8],
+            parent_span_id: vec![],
+            name: "checkout".to_string(),
+            kind: 2, // Server
+            start_time_unix_nano: 1_700_000_000_000_000_000,
+            end_time_unix_nano: 1_700_000_000_100_000_000,
+            attributes: vec![KeyValue {
+                key: "http.method".to_string(),
+                value: Some(AnyValue {
+                    value: Some(Value::StringValue("GET".to_string())),
+                }),
+                ..Default::default()
+            }],
+            dropped_attributes_count: 3,
+            events: vec![],
+            dropped_events_count: 5,
+            links: vec![],
+            dropped_links_count: 7,
+            status: Some(Status {
+                code: 2, // Error
+                message: "boom".to_string(),
+            }),
+            flags: 0,
+            trace_state: String::new(),
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("checkout-svc".to_string())),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let wire_batch = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+        let v2_batch = transform_trace_v1_to_v2(wire_batch, &[]).expect("transform should succeed");
+
+        // Expected physical-v3 field order: v1 base (renamed/typed per v2),
+        // then v2's computed additions, then v3's numeric additions.
+        let expected: &[(&str, DataType, bool)] = &[
+            ("trace_id", DataType::Utf8, false),
+            ("span_id", DataType::Utf8, false),
+            ("parent_span_id", DataType::Utf8, true),
+            ("span_name", DataType::Utf8, false),
+            ("service_name", DataType::Utf8, false),
+            ("start_time_unix_nano", DataType::Int64, false),
+            ("end_time_unix_nano", DataType::Int64, false),
+            ("duration_nanos", DataType::Int64, false),
+            ("span_kind", DataType::Utf8, false),
+            ("status_code", DataType::Utf8, false),
+            ("status_message", DataType::Utf8, true),
+            ("is_root", DataType::Boolean, false),
+            ("span_attributes", DataType::Utf8, true),
+            ("resource_attributes", DataType::Utf8, true),
+            ("events", DataType::Utf8, true),
+            ("links", DataType::Utf8, true),
+            ("trace_state", DataType::Utf8, true),
+            ("resource_schema_url", DataType::Utf8, true),
+            ("scope_name", DataType::Utf8, true),
+            ("scope_version", DataType::Utf8, true),
+            ("scope_schema_url", DataType::Utf8, true),
+            ("scope_attributes", DataType::Utf8, true),
+            (
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            ("date_day", DataType::Date32, false),
+            ("hour", DataType::Int32, false),
+            ("span_kind_number", DataType::Int32, true),
+            ("status_code_number", DataType::Int32, true),
+            ("dropped_attributes_count", DataType::Int64, true),
+            ("dropped_events_count", DataType::Int64, true),
+            ("dropped_links_count", DataType::Int64, true),
+        ];
+
+        let batch_schema = v2_batch.schema();
+        let actual: Vec<(String, DataType, bool)> = batch_schema
+            .fields()
+            .iter()
+            .map(|f| (f.name().clone(), f.data_type().clone(), f.is_nullable()))
+            .collect();
+        assert_eq!(
+            actual,
+            expected
+                .iter()
+                .map(|(n, t, nu)| (n.to_string(), t.clone(), *nu))
+                .collect::<Vec<_>>(),
+            "full physical-v3 schema (names, order, types, nullability) must match exactly"
+        );
+
+        assert_eq!(v2_batch.num_rows(), 1);
+        let get_str = |name: &str| {
+            let (idx, _) = v2_batch.schema().column_with_name(name).unwrap();
+            v2_batch
+                .column(idx)
+                .as_any()
+                .downcast_ref::<datafusion::arrow::array::StringArray>()
+                .unwrap()
+                .value(0)
+                .to_string()
+        };
+        assert_eq!(get_str("span_name"), "checkout", "renamed from v1's `name`");
+        assert_eq!(get_str("service_name"), "checkout-svc");
+        assert!(
+            get_str("span_attributes").contains("http.method"),
+            "renamed from v1's `attributes_json`"
+        );
     }
 
     #[test]
