@@ -1,6 +1,6 @@
 ## Purpose
 
-Defines the Model Context Protocol surface SignalDB exposes to AI agents: how they authenticate, which read/exploration tools and schema resources they can use, and how those calls stay scoped to the caller's tenant.
+Defines the Model Context Protocol surface SignalDB exposes to AI agents: how they authenticate, which read/exploration tools they can use, and how those calls stay scoped to the caller's tenant.
 
 ## ADDED Requirements
 
@@ -8,22 +8,24 @@ Defines the Model Context Protocol surface SignalDB exposes to AI agents: how th
 
 The MCP server SHALL run as a standalone service whose only channel to SignalDB is the router's HTTP API via the generated SDK; it SHALL NOT be mounted as an in-process route on the router, and `/mcp` SHALL always be served on the MCP service's own port (a sidecar), never on the router's port. It SHALL expose the Model Context Protocol over Streamable HTTP at the `/mcp` path as its production transport, and SHALL additionally support a stdio transport for single-user local development. It SHALL respond to the MCP `initialize` handshake advertising `tools` and `resources` capabilities.
 
-Streamable HTTP SHALL carry credentials in the `Authorization` and `X-Tenant-ID` headers on every request, and each request is forwarded as that caller. The stdio transport has no per-request headers; the standalone binary MAY be given a single fixed credential (token + tenant, optional dataset) via CLI flags, environment, or config, which query tools use to reach the router. Started without a configured credential, stdio runs unauthenticated: `initialize`/`tools/list` still work, but a query tool returns a clear "stdio requires a configured credential" error rather than an opaque router auth failure. Stdio is documented as development-only, never for production.
+Streamable HTTP SHALL carry credentials in the `Authorization` and `X-Tenant-ID` headers on every request, and each request is forwarded as that caller. The stdio transport has no per-request headers and holds no credential of its own: `initialize`, `tools/list`, `prompts/list`, and `resources/list` work, but a tool that forwards the caller's credential to the router SHALL fail with a clear MCP error rather than reaching the router unauthenticated. Stdio is documented as development-only, never for production.
+
+The `resources` capability SHALL be advertised only because the compiled-in MCP Apps UI documents (the `get_trace` waterfall and `get_profile` flamegraph apps) are served over `resources/list` and `resources/read`; the server SHALL expose no tenant data as MCP resources.
 
 #### Scenario: Streamable HTTP initialize succeeds
 
 - **WHEN** an MCP client sends an `initialize` request over Streamable HTTP to `/mcp` with a valid tenant bearer token and `X-Tenant-ID` header
 - **THEN** the server completes the handshake and advertises `tools` and `resources` capabilities
 
-#### Scenario: Stdio without a configured credential
+#### Scenario: Stdio has no credential
 
-- **WHEN** the server is started in stdio mode with no configured credential
-- **THEN** an MCP client can `initialize` and list tools, but invoking a query tool returns a "stdio requires a configured credential" error
+- **WHEN** the server is started in stdio mode
+- **THEN** an MCP client can `initialize` and list tools, but invoking a tool that reads tenant data returns an MCP error, and no unauthenticated request reaches the router
 
-#### Scenario: Stdio with a configured credential
+#### Scenario: Resources hold only UI documents
 
-- **WHEN** the standalone binary is started in stdio mode with a token + tenant configured, and a query tool is invoked
-- **THEN** the tool reaches the router as that configured credential and returns results scoped to that tenant
+- **WHEN** an MCP client issues `resources/list`
+- **THEN** the result contains only the compiled-in MCP Apps UI documents and no tenant schema or data resource
 
 ### Requirement: Bearer authentication and credential forwarding
 
@@ -129,34 +131,4 @@ The MCP server SHALL expose read-only tools that wrap the SignalDB query API: tr
 #### Scenario: Tools are listed for any authenticated tenant session
 
 - **WHEN** any authenticated tenant session issues `tools/list`
-- **THEN** every advertised tool — the query/exploration tools and the discovery tools (`list_datasets`, `list_schemas`, `list_tables`) — is present in the returned list
-
-### Requirement: Discovery tools
-
-The MCP server SHALL expose discovery tools scoped to the caller's tenant: `list_datasets` (the datasets the caller may access), `list_schemas` (available signal schemas), and `list_tables` (tables in a dataset). Each SHALL return structured JSON and reflect only the caller's tenant. They take no privileged action and are visible to every authenticated tenant session.
-
-#### Scenario: List datasets returns only the caller's tenant
-
-- **WHEN** an authenticated session for tenant A calls `list_datasets`
-- **THEN** the tool returns tenant A's datasets and no other tenant's
-
-#### Scenario: List tables for a dataset
-
-- **WHEN** an authenticated session calls `list_tables` for one of its datasets
-- **THEN** the tool returns the tables in that dataset as structured JSON
-
-### Requirement: Schema resources
-
-The MCP server SHALL expose the caller's table schemas (traces, logs, metrics column definitions) as MCP resources readable via `resources/list` and `resources/read`, so agents can ground queries without issuing tool calls.
-
-**URI grammar.** Resource URIs SHALL follow a stable grammar `signaldb://schema/{dataset}/{table}` that identifies the dataset and table but SHALL NOT encode tenant identity — the tenant is taken from the authenticated session, never from the URI. `resources/read` SHALL resolve the schema using the authenticated tenant plus the dataset/table from the URI, and SHALL reject a URI that names an unknown or foreign dataset/table with a not-found error that reveals no schema data. A URI minted for one tenant therefore returns nothing when read by another.
-
-#### Scenario: List and read table schemas
-
-- **WHEN** an authenticated session issues `resources/list` and then `resources/read` for a `signaldb://schema/{dataset}/{table}` URI in its tenant
-- **THEN** the server returns the current column definitions for that table in the caller's tenant
-
-#### Scenario: Foreign-tenant URI reveals nothing
-
-- **WHEN** a session for tenant B issues `resources/read` for a URI whose dataset/table belongs only to tenant A
-- **THEN** the server returns a not-found error and no schema data, because the tenant comes from the session, not the URI
+- **THEN** every advertised query/exploration tool is present in the returned list
