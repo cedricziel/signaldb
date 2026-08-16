@@ -44,9 +44,23 @@ pub enum Decision {
     Return,
     /// Retry after waiting this long.
     Retry(Duration),
-    /// The failure was retryable but the wait the server asked for is
-    /// beyond the policy's ceiling; return it now rather than blocking.
-    FailFast,
+    /// The failure was retryable but the wait is beyond the policy's
+    /// ceiling; return it now rather than blocking. See [`FailFastCause`]
+    /// for which ceiling.
+    FailFast(FailFastCause),
+}
+
+/// Which ceiling [`RetryPolicy::decide`] tripped to produce
+/// [`Decision::FailFast`]. Carried on the decision itself (rather than
+/// re-derived by callers from `retry_after` and the policy) so it can never
+/// drift from the branch `decide` actually took.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailFastCause {
+    /// The server-stated `Retry-After` is beyond [`RetryPolicy::per_attempt_cap`].
+    PerAttemptCeiling,
+    /// The wait already spent on this call, plus this attempt's wait, would
+    /// exceed [`RetryPolicy::total_cap`].
+    TotalCap,
 }
 
 /// The retryable-or-not shape of one attempt, independent of transport types
@@ -168,14 +182,14 @@ impl RetryPolicy {
         let wait = match retry_after {
             Some(server_wait) => {
                 if server_wait > self.per_attempt_cap {
-                    return Decision::FailFast;
+                    return Decision::FailFast(FailFastCause::PerAttemptCeiling);
                 }
                 server_wait
             }
             None => self.backoff(attempt),
         };
         if waited.saturating_add(wait) > self.total_cap {
-            return Decision::FailFast;
+            return Decision::FailFast(FailFastCause::TotalCap);
         }
         Decision::Retry(wait)
     }
@@ -202,6 +216,19 @@ impl RetryPolicy {
 
     fn backoff(&self, attempt: u32) -> Duration {
         self.backoff_ceiling(attempt).mul_f64(rand::random::<f64>())
+    }
+}
+
+/// The log message for a [`Decision::FailFast`]'s [`FailFastCause`].
+#[cfg(feature = "tracing")]
+fn fail_fast_message(cause: FailFastCause) -> &'static str {
+    match cause {
+        FailFastCause::PerAttemptCeiling => {
+            "not retrying: server-stated wait exceeds the per-attempt policy ceiling"
+        }
+        FailFastCause::TotalCap => {
+            "not retrying: projected total wait exceeds the total policy ceiling"
+        }
     }
 }
 
@@ -337,16 +364,22 @@ pub async fn execute(
             .and_then(|r| retry_after_from_headers(r.headers()));
         match policy.decide(failure, &method, retry_after, attempt, waited) {
             Decision::Return => return result,
-            Decision::FailFast => {
+            Decision::FailFast(cause) => {
                 #[cfg(feature = "tracing")]
-                tracing::debug!(
-                    target: "signaldb_sdk::retry",
-                    operation = info.operation_id,
-                    attempt,
-                    retry_after_ms = retry_after.map(|d| d.as_millis() as u64),
-                    ?failure,
-                    "not retrying: server-stated wait exceeds the policy ceiling"
-                );
+                {
+                    let message = fail_fast_message(cause);
+                    tracing::debug!(
+                        target: "signaldb_sdk::retry",
+                        operation = info.operation_id,
+                        attempt,
+                        retry_after_ms = retry_after.map(|d| d.as_millis() as u64),
+                        waited_ms = waited.as_millis() as u64,
+                        ?failure,
+                        "{message}"
+                    );
+                }
+                #[cfg(not(feature = "tracing"))]
+                let _ = cause;
                 return result;
             }
             Decision::Retry(wait) => {
@@ -470,7 +503,7 @@ mod tests {
             1,
             Duration::from_secs(26),
         );
-        assert_eq!(d, Decision::FailFast);
+        assert_eq!(d, Decision::FailFast(FailFastCause::TotalCap));
     }
 
     #[test]
@@ -496,5 +529,33 @@ mod tests {
             p.decide(Failure::Status(429), &Method::GET, None, 1, Duration::ZERO),
             Decision::Retry(_)
         ));
+    }
+
+    #[test]
+    fn decide_reports_the_per_attempt_ceiling_when_retry_after_exceeds_it() {
+        let p = RetryPolicy::default();
+        let d = p.decide(
+            Failure::Status(429),
+            &Method::GET,
+            Some(p.per_attempt_cap + Duration::from_secs(1)),
+            1,
+            Duration::ZERO,
+        );
+        assert_eq!(d, Decision::FailFast(FailFastCause::PerAttemptCeiling));
+    }
+
+    #[test]
+    #[cfg(feature = "tracing")]
+    fn fail_fast_message_names_the_cause_it_is_given() {
+        assert!(
+            fail_fast_message(FailFastCause::PerAttemptCeiling).contains("per-attempt"),
+            "{}",
+            fail_fast_message(FailFastCause::PerAttemptCeiling)
+        );
+        assert!(
+            fail_fast_message(FailFastCause::TotalCap).contains("total"),
+            "{}",
+            fail_fast_message(FailFastCause::TotalCap)
+        );
     }
 }
