@@ -41,8 +41,8 @@ Lives in `tests-integration` (needs compactor + writer + generators to seed). Co
 
 ## 7. Per-PR compile guard
 
-- [ ] 7.1 Add a CI step running `cargo check --benches --features benchmarks` for each crate that actually has benches: `writer` (already has `benchmarks`), `common` (ingest + WAL), and `tests-integration` (querier read + compaction). Acceptor/compactor have no bench targets (their hot-path code is benched from `common`/`tests-integration`).
-- [ ] 7.2 Confirm the step fails when a bench target is deliberately broken, then revert the break.
+- [x] 7.1 No new step needed: `ci.yml`'s `cargo clippy --workspace --all-targets --all-features -- -D warnings` already type-checks every `[[bench]]` target behind the per-crate `benchmarks` feature (`common`, `writer`, `tests-integration`). Documented on the step itself. Acceptor/compactor have no bench targets (their hot-path code is benched from `common`/`tests-integration`).
+- [x] 7.2 Confirmed: a deliberately broken `common/benches/ingest_and_wal.rs` fails `cargo clippy -p common --all-targets --all-features -- -D warnings` with `could not compile common (bench "ingest_and_wal")`; break reverted.
 
 ## 8. Nightly run + trend tracking
 
@@ -52,7 +52,7 @@ Lives in `tests-integration` (needs compactor + writer + generators to seed). Co
 
 ## 9. CI cleanup
 
-- [ ] 9.1 Rename or remove the `performance-benchmark` matrix job in `.github/workflows/test-matrix.yml` so CI naming reflects that it runs ignored load tests, not Criterion.
+- [x] 9.1 Renamed the `performance-benchmark` matrix job in `.github/workflows/test-matrix.yml` to `load-tests` ("Ignored load tests") with a comment pointing at the real Criterion entry points.
 
 ## 10. Documentation
 

@@ -1,8 +1,11 @@
 name: Database & Deployment Testing Matrix
 
 # Extended testing matrix for comprehensive validation across database versions,
-# deployment scenarios, and performance benchmarks. Run manually when needed
+# deployment scenarios, and `#[ignore]`d load tests. Run manually when needed
 # for thorough testing before major releases or significant changes.
+#
+# Criterion benchmarks are NOT run here: they are compile-checked on every
+# core PR by ci.yml's clippy step and executed nightly by benchmarks.yml.
 
 on:
   workflow_dispatch:
@@ -206,8 +209,11 @@ jobs:
             ;;
         esac
 
-  performance-benchmark:
-    name: Performance Benchmarks
+  # Runs the `#[ignore]`d load tests under varying thread counts against each
+  # database backend. This is a load/soak sweep, not a benchmark — it produces
+  # no timings; the Criterion suites live behind `--features benchmarks`.
+  load-tests:
+    name: Ignored load tests
     runs-on: ubuntu-latest
     if: ${{ github.event.inputs.test_scope == 'full' }}
     strategy:
@@ -238,7 +244,7 @@ jobs:
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@v2
       with:
-        shared-key: "bench-${{ matrix.database }}-${{ matrix.load }}"
+        shared-key: "load-tests-${{ matrix.database }}-${{ matrix.load }}"
         save-if: ${{ github.ref == 'refs/heads/main' }}
         cache-on-failure: true
 
@@ -247,7 +253,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y protobuf-compiler
     
-    - name: Configure benchmark environment
+    - name: Configure load-test environment
       run: |
         mkdir -p .data
         if [ "${{ matrix.database }}" = "postgresql" ]; then
@@ -260,9 +266,9 @@ jobs:
       run: |
         cargo build --release --all-targets
     
-    - name: Run performance benchmarks
+    - name: Run ignored load tests
       run: |
-        echo "Running ${{ matrix.load }} load benchmarks with ${{ matrix.database }}"
+        echo "Running ${{ matrix.load }} load tests with ${{ matrix.database }}"
         case "${{ matrix.load }}" in
           light)
             cargo test --release --test '*' -- --test-threads=1 --ignored
