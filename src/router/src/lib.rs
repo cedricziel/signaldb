@@ -146,8 +146,15 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
                 if let Some(ctx) = req.extensions().get::<TenantContext>()
                     && let Err(e) = limiter.check_query(&ctx.tenant_id)
                 {
-                    tracing::warn!(tenant_id = %ctx.tenant_id, "Query request rate limited");
-                    return (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response();
+                    let retry_after_ms = e.retry_after_secs().saturating_mul(1_000);
+                    tracing::warn!(
+                        tenant_id = %ctx.tenant_id,
+                        surface = "query",
+                        retry_after_ms,
+                        "Query request rate limited"
+                    );
+                    common::self_monitoring::record_rate_limit_rejection("query", e.kind.as_str());
+                    return endpoints::api_error::ApiError::rate_limited(&e).into_response();
                 }
                 next.run(req).await
             }
@@ -402,14 +409,25 @@ mod tests {
         config
     }
 
-    async fn echo_request(app: &Router) -> StatusCode {
-        let request = Request::builder()
+    fn echo_request_builder() -> Request<Body> {
+        Request::builder()
             .uri("/tempo/api/echo")
             .header("authorization", "Bearer sk-test-key")
             .header("x-tenant-id", "acme")
             .body(Body::empty())
-            .unwrap();
-        app.clone().oneshot(request).await.unwrap().status()
+            .unwrap()
+    }
+
+    async fn echo_request(app: &Router) -> StatusCode {
+        app.clone()
+            .oneshot(echo_request_builder())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    async fn echo_request_response(app: &Router) -> axum::response::Response {
+        app.clone().oneshot(echo_request_builder()).await.unwrap()
     }
 
     #[tokio::test]
@@ -424,12 +442,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn query_rate_limit_answers_the_structured_429_envelope_with_headers() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let state = RouterAppState::new(catalog, test_config(Some(1)));
+        let app = create_router(state);
+
+        assert_eq!(echo_request(&app).await, StatusCode::OK);
+        let response = echo_request_response(&app).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+        let retry_after: u64 = response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .expect("Retry-After header present and numeric");
+        assert!(retry_after >= 1);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-ratelimit-limit")
+                .and_then(|v| v.to_str().ok()),
+            Some("1")
+        );
+        assert!(response.headers().get("x-ratelimit-burst").is_some());
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["errorType"], "rate_limited");
+        assert!(json["retryAfterMs"].as_u64().unwrap() >= 1_000);
+    }
+
+    #[tokio::test]
     async fn query_requests_unlimited_without_configured_limit() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let state = RouterAppState::new(catalog, test_config(None));
         let app = create_router(state);
 
         for _ in 0..50 {
+            assert_eq!(echo_request(&app).await, StatusCode::OK);
+        }
+    }
+
+    #[tokio::test]
+    async fn generous_default_burst_admits_an_interactive_fan_out() {
+        // Regression guard for the "generous defaults" requirement: a
+        // tenant limited to 100 req/s with the default burst (10s of
+        // budget) admits a 40-request fan-out (an Explore page load or an
+        // agent's multi-tool investigation) in one instant.
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = test_config(Some(100));
+        config.auth.default_limits.burst_seconds =
+            common::config::TenantLimits::default().burst_seconds;
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        for _ in 0..40 {
             assert_eq!(echo_request(&app).await, StatusCode::OK);
         }
     }

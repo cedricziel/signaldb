@@ -100,6 +100,7 @@ pub(crate) struct ManageError {
     operation_id = "manage_create_tenant",
     request_body = CreateTenantRequest,
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 201, description = "Tenant created", body = ManageCreatedTenant),
         (status = 400, description = "Validation error", body = ManageError),
         (status = 403, description = "Instance administrator required", body = ManageError),
@@ -199,6 +200,7 @@ pub(crate) struct DatasetResponse {
     operation_id = "manage_list_datasets",
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "List of datasets", body = [DatasetResponse]),
         (status = 403, description = "Forbidden", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
@@ -244,6 +246,7 @@ pub(crate) struct CreateDatasetRequest {
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     request_body = CreateDatasetRequest,
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 201, description = "Dataset created", body = DatasetResponse),
         (status = 400, description = "Validation error", body = ManageError),
         (status = 403, description = "Forbidden", body = ManageError),
@@ -285,6 +288,7 @@ pub(crate) async fn create_dataset<S: RouterState>(
         ("dataset_name" = String, Path, description = "Dataset name"),
     ),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 204, description = "Dataset deleted"),
         (status = 403, description = "Forbidden", body = ManageError),
         (status = 404, description = "Dataset not found", body = ManageError),
@@ -409,6 +413,7 @@ pub(crate) struct ManageCreatedApiKey {
     operation_id = "manage_list_api_keys",
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "List of API keys", body = [ApiKeyResponse]),
         (status = 403, description = "Forbidden", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
@@ -451,6 +456,7 @@ pub(crate) async fn list_api_keys<S: RouterState>(
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     request_body = CreateApiKeyRequest,
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 201, description = "API key created", body = ManageCreatedApiKey),
         (status = 400, description = "Dataset does not exist", body = ManageError),
         (status = 422, description = "Invalid or empty scopes", body = ManageError),
@@ -558,6 +564,7 @@ pub(crate) struct UpdateApiKeyRequest {
     ),
     request_body = UpdateApiKeyRequest,
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "API key updated", body = ApiKeyResponse),
         (status = 400, description = "Dataset does not exist", body = ManageError),
         (status = 403, description = "Forbidden", body = ManageError),
@@ -655,6 +662,7 @@ pub(crate) async fn update_api_key<S: RouterState>(
         ("key_id" = String, Path, description = "API key identifier"),
     ),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 204, description = "API key revoked"),
         (status = 403, description = "Forbidden", body = ManageError),
         (status = 404, description = "API key not found", body = ManageError),
@@ -709,6 +717,7 @@ pub(crate) struct MembershipResponse {
     operation_id = "manage_list_memberships",
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "List of memberships", body = [MembershipResponse]),
         (status = 403, description = "Forbidden", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
@@ -768,6 +777,7 @@ pub(crate) struct UpsertMembershipRequest {
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     request_body = UpsertMembershipRequest,
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Membership updated", body = MembershipResponse),
         (status = 403, description = "Forbidden", body = ManageError),
         (status = 404, description = "User not found", body = ManageError),
@@ -854,6 +864,7 @@ pub(crate) async fn upsert_membership<S: RouterState>(
         ("user_id" = String, Path, description = "User identifier"),
     ),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 204, description = "Membership removed"),
         (status = 400, description = "Cannot remove own membership", body = ManageError),
         (status = 403, description = "Forbidden", body = ManageError),
@@ -1023,6 +1034,7 @@ fn physical_schemas_for_source(
     tag = "schema",
     operation_id = "manage_get_schema",
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Logical and physical schema", body = ManageSchemaResponse),
         (status = 403, description = "Instance administrator required", body = ManageError),
     )

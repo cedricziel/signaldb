@@ -378,6 +378,7 @@ pub struct WhoamiIdentityResponse {
     responses(
         (status = 200, description = "Resolved authenticated tenant and dataset", body = WhoamiIdentityResponse),
         (status = 401, description = "Invalid or expired credential"),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 pub async fn whoami<S: RouterState>(

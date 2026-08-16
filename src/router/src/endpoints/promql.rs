@@ -94,6 +94,7 @@ pub struct MetadataParams {
     ),
     responses(
         (status = 200, description = "Prometheus range-query response (matrix)", body = serde_json::Value),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 #[tracing::instrument(
@@ -137,6 +138,7 @@ pub async fn query_range<S: RouterState>(
     ),
     responses(
         (status = 200, description = "Prometheus instant-query response (vector)", body = serde_json::Value),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 #[tracing::instrument(
@@ -179,6 +181,7 @@ pub async fn query<S: RouterState>(
     ),
     responses(
         (status = 200, description = "Known metric label names", body = serde_json::Value),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 pub async fn labels<S: RouterState>(
@@ -211,6 +214,7 @@ pub async fn labels<S: RouterState>(
     ),
     responses(
         (status = 200, description = "Distinct values for the label", body = serde_json::Value),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 pub async fn label_values<S: RouterState>(

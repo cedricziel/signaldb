@@ -260,6 +260,7 @@ fn clamp_limit(limit: Option<usize>) -> usize {
     tag = "schema",
     operation_id = "schema_list_registries",
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Registries visible to the tenant, precedence order", body = RegistryListResponse),
         (status = 403, description = "Missing schema:read scope", body = SchemaError),
     ),
@@ -285,6 +286,7 @@ pub async fn list_registries<S: RouterState>(
     operation_id = "schema_create_registry",
     request_body(content = Object, description = "Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type", content_type = "application/json"),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 201, description = "Registry created", body = RegistrySummary),
         (status = 400, description = "Unparseable document", body = SchemaError),
         (status = 403, description = "Missing schema:write scope", body = SchemaError),
@@ -322,6 +324,7 @@ pub async fn create_registry<S: RouterState>(
     operation_id = "schema_validate_registry",
     request_body(content = Object, description = "Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored", content_type = "application/json"),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Validation outcome (errors with paths, or resulting counts)", body = ValidationReport),
         (status = 400, description = "Unparseable document", body = SchemaError),
         (status = 403, description = "Missing schema:write scope", body = SchemaError),
@@ -354,6 +357,7 @@ pub async fn validate_registry<S: RouterState>(
     operation_id = "schema_get_registry",
     params(("namespace" = String, Path, description = "Registry namespace"), ("version" = String, Path, description = "Registry version")),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Registry summary and document", body = RegistryResponse),
         (status = 403, description = "Missing schema:read scope", body = SchemaError),
         (status = 404, description = "No such registry visible to the tenant", body = SchemaError),
@@ -392,6 +396,7 @@ pub async fn get_registry<S: RouterState>(
     params(("namespace" = String, Path, description = "Registry namespace"), ("version" = String, Path, description = "Registry version")),
     request_body(content = Object, description = "Replacement registry document; its name/version must match the path", content_type = "application/json"),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Registry replaced", body = RegistrySummary),
         (status = 400, description = "Unparseable document", body = SchemaError),
         (status = 403, description = "Missing schema:write scope", body = SchemaError),
@@ -435,6 +440,7 @@ pub async fn replace_registry<S: RouterState>(
     operation_id = "schema_delete_registry",
     params(("namespace" = String, Path, description = "Registry namespace"), ("version" = String, Path, description = "Registry version")),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 204, description = "Registry deleted"),
         (status = 403, description = "Missing schema:write scope", body = SchemaError),
         (status = 404, description = "No such custom registry", body = SchemaError),
@@ -476,6 +482,7 @@ pub async fn delete_registry<S: RouterState>(
     operation_id = "schema_search_attributes",
     params(SearchParams),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Prefix hits (and per-key resolutions when keys= is given)", body = AttributeSearchResponse),
         (status = 403, description = "Missing schema:read scope", body = SchemaError),
     ),
@@ -529,6 +536,7 @@ pub async fn search_attributes<S: RouterState>(
     operation_id = "schema_resolve_attribute",
     params(("key" = String, Path, description = "Attribute wire key, e.g. k8s.pod.uid")),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Every definition of the key across visible registries (empty when unknown)", body = AttributeResolution),
         (status = 403, description = "Missing schema:read scope", body = SchemaError),
     ),
@@ -559,6 +567,7 @@ pub async fn resolve_attribute<S: RouterState>(
     operation_id = "schema_search_entities",
     params(SearchParams),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Entity types whose name starts with the prefix", body = EntitySearchResponse),
         (status = 403, description = "Missing schema:read scope", body = SchemaError),
     ),
@@ -589,6 +598,7 @@ pub async fn search_entities<S: RouterState>(
     operation_id = "schema_resolve_entity",
     params(("name" = String, Path, description = "Entity type name, e.g. k8s.pod")),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Every definition of the entity across visible registries (empty when unknown)", body = EntityResolution),
         (status = 403, description = "Missing schema:read scope", body = SchemaError),
     ),
@@ -619,6 +629,7 @@ pub async fn resolve_entity<S: RouterState>(
     operation_id = "schema_search_metrics",
     params(SearchParams),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Metrics whose name starts with the prefix", body = MetricSearchResponse),
         (status = 403, description = "Missing schema:read scope", body = SchemaError),
     ),
@@ -649,6 +660,7 @@ pub async fn search_metrics<S: RouterState>(
     operation_id = "schema_resolve_metric",
     params(("name" = String, Path, description = "Metric name, e.g. k8s.pod.cpu.time")),
     responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Every definition of the metric across visible registries (empty when unknown)", body = MetricResolution),
         (status = 403, description = "Missing schema:read scope", body = SchemaError),
     ),

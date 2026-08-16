@@ -629,6 +629,7 @@ pub async fn echo() -> &'static str {
     responses(
         (status = 200, description = "The reconstructed trace", body = tempo_api::Trace),
         (status = 404, description = "Trace not found"),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 #[tracing::instrument(
@@ -849,7 +850,7 @@ fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> ApiErr
     responses(
         (status = 200, description = "TraceQL search results", body = tempo_api::SearchResult),
         (status = 400, description = "Invalid query"),
-        (status = 429, description = "Rate limited"),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 #[tracing::instrument(
@@ -1218,6 +1219,7 @@ async fn tag_values_for<S: RouterState>(
     responses(
         (status = 200, description = "Searchable tag names observed in the window", body = tempo_api::TagSearchResponse),
         (status = 400, description = "start/end are not unix-second timestamps"),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
@@ -1251,6 +1253,7 @@ pub async fn search_tags<S: RouterState>(
     responses(
         (status = 200, description = "Values for the tag", body = tempo_api::TagValuesResponse),
         (status = 400, description = "start/end are not unix-second timestamps"),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
