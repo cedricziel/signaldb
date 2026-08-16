@@ -23,7 +23,8 @@ pub enum ApiKeyAction {
         name: Option<String>,
         /// Scope the key carries (repeatable, at least one): metrics:write,
         /// logs:write, traces:write, profiles:write, traces:read, logs:read,
-        /// metrics:read, profiles:read, schema:read, schema:write
+        /// metrics:read, profiles:read, schema:read, schema:write,
+        /// tenant:manage (manage this tenant's datasets, keys, and members)
         #[arg(long = "scope", required = true, value_name = "SCOPE")]
         scopes: Vec<String>,
         /// Restrict the key to one dataset of the tenant

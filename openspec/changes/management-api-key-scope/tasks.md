@@ -7,8 +7,8 @@
 
 ## 2. CLI
 
-- [ ] 2.1 Failing clap-tree test: `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`, `tenant membership {list,set,remove}`, `tenant schema get`, `tenant show` exist; `admin api-key create --scope tenant:manage` accepted
-- [ ] 2.2 Implement over the SDK `manage_*` / `get_tenant_self` operations; destructive verbs with `--yes`/TTY confirm; scope help text lists `tenant:manage`
+- [x] 2.1 Failing clap-tree test: `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`, `tenant membership {list,set,remove}`, `tenant schema get`, `tenant show` exist; `admin api-key create --scope tenant:manage` accepted
+- [x] 2.2 Implement over the SDK `manage_*` / `get_tenant_self` operations; destructive verbs with `--yes`/TTY confirm; scope help text lists `tenant:manage`
 - [ ] 2.3 CLI integration test against a router: with a `tenant:manage` key, `tenant dataset create staging` then `tenant dataset list` shows it, `tenant api-key create --name ci --scope traces:write` prints the key once, `tenant show` returns the tenant; with a `traces:write`-only key `tenant dataset create` exits non-zero with the access-denied message
 
 ## 3. MCP + UI
