@@ -6,6 +6,8 @@ sources:
   - src/writer/src/reconcile.rs
   - src/common/src/catalog_manager.rs
   - src/common/src/iceberg/table_manager.rs
+  - src/common/src/schema/mod.rs
+  - src/common/src/tenant_api.rs
   - src/router/src/endpoints/tenant.rs
 ---
 
@@ -130,9 +132,22 @@ already trusted to shape its own tenant's infrastructure (see
 endpoints, which require a human-authenticated session.
 
 `GET /api/v1/tenants/{id}/tables` (`tenant table list` / `tenant_list_tables`)
-is, as of this writing, a stub that always answers an empty list regardless
-of what has actually been provisioned — use the metrics/logs below, or the
-Iceberg catalog directly, to verify provisioning until that is implemented.
+lists what is really in the Iceberg catalog — the same place provisioning
+writes to — grouped by dataset. Each table carries the dataset it belongs to
+(`dataset` on every entry); the response also groups them under `datasets`
+(one entry per dataset, each with its own `tables`), while the flat `tables`
+list is kept for existing consumers. A dataset with nothing provisioned yet
+lists as empty, not as an error, and a listing right after
+`POST …/tables/create` reflects exactly what was just created.
+
+```bash
+$ signaldb-cli tenant table list --api-key "$SIGNALDB_API_KEY" --tenant-id acme
+DATASET     TABLE    TYPE
+production  logs     logs
+production  traces   traces
+```
+
+Pass `--json` for the raw response instead of the formatted table.
 
 ## Verifying
 

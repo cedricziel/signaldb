@@ -11,12 +11,12 @@
 
 ## 3. Surfaces
 
-- [ ] 3.1 CLI `tenant table list` prints `DATASET  TABLE  TYPE` (and JSON with the new fields); test
-- [ ] 3.2 MCP `tenant_list_tables` returns the SDK shape (test asserts `datasets` present)
-- [ ] 3.3 UI: failing component test then implement — Tables section grouped by dataset, refetch after provisioning shows the new tables (`pnpm --filter signaldb-ui test`)
-- [ ] 3.4 tests-integration `tenant_table_cli.rs`: assert the CLI list shows the provisioned tables (replace the direct catalog read)
+- [x] 3.1 CLI `tenant table list` prints `DATASET  TABLE  TYPE` (and JSON with the new fields); test
+- [x] 3.2 MCP `tenant_list_tables` returns the SDK shape (test asserts `datasets` present)
+- [x] 3.3 UI: failing component test then implement — Tables section grouped by dataset, refetch after provisioning shows the new tables (`pnpm --filter signaldb-ui test`)
+- [x] 3.4 tests-integration `tenant_table_cli.rs`: assert the CLI list shows the provisioned tables (replace the direct catalog read)
 
 ## 4. Docs, hygiene
 
-- [ ] 4.1 Docs (route via the docs skill): `docs/operations/table-provisioning.md` — listing is catalog-backed and grouped by dataset; `docs/users/explore-ui.md` Tables section
+- [x] 4.1 Docs (route via the docs skill): `docs/operations/table-provisioning.md` — listing is catalog-backed and grouped by dataset; `docs/users/explore-ui.md` Tables section
 - [ ] 4.2 `cargo fmt`, clippy on touched crates, `cargo machete --with-metadata`; UI lint/test; `openspec validate tenant-table-listing --type change --strict`

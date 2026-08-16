@@ -44,11 +44,32 @@ describe("ManagementPanel tables section", () => {
               name: "traces",
               schema_type: "traces",
               description: "OpenTelemetry traces and spans",
+              dataset: "production",
             },
             {
               name: "logs",
               schema_type: "logs",
               description: "OpenTelemetry log entries",
+              dataset: "production",
+            },
+          ],
+          datasets: [
+            {
+              dataset: "production",
+              tables: [
+                {
+                  name: "traces",
+                  schema_type: "traces",
+                  description: "OpenTelemetry traces and spans",
+                  dataset: "production",
+                },
+                {
+                  name: "logs",
+                  schema_type: "logs",
+                  description: "OpenTelemetry log entries",
+                  dataset: "production",
+                },
+              ],
             },
           ],
         },
@@ -61,6 +82,71 @@ describe("ManagementPanel tables section", () => {
     await waitFor(() => {
       expect(screen.getByText("traces")).toBeInTheDocument();
       expect(screen.getByText("logs")).toBeInTheDocument();
+    });
+  });
+
+  it("groups tables by dataset, one heading per dataset", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      {
+        match: TABLES_PATH,
+        body: {
+          tenant_id: "acme",
+          tables: [
+            {
+              name: "traces",
+              schema_type: "traces",
+              description: "d",
+              dataset: "production",
+            },
+            {
+              name: "profiles",
+              schema_type: "profiles",
+              description: "d",
+              dataset: "archive",
+            },
+          ],
+          datasets: [
+            {
+              dataset: "production",
+              tables: [
+                {
+                  name: "traces",
+                  schema_type: "traces",
+                  description: "d",
+                  dataset: "production",
+                },
+              ],
+            },
+            {
+              dataset: "archive",
+              tables: [
+                {
+                  name: "profiles",
+                  schema_type: "profiles",
+                  description: "d",
+                  dataset: "archive",
+                },
+              ],
+            },
+          ],
+        },
+        method: "GET",
+      },
+    ]);
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", { level: 4, name: "production" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("heading", { level: 4, name: "archive" }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("traces")).toBeInTheDocument();
+      expect(screen.getByText("profiles")).toBeInTheDocument();
     });
   });
 
