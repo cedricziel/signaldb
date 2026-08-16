@@ -17,7 +17,7 @@
 
 ## 4. Trace continuity MCP → router
 
-- [ ] 4.1 (Depends on `sdk-retry-on-throttle`, which makes the SDK inject W3C trace context on outbound requests.) tests-integration: an MCP `get_trace` call produces a router server span whose trace id equals the tool span's; if the SDK change has not merged yet, land this task in a follow-up PR once it has
+- [x] 4.1 (Depends on `sdk-retry-on-throttle`, which makes the SDK inject W3C trace context on outbound requests.) tests-integration: an MCP `get_trace` call produces a router server span whose trace id equals the tool span's; if the SDK change has not merged yet, land this task in a follow-up PR once it has — landed as `tests-integration/tests/mcp_router_trace_continuity.rs` (own `[[test]]` target, process-global OTel state), using the preferred approach: a real `router::create_router` and a real `mcp_http_router` in-process, connected over a real TCP socket, with an in-memory OTel exporter. No querier is registered (trace lookup 503s, matching `router`'s own `trace_lookup_without_a_querier_explains_itself` unit test), since the assertion is about the router's own HTTP server span, not the query outcome. Asserts the `tools/call get_trace` INTERNAL span and the router's `GET /tempo/api/traces/{trace_id}` SERVER span share a trace id and that the router span's parent is the tool span. Sanity-checked by temporarily disabling `signaldb-sdk`'s trace-context injection: the test fails as expected, then reverted.
 
 ## 5. Per-session concurrency bound
 

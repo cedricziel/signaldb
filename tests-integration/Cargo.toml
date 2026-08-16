@@ -132,3 +132,7 @@ path = "tests/http_response_headers.rs"
 [[test]]
 name = "ops_endpoints_tracing"
 path = "tests/ops_endpoints_tracing.rs"
+
+[[test]]
+name = "mcp_router_trace_continuity"
+path = "tests/mcp_router_trace_continuity.rs"
