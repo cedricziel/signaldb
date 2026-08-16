@@ -213,18 +213,18 @@ available for machine clients and ingestion.
 
 **Tempo API Endpoints**:
 
-| Endpoint                                         | Status                                                                                     |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| `GET /tempo/api/echo`                            | Implemented                                                                                |
-| `GET /tempo/api/traces/{trace_id}`               | Implemented -- routes to Querier                                                           |
-| `GET /tempo/api/v2/traces/{trace_id}`            | Implemented -- same handler as v1                                                          |
-| `GET /tempo/api/search`                          | Implemented -- routes to Querier                                                           |
-| `GET /tempo/api/search/tags`                     | Implemented -- static list of resource + intrinsic tag names                               |
-| `GET /tempo/api/search/tag/{tag_name}/values`    | Implemented -- distinct column values via Querier; 501 for attribute tags without an index |
-| `GET /tempo/api/v2/search/tags`                  | Implemented -- same tag names, v2 scoped response                                          |
-| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented -- same lookup, v2 response shape                                              |
-| `GET /tempo/api/metrics/query`                   | 501 Not Implemented (TraceQL metrics)                                                      |
-| `GET /tempo/api/metrics/query_range`             | 501 Not Implemented (TraceQL metrics)                                                      |
+| Endpoint                                         | Status                                                                                   |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| `GET /tempo/api/echo`                            | Implemented                                                                              |
+| `GET /tempo/api/traces/{trace_id}`               | Implemented -- routes to Querier                                                         |
+| `GET /tempo/api/v2/traces/{trace_id}`            | Implemented -- same handler as v1                                                        |
+| `GET /tempo/api/search`                          | Implemented -- routes to Querier                                                         |
+| `GET /tempo/api/search/tags`                     | Implemented -- attribute keys observed in the window via Querier, plus fixed intrinsics  |
+| `GET /tempo/api/search/tag/{tag_name}/values`    | Implemented -- distinct values via Querier for any tag; empty list for an unobserved one |
+| `GET /tempo/api/v2/search/tags`                  | Implemented -- same discovery, scoped (resource/span/intrinsic)                          |
+| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented -- same lookup, v2 response shape                                            |
+| `GET /tempo/api/metrics/query`                   | 501 Not Implemented (TraceQL metrics)                                                    |
+| `GET /tempo/api/metrics/query_range`             | 501 Not Implemented (TraceQL metrics)                                                    |
 
 **Pyroscope API Endpoints** (profiles, nested at `/pyroscope` plus `/api/profiles`):
 
@@ -520,7 +520,7 @@ The Grafana plugin (`src/grafana-plugin/`) provides a native datasource with:
 
 ### Tempo API Compatibility
 
-The Router exposes Tempo-compatible endpoints at `/tempo/api/...` for direct use with Grafana's built-in Tempo datasource. Supports trace lookup by ID, trace search, tag-name listing, and tag-value lookup for indexed columns (v1 and v2 variants). TraceQL metrics endpoints (`/metrics/query`, `/metrics/query_range`) return 501 Not Implemented.
+The Router exposes Tempo-compatible endpoints at `/tempo/api/...` for direct use with Grafana's built-in Tempo datasource. Supports trace lookup by ID, trace search, and tag-name/tag-value discovery over the tenant's actual data, sampled within a bounded time window (v1 and v2 variants). TraceQL metrics endpoints (`/metrics/query`, `/metrics/query_range`) return 501 Not Implemented.
 
 ## Configuration
 
