@@ -65,18 +65,29 @@ use rmcp::{
 use serde::Deserialize;
 
 use crate::apps;
+use crate::audit::{
+    self, AuditContext, DEFAULT_MAX_CONCURRENT_TOOL_CALLS, Outcome, PERMIT_WAIT,
+    concurrency_limit_error, with_http_status,
+};
 use crate::prompts;
 use crate::sdk_client_for;
 
 /// The SignalDB MCP server handler. One instance is created per session by the
 /// transport's service factory; it holds only the router base URL used to build
-/// per-session forwarding clients — no credential of its own.
+/// per-session forwarding clients — no credential of its own — plus that
+/// session's tool-call permits.
 #[derive(Clone)]
 pub struct McpServer {
     router_base_url: String,
     /// Overall timeout for each forwarded request, so a hung router fails the
     /// tool call instead of hanging it indefinitely (issue #885).
     router_timeout: std::time::Duration,
+    /// Bound on tool calls in flight for this session. One handler instance
+    /// serves one session (the transport builds a fresh one per session; stdio
+    /// has exactly one), so a per-instance semaphore is a per-session bound
+    /// that is dropped with the session — no registry to evict from.
+    tool_permits: std::sync::Arc<tokio::sync::Semaphore>,
+    max_concurrent_tool_calls: usize,
 }
 
 /// Parameters for `search_traces`.
@@ -424,10 +435,53 @@ impl McpServer {
     /// Construct a handler that forwards to `router_base_url`, bounding each
     /// forwarded request by `router_timeout`.
     pub fn new(router_base_url: String, router_timeout: std::time::Duration) -> Self {
+        Self::with_max_concurrent_tool_calls(
+            router_base_url,
+            router_timeout,
+            DEFAULT_MAX_CONCURRENT_TOOL_CALLS,
+        )
+    }
+
+    /// [`Self::new`] with an explicit per-session bound on tool calls in
+    /// flight (`[mcp].max_concurrent_tool_calls`). A bound of `0` is treated
+    /// as `1` so the session can still make progress.
+    pub fn with_max_concurrent_tool_calls(
+        router_base_url: String,
+        router_timeout: std::time::Duration,
+        max_concurrent_tool_calls: usize,
+    ) -> Self {
+        let max_concurrent_tool_calls = max_concurrent_tool_calls.max(1);
         Self {
             router_base_url,
             router_timeout,
+            tool_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                max_concurrent_tool_calls,
+            )),
+            max_concurrent_tool_calls,
         }
+    }
+
+    /// Run one tool call under the session's concurrency bound: wait up to
+    /// [`PERMIT_WAIT`] for a permit, then dispatch through the tool router.
+    /// The permit is released when the call finishes, whether it succeeded or
+    /// failed.
+    async fn dispatch_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
+        let _permit = match tokio::time::timeout(PERMIT_WAIT, self.tool_permits.acquire()).await {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_closed)) => {
+                return Err(ErrorData::internal_error(
+                    "tool-call permits closed for this session",
+                    None,
+                ));
+            }
+            Err(_timeout) => return Err(concurrency_limit_error(self.max_concurrent_tool_calls)),
+        };
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        Self::tool_router().call(tcc).await
     }
 
     /// Build the per-request forwarding client, surfacing a construction
@@ -1171,6 +1225,45 @@ impl ServerHandler for McpServer {
         )
     }
 
+    /// The one dispatch wrapper every tool call goes through (issue #629):
+    /// opens the `tools/call {tool}` span (parented to the caller's W3C
+    /// context when the HTTP request carried one), holds the session's
+    /// concurrency permit, times the call, classifies the outcome, emits
+    /// exactly one audit event, and records the metrics. Tools themselves
+    /// stay untouched. Replaces the `#[tool_handler]` default, which the macro
+    /// skips when the method is present.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
+        use tracing::Instrument as _;
+
+        let audit = AuditContext::capture(&request, &context);
+        let span = common::self_monitoring::spans::mcp_tool_span(
+            &audit.tool,
+            &audit.tenant_id,
+            audit.dataset.as_deref(),
+            &audit.session_id,
+        );
+        if let Some(parts) = context.extensions.get::<Parts>() {
+            // Parent must be adopted before the span is first entered.
+            common::flight::trace_context::set_parent_from_http_headers(&span, &parts.headers);
+        }
+        let started = std::time::Instant::now();
+        let result = self
+            .dispatch_tool(request, context)
+            .instrument(span.clone())
+            .await;
+        let duration = started.elapsed();
+        let outcome = Outcome::of(&result);
+        if let Some(error_type) = outcome.error_type() {
+            common::self_monitoring::spans::record_span_error(&span, error_type);
+        }
+        audit.finish(&outcome, duration);
+        result
+    }
+
     /// List tools, attaching `_meta.ui.resourceUri` to UI-backed tools when the
     /// client negotiated the MCP Apps extension. Clients that did not ask for
     /// apps get exactly the tool surface they got before.
@@ -1300,9 +1393,9 @@ fn json_result_for_app<T: serde::Serialize>(
             "limit_bytes": MAX_TOOL_PAYLOAD_BYTES,
             "hint": "Result exceeded the size cap; narrow the time range or lower `limit`, then retry.",
         });
-        return Ok(CallToolResult::success(vec![ContentBlock::text(
-            notice.to_string(),
-        )]));
+        return Ok(audit::mark_truncated(CallToolResult::success(vec![
+            ContentBlock::text(notice.to_string()),
+        ])));
     }
     let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
     if with_structured {
@@ -1362,7 +1455,8 @@ fn flamegraph_or_not_found(
 /// agents see "not found" / "invalid query" / "access denied" / "rate limited"
 /// rather than an opaque transport failure.
 fn map_sdk_err<E: std::fmt::Debug>(err: signaldb_sdk::Error<E>, what: &str) -> ErrorData {
-    match err.status().map(|s| s.as_u16()) {
+    let status = err.status().map(|s| s.as_u16());
+    let mapped = match status {
         Some(400) | Some(422) | Some(501) => {
             ErrorData::invalid_params(format!("{what}: invalid request: {err}"), None)
         }
@@ -1379,6 +1473,12 @@ fn map_sdk_err<E: std::fmt::Debug>(err: signaldb_sdk::Error<E>, what: &str) -> E
             ErrorData::internal_error(format!("{what}: rate limited, retry shortly"), None)
         }
         _ => ErrorData::internal_error(format!("{what}: {err}"), None),
+    };
+    // Carry the downstream status so the audit wrapper classifies denied /
+    // throttled / failed calls from data, not message text.
+    match status {
+        Some(status) => with_http_status(mapped, status),
+        None => mapped,
     }
 }
 
@@ -1406,7 +1506,7 @@ fn map_schema_err(
         message.push_str(&details.join("; "));
         message.push(']');
     }
-    match status {
+    let mapped = match status {
         400 | 422 => ErrorData::invalid_params(message, None),
         401 => ErrorData::invalid_request(
             format!("{what}: credential expired or was revoked; re-authenticate the session"),
@@ -1415,7 +1515,8 @@ fn map_schema_err(
         403 | 409 => ErrorData::invalid_request(message, None),
         404 => ErrorData::resource_not_found(message, None),
         _ => ErrorData::internal_error(message, None),
-    }
+    };
+    with_http_status(mapped, status)
 }
 
 #[cfg(test)]

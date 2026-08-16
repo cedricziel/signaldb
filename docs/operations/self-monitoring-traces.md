@@ -92,6 +92,28 @@ flowchart LR
 
 - **WAL fan-in**: the writer's batch span **links** to every distinct
   source ingest trace (one link per origin, never a parent).
+- **MCP tool calls** (the `signaldb-mcp` sidecar, when its
+  `[self_monitoring]` is enabled): every `tools/call` runs in one INTERNAL
+  span named `tools/call {tool}` (`mcp.method.name=tools/call`,
+  `gen_ai.tool.name`, `mcp.session.id`, `signaldb.tenant.id`,
+  `signaldb.dataset.id`), parented to the client's `traceparent` when the
+  HTTP request carried one. Status is Error + `error.type` only for a
+  failed call — a router `4xx` (denied) or throttled outcome leaves it
+  unset. Arguments and results are never recorded. The MCP HTTP requests
+  themselves are `POST /mcp` SERVER spans like every other HTTP boundary.
+  The pinned semconv snapshot keeps the MCP and GenAI attribute names only
+  as deprecated shells (moved to the GenAI conventions repository);
+  `otel/registry/` references `mcp.session.id` and declares the
+  `signaldb.mcp.outcome` label, and the factory pins all names to the
+  semconv crate. Alongside the span, each call emits one audit event
+  (`signaldb_mcp::audit`: `tool`, `tenant_id`, `dataset`, `session_id`,
+  `outcome`, `duration_ms`, `error.type`) and records the
+  `signaldb.mcp.tool_calls` counter (by `gen_ai.tool.name` and
+  `signaldb.mcp.outcome`: `ok | truncated | denied | throttled | error`)
+  and the `signaldb.mcp.tool_call.duration` histogram (seconds, by tool) —
+  Prometheus `signaldb_mcp_tool_calls_total` /
+  `signaldb_mcp_tool_call_duration_seconds`. See
+  [MCP server](../users/mcp.md#audit-and-observability).
 
 Trace continuity: a caller-supplied W3C `traceparent` is honored at every
 boundary, and the sampler is parent-based by default (an unrecognized

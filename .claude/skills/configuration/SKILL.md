@@ -270,9 +270,13 @@ bind_address = "127.0.0.1:8228"      # Streamable HTTP at /mcp; loopback default
                                      # Non-loopback bind forwards live bearer
                                      # credentials and must sit behind TLS.
 router_url = "http://localhost:3000" # Router HTTP API to forward to
+router_timeout = 30                  # Seconds per forwarded request (default 30)
+max_concurrent_tool_calls = 8        # Tool calls in flight per MCP session (default 8);
+                                     # excess calls wait 2 s for a permit, then fail with
+                                     # "too many concurrent tool calls (limit N)"
 ```
 
-Env (multi-word fields need the double-underscore form): `SIGNALDB__MCP__ENABLED`, `SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`. The MCP server ships in the monolithic image, so it can run as a sidecar container from the same image via `entrypoint: [signaldb-mcp]`.
+Env (multi-word fields need the double-underscore form): `SIGNALDB__MCP__ENABLED`, `SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`, `SIGNALDB__MCP__ROUTER_TIMEOUT`, `SIGNALDB__MCP__MAX_CONCURRENT_TOOL_CALLS`. The sidecar reads `[self_monitoring]` too (via `--config`, `signaldb.toml`, or `SIGNALDB__SELF_MONITORING__*`): when enabled it exports `POST /mcp` server spans, `tools/call {tool}` spans, per-call audit events, and the `signaldb.mcp.*` metrics as service `signaldb-mcp`. The MCP server ships in the monolithic image, so it can run as a sidecar container from the same image via `entrypoint: [signaldb-mcp]`.
 
 #### MCP OAuth 2.1 authorization server
 

@@ -1,10 +1,12 @@
 //! # signaldb-mcp
 //!
 //! A standalone Model Context Protocol server for SignalDB. Its **only** channel
-//! to SignalDB is the router's HTTP API via [`signaldb_sdk`] — it depends on no
-//! SignalDB internal crate and holds no privileged state. Because it reaches the
-//! platform only through the SDK, it is always a separate service (a sidecar),
-//! never an in-process route on the router.
+//! to SignalDB data is the router's HTTP API via [`signaldb_sdk`] — it holds no
+//! privileged state and no catalog or storage handle; the one internal crate it
+//! uses, `common`, supplies self-monitoring primitives only (span factories,
+//! metrics, HTTP middleware). Because it reaches the platform only through the
+//! SDK, it is always a separate service (a sidecar), never an in-process route on
+//! the router.
 //!
 //! It validates each caller credential with the router, pins each MCP session to
 //! that identity, and forwards the original request headers to the router on
@@ -15,6 +17,7 @@
 //! MCP is served over Streamable HTTP at `/mcp` on this service's own port.
 
 pub mod apps;
+pub mod audit;
 pub mod cli;
 pub mod prompts;
 pub mod server;
@@ -58,7 +61,7 @@ pub const DEFAULT_ROUTER_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Prefix identifying a SignalDB OAuth 2.1 access token. Mirrors
 /// `common::auth::oauth::ACCESS_TOKEN_PREFIX`; duplicated deliberately so the
-/// sidecar keeps depending on no SignalDB internal crate.
+/// sidecar's trust model does not lean on `common`'s auth module.
 const OAUTH_ACCESS_TOKEN_PREFIX: &str = "sdb_at_";
 
 /// The OAuth 2.1 resource metadata this sidecar advertises (change:
@@ -109,6 +112,8 @@ pub struct McpAppState {
     session_bindings: Arc<DashMap<String, SessionBinding>>,
     /// OAuth resource metadata to advertise, when the deployment enables OAuth.
     oauth: Option<OAuthResource>,
+    /// Per-session bound on tool calls in flight (`[mcp].max_concurrent_tool_calls`).
+    pub max_concurrent_tool_calls: usize,
 }
 
 impl McpAppState {
@@ -119,7 +124,14 @@ impl McpAppState {
             router_timeout: DEFAULT_ROUTER_TIMEOUT,
             session_bindings: Arc::new(DashMap::new()),
             oauth: None,
+            max_concurrent_tool_calls: audit::DEFAULT_MAX_CONCURRENT_TOOL_CALLS,
         }
+    }
+
+    /// Override the per-session bound on tool calls in flight.
+    pub fn with_max_concurrent_tool_calls(mut self, limit: usize) -> Self {
+        self.max_concurrent_tool_calls = limit;
+        self
     }
 
     /// Override the overall timeout for downstream requests to the router.
@@ -152,6 +164,7 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
     let session_manager = Arc::new(LocalSessionManager::default());
     let base_url = state.router_base_url.clone();
     let router_timeout = state.router_timeout;
+    let max_concurrent_tool_calls = state.max_concurrent_tool_calls;
 
     let mut config = StreamableHttpServerConfig::default();
     if allowed_hosts.iter().any(|h| h == "*") {
@@ -165,7 +178,13 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
     }
 
     let service = StreamableHttpService::new(
-        move || Ok(McpServer::new(base_url.clone(), router_timeout)),
+        move || {
+            Ok(McpServer::with_max_concurrent_tool_calls(
+                base_url.clone(),
+                router_timeout,
+                max_concurrent_tool_calls,
+            ))
+        },
         session_manager,
         config,
     );
@@ -178,6 +197,17 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             mcp_auth_middleware,
+        ))
+        // OTel HTTP server metrics, then — outermost — the `POST /mcp` server
+        // span parented to the caller's W3C trace context, exactly as the
+        // router and acceptor layer them (no-op unless self-monitoring is
+        // enabled). Layered on the `/mcp` router only, so the public
+        // well-known document is not measured.
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_metrics_middleware,
+        ))
+        .layer(middleware::from_fn(
+            common::self_monitoring::http_trace_context_middleware,
         ));
 
     let oauth = state.oauth.clone();
@@ -244,7 +274,7 @@ async fn mcp_auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let (parts, body) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
     let token = parts
         .headers
         .get(AUTHORIZATION)
@@ -296,6 +326,12 @@ async fn mcp_auth_middleware(
             }
         },
     };
+
+    // The router-resolved tenant travels with the request so the tool-call
+    // audit names it even for OAuth credentials (no `X-Tenant-ID` header).
+    parts
+        .extensions
+        .insert(audit::CallerTenant(identity.tenant.id.clone()));
 
     // Pin the session to this identity. A request that carries an established
     // `mcp-session-id` but resolves to a different tenant or credential is a

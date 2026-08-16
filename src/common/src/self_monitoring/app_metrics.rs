@@ -69,6 +69,37 @@ pub struct AppMetrics {
     // count means the deployment has degraded to create-on-first-write.
     pub writer_tables_provisioned: Counter<u64>,
     pub writer_table_provisioning_failures: Counter<u64>,
+
+    // MCP server audit: one count per tool call by tool and outcome
+    // (`ok | truncated | denied | throttled | error`), and the call duration
+    // by tool. Prometheus renders them as `signaldb_mcp_tool_calls_total`
+    // and `signaldb_mcp_tool_call_duration_seconds`.
+    pub mcp_tool_calls: Counter<u64>,
+    pub mcp_tool_call_duration: Histogram<f64>,
+}
+
+/// Attribute key naming the tool on the MCP metrics (`gen_ai.tool.name`).
+pub const MCP_TOOL_ATTR: &str = "gen_ai.tool.name";
+/// Attribute key carrying the audit outcome on the MCP call counter.
+pub const MCP_OUTCOME_ATTR: &str = "signaldb.mcp.outcome";
+
+impl AppMetrics {
+    /// Record one MCP tool call: bumps `signaldb.mcp.tool_calls` for the
+    /// `(tool, outcome)` pair and records its duration under the tool.
+    pub fn record_mcp_tool_call(&self, tool: &str, outcome: &str, duration: std::time::Duration) {
+        use opentelemetry::KeyValue;
+        self.mcp_tool_calls.add(
+            1,
+            &[
+                KeyValue::new(MCP_TOOL_ATTR, tool.to_owned()),
+                KeyValue::new(MCP_OUTCOME_ATTR, outcome.to_owned()),
+            ],
+        );
+        self.mcp_tool_call_duration.record(
+            duration.as_secs_f64(),
+            &[KeyValue::new(MCP_TOOL_ATTR, tool.to_owned())],
+        );
+    }
 }
 
 static APP_METRICS: OnceLock<AppMetrics> = OnceLock::new();
@@ -231,6 +262,16 @@ impl AppMetrics {
                 .u64_counter("signaldb.writer.table_provisioning_failures")
                 .with_description("Signal tables the reconciler could not create")
                 .with_unit("{table}")
+                .build(),
+            mcp_tool_calls: meter
+                .u64_counter("signaldb.mcp.tool_calls")
+                .with_description("MCP tool calls by tool and audit outcome")
+                .with_unit("{call}")
+                .build(),
+            mcp_tool_call_duration: meter
+                .f64_histogram("signaldb.mcp.tool_call.duration")
+                .with_description("Duration of MCP tool calls by tool")
+                .with_unit("s")
                 .build(),
         }
     }
