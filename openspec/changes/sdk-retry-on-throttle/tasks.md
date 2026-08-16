@@ -19,9 +19,9 @@
 
 ## 4. MCP server
 
-- [ ] 4.1 Failing test: source-scan asserts `mcp-server` has no bare `reqwest::Client::builder()`; then `sdk_client_for` uses `signaldb_sdk::ClientBuilder` (headers, timeouts, default retry policy)
-- [ ] 4.2 Failing tests then implement the 429 arm of `map_sdk_err`: message prefix `throttled:` naming the server-stated wait, `data: {"retryAfterMs": N}`; existing "rate limited, retry shortly" test updated
-- [ ] 4.3 Integration test (mock router): 429→200 sequence yields a successful tool result; all-429 sequence yields the throttled error with `retryAfterMs`
+- [x] 4.1 Failing test: source-scan asserts `mcp-server` has no bare `reqwest::Client::builder()`; then `sdk_client_for` uses `signaldb_sdk::ClientBuilder` (headers, timeouts, default retry policy)
+- [x] 4.2 Failing tests then implement the 429 arm of `map_sdk_err`: message prefix `throttled:` naming the server-stated wait, `data: {"retryAfterMs": N}`; existing "rate limited, retry shortly" test updated
+- [x] 4.3 Integration test (mock router): 429→200 sequence yields a successful tool result; all-429 sequence yields the throttled error with `retryAfterMs`
 
 ## 5. UI
 

@@ -13,7 +13,6 @@ rmcp.workspace = true
 
 tokio.workspace = true
 axum.workspace = true
-reqwest.workspace = true
 
 anyhow.workspace = true
 tracing.workspace = true
@@ -24,6 +23,9 @@ serde_json.workspace = true
 dashmap.workspace = true
 
 [dev-dependencies]
+# Only tests construct raw responses; production reaches SignalDB solely
+# through signaldb-sdk (client-surface-parity).
+reqwest.workspace = true
 tower.workspace = true
 futures.workspace = true
 opentelemetry.workspace = true
