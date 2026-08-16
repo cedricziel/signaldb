@@ -13,8 +13,8 @@
 
 ## 3. CLI
 
-- [ ] 3.1 Failing test: a source-scan test asserts `signaldb-cli` contains no `reqwest::Client::builder()` / `reqwest::ClientBuilder::new()`; then replace the six construction sites with `signaldb_sdk::ClientBuilder`
-- [ ] 3.2 Failing tests then implement `--no-retry` / `SIGNALDB_NO_RETRY=1` → `RetryPolicy::disabled()`; throttled-after-retries → stderr "rate limited; server asked to retry in Ns" and exit code `4`; per-retry stderr note only when stderr is a terminal (SDK debug event → CLI subscriber)
+- [x] 3.1 Failing test: a source-scan test asserts `signaldb-cli` contains no `reqwest::Client::builder()` / `reqwest::ClientBuilder::new()`; then replace the six construction sites with `signaldb_sdk::ClientBuilder`
+- [x] 3.2 Failing tests then implement `--no-retry` / `SIGNALDB_NO_RETRY=1` → `RetryPolicy::disabled()`; throttled-after-retries → stderr "rate limited; server asked to retry in Ns" and exit code `4`; per-retry stderr note only when stderr is a terminal (SDK debug event → CLI subscriber)
 - [ ] 3.3 CLI integration test against a router with `max_query_requests_per_sec = 1, burst_seconds = 1`: three back-to-back `query` invocations all exit 0; with `--no-retry` the second exits `4`
 
 ## 4. MCP server

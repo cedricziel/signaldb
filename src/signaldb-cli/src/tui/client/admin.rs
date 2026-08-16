@@ -39,21 +39,10 @@ impl AdminClient {
     pub fn new(base_url: &str, admin_key: &str) -> Result<Self, AdminClientError> {
         // The generated SDK's operation URLs are absolute (e.g.
         // /api/v1/admin/tenants), so the client base is the router root.
-        let base_url = base_url.trim_end_matches('/').to_string();
-
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {admin_key}"))
-                .map_err(|e| AdminClientError::ConnectionError(e.to_string()))?,
-        );
-
-        let http = reqwest::Client::builder()
-            .default_headers(headers)
+        let client = crate::retry::client_builder(base_url)
+            .bearer(admin_key)
             .build()
             .map_err(|e| AdminClientError::ConnectionError(e.to_string()))?;
-
-        let client = Client::new_with_client(&base_url, http);
 
         Ok(Self { client })
     }

@@ -6,6 +6,7 @@
 //! without shelling out to the built binary.
 
 pub mod commands;
+pub mod retry;
 // `tui` is an internal implementation detail of `commands`; it is not part of
 // the library's public surface, so its types stay private (avoids exposing the
 // whole widget tree to lints and consumers).

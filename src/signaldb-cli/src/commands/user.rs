@@ -69,7 +69,7 @@ impl UserAction {
                     })
                     .send()
                     .await
-                    .map_err(|e| anyhow::anyhow!("create user failed: {e}"))?
+                    .map_err(|e| anyhow::Error::new(e).context("create user failed"))?
                     .into_inner();
                 println!(
                     "Created user '{}' ({}) in tenant '{tenant}'.",

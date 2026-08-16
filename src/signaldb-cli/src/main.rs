@@ -19,6 +19,16 @@ fn main() {
     };
 
     if let Err(e) = runtime.block_on(cli.run()) {
+        // Throttled past the retry budget (or fail-fast under --no-retry):
+        // name the server-stated wait and exit distinctly so scripts can
+        // back off and re-run.
+        if let Some(throttled) = signaldb_cli::retry::throttled(&e) {
+            eprintln!(
+                "Error: {}",
+                signaldb_cli::retry::throttled_message(&throttled)
+            );
+            std::process::exit(signaldb_cli::retry::EXIT_THROTTLED);
+        }
         eprintln!("Error: {e}");
         for cause in e.chain().skip(1) {
             eprintln!("  caused by: {cause}");

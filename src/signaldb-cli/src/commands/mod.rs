@@ -38,6 +38,11 @@ pub struct Cli {
     #[arg(long, env = "SIGNALDB_ADMIN_KEY")]
     admin_key: Option<String>,
 
+    /// Fail fast instead of retrying throttled (429) or transient requests
+    /// (also SIGNALDB_NO_RETRY=1)
+    #[arg(long, global = true)]
+    no_retry: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -170,6 +175,13 @@ enum AdminAction {
 
 impl Cli {
     pub async fn run(self) -> anyhow::Result<()> {
+        // Retry policy for every client this invocation builds: `--no-retry`
+        // or SIGNALDB_NO_RETRY=1 means fail-fast (see `crate::retry`).
+        let env_no_retry = crate::retry::env_value_disables_retry(
+            std::env::var(crate::retry::NO_RETRY_ENV).ok().as_deref(),
+        );
+        crate::retry::set_no_retry(self.no_retry || env_no_retry);
+
         if let Commands::Query(args) = self.command {
             return args.run().await;
         }
@@ -275,18 +287,9 @@ impl Cli {
     /// router base URL (the generated admin/ops methods carry absolute
     /// paths, so the client base must not add an `/api/v1/...` prefix).
     fn bearer_client(&self, admin_key: &str) -> anyhow::Result<Client> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {admin_key}"))?,
-        );
-        let http = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()?;
-        Ok(Client::new_with_client(
-            self.url.trim_end_matches('/'),
-            http,
-        ))
+        Ok(crate::retry::client_builder(&self.url)
+            .bearer(admin_key)
+            .build()?)
     }
 
     fn resolve_admin_key(&self) -> anyhow::Result<String> {
@@ -505,9 +508,10 @@ mod parse_tests {
             .create_async()
             .await;
 
-        let http = reqwest::Client::new();
         // The admin dispatch configures the client with the router root.
-        let client = Client::new_with_client(server.url().trim_end_matches('/'), http);
+        let client = signaldb_sdk::ClientBuilder::new(server.url())
+            .build()
+            .unwrap();
         // The request must reach `/api/v1/admin/tenants`; a double-prefixed URL
         // would miss the mock and fail the assertion below.
         let _ = client.list_tenants().send().await;

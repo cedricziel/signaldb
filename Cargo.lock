@@ -6915,7 +6915,6 @@ dependencies = [
  "insta",
  "mockito",
  "ratatui",
- "reqwest 0.13.4",
  "serde",
  "serde_json",
  "serde_norway",
