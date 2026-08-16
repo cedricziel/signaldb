@@ -26,9 +26,13 @@
 mod config_builder;
 mod flush;
 mod otel_capture;
+mod otlp_fixtures;
 mod temp_catalog;
 
 pub use config_builder::TestConfigBuilder;
 pub use flush::flush_storage_writers;
 pub use otel_capture::OtelExportProbe;
+pub use otlp_fixtures::{
+    sample_logs_request, sample_metrics_request, sample_trace_request, string_attr,
+};
 pub use temp_catalog::TempCatalog;

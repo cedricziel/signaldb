@@ -7,8 +7,9 @@ license.workspace = true
 [features]
 default = []
 testing = ["dep:tempfile"]
-# Enables the Criterion ingest/WAL benchmarks under benches/.
-benchmarks = ["dep:criterion"]
+# Enables the Criterion ingest/WAL benchmarks under benches/. They build
+# their inputs from `common::testing`, hence the `testing` dependency.
+benchmarks = ["dep:criterion", "testing"]
 # Heap profiling via jemalloc: binaries built with this feature install
 # jemalloc as global allocator, enable Pyroscope's jemalloc backend, and
 # unlock heap self-profiling (jemalloc_pprof dumps + in-process symbolization).
