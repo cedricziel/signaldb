@@ -39,4 +39,4 @@
 
 - [x] 7.1 Docs (route via the docs skill): SDK README/`docs/users/` client section (retry semantics, policy knobs, `retry_after`), CLI reference (`--no-retry`, exit code 4), MCP user docs (throttled error shape), UI note in the explore docs if one exists
 - [x] 7.2 Update skills that describe client behaviour (`tempo-api`, `dev-workflow` CLI section, `multi-tenancy` limits) for retry semantics
-- [ ] 7.3 `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, `cargo machete --with-metadata`; `pnpm --filter signaldb-ui lint && test`; `openspec validate sdk-retry-on-throttle --type change --strict`
+- [x] 7.3 `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, `cargo machete --with-metadata`; `pnpm --filter signaldb-ui lint && test`; `openspec validate sdk-retry-on-throttle --type change --strict`
