@@ -349,6 +349,37 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
     ),
     // ---- Identity ----
     ("whoami", CliSurface::Path(&["whoami"]), "server_info"),
+    // ---- Pyroscope-compatible profile query (change: pyroscope-openapi-parity) ----
+    (
+        "pyroscope_render",
+        CliSurface::Path(&["profiles", "render"]),
+        "search_profiles",
+    ),
+    (
+        "pyroscope_render_diff",
+        CliSurface::Path(&["profiles", "diff"]),
+        "compare_profiles",
+    ),
+    (
+        "pyroscope_label_names",
+        CliSurface::Path(&["profiles", "labels"]),
+        "discover_attributes",
+    ),
+    (
+        "pyroscope_label_values",
+        CliSurface::Path(&["profiles", "label-values"]),
+        "discover_attributes",
+    ),
+    (
+        "pyroscope_profile_types",
+        CliSurface::Path(&["profiles", "types"]),
+        "discover_profile_types",
+    ),
+    (
+        "profiles_by_trace",
+        CliSurface::Path(&["profiles", "by-trace"]),
+        "profiles_for_trace",
+    ),
 ];
 
 /// Walks `cmd`'s subcommand tree along `path`, returning whether every

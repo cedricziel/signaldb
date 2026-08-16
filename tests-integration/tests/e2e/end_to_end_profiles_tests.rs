@@ -1,8 +1,11 @@
 //! End-to-end tests for the profiles signal: OTLP ingestion through the
 //! gRPC acceptor, WAL durability, Flight forwarding to the writer, Iceberg
-//! persistence, and query retrieval — both via a direct Flight
-//! `find_profile` ticket against the querier and via the router's
-//! Pyroscope-compatible `/pyroscope/render` HTTP endpoint.
+//! persistence, and query retrieval — via a direct Flight `find_profile`
+//! ticket against the querier, the router's Pyroscope-compatible
+//! `/pyroscope/render` HTTP endpoint, the generated SDK client the CLI's
+//! `profiles` commands dispatch through (change: `pyroscope-openapi-parity`,
+//! task 5.2), and the MCP server's `discover_profile_types` tool called over
+//! a real Streamable HTTP session.
 //!
 //! Modeled on `end_to_end_trace_tests.rs`: a test tenant `AuthConfig`, a
 //! `TenantContext`-injecting gRPC interceptor (tests don't run the real auth
@@ -832,4 +835,247 @@ async fn query_ir_returns_profile_summary_without_raw_payloads() {
         }
         sleep(Duration::from_millis(200)).await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// change: pyroscope-openapi-parity, task 5.2 — the Pyroscope compat surface
+// through the SDK client (the CLI's `profiles` commands' exact code path)
+// and the MCP server's `discover_profile_types` tool over a real Streamable
+// HTTP session, against the same ingested-CPU-profile pipeline the tests
+// above exercise via raw HTTP.
+// ---------------------------------------------------------------------------
+
+/// Serve the router on a real TCP listener, matching production transport —
+/// unlike the raw `app.oneshot(...)` calls above, the SDK client (reqwest)
+/// and the MCP server's own outbound HTTP client both need an actual socket
+/// to connect to.
+async fn spawn_router_http(services: &TestServices) -> String {
+    let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
+        .await
+        .unwrap();
+    let router_state = RouterAppState::new_with_flight_transport(
+        catalog,
+        services.config.clone(),
+        (*services.flight_transport).clone(),
+    );
+    let app = create_router(router_state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("router serves");
+    });
+    for attempt in 0..50 {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            break;
+        }
+        assert!(attempt < 49, "router at {addr} never became reachable");
+        sleep(Duration::from_millis(50)).await;
+    }
+    format!("http://{addr}")
+}
+
+/// The SDK client `signaldb-cli profiles <verb>` builds: bearer + tenant
+/// headers on every request.
+fn profiles_sdk_client(base_url: &str) -> signaldb_sdk::Client {
+    signaldb_sdk::ClientBuilder::new(base_url)
+        .bearer("test-key-123")
+        .tenant(TEST_TENANT)
+        .build()
+        .expect("build SDK client")
+}
+
+/// `signaldb profiles types` and `signaldb profiles render` dispatch through
+/// exactly these two SDK calls; both must see the ingested CPU profile.
+#[tokio::test]
+async fn sdk_client_lists_and_renders_the_ingested_profile_type() {
+    let services = setup_services().await;
+    send_test_profile(&services).await;
+    wait_for_objects_persisted(&services.object_store, Duration::from_secs(15)).await;
+
+    let base_url = spawn_router_http(&services).await;
+    let client = profiles_sdk_client(&base_url);
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let types = loop {
+        let types = client
+            .pyroscope_profile_types()
+            .send()
+            .await
+            .expect("pyroscope_profile_types succeeds")
+            .into_inner();
+        if types.iter().any(|t| t.sample_type == "cpu") {
+            break types;
+        }
+        if Instant::now() >= deadline {
+            panic!("profile-types never listed the ingested cpu type; got {types:?}");
+        }
+        sleep(Duration::from_millis(200)).await;
+    };
+    assert!(types.iter().any(|t| t.sample_type == "cpu"));
+
+    let render = client
+        .pyroscope_render()
+        .query("cpu")
+        .from("1699999999")
+        .until("1700000030")
+        .send()
+        .await
+        .expect("pyroscope_render succeeds")
+        .into_inner();
+    assert_eq!(
+        render.flamebearer.num_ticks, SAMPLE_VALUE,
+        "flamegraph total ticks did not match the ingested sample value"
+    );
+    assert!(
+        render.flamebearer.names.iter().any(|n| n == LEAF_FUNCTION),
+        "flamegraph name table did not contain the ingested leaf function '{LEAF_FUNCTION}'; got {:?}",
+        render.flamebearer.names
+    );
+}
+
+fn mcp_profiles_request(
+    session_id: Option<&str>,
+    body: serde_json::Value,
+) -> axum::http::Request<axum::body::Body> {
+    let mut builder = axum::http::Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("host", "localhost")
+        .header("authorization", "Bearer test-key-123")
+        .header("x-tenant-id", TEST_TENANT)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream");
+    if let Some(session_id) = session_id {
+        builder = builder.header("mcp-session-id", session_id);
+    }
+    builder
+        .body(axum::body::Body::from(body.to_string()))
+        .expect("build MCP request")
+}
+
+/// Read a Streamable HTTP response (JSON or SSE) until the JSON-RPC message
+/// with `id` arrives (mirrors `mcp_router_trace_continuity.rs`'s helper).
+async fn read_mcp_jsonrpc_response(
+    response: axum::response::Response,
+    id: u64,
+) -> serde_json::Value {
+    let mut stream = response.into_body().into_data_stream();
+    let mut buffered = String::new();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let chunk = timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            stream.next(),
+        )
+        .await
+        .expect("response arrives before the deadline");
+        let Some(chunk) = chunk else {
+            panic!("response stream ended without a reply for id {id}: {buffered}");
+        };
+        let chunk = chunk.expect("read response chunk");
+        buffered.push_str(&String::from_utf8_lossy(&chunk));
+        for line in buffered.lines() {
+            let candidate = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate)
+                && value.get("id").and_then(|v| v.as_u64()) == Some(id)
+            {
+                return value;
+            }
+        }
+    }
+}
+
+/// The MCP server's `discover_profile_types` tool, called over a real
+/// Streamable HTTP session against the live router, must list the ingested
+/// CPU profile type — the same discovery surface `signaldb profiles types`
+/// exposes on the CLI side.
+#[tokio::test]
+async fn mcp_discover_profile_types_lists_the_ingested_profile_type() {
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+
+    let services = setup_services().await;
+    send_test_profile(&services).await;
+    wait_for_objects_persisted(&services.object_store, Duration::from_secs(15)).await;
+
+    let router_base_url = spawn_router_http(&services).await;
+    let mcp_state =
+        mcp_server::McpAppState::new(router_base_url).with_router_timeout(Duration::from_secs(10));
+    let mcp_app = mcp_server::mcp_http_router(mcp_state, &[]);
+
+    let init = mcp_profiles_request(
+        None,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                       "clientInfo": {"name": "profiles-e2e", "version": "0"}}
+        }),
+    );
+    let response = mcp_app
+        .clone()
+        .oneshot(init)
+        .await
+        .expect("initialize responds");
+    assert_eq!(response.status(), StatusCode::OK, "initialize");
+    let session_id = response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("initialize assigns a session id")
+        .to_string();
+    let _ = read_mcp_jsonrpc_response(response, 1).await;
+
+    let initialized = mcp_profiles_request(
+        Some(&session_id),
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    );
+    let response = mcp_app
+        .clone()
+        .oneshot(initialized)
+        .await
+        .expect("initialized responds");
+    assert_eq!(response.status(), StatusCode::ACCEPTED, "initialized");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut next_id = 2u64;
+    let types = loop {
+        let call = mcp_profiles_request(
+            Some(&session_id),
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": next_id, "method": "tools/call",
+                "params": {"name": "discover_profile_types", "arguments": {}}
+            }),
+        );
+        let response = mcp_app
+            .clone()
+            .oneshot(call)
+            .await
+            .expect("tools/call responds");
+        assert_eq!(response.status(), StatusCode::OK, "tools/call HTTP status");
+        let reply = read_mcp_jsonrpc_response(response, next_id).await;
+        let text = reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("discover_profile_types carries no text block: {reply}"));
+        let types: serde_json::Value = serde_json::from_str(text).expect("tool result is JSON");
+        if types
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|t| t["sampleType"] == "cpu"))
+        {
+            break types;
+        }
+        next_id += 1;
+        if Instant::now() >= deadline {
+            panic!("discover_profile_types never listed the ingested cpu type; got {types}");
+        }
+        sleep(Duration::from_millis(200)).await;
+    };
+    assert!(
+        types
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["sampleType"] == "cpu"),
+        "expected a cpu profile type via MCP, got {types}"
+    );
 }
