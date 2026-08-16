@@ -28,7 +28,7 @@ use opentelemetry::trace::{SpanKind, Status, TracerProvider as _};
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
 use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
-use tokio::sync::Notify;
+use tokio::sync::watch;
 use tracing::Level;
 use tracing_subscriber::prelude::*;
 
@@ -158,8 +158,9 @@ fn attr(span: &SpanData, key: &str) -> Option<String> {
 
 #[derive(Clone)]
 struct MockRouter {
-    /// Released by the test to let `slow` requests complete.
-    release: Arc<Notify>,
+    /// Flipped to `true` by the test to let `slow` requests complete — a
+    /// latched state, so a request that arrives after the release passes too.
+    release: watch::Sender<bool>,
 }
 
 async fn whoami() -> Response {
@@ -185,7 +186,12 @@ async fn behaviour(
         "boom" => (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response(),
         "throttle" => (StatusCode::TOO_MANY_REQUESTS, "slow down").into_response(),
         "slow" => {
-            mock.release.notified().await;
+            let mut released = mock.release.subscribe();
+            while !*released.borrow_and_update() {
+                if released.changed().await.is_err() {
+                    break;
+                }
+            }
             ok_body(uri.path(), false)
         }
         "big" => ok_body(uri.path(), true),
@@ -207,7 +213,7 @@ fn ok_body(path: &str, big: bool) -> Response {
 
 async fn spawn_mock_router() -> (String, MockRouter) {
     let mock = MockRouter {
-        release: Arc::new(Notify::new()),
+        release: watch::Sender::new(false),
     };
     let app = axum::Router::new()
         .route("/api/v1/whoami", get(whoami))
@@ -704,7 +710,7 @@ async fn excess_concurrent_calls_fail_fast_and_sessions_stay_isolated() {
     assert!(other.get("result").is_some(), "{other}");
 
     // Release the slow calls: both complete, and their permits are freed.
-    mock.release.notify_waiters();
+    mock.release.send_replace(true);
     let first = in_flight_1.await.unwrap();
     let second = in_flight_2.await.unwrap();
     assert!(first.get("result").is_some(), "{first}");
@@ -739,7 +745,7 @@ async fn calls_within_the_bound_all_run() {
         in_flight.push(tokio::spawn(McpSession::send(app.clone(), request)));
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
-    mock.release.notify_waiters();
+    mock.release.send_replace(true);
     for handle in in_flight {
         let reply = handle.await.unwrap();
         assert!(reply.get("result").is_some(), "{reply}");
