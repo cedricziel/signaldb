@@ -19,6 +19,28 @@ export type ApiError = {
 };
 
 /**
+ * The JSON envelope every query-surface error responds with: `status` is
+ * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+ * human-readable message, and `retryAfterMs` present only on rate-limit
+ * rejections. Exists as a real (rather than `serde_json::json!`-built)
+ * type so the OpenAPI document can declare its schema on the `429`
+ * response of every rate-limited operation.
+ */
+export type ApiErrorBody = {
+    error: string;
+    errorType: string;
+    /**
+     * Milliseconds until the request would be admitted; present only when
+     * `errorType` is `"rate_limited"`.
+     */
+    retryAfterMs?: number | null;
+    /**
+     * Always `"error"`.
+     */
+    status: string;
+};
+
+/**
  * API key information (without the raw key).
  */
 export type ApiKeyResponse = {
@@ -929,16 +951,6 @@ export type SpanSet = {
     spans: Array<Span>;
 };
 
-/**
- * GET /api/search/tags?scope=<resource|span|intrinsic>
- *
- * `rename_all = "lowercase"` matters here: the Tempo API (and Grafana's
- * Tempo datasource, which is what actually sends this) uses lowercase
- * scope values. Without it, serde only accepts the Rust variant names
- * (`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).
- */
-export type TagScope = 'resource' | 'span' | 'intrinsic';
-
 export type TagSearchResponse = {
     tagNames: Array<string>;
 };
@@ -1125,31 +1137,6 @@ export type WhoamiTenant = {
     id: string;
     name: string;
     slug: string;
-};
-
-export type TempoApiV2TagSearchResponse = {
-    scopes: Array<TempoApiV2TagSearchScope>;
-};
-
-export type TempoApiV2TagSearchScope = {
-    scope: string;
-    tags: Array<string>;
-};
-
-/**
- * GET /api/v2/search/tag/.service.name/values
- *
- * Todo: Add types to values
- *
- * See <https://grafana.com/docs/tempo/latest/api_docs/#search-tag-values-v2>
- */
-export type TempoApiV2TagValuesResponse = {
-    tagValues: Array<TempoApiV2TagWithValue>;
-};
-
-export type TempoApiV2TagWithValue = {
-    tag: string;
-    value: string;
 };
 
 export type ListTenantsData = {
@@ -1594,6 +1581,27 @@ export type ManageGetSchemaErrors = {
      * Instance administrator required
      */
     403: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type ManageGetSchemaError = ManageGetSchemaErrors[keyof ManageGetSchemaErrors];
@@ -1628,6 +1636,27 @@ export type ManageCreateTenantErrors = {
      */
     409: ManageError;
     /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
      * Internal error
      */
     500: ManageError;
@@ -1661,6 +1690,27 @@ export type ManageListApiKeysErrors = {
      * Forbidden
      */
     403: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
     /**
      * Internal error
      */
@@ -1708,6 +1758,27 @@ export type ManageCreateApiKeyErrors = {
      */
     422: ManageError;
     /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
      * Internal error
      */
     500: ManageError;
@@ -1749,6 +1820,27 @@ export type ManageRevokeApiKeyErrors = {
      * API key not found
      */
     404: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
     /**
      * Internal error
      */
@@ -1804,6 +1896,27 @@ export type ManageUpdateApiKeyErrors = {
      */
     422: ManageError;
     /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
      * Internal error
      */
     500: ManageError;
@@ -1837,6 +1950,27 @@ export type ManageListDatasetsErrors = {
      * Forbidden
      */
     403: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
     /**
      * Internal error
      */
@@ -1879,6 +2013,27 @@ export type ManageCreateDatasetErrors = {
      * Unable to create dataset
      */
     409: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type ManageCreateDatasetError = ManageCreateDatasetErrors[keyof ManageCreateDatasetErrors];
@@ -1922,6 +2077,27 @@ export type ManageDeleteDatasetErrors = {
      */
     409: ManageError;
     /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
      * Internal error
      */
     500: ManageError;
@@ -1955,6 +2131,27 @@ export type ManageListMembershipsErrors = {
      * Forbidden
      */
     403: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
     /**
      * Internal error
      */
@@ -1997,6 +2194,27 @@ export type ManageUpsertMembershipErrors = {
      * Last administrator cannot be demoted
      */
     409: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
     /**
      * Internal error
      */
@@ -2043,6 +2261,27 @@ export type ManageRemoveMembershipErrors = {
      * Last administrator cannot be removed
      */
     409: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
     /**
      * Internal error
      */
@@ -2164,10 +2403,33 @@ export type QueryIrErrors = {
      */
     401: unknown;
     /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
      * No querier service available
      */
     503: unknown;
 };
+
+export type QueryIrError = QueryIrErrors[keyof QueryIrErrors];
 
 export type QueryIrResponses = {
     /**
@@ -2203,6 +2465,27 @@ export type SchemaSearchAttributesErrors = {
      * Missing schema:read scope
      */
     403: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaSearchAttributesError = SchemaSearchAttributesErrors[keyof SchemaSearchAttributesErrors];
@@ -2233,6 +2516,27 @@ export type SchemaResolveAttributeErrors = {
      * Missing schema:read scope
      */
     403: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaResolveAttributeError = SchemaResolveAttributeErrors[keyof SchemaResolveAttributeErrors];
@@ -2271,6 +2575,27 @@ export type SchemaSearchEntitiesErrors = {
      * Missing schema:read scope
      */
     403: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaSearchEntitiesError = SchemaSearchEntitiesErrors[keyof SchemaSearchEntitiesErrors];
@@ -2301,6 +2626,27 @@ export type SchemaResolveEntityErrors = {
      * Missing schema:read scope
      */
     403: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaResolveEntityError = SchemaResolveEntityErrors[keyof SchemaResolveEntityErrors];
@@ -2339,6 +2685,27 @@ export type SchemaSearchMetricsErrors = {
      * Missing schema:read scope
      */
     403: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaSearchMetricsError = SchemaSearchMetricsErrors[keyof SchemaSearchMetricsErrors];
@@ -2369,6 +2736,27 @@ export type SchemaResolveMetricErrors = {
      * Missing schema:read scope
      */
     403: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaResolveMetricError = SchemaResolveMetricErrors[keyof SchemaResolveMetricErrors];
@@ -2394,6 +2782,27 @@ export type SchemaListRegistriesErrors = {
      * Missing schema:read scope
      */
     403: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaListRegistriesError = SchemaListRegistriesErrors[keyof SchemaListRegistriesErrors];
@@ -2436,6 +2845,27 @@ export type SchemaCreateRegistryErrors = {
      * Invalid document (errors carry paths)
      */
     422: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaCreateRegistryError = SchemaCreateRegistryErrors[keyof SchemaCreateRegistryErrors];
@@ -2478,6 +2908,27 @@ export type SchemaDeleteRegistryErrors = {
      * Registry is bundled and read-only
      */
     409: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaDeleteRegistryError = SchemaDeleteRegistryErrors[keyof SchemaDeleteRegistryErrors];
@@ -2516,6 +2967,27 @@ export type SchemaGetRegistryErrors = {
      * No such registry visible to the tenant
      */
     404: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaGetRegistryError = SchemaGetRegistryErrors[keyof SchemaGetRegistryErrors];
@@ -2571,6 +3043,27 @@ export type SchemaReplaceRegistryErrors = {
      * Invalid document or identity mismatch
      */
     422: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaReplaceRegistryError = SchemaReplaceRegistryErrors[keyof SchemaReplaceRegistryErrors];
@@ -2605,6 +3098,27 @@ export type SchemaValidateRegistryErrors = {
      * Missing schema:write scope
      */
     403: SchemaError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
 
 export type SchemaValidateRegistryError = SchemaValidateRegistryErrors[keyof SchemaValidateRegistryErrors];
@@ -2630,7 +3144,30 @@ export type WhoamiErrors = {
      * Invalid or expired credential
      */
     401: unknown;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
+
+export type WhoamiError = WhoamiErrors[keyof WhoamiErrors];
 
 export type WhoamiResponses = {
     /**
@@ -2662,6 +3199,32 @@ export type LogqlLabelValuesData = {
     url: '/loki/api/v1/label/{name}/values';
 };
 
+export type LogqlLabelValuesErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type LogqlLabelValuesError = LogqlLabelValuesErrors[keyof LogqlLabelValuesErrors];
+
 export type LogqlLabelValuesResponses = {
     /**
      * Distinct values for the label
@@ -2684,6 +3247,32 @@ export type LogqlLabelsData = {
     };
     url: '/loki/api/v1/labels';
 };
+
+export type LogqlLabelsErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type LogqlLabelsError = LogqlLabelsErrors[keyof LogqlLabelsErrors];
 
 export type LogqlLabelsResponses = {
     /**
@@ -2715,6 +3304,32 @@ export type LogqlQueryData = {
     };
     url: '/loki/api/v1/query';
 };
+
+export type LogqlQueryErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type LogqlQueryError = LogqlQueryErrors[keyof LogqlQueryErrors];
 
 export type LogqlQueryResponses = {
     /**
@@ -2754,6 +3369,32 @@ export type LogqlQueryRangeData = {
     };
     url: '/loki/api/v1/query_range';
 };
+
+export type LogqlQueryRangeErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type LogqlQueryRangeError = LogqlQueryRangeErrors[keyof LogqlQueryRangeErrors];
 
 export type LogqlQueryRangeResponses = {
     /**
@@ -2846,6 +3487,32 @@ export type PromqlLabelValuesData = {
     url: '/prometheus/api/v1/label/{name}/values';
 };
 
+export type PromqlLabelValuesErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type PromqlLabelValuesError = PromqlLabelValuesErrors[keyof PromqlLabelValuesErrors];
+
 export type PromqlLabelValuesResponses = {
     /**
      * Distinct values for the label
@@ -2869,6 +3536,32 @@ export type PromqlLabelsData = {
     url: '/prometheus/api/v1/labels';
 };
 
+export type PromqlLabelsErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type PromqlLabelsError = PromqlLabelsErrors[keyof PromqlLabelsErrors];
+
 export type PromqlLabelsResponses = {
     /**
      * Known metric label names
@@ -2891,6 +3584,32 @@ export type PromqlQueryData = {
     };
     url: '/prometheus/api/v1/query';
 };
+
+export type PromqlQueryErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type PromqlQueryError = PromqlQueryErrors[keyof PromqlQueryErrors];
 
 export type PromqlQueryResponses = {
     /**
@@ -2923,6 +3642,32 @@ export type PromqlQueryRangeData = {
     url: '/prometheus/api/v1/query_range';
 };
 
+export type PromqlQueryRangeErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type PromqlQueryRangeError = PromqlQueryRangeErrors[keyof PromqlQueryRangeErrors];
+
 export type PromqlQueryRangeResponses = {
     /**
      * Prometheus range-query response (matrix)
@@ -2952,10 +3697,29 @@ export type SearchErrors = {
      */
     400: unknown;
     /**
-     * Rate limited
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
      */
-    429: unknown;
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
+
+export type SearchError = SearchErrors[keyof SearchErrors];
 
 export type SearchResponses = {
     /**
@@ -2992,7 +3756,34 @@ export type SearchTagValuesErrors = {
      * start/end are not unix-second timestamps
      */
     400: unknown;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Tag not queryable yet
+     */
+    501: unknown;
 };
+
+export type SearchTagValuesError = SearchTagValuesErrors[keyof SearchTagValuesErrors];
 
 export type SearchTagValuesResponses = {
     /**
@@ -3006,29 +3797,39 @@ export type SearchTagValuesResponse = SearchTagValuesResponses[keyof SearchTagVa
 export type SearchTagsData = {
     body?: never;
     path?: never;
-    query?: {
-        /**
-         * Window start (unix seconds); default lookback is 1 hour
-         */
-        start?: number;
-        /**
-         * Window end (unix seconds); defaults to now
-         */
-        end?: number;
-    };
+    query?: never;
     url: '/tempo/api/search/tags';
 };
 
 export type SearchTagsErrors = {
     /**
-     * start/end are not unix-second timestamps
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
      */
-    400: unknown;
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
+
+export type SearchTagsError = SearchTagsErrors[keyof SearchTagsErrors];
 
 export type SearchTagsResponses = {
     /**
-     * Searchable tag names observed in the window
+     * Searchable tag names
      */
     200: TagSearchResponse;
 };
@@ -3059,7 +3860,30 @@ export type QuerySingleTraceErrors = {
      * Trace not found
      */
     404: unknown;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
 };
+
+export type QuerySingleTraceError = QuerySingleTraceErrors[keyof QuerySingleTraceErrors];
 
 export type QuerySingleTraceResponses = {
     /**
@@ -3069,80 +3893,3 @@ export type QuerySingleTraceResponses = {
 };
 
 export type QuerySingleTraceResponse = QuerySingleTraceResponses[keyof QuerySingleTraceResponses];
-
-export type SearchTagValuesV2Data = {
-    body?: never;
-    path: {
-        /**
-         * Scoped or unscoped tag name to fetch values for
-         */
-        tag_name: string;
-    };
-    query?: {
-        /**
-         * Window start (unix seconds)
-         */
-        start?: number;
-        /**
-         * Window end (unix seconds)
-         */
-        end?: number;
-        /**
-         * Accepted for Tempo API compatibility; unused
-         */
-        q?: string;
-    };
-    url: '/tempo/api/v2/search/tag/{tag_name}/values';
-};
-
-export type SearchTagValuesV2Errors = {
-    /**
-     * start/end are not unix-second timestamps
-     */
-    400: unknown;
-};
-
-export type SearchTagValuesV2Responses = {
-    /**
-     * Values for the tag
-     */
-    200: TempoApiV2TagValuesResponse;
-};
-
-export type SearchTagValuesV2Response = SearchTagValuesV2Responses[keyof SearchTagValuesV2Responses];
-
-export type SearchTagsV2Data = {
-    body?: never;
-    path?: never;
-    query?: {
-        /**
-         * Restrict to one scope
-         */
-        scope?: TagScope;
-        /**
-         * Window start (unix seconds); default lookback is 1 hour
-         */
-        start?: number;
-        /**
-         * Window end (unix seconds); defaults to now
-         */
-        end?: number;
-    };
-    url: '/tempo/api/v2/search/tags';
-};
-
-export type SearchTagsV2Errors = {
-    /**
-     * start/end are not unix-second timestamps
-     */
-    400: unknown;
-};
-
-export type SearchTagsV2Responses = {
-    /**
-     * Searchable tag names, grouped by scope
-     */
-    200: TempoApiV2TagSearchResponse;
-};
-
-export type SearchTagsV2Response = SearchTagsV2Responses[keyof SearchTagsV2Responses];

@@ -13,9 +13,15 @@ export async function runIrQuery(
   const res = await queryIr({ body: doc, headers: tenantHeaders() });
   if (res.error || !res.data) {
     const status = res.response?.status ?? 500;
-    const message =
-      typeof res.error === "string" ? res.error : `IR query failed (${status})`;
-    throw new ApiError(message, status);
+    // `error` is the rate-limited/`ApiErrorBody` envelope's human-readable
+    // field (see `ApiErrorBody` in `./gen`), never a bare string — but the
+    // request can also fail before a body decodes, so check defensively.
+    const error: unknown = res.error;
+    const detail =
+      error && typeof error === "object" && "error" in error
+        ? String((error as { error: unknown }).error)
+        : undefined;
+    throw new ApiError(detail ?? `IR query failed (${status})`, status);
   }
   return res.data;
 }

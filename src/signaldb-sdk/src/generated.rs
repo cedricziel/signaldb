@@ -70,6 +70,69 @@ pub mod types {
             Default::default()
         }
     }
+    /**The JSON envelope every query-surface error responds with: `status` is
+    always `"error"`, `errorType` a stable low-cardinality code, `error` a
+    human-readable message, and `retryAfterMs` present only on rate-limit
+    rejections. Exists as a real (rather than `serde_json::json!`-built)
+    type so the OpenAPI document can declare its schema on the `429`
+    response of every rate-limited operation.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The JSON envelope every query-surface error responds with: `status` is\nalways `\"error\"`, `errorType` a stable low-cardinality code, `error` a\nhuman-readable message, and `retryAfterMs` present only on rate-limit\nrejections. Exists as a real (rather than `serde_json::json!`-built)\ntype so the OpenAPI document can declare its schema on the `429`\nresponse of every rate-limited operation.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "error",
+    ///    "errorType",
+    ///    "status"
+    ///  ],
+    ///  "properties": {
+    ///    "error": {
+    ///      "type": "string"
+    ///    },
+    ///    "errorType": {
+    ///      "type": "string"
+    ///    },
+    ///    "retryAfterMs": {
+    ///      "description": "Milliseconds until the request would be admitted; present only when\n`errorType` is `\"rate_limited\"`.",
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "format": "int64",
+    ///      "minimum": 0.0
+    ///    },
+    ///    "status": {
+    ///      "description": "Always `\"error\"`.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ApiErrorBody {
+        pub error: ::std::string::String,
+        #[serde(rename = "errorType")]
+        pub error_type: ::std::string::String,
+        /**Milliseconds until the request would be admitted; present only when
+        `errorType` is `"rate_limited"`.*/
+        #[serde(
+            rename = "retryAfterMs",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub retry_after_ms: ::std::option::Option<i64>,
+        ///Always `"error"`.
+        pub status: ::std::string::String,
+    }
+    impl ApiErrorBody {
+        pub fn builder() -> builder::ApiErrorBody {
+            Default::default()
+        }
+    }
     ///API key information (without the raw key).
     ///
     /// <details><summary>JSON schema</summary>
@@ -3967,89 +4030,6 @@ pub mod types {
             Default::default()
         }
     }
-    /**GET /api/search/tags?scope=<resource|span|intrinsic>
-
-    `rename_all = "lowercase"` matters here: the Tempo API (and Grafana's
-    Tempo datasource, which is what actually sends this) uses lowercase
-    scope values. Without it, serde only accepts the Rust variant names
-    (`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "GET /api/search/tags?scope=<resource|span|intrinsic>\n\n`rename_all = \"lowercase\"` matters here: the Tempo API (and Grafana's\nTempo datasource, which is what actually sends this) uses lowercase\nscope values. Without it, serde only accepts the Rust variant names\n(`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "resource",
-    ///    "span",
-    ///    "intrinsic"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
-    #[derive(
-        ::serde::Deserialize,
-        ::serde::Serialize,
-        Clone,
-        Copy,
-        Debug,
-        Eq,
-        Hash,
-        Ord,
-        PartialEq,
-        PartialOrd,
-    )]
-    pub enum TagScope {
-        #[serde(rename = "resource")]
-        Resource,
-        #[serde(rename = "span")]
-        Span,
-        #[serde(rename = "intrinsic")]
-        Intrinsic,
-    }
-    impl ::std::fmt::Display for TagScope {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            match *self {
-                Self::Resource => f.write_str("resource"),
-                Self::Span => f.write_str("span"),
-                Self::Intrinsic => f.write_str("intrinsic"),
-            }
-        }
-    }
-    impl ::std::str::FromStr for TagScope {
-        type Err = self::error::ConversionError;
-        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-            match value {
-                "resource" => Ok(Self::Resource),
-                "span" => Ok(Self::Span),
-                "intrinsic" => Ok(Self::Intrinsic),
-                _ => Err("invalid value".into()),
-            }
-        }
-    }
-    impl ::std::convert::TryFrom<&str> for TagScope {
-        type Error = self::error::ConversionError;
-        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
-    impl ::std::convert::TryFrom<&::std::string::String> for TagScope {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
-    impl ::std::convert::TryFrom<::std::string::String> for TagScope {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: ::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     ///`TagSearchResponse`
     ///
     /// <details><summary>JSON schema</summary>
@@ -4109,139 +4089,6 @@ pub mod types {
     }
     impl TagValuesResponse {
         pub fn builder() -> builder::TagValuesResponse {
-            Default::default()
-        }
-    }
-    ///`TempoApiV2TagSearchResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "scopes": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/tempo_api.v2.TagSearchScope"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct TempoApiV2TagSearchResponse {
-        pub scopes: ::std::vec::Vec<TempoApiV2TagSearchScope>,
-    }
-    impl TempoApiV2TagSearchResponse {
-        pub fn builder() -> builder::TempoApiV2TagSearchResponse {
-            Default::default()
-        }
-    }
-    ///`TempoApiV2TagSearchScope`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "scope",
-    ///    "tags"
-    ///  ],
-    ///  "properties": {
-    ///    "scope": {
-    ///      "type": "string"
-    ///    },
-    ///    "tags": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct TempoApiV2TagSearchScope {
-        pub scope: ::std::string::String,
-        pub tags: ::std::vec::Vec<::std::string::String>,
-    }
-    impl TempoApiV2TagSearchScope {
-        pub fn builder() -> builder::TempoApiV2TagSearchScope {
-            Default::default()
-        }
-    }
-    /**GET /api/v2/search/tag/.service.name/values
-
-    Todo: Add types to values
-
-    See <https://grafana.com/docs/tempo/latest/api_docs/#search-tag-values-v2>*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "GET /api/v2/search/tag/.service.name/values\n\nTodo: Add types to values\n\nSee <https://grafana.com/docs/tempo/latest/api_docs/#search-tag-values-v2>",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tagValues"
-    ///  ],
-    ///  "properties": {
-    ///    "tagValues": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/tempo_api.v2.TagWithValue"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct TempoApiV2TagValuesResponse {
-        #[serde(rename = "tagValues")]
-        pub tag_values: ::std::vec::Vec<TempoApiV2TagWithValue>,
-    }
-    impl TempoApiV2TagValuesResponse {
-        pub fn builder() -> builder::TempoApiV2TagValuesResponse {
-            Default::default()
-        }
-    }
-    ///`TempoApiV2TagWithValue`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tag",
-    ///    "value"
-    ///  ],
-    ///  "properties": {
-    ///    "tag": {
-    ///      "type": "string"
-    ///    },
-    ///    "value": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct TempoApiV2TagWithValue {
-        pub tag: ::std::string::String,
-        pub value: ::std::string::String,
-    }
-    impl TempoApiV2TagWithValue {
-        pub fn builder() -> builder::TempoApiV2TagWithValue {
             Default::default()
         }
     }
@@ -4842,6 +4689,89 @@ pub mod types {
                 Self {
                     error: Ok(value.error),
                     message: Ok(value.message),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ApiErrorBody {
+            error: ::std::result::Result<::std::string::String, ::std::string::String>,
+            error_type: ::std::result::Result<::std::string::String, ::std::string::String>,
+            retry_after_ms:
+                ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            status: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ApiErrorBody {
+            fn default() -> Self {
+                Self {
+                    error: Err("no value supplied for error".to_string()),
+                    error_type: Err("no value supplied for error_type".to_string()),
+                    retry_after_ms: Ok(Default::default()),
+                    status: Err("no value supplied for status".to_string()),
+                }
+            }
+        }
+        impl ApiErrorBody {
+            pub fn error<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error: {e}"));
+                self
+            }
+            pub fn error_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error_type: {e}"));
+                self
+            }
+            pub fn retry_after_ms<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.retry_after_ms = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for retry_after_ms: {e}")
+                });
+                self
+            }
+            pub fn status<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.status = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for status: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ApiErrorBody> for super::ApiErrorBody {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ApiErrorBody,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    error: value.error?,
+                    error_type: value.error_type?,
+                    retry_after_ms: value.retry_after_ms?,
+                    status: value.status?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ApiErrorBody> for ApiErrorBody {
+            fn from(value: super::ApiErrorBody) -> Self {
+                Self {
+                    error: Ok(value.error),
+                    error_type: Ok(value.error_type),
+                    retry_after_ms: Ok(value.retry_after_ms),
+                    status: Ok(value.status),
                 }
             }
         }
@@ -11008,203 +10938,6 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
-        pub struct TempoApiV2TagSearchResponse {
-            scopes: ::std::result::Result<
-                ::std::vec::Vec<super::TempoApiV2TagSearchScope>,
-                ::std::string::String,
-            >,
-        }
-        impl ::std::default::Default for TempoApiV2TagSearchResponse {
-            fn default() -> Self {
-                Self {
-                    scopes: Err("no value supplied for scopes".to_string()),
-                }
-            }
-        }
-        impl TempoApiV2TagSearchResponse {
-            pub fn scopes<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<super::TempoApiV2TagSearchScope>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.scopes = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for scopes: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<TempoApiV2TagSearchResponse> for super::TempoApiV2TagSearchResponse {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: TempoApiV2TagSearchResponse,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    scopes: value.scopes?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::TempoApiV2TagSearchResponse> for TempoApiV2TagSearchResponse {
-            fn from(value: super::TempoApiV2TagSearchResponse) -> Self {
-                Self {
-                    scopes: Ok(value.scopes),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct TempoApiV2TagSearchScope {
-            scope: ::std::result::Result<::std::string::String, ::std::string::String>,
-            tags: ::std::result::Result<
-                ::std::vec::Vec<::std::string::String>,
-                ::std::string::String,
-            >,
-        }
-        impl ::std::default::Default for TempoApiV2TagSearchScope {
-            fn default() -> Self {
-                Self {
-                    scope: Err("no value supplied for scope".to_string()),
-                    tags: Err("no value supplied for tags".to_string()),
-                }
-            }
-        }
-        impl TempoApiV2TagSearchScope {
-            pub fn scope<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.scope = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for scope: {e}"));
-                self
-            }
-            pub fn tags<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.tags = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for tags: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<TempoApiV2TagSearchScope> for super::TempoApiV2TagSearchScope {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: TempoApiV2TagSearchScope,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    scope: value.scope?,
-                    tags: value.tags?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::TempoApiV2TagSearchScope> for TempoApiV2TagSearchScope {
-            fn from(value: super::TempoApiV2TagSearchScope) -> Self {
-                Self {
-                    scope: Ok(value.scope),
-                    tags: Ok(value.tags),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct TempoApiV2TagValuesResponse {
-            tag_values: ::std::result::Result<
-                ::std::vec::Vec<super::TempoApiV2TagWithValue>,
-                ::std::string::String,
-            >,
-        }
-        impl ::std::default::Default for TempoApiV2TagValuesResponse {
-            fn default() -> Self {
-                Self {
-                    tag_values: Err("no value supplied for tag_values".to_string()),
-                }
-            }
-        }
-        impl TempoApiV2TagValuesResponse {
-            pub fn tag_values<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<super::TempoApiV2TagWithValue>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.tag_values = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for tag_values: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<TempoApiV2TagValuesResponse> for super::TempoApiV2TagValuesResponse {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: TempoApiV2TagValuesResponse,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    tag_values: value.tag_values?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::TempoApiV2TagValuesResponse> for TempoApiV2TagValuesResponse {
-            fn from(value: super::TempoApiV2TagValuesResponse) -> Self {
-                Self {
-                    tag_values: Ok(value.tag_values),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct TempoApiV2TagWithValue {
-            tag: ::std::result::Result<::std::string::String, ::std::string::String>,
-            value: ::std::result::Result<::std::string::String, ::std::string::String>,
-        }
-        impl ::std::default::Default for TempoApiV2TagWithValue {
-            fn default() -> Self {
-                Self {
-                    tag: Err("no value supplied for tag".to_string()),
-                    value: Err("no value supplied for value".to_string()),
-                }
-            }
-        }
-        impl TempoApiV2TagWithValue {
-            pub fn tag<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.tag = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for tag: {e}"));
-                self
-            }
-            pub fn value<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.value = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for value: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<TempoApiV2TagWithValue> for super::TempoApiV2TagWithValue {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: TempoApiV2TagWithValue,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    tag: value.tag?,
-                    value: value.value?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::TempoApiV2TagWithValue> for TempoApiV2TagWithValue {
-            fn from(value: super::TempoApiV2TagWithValue) -> Self {
-                Self {
-                    tag: Ok(value.tag),
-                    value: Ok(value.value),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
         pub struct TenantResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
             default_dataset: ::std::result::Result<
@@ -12926,10 +12659,9 @@ impl Client {
     }
     /**GET /api/search/tag/:tag_name/values
 
-    Backed by real data: distinct values observed in the tenant's traces
-    within the window, for any tag — dedicated columns, map-stored
-    attributes, and the static `status`/`kind` enums alike. An unknown or
-    unobserved tag answers `200` with an empty list, never `501`.
+    Backed by real data: distinct values from the tenant's traces table
+    for supported tags, static status values for `status`, and an
+    explicit 501 for tags that are not queryable yet.
 
     Sends a `GET` request to `/tempo/api/search/tag/{tag_name}/values`
 
@@ -12954,13 +12686,8 @@ impl Client {
 
     Sends a `GET` request to `/tempo/api/search/tags`
 
-    Arguments:
-    - `end`: Window end (unix seconds); defaults to now
-    - `start`: Window start (unix seconds); default lookback is 1 hour
     ```ignore
     let response = client.search_tags()
-        .end(end)
-        .start(start)
         .send()
         .await;
     ```*/
@@ -12989,46 +12716,6 @@ impl Client {
     ```*/
     pub fn query_single_trace(&self) -> builder::QuerySingleTrace<'_> {
         builder::QuerySingleTrace::new(self)
-    }
-    /**GET /api/v2/search/tag/{tag_name}/values
-
-    Sends a `GET` request to `/tempo/api/v2/search/tag/{tag_name}/values`
-
-    Arguments:
-    - `tag_name`: Scoped or unscoped tag name to fetch values for
-    - `end`: Window end (unix seconds)
-    - `q`: Accepted for Tempo API compatibility; unused
-    - `start`: Window start (unix seconds)
-    ```ignore
-    let response = client.search_tag_values_v2()
-        .tag_name(tag_name)
-        .end(end)
-        .q(q)
-        .start(start)
-        .send()
-        .await;
-    ```*/
-    pub fn search_tag_values_v2(&self) -> builder::SearchTagValuesV2<'_> {
-        builder::SearchTagValuesV2::new(self)
-    }
-    /**GET /api/v2/search/tags?scope=<resource|span|intrinsic>
-
-    Sends a `GET` request to `/tempo/api/v2/search/tags`
-
-    Arguments:
-    - `end`: Window end (unix seconds); defaults to now
-    - `scope`: Restrict to one scope
-    - `start`: Window start (unix seconds); default lookback is 1 hour
-    ```ignore
-    let response = client.search_tags_v2()
-        .end(end)
-        .scope(scope)
-        .start(start)
-        .send()
-        .await;
-    ```*/
-    pub fn search_tags_v2(&self) -> builder::SearchTagsV2<'_> {
-        builder::SearchTagsV2::new(self)
     }
 }
 /// Types for composing operation parameters.
@@ -14142,6 +13829,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -14229,6 +13919,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -14299,6 +13992,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
@@ -14414,6 +14110,9 @@ pub mod builder {
                 422u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -14499,6 +14198,9 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
@@ -14631,6 +14333,9 @@ pub mod builder {
                 422u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -14701,6 +14406,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
@@ -14814,6 +14522,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -14901,6 +14612,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -14971,6 +14685,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
@@ -15082,6 +14799,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 500u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
@@ -15170,6 +14890,9 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
@@ -15384,6 +15107,7 @@ pub mod builder {
                 200u16 => ResponseValue::from_response(response).await,
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
@@ -15481,6 +15205,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -15545,6 +15272,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -15642,6 +15372,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -15706,6 +15439,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -15803,6 +15539,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -15869,6 +15608,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -15915,6 +15657,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -15990,6 +15735,9 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -16076,6 +15824,9 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -16190,6 +15941,9 @@ pub mod builder {
                 422u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16277,6 +16031,9 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16346,6 +16103,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16390,6 +16150,7 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16482,6 +16243,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16553,6 +16315,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16657,6 +16420,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -16789,6 +16553,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17015,6 +16780,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17086,6 +16852,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17161,6 +16928,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17264,6 +17032,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17533,6 +17302,8 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                501u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17543,42 +17314,14 @@ pub mod builder {
     #[derive(Debug, Clone)]
     pub struct SearchTags<'a> {
         client: &'a super::Client,
-        end: Result<Option<i64>, String>,
-        start: Result<Option<i64>, String>,
     }
     impl<'a> SearchTags<'a> {
         pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                end: Ok(None),
-                start: Ok(None),
-            }
-        }
-        pub fn end<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<i64>,
-        {
-            self.end = value
-                .try_into()
-                .map(Some)
-                .map_err(|_| "conversion to `i64` for end failed".to_string());
-            self
-        }
-        pub fn start<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<i64>,
-        {
-            self.start = value
-                .try_into()
-                .map(Some)
-                .map_err(|_| "conversion to `i64` for start failed".to_string());
-            self
+            Self { client: client }
         }
         ///Sends a `GET` request to `/tempo/api/search/tags`
         pub async fn send(self) -> Result<ResponseValue<types::TagSearchResponse>, Error<()>> {
-            let Self { client, end, start } = self;
-            let end = end.map_err(Error::InvalidRequest)?;
-            let start = start.map_err(Error::InvalidRequest)?;
+            let Self { client } = self;
             let url = format!("{}/tempo/api/search/tags", client.baseurl,);
             let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
             header_map.append(
@@ -17593,8 +17336,6 @@ pub mod builder {
                     ::reqwest::header::ACCEPT,
                     ::reqwest::header::HeaderValue::from_static("application/json"),
                 )
-                .query(&progenitor_client::QueryParam::new("end", &end))
-                .query(&progenitor_client::QueryParam::new("start", &start))
                 .headers(header_map)
                 .build()?;
             let info = OperationInfo {
@@ -17606,7 +17347,7 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -17720,213 +17461,7 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::search_tag_values_v2`]
-
-    [`Client::search_tag_values_v2`]: super::Client::search_tag_values_v2*/
-    #[derive(Debug, Clone)]
-    pub struct SearchTagValuesV2<'a> {
-        client: &'a super::Client,
-        tag_name: Result<::std::string::String, String>,
-        end: Result<Option<i64>, String>,
-        q: Result<Option<::std::string::String>, String>,
-        start: Result<Option<i64>, String>,
-    }
-    impl<'a> SearchTagValuesV2<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tag_name: Err("tag_name was not initialized".to_string()),
-                end: Ok(None),
-                q: Ok(None),
-                start: Ok(None),
-            }
-        }
-        pub fn tag_name<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tag_name = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tag_name failed".to_string()
-            });
-            self
-        }
-        pub fn end<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<i64>,
-        {
-            self.end = value
-                .try_into()
-                .map(Some)
-                .map_err(|_| "conversion to `i64` for end failed".to_string());
-            self
-        }
-        pub fn q<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.q = value
-                .try_into()
-                .map(Some)
-                .map_err(|_| "conversion to `:: std :: string :: String` for q failed".to_string());
-            self
-        }
-        pub fn start<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<i64>,
-        {
-            self.start = value
-                .try_into()
-                .map(Some)
-                .map_err(|_| "conversion to `i64` for start failed".to_string());
-            self
-        }
-        ///Sends a `GET` request to `/tempo/api/v2/search/tag/{tag_name}/values`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::TempoApiV2TagValuesResponse>, Error<()>> {
-            let Self {
-                client,
-                tag_name,
-                end,
-                q,
-                start,
-            } = self;
-            let tag_name = tag_name.map_err(Error::InvalidRequest)?;
-            let end = end.map_err(Error::InvalidRequest)?;
-            let q = q.map_err(Error::InvalidRequest)?;
-            let start = start.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/tempo/api/v2/search/tag/{}/values",
-                client.baseurl,
-                encode_path(&tag_name.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .query(&progenitor_client::QueryParam::new("end", &end))
-                .query(&progenitor_client::QueryParam::new("q", &q))
-                .query(&progenitor_client::QueryParam::new("start", &start))
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "search_tag_values_v2",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::search_tags_v2`]
-
-    [`Client::search_tags_v2`]: super::Client::search_tags_v2*/
-    #[derive(Debug, Clone)]
-    pub struct SearchTagsV2<'a> {
-        client: &'a super::Client,
-        end: Result<Option<i64>, String>,
-        scope: Result<Option<types::TagScope>, String>,
-        start: Result<Option<i64>, String>,
-    }
-    impl<'a> SearchTagsV2<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                end: Ok(None),
-                scope: Ok(None),
-                start: Ok(None),
-            }
-        }
-        pub fn end<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<i64>,
-        {
-            self.end = value
-                .try_into()
-                .map(Some)
-                .map_err(|_| "conversion to `i64` for end failed".to_string());
-            self
-        }
-        pub fn scope<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<types::TagScope>,
-        {
-            self.scope = value
-                .try_into()
-                .map(Some)
-                .map_err(|_| "conversion to `TagScope` for scope failed".to_string());
-            self
-        }
-        pub fn start<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<i64>,
-        {
-            self.start = value
-                .try_into()
-                .map(Some)
-                .map_err(|_| "conversion to `i64` for start failed".to_string());
-            self
-        }
-        ///Sends a `GET` request to `/tempo/api/v2/search/tags`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::TempoApiV2TagSearchResponse>, Error<()>> {
-            let Self {
-                client,
-                end,
-                scope,
-                start,
-            } = self;
-            let end = end.map_err(Error::InvalidRequest)?;
-            let scope = scope.map_err(Error::InvalidRequest)?;
-            let start = start.map_err(Error::InvalidRequest)?;
-            let url = format!("{}/tempo/api/v2/search/tags", client.baseurl,);
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .query(&progenitor_client::QueryParam::new("end", &end))
-                .query(&progenitor_client::QueryParam::new("scope", &scope))
-                .query(&progenitor_client::QueryParam::new("start", &start))
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "search_tags_v2",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

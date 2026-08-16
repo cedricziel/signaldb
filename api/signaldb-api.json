@@ -371,6 +371,22 @@
           },
           "429": {
             "description": "Tenant API key quota exceeded",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "description": "Fixed at 1 second: a count quota has no token bucket to refill from"
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "description": "The tenant's max_api_keys quota"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -626,6 +642,22 @@
           },
           "429": {
             "description": "Tenant dataset quota exceeded",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "description": "Fixed at 1 second: a count quota has no token bucket to refill from"
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "description": "The tenant's max_datasets quota"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -795,6 +827,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -856,6 +891,9 @@
               }
             }
           },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -909,6 +947,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
             "description": "Internal error",
@@ -999,6 +1040,9 @@
               }
             }
           },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -1061,6 +1105,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
             "description": "Internal error",
@@ -1170,6 +1217,9 @@
               }
             }
           },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -1223,6 +1273,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
             "description": "Internal error",
@@ -1302,6 +1355,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -1366,6 +1422,9 @@
               }
             }
           },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -1419,6 +1478,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
             "description": "Internal error",
@@ -1499,6 +1561,9 @@
               }
             }
           },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -1571,6 +1636,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
             "description": "Internal error",
@@ -1718,6 +1786,9 @@
           "401": {
             "description": "Missing or invalid credentials"
           },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
           "503": {
             "description": "No querier service available"
           }
@@ -1791,6 +1862,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -1837,6 +1911,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -1908,6 +1985,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -1954,6 +2034,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2025,6 +2108,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2071,6 +2157,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2106,6 +2195,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2180,6 +2272,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2245,6 +2340,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2349,6 +2447,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2415,6 +2516,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2471,6 +2575,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2501,6 +2608,9 @@
           },
           "401": {
             "description": "Invalid or expired credential"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2554,6 +2664,9 @@
                 "schema": {}
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2598,6 +2711,9 @@
                 "schema": {}
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2663,6 +2779,9 @@
                 "schema": {}
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2745,6 +2864,9 @@
                 "schema": {}
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2882,6 +3004,9 @@
                 "schema": {}
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2926,6 +3051,9 @@
                 "schema": {}
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -2971,6 +3099,9 @@
                 "schema": {}
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -3033,6 +3164,9 @@
                 "schema": {}
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -3136,7 +3270,7 @@
             "description": "Invalid query"
           },
           "429": {
-            "description": "Rate limited"
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -3152,7 +3286,7 @@
           "traces"
         ],
         "summary": "GET /api/search/tag/:tag_name/values",
-        "description": "Backed by real data: distinct values observed in the tenant's traces\nwithin the window, for any tag — dedicated columns, map-stored\nattributes, and the static `status`/`kind` enums alike. An unknown or\nunobserved tag answers `200` with an empty list, never `501`.",
+        "description": "Backed by real data: distinct values from the tenant's traces table\nfor supported tags, static status values for `status`, and an\nexplicit 501 for tags that are not queryable yet.",
         "operationId": "search_tag_values",
         "parameters": [
           {
@@ -3198,6 +3332,12 @@
           },
           "400": {
             "description": "start/end are not unix-second timestamps"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "501": {
+            "description": "Tag not queryable yet"
           }
         },
         "security": [
@@ -3215,31 +3355,9 @@
         "summary": "GET /api/search/tags?scope=<resource|span|intrinsic>",
         "description": "See https://grafana.com/docs/tempo/latest/api_docs/#search-tags",
         "operationId": "search_tags",
-        "parameters": [
-          {
-            "name": "start",
-            "in": "query",
-            "description": "Window start (unix seconds); default lookback is 1 hour",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "end",
-            "in": "query",
-            "description": "Window end (unix seconds); defaults to now",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        ],
         "responses": {
           "200": {
-            "description": "Searchable tag names observed in the window",
+            "description": "Searchable tag names",
             "content": {
               "application/json": {
                 "schema": {
@@ -3248,8 +3366,8 @@
               }
             }
           },
-          "400": {
-            "description": "start/end are not unix-second timestamps"
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -3318,135 +3436,9 @@
           },
           "404": {
             "description": "Trace not found"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/tempo/api/v2/search/tag/{tag_name}/values": {
-      "get": {
-        "tags": [
-          "traces"
-        ],
-        "summary": "GET /api/v2/search/tag/{tag_name}/values",
-        "operationId": "search_tag_values_v2",
-        "parameters": [
-          {
-            "name": "tag_name",
-            "in": "path",
-            "description": "Scoped or unscoped tag name to fetch values for",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
           },
-          {
-            "name": "start",
-            "in": "query",
-            "description": "Window start (unix seconds)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "end",
-            "in": "query",
-            "description": "Window end (unix seconds)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "q",
-            "in": "query",
-            "description": "Accepted for Tempo API compatibility; unused",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Values for the tag",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/tempo_api.v2.TagValuesResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "start/end are not unix-second timestamps"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/tempo/api/v2/search/tags": {
-      "get": {
-        "tags": [
-          "traces"
-        ],
-        "summary": "GET /api/v2/search/tags?scope=<resource|span|intrinsic>",
-        "operationId": "search_tags_v2",
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "query",
-            "description": "Restrict to one scope",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/TagScope"
-            }
-          },
-          {
-            "name": "start",
-            "in": "query",
-            "description": "Window start (unix seconds); default lookback is 1 hour",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "end",
-            "in": "query",
-            "description": "Window end (unix seconds); defaults to now",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Searchable tag names, grouped by scope",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/tempo_api.v2.TagSearchResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "start/end are not unix-second timestamps"
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         },
         "security": [
@@ -3474,6 +3466,36 @@
           "message": {
             "type": "string",
             "description": "Human-readable error description."
+          }
+        }
+      },
+      "ApiErrorBody": {
+        "type": "object",
+        "description": "The JSON envelope every query-surface error responds with: `status` is\nalways `\"error\"`, `errorType` a stable low-cardinality code, `error` a\nhuman-readable message, and `retryAfterMs` present only on rate-limit\nrejections. Exists as a real (rather than `serde_json::json!`-built)\ntype so the OpenAPI document can declare its schema on the `429`\nresponse of every rate-limited operation.",
+        "required": [
+          "status",
+          "errorType",
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "errorType": {
+            "type": "string"
+          },
+          "retryAfterMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Milliseconds until the request would be admitted; present only when\n`errorType` is `\"rate_limited\"`.",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "description": "Always `\"error\"`."
           }
         }
       },
@@ -5454,15 +5476,6 @@
           }
         }
       },
-      "TagScope": {
-        "type": "string",
-        "description": "GET /api/search/tags?scope=<resource|span|intrinsic>\n\n`rename_all = \"lowercase\"` matters here: the Tempo API (and Grafana's\nTempo datasource, which is what actually sends this) uses lowercase\nscope values. Without it, serde only accepts the Rust variant names\n(`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).",
-        "enum": [
-          "resource",
-          "span",
-          "intrinsic"
-        ]
-      },
       "TagSearchResponse": {
         "type": "object",
         "required": [
@@ -5765,66 +5778,63 @@
             "type": "string"
           }
         }
-      },
-      "tempo_api.v2.TagSearchResponse": {
-        "type": "object",
-        "required": [
-          "scopes"
-        ],
-        "properties": {
-          "scopes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/tempo_api.v2.TagSearchScope"
-            }
-          }
-        }
-      },
-      "tempo_api.v2.TagSearchScope": {
-        "type": "object",
-        "required": [
-          "scope",
-          "tags"
-        ],
-        "properties": {
-          "scope": {
-            "type": "string"
+      }
+    },
+    "responses": {
+      "RateLimited": {
+        "description": "Rate limited: the tenant's request budget for this dimension is exhausted. `Retry-After` states whole seconds (rounded up, at least 1) until the request would be admitted, computed from the token bucket's actual state.",
+        "headers": {
+          "Retry-After": {
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Whole seconds (rounded up, at least 1) until the request would be admitted"
           },
-          "tags": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "tempo_api.v2.TagValuesResponse": {
-        "type": "object",
-        "description": "GET /api/v2/search/tag/.service.name/values\n\nTodo: Add types to values\n\nSee <https://grafana.com/docs/tempo/latest/api_docs/#search-tag-values-v2>",
-        "required": [
-          "tagValues"
-        ],
-        "properties": {
-          "tagValues": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/tempo_api.v2.TagWithValue"
-            }
-          }
-        }
-      },
-      "tempo_api.v2.TagWithValue": {
-        "type": "object",
-        "required": [
-          "tag",
-          "value"
-        ],
-        "properties": {
-          "tag": {
-            "type": "string"
+          "X-RateLimit-Burst": {
+            "schema": {
+              "type": "integer"
+            },
+            "description": "The tenant's burst allowance for the rejected dimension"
           },
-          "value": {
-            "type": "string"
+          "X-RateLimit-Limit": {
+            "schema": {
+              "type": "integer"
+            },
+            "description": "The tenant's per-second budget for the rejected dimension"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "description": "The JSON envelope every query-surface error responds with: `status` is\nalways `\"error\"`, `errorType` a stable low-cardinality code, `error` a\nhuman-readable message, and `retryAfterMs` present only on rate-limit\nrejections. Exists as a real (rather than `serde_json::json!`-built)\ntype so the OpenAPI document can declare its schema on the `429`\nresponse of every rate-limited operation.",
+              "required": [
+                "status",
+                "errorType",
+                "error"
+              ],
+              "properties": {
+                "error": {
+                  "type": "string"
+                },
+                "errorType": {
+                  "type": "string"
+                },
+                "retryAfterMs": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "Milliseconds until the request would be admitted; present only when\n`errorType` is `\"rate_limited\"`.",
+                  "minimum": 0
+                },
+                "status": {
+                  "type": "string",
+                  "description": "Always `\"error\"`."
+                }
+              }
+            }
           }
         }
       }
