@@ -58,6 +58,23 @@ pub const ROUTER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// tool calls indefinitely (issue #885).
 pub const DEFAULT_ROUTER_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Total per-`tools/call` deadline: `sdk_client_for` applies `router_timeout`
+/// as a *per-attempt* timeout, and the SDK's default [`signaldb_sdk::RetryPolicy`]
+/// can spend up to `max_attempts` (4) attempts plus [`signaldb_sdk::RetryPolicy::total_cap`]
+/// (30s) of retry sleeps between them — with the default 30s `router_timeout`
+/// that is up to ~150s before a single tool call gives up, which can keep an
+/// MCP client waiting far longer than it expects. `call_tool` wraps the whole
+/// dispatch in `tokio::time::timeout(tool_call_deadline(router_timeout), ..)`
+/// so one call is bounded by `router_timeout + total_cap` (60s with defaults)
+/// regardless of how many attempts the retry policy spends underneath. This
+/// is deliberately a simpler bound than the exact worst case
+/// (`max_attempts * router_timeout + total_cap`): it still meaningfully caps
+/// the call, and callers who need slower single attempts should raise
+/// `router_timeout` rather than rely on this deadline being loose.
+pub fn tool_call_deadline(router_timeout: Duration) -> Duration {
+    router_timeout + signaldb_sdk::RetryPolicy::default().total_cap
+}
+
 /// Prefix identifying a SignalDB OAuth 2.1 access token. Mirrors
 /// `common::auth::oauth::ACCESS_TOKEN_PREFIX`; duplicated deliberately so the
 /// sidecar's trust model does not lean on `common`'s auth module.
@@ -113,6 +130,10 @@ pub struct McpAppState {
     oauth: Option<OAuthResource>,
     /// Per-session bound on tool calls in flight (`[mcp].max_concurrent_tool_calls`).
     pub max_concurrent_tool_calls: usize,
+    /// Total deadline for one `tools/call`; see [`tool_call_deadline`].
+    /// Recomputed from `router_timeout` by [`Self::with_router_timeout`]
+    /// unless [`Self::with_tool_call_deadline`] is called afterwards.
+    pub tool_call_deadline: Duration,
 }
 
 impl McpAppState {
@@ -124,6 +145,7 @@ impl McpAppState {
             session_bindings: Arc::new(DashMap::new()),
             oauth: None,
             max_concurrent_tool_calls: audit::DEFAULT_MAX_CONCURRENT_TOOL_CALLS,
+            tool_call_deadline: tool_call_deadline(DEFAULT_ROUTER_TIMEOUT),
         }
     }
 
@@ -134,8 +156,20 @@ impl McpAppState {
     }
 
     /// Override the overall timeout for downstream requests to the router.
+    /// Also recomputes [`Self::tool_call_deadline`] from the new timeout;
+    /// call [`Self::with_tool_call_deadline`] afterwards to override that too.
     pub fn with_router_timeout(mut self, timeout: Duration) -> Self {
         self.router_timeout = timeout;
+        self.tool_call_deadline = tool_call_deadline(timeout);
+        self
+    }
+
+    /// Override the total per-`tools/call` deadline directly (default
+    /// `tool_call_deadline(router_timeout)`). Mainly for tests that need to
+    /// observe a deadline-exceeded error without waiting out the full
+    /// default.
+    pub fn with_tool_call_deadline(mut self, deadline: Duration) -> Self {
+        self.tool_call_deadline = deadline;
         self
     }
 
@@ -164,6 +198,7 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
     let base_url = state.router_base_url.clone();
     let router_timeout = state.router_timeout;
     let max_concurrent_tool_calls = state.max_concurrent_tool_calls;
+    let tool_call_deadline = state.tool_call_deadline;
 
     let mut config = StreamableHttpServerConfig::default();
     if allowed_hosts.iter().any(|h| h == "*") {
@@ -182,7 +217,8 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
                 base_url.clone(),
                 router_timeout,
                 max_concurrent_tool_calls,
-            ))
+            )
+            .with_tool_call_deadline(tool_call_deadline))
         },
         session_manager,
         config,
@@ -934,6 +970,34 @@ mod tests {
     fn default_router_timeout_is_30_seconds() {
         assert_eq!(DEFAULT_ROUTER_TIMEOUT, std::time::Duration::from_secs(30));
         assert_eq!(test_state().router_timeout, DEFAULT_ROUTER_TIMEOUT);
+    }
+
+    #[test]
+    fn tool_call_deadline_is_router_timeout_plus_the_retry_total_cap() {
+        let router_timeout = Duration::from_secs(30);
+        assert_eq!(
+            tool_call_deadline(router_timeout),
+            router_timeout + signaldb_sdk::RetryPolicy::default().total_cap,
+        );
+        // Default router_timeout (30s) + default total_cap (30s) = 60s, well
+        // under the ~150s worst case of 4 attempts at 30s each plus 30s of
+        // retry sleeps that an unbounded call could otherwise reach.
+        assert_eq!(
+            tool_call_deadline(DEFAULT_ROUTER_TIMEOUT),
+            Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn app_state_recomputes_tool_call_deadline_from_router_timeout() {
+        let state = test_state().with_router_timeout(Duration::from_secs(5));
+        assert_eq!(
+            state.tool_call_deadline,
+            Duration::from_secs(5) + signaldb_sdk::RetryPolicy::default().total_cap
+        );
+
+        let overridden = state.with_tool_call_deadline(Duration::from_millis(200));
+        assert_eq!(overridden.tool_call_deadline, Duration::from_millis(200));
     }
 
     #[tokio::test]
