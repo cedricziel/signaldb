@@ -542,7 +542,7 @@ where
 {
     // Per-tenant ingest rate limiting (HTTP 429 with the reason)
     if let Err(e) = rate_limiter.check_ingest(&tenant_context.tenant_id, body.len()) {
-        return otlp_http_error(axum::http::StatusCode::TOO_MANY_REQUESTS, e.to_string());
+        return otlp_http_rate_limit_error(&e);
     }
 
     // Per-tenant storage quota: a tenant at or over max_storage_bytes
@@ -746,7 +746,7 @@ async fn handle_http_profiles(
         .rate_limiter
         .check_ingest(&tenant_context.tenant_id, body.len())
     {
-        return otlp_http_error(axum::http::StatusCode::TOO_MANY_REQUESTS, e.to_string());
+        return otlp_http_rate_limit_error(&e);
     }
 
     // Per-tenant storage quota: a tenant at or over max_storage_bytes
@@ -808,6 +808,24 @@ fn otlp_http_error(
             serde_json::json!({ "message": message }).to_string(),
         ))
         .expect("error response must build")
+}
+
+/// A `429` for an ingest rate-limit rejection: same body shape as
+/// [`otlp_http_error`], plus the `Retry-After` / `X-RateLimit-Limit` /
+/// `X-RateLimit-Burst` headers computed from the rejected bucket's actual
+/// state (`common::ratelimit::retry_headers`, shared with the router so
+/// every SignalDB 429 answers identically). Also records the
+/// `signaldb_rate_limit_rejections_total{surface="otlp_http",kind}` counter.
+fn otlp_http_rate_limit_error(
+    err: &common::ratelimit::RateLimitExceeded,
+) -> axum::response::Response<axum::body::Body> {
+    common::self_monitoring::record_rate_limit_rejection("otlp_http", err.kind.as_str());
+    let mut response = otlp_http_error(axum::http::StatusCode::TOO_MANY_REQUESTS, err.to_string());
+    let headers = response.headers_mut();
+    for (name, value) in common::ratelimit::retry_headers(err) {
+        headers.insert(name, value);
+    }
+    response
 }
 
 /// Handler variant using Extension instead of State for simpler router composition

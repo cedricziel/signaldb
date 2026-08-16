@@ -80,7 +80,13 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
         if let Some(limiter) = &self.rate_limiter {
             limiter
                 .check_ingest(&tenant_context.tenant_id, request_inner.encoded_len())
-                .map_err(|e| Status::resource_exhausted(e.to_string()))?;
+                .map_err(|e| {
+                    common::self_monitoring::record_rate_limit_rejection(
+                        "otlp_grpc",
+                        e.kind.as_str(),
+                    );
+                    Status::resource_exhausted(e.to_string())
+                })?;
         }
 
         // Per-tenant storage quota: a tenant at or over max_storage_bytes

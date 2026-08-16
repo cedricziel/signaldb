@@ -117,7 +117,7 @@ impl PrometheusHandler {
         if let Some(limiter) = &self.rate_limiter {
             limiter
                 .check_ingest(&tenant_context.tenant_id, body.len())
-                .map_err(|e| PrometheusError::RateLimited(e.to_string()))?;
+                .map_err(PrometheusError::RateLimited)?;
         }
 
         // Per-tenant storage quota: a tenant at or over max_storage_bytes
@@ -322,7 +322,10 @@ pub enum PrometheusError {
     ConversionError(String),
     SerializationError(String),
     WalError(String),
-    RateLimited(String),
+    /// Ingest rate limit exceeded; carries the rejected bucket's state so
+    /// the response can attach `Retry-After` / `X-RateLimit-*` headers via
+    /// `common::ratelimit::retry_headers`.
+    RateLimited(common::ratelimit::RateLimitExceeded),
     QuotaExceeded(String),
 }
 
@@ -333,7 +336,7 @@ impl std::fmt::Display for PrometheusError {
             Self::ConversionError(msg) => write!(f, "Conversion error: {msg}"),
             Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
             Self::WalError(msg) => write!(f, "WAL error: {msg}"),
-            Self::RateLimited(msg) => write!(f, "Rate limited: {msg}"),
+            Self::RateLimited(err) => write!(f, "Rate limited: {err}"),
             Self::QuotaExceeded(msg) => write!(f, "Quota exceeded: {msg}"),
         }
     }
@@ -343,14 +346,27 @@ impl std::error::Error for PrometheusError {}
 
 impl IntoResponse for PrometheusError {
     fn into_response(self) -> axum::response::Response {
-        let (status, message) = match &self {
-            Self::DecodeError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
-            Self::ConversionError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            Self::SerializationError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            Self::WalError(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
-            Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
-            Self::QuotaExceeded(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
+        let status = match &self {
+            Self::DecodeError(_) => StatusCode::BAD_REQUEST,
+            Self::ConversionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::SerializationError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::WalError(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::RateLimited(_) | Self::QuotaExceeded(_) => StatusCode::TOO_MANY_REQUESTS,
         };
+        let message = self.to_string();
+
+        // Rate-limit rejections (unlike the count-based storage quota) come
+        // from a token bucket, so they carry the `Retry-After` /
+        // `X-RateLimit-*` headers every SignalDB rate-limit rejection uses.
+        if let Self::RateLimited(err) = &self {
+            common::self_monitoring::record_rate_limit_rejection("prometheus", err.kind.as_str());
+            let mut response = (status, message).into_response();
+            let headers = response.headers_mut();
+            for (name, value) in common::ratelimit::retry_headers(err) {
+                headers.insert(name, value);
+            }
+            return response;
+        }
 
         (status, message).into_response()
     }
@@ -375,11 +391,69 @@ mod tests {
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    fn sample_rate_limit_exceeded(
+        kind: common::ratelimit::RateLimitKind,
+    ) -> common::ratelimit::RateLimitExceeded {
+        common::ratelimit::RateLimitExceeded {
+            tenant_id: "acme".to_string(),
+            kind,
+            retry_after: std::time::Duration::from_millis(2_500),
+            limit: 1_000.0,
+            burst: 1_000.0,
+        }
+    }
+
     #[test]
     fn rate_limited_error_maps_to_http_429() {
-        let response =
-            PrometheusError::RateLimited("tenant 'acme' exceeded its request rate limit".into())
-                .into_response();
+        let response = PrometheusError::RateLimited(sample_rate_limit_exceeded(
+            common::ratelimit::RateLimitKind::Requests,
+        ))
+        .into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn rate_limited_error_carries_retry_after_and_limit_headers() {
+        // Bytes-dimension rejection: the headers report bytes/second, not
+        // requests/second, matching whichever bucket rejected the request.
+        let response = PrometheusError::RateLimited(sample_rate_limit_exceeded(
+            common::ratelimit::RateLimitKind::Bytes,
+        ))
+        .into_response();
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("3")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-ratelimit-limit")
+                .and_then(|v| v.to_str().ok()),
+            Some("1000")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-ratelimit-burst")
+                .and_then(|v| v.to_str().ok()),
+            Some("1000")
+        );
+    }
+
+    #[test]
+    fn quota_exceeded_carries_no_rate_limit_headers() {
+        // The storage quota is a count check, not a token bucket, so it
+        // does not have the header trio.
+        let response = PrometheusError::QuotaExceeded("over storage quota".into()).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .is_none()
+        );
     }
 }
