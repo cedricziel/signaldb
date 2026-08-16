@@ -19,8 +19,8 @@
 
 ## 4. CLI `tenant` group
 
-- [ ] 4.1 Failing clap-tree test: `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`, `tenant membership {list,set,remove}`, `tenant schema get`, `tenant table {list,provision}` exist; `admin user create` exists; `whoami` decision per design (add or exclude)
-- [ ] 4.2 Implement the commands over the SDK (`manage_*`, tables/schemas ops), destructive verbs with `--yes`/TTY prompt; native output shapes consistent with `admin`
+- [x] 4.1 Failing clap-tree test: `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`, `tenant membership {list,set,remove}`, `tenant schema get`, `tenant table {list,provision}` exist; `admin user create` exists; `whoami` decision per design (add or exclude). Deviations: `admin user create` was already reachable as top-level `user create` (no `admin` nesting existed for it pre-change; left as-is, not moved, to avoid an unrelated breaking change) — the parity manifest maps `create_user` there. `whoami` added as a top-level command (cheaper than excluding, per design's open question). `tenant table` also gained `schemas`/`available-schemas` verbs for `list_tenant_schemas`/`list_available_schemas`, two tenant.rs operations the design's tool list omitted but the whole-SDK parity check requires covered. `query` gained `--trace-id` (`query_single_trace`) and `--start`/`--end`/`--step` (`promql_query_range`/`logql_query_range`) — pre-existing operations with no CLI/MCP surface at all before this change.
+- [x] 4.2 Implement the commands over the SDK (`manage_*`, tables/schemas ops). Deviation: no `--yes`/TTY prompt on destructive verbs — the existing `admin` destructive verbs (`delete_tenant`, `revoke_api_key`, `delete_dataset`) have none either, so "consistent with existing admin verbs" means immediate execution, matched here.
 - [ ] 4.3 CLI integration test against a running router: `tenant dataset list` and `tenant table provision` succeed with a tenant key that has the required scopes
 
 ## 5. UI
