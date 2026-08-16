@@ -14,21 +14,47 @@
 //!   signal-aware (`traces` via Tempo tags, `logs` via Loki labels,
 //!   `metrics` via Prometheus labels)
 //! - `discover_metrics` — distinct metric names for the tenant
-//! - `query_metrics` — PromQL query (native Prometheus result)
-//! - `search_logs` — LogQL query (native Loki result)
+//! - `query_metrics` — PromQL query (native Prometheus result), instant or
+//!   range (`start`/`end`/`step`)
+//! - `search_logs` — LogQL query (native Loki result), instant or range
 //! - `query_ir` — native Query IR document (structured query surface)
 //! - `compact_run` / `compact_status` / `compact_dry_run` — operational
 //!   compaction control (admin-authenticated)
-//! - `list_api_keys` / `create_api_key` / `update_api_key_scopes` — API-key
-//!   management over the admin API (admin-authenticated); keys carry explicit
-//!   scopes from the shared vocabulary (`common::auth::API_KEY_SCOPES`)
-//! - `list_schema_registries`, `resolve_attribute` / `resolve_entity` /
-//!   `resolve_metric`, `search_schema` — schema-registry lookup: what an
-//!   attribute key, entity type, or metric name *means*, precedence-ordered
-//!   across the tenant's visible registries (custom → signaldb → otel), so a
-//!   model can learn the vocabulary before building a query
+//! - `list_schema_registries`, `get_schema_registry`, `resolve_attribute` /
+//!   `resolve_entity` / `resolve_metric`, `search_schema` — schema-registry
+//!   lookup: what an attribute key, entity type, or metric name *means*,
+//!   precedence-ordered across the tenant's visible registries (custom →
+//!   signaldb → otel), so a model can learn the vocabulary before building a
+//!   query
 //! - `create_schema_registry` / `replace_schema_registry` /
-//!   `delete_schema_registry` — custom-registry management (`schema:write`)
+//!   `delete_schema_registry` / `validate_schema_registry` — custom-registry
+//!   management (`schema:write`)
+//!
+//! Management tools come in two families that differ only in which
+//! credential the router expects (design D1); neither is hidden from
+//! `tools/list` — a call the router does not authorize returns a clean
+//! access-denied error:
+//! - **Platform-admin** (unprefixed, admin API, requires the administrative
+//!   credential): `list_tenants` / `get_tenant` / `create_tenant` /
+//!   `update_tenant` / `delete_tenant`, `create_user`, `list_api_keys` /
+//!   `create_api_key` / `update_api_key_scopes` / `revoke_api_key`,
+//!   `list_datasets` / `create_dataset` / `delete_dataset`. Keys carry
+//!   explicit scopes from the shared vocabulary (`common::auth::API_KEY_SCOPES`).
+//! - **Tenant self-management** (`tenant_`-prefixed, management API, acts as
+//!   the caller's own identity within its tenant): `tenant_list_datasets` /
+//!   `tenant_create_dataset` / `tenant_delete_dataset`,
+//!   `tenant_list_api_keys` / `tenant_create_api_key` /
+//!   `tenant_update_api_key` / `tenant_revoke_api_key`,
+//!   `tenant_list_memberships` / `tenant_upsert_membership` /
+//!   `tenant_remove_membership`, `tenant_get_schema`, `tenant_list_tables` /
+//!   `tenant_create_tables` / `tenant_list_table_schemas`, and the
+//!   tenant-scoped-but-credential-agnostic `list_available_table_schemas`.
+//!
+//! Tools that delete or revoke carry the MCP destructive annotation and
+//! require a `confirm` argument equal to the identifier being destroyed;
+//! read-only tools carry the read-only annotation. `create_api_key` /
+//! `tenant_create_api_key` return key material exactly once, in that
+//! response; the `list_*` tools never return key material.
 //!
 //! Raw SQL is served over Arrow Flight (gRPC) rather than the router HTTP API;
 //! this server is an HTTP forwarder and holds no Flight client, so SQL stays a
@@ -250,9 +276,21 @@ struct DiscoverMetricsParams {
 struct QueryMetricsParams {
     /// PromQL expression, e.g. `rate(http_requests_total[5m])`.
     query: String,
-    /// Evaluation timestamp, unix seconds or RFC3339. Omit to evaluate at "now".
+    /// Evaluation timestamp, unix seconds or RFC3339. Omit to evaluate at
+    /// "now". Ignored (and superseded by `start`/`end`) for a range query.
     #[serde(default)]
     time: Option<String>,
+    /// Range query start (unix seconds or RFC3339). Providing `start` or
+    /// `end` switches from an instant query to a range query.
+    #[serde(default)]
+    start: Option<String>,
+    /// Range query end (unix seconds or RFC3339). See `start`.
+    #[serde(default)]
+    end: Option<String>,
+    /// Range query resolution step (Go duration or seconds). Only used with
+    /// `start`/`end`.
+    #[serde(default)]
+    step: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -270,6 +308,17 @@ struct SearchLogsParams {
     /// Log ordering: `forward` or `backward`.
     #[serde(default)]
     direction: Option<String>,
+    /// Range query start (unix ns/s or RFC3339). Providing `start` or `end`
+    /// switches from an instant query to a range query.
+    #[serde(default)]
+    start: Option<String>,
+    /// Range query end (unix ns/s or RFC3339). See `start`.
+    #[serde(default)]
+    end: Option<String>,
+    /// Range query evaluation interval for metric queries. Only used with
+    /// `start`/`end`.
+    #[serde(default)]
+    step: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -428,6 +477,259 @@ fn registry_document(
             None,
         )),
     }
+}
+
+/// Enforces design D2's confirmation rule for destructive tools: `confirm`
+/// must equal the identifier being destroyed, or the call is refused before
+/// any downstream request.
+fn require_confirm(confirm: &str, expected: &str, what: &str) -> Result<(), ErrorData> {
+    if confirm != expected {
+        return Err(ErrorData::invalid_params(
+            format!("`confirm` must equal the {what} being deleted/revoked (\"{expected}\")"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+// ---- Platform-admin tool parameters (admin API; administrative credential) ----
+
+/// Parameters for `get_tenant`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TenantIdParams {
+    /// Tenant identifier.
+    tenant_id: String,
+}
+
+/// Parameters for `create_tenant`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct CreateTenantParams {
+    /// Unique tenant identifier.
+    id: String,
+    /// Human-readable tenant name.
+    name: String,
+    /// Default dataset name.
+    #[serde(default)]
+    default_dataset: Option<String>,
+}
+
+/// Parameters for `update_tenant`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct UpdateTenantParams {
+    /// Tenant identifier.
+    tenant_id: String,
+    /// Replacement tenant name. Omit to keep the current name.
+    #[serde(default)]
+    name: Option<String>,
+    /// Replacement default dataset. Omit to keep the current one.
+    #[serde(default)]
+    default_dataset: Option<String>,
+}
+
+/// Parameters for `delete_tenant`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DeleteTenantParams {
+    /// Tenant identifier to delete.
+    tenant_id: String,
+    /// Must equal `tenant_id`, confirming the deletion.
+    confirm: String,
+}
+
+/// Parameters for `create_user`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct CreateUserParams {
+    /// Login email address.
+    email: String,
+    /// Optional display name.
+    #[serde(default)]
+    display_name: Option<String>,
+    /// Tenant to grant the initial membership in.
+    tenant: String,
+    /// Initial tenant role: `admin`, `member`, or `viewer`. Defaults to `admin`.
+    #[serde(default)]
+    role: Option<String>,
+    /// Grant instance-administrator status.
+    #[serde(default)]
+    instance_admin: Option<bool>,
+    /// Password (at least 12 characters; hashed server-side).
+    password: String,
+}
+
+/// Parameters for `list_datasets` / `tenant_list_datasets`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListDatasetsParams {
+    /// Tenant whose datasets to list.
+    tenant_id: String,
+}
+
+/// Parameters for `create_dataset` / `tenant_create_dataset`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct CreateDatasetParams {
+    /// Tenant the dataset belongs to.
+    tenant_id: String,
+    /// Dataset name.
+    name: String,
+}
+
+/// Parameters for `delete_dataset` (admin API — identifies the dataset by
+/// its opaque `dataset_id`; the management API's `tenant_delete_dataset`
+/// identifies it by name instead — see [`TenantDeleteDatasetParams`]).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DeleteDatasetParams {
+    /// Tenant the dataset belongs to.
+    tenant_id: String,
+    /// Dataset ID to delete.
+    dataset_id: String,
+    /// Must equal `dataset_id`, confirming the deletion.
+    confirm: String,
+}
+
+/// Parameters for `revoke_api_key` (platform-admin; `tenant_revoke_api_key`
+/// has its own params below).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct RevokeApiKeyParams {
+    /// Tenant the key belongs to.
+    tenant_id: String,
+    /// API key ID to revoke.
+    key_id: String,
+    /// Must equal `key_id`, confirming the revocation.
+    confirm: String,
+}
+
+// ---- Tenant self-management tool parameters (management API; the caller's
+// own tenant credential) ----
+
+/// Parameters for `tenant_list_datasets`, `tenant_list_api_keys`,
+/// `tenant_list_memberships`, `tenant_list_tables`, `tenant_create_tables`,
+/// `tenant_list_table_schemas`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TenantOnlyParams {
+    /// The caller's own tenant. Must match the authenticated tenant.
+    tenant_id: String,
+}
+
+/// Parameters for `tenant_delete_dataset`. The management API identifies a
+/// dataset by name (`dataset_name`), unlike the admin API's `dataset_id`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TenantDeleteDatasetParams {
+    /// The caller's own tenant. Must match the authenticated tenant.
+    tenant_id: String,
+    /// Dataset name to delete.
+    dataset_name: String,
+    /// Must equal `dataset_name`, confirming the deletion.
+    confirm: String,
+}
+
+/// Parameters for `tenant_create_api_key`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TenantCreateApiKeyParams {
+    /// The caller's own tenant. Must match the authenticated tenant.
+    tenant_id: String,
+    /// Optional human-readable key name.
+    #[serde(default)]
+    name: Option<String>,
+    /// Scopes the key carries (required, at least one).
+    scopes: Vec<String>,
+    /// Optional dataset the key is restricted to.
+    #[serde(default)]
+    dataset_id: Option<String>,
+}
+
+/// Parameters for `tenant_revoke_api_key`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TenantRevokeApiKeyParams {
+    /// The caller's own tenant. Must match the authenticated tenant.
+    tenant_id: String,
+    /// API key ID to revoke.
+    key_id: String,
+    /// Must equal `key_id`, confirming the revocation.
+    confirm: String,
+}
+
+/// Parameters for `tenant_update_api_key`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TenantUpdateApiKeyParams {
+    /// The caller's own tenant. Must match the authenticated tenant.
+    tenant_id: String,
+    /// Key to update.
+    key_id: String,
+    /// Replacement scope list (non-empty). Omit to keep the current scopes.
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+    /// Replacement dataset restriction. Omit to keep the current one.
+    #[serde(default)]
+    dataset_id: Option<String>,
+}
+
+/// Tenant membership role, shared by `tenant_upsert_membership`.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "lowercase")]
+enum TenantMembershipRole {
+    Admin,
+    Member,
+    Viewer,
+}
+
+/// Parameters for `tenant_upsert_membership`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TenantUpsertMembershipParams {
+    /// The caller's own tenant. Must match the authenticated tenant.
+    tenant_id: String,
+    /// The member's login email.
+    email: String,
+    /// Role to grant.
+    role: TenantMembershipRole,
+}
+
+/// Parameters for `tenant_remove_membership`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TenantRemoveMembershipParams {
+    /// The caller's own tenant. Must match the authenticated tenant.
+    tenant_id: String,
+    /// User ID to remove.
+    user_id: String,
+    /// Must equal `user_id`, confirming the removal.
+    confirm: String,
+}
+
+// ---- Schema-registry lookup parameters (tenant credential) ----
+
+/// Parameters for `get_schema_registry`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct GetSchemaRegistryParams {
+    /// Registry namespace (e.g. `otel`, `signaldb`, or a custom name).
+    namespace: String,
+    /// Registry version (e.g. `1.43.0`).
+    version: String,
+}
+
+/// Parameters for `validate_schema_registry`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ValidateSchemaRegistryParams {
+    /// The registry document to validate (Weaver model) as a JSON object;
+    /// nothing is stored.
+    #[schemars(schema_with = "json_object_schema")]
+    #[serde(deserialize_with = "deserialize_json_object_or_string")]
+    document: serde_json::Value,
 }
 
 #[tool_router]
@@ -701,7 +1003,8 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Query metrics with PromQL. Provide `query` as a PromQL expression (e.g. `rate(http_requests_total[5m])`) and optionally `time` (unix seconds or RFC3339). Returns the native Prometheus result scoped to your tenant."
+        description = "Query metrics with PromQL. Provide `query` as a PromQL expression (e.g. `rate(http_requests_total[5m])`) and optionally `time` (unix seconds or RFC3339) for an instant query. Provide `start`/`end` (and optionally `step`) instead of `time` for a range query. Returns the native Prometheus result scoped to your tenant.",
+        annotations(read_only_hint = true)
     )]
     async fn query_metrics(
         &self,
@@ -709,19 +1012,38 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, p.dataset.as_deref())?;
-        let mut req = client.promql_query().query(p.query);
-        if let Some(v) = p.time {
-            req = req.time(v);
+        if p.start.is_some() || p.end.is_some() {
+            let mut req = client.promql_query_range().query(p.query);
+            if let Some(v) = p.start {
+                req = req.start(v);
+            }
+            if let Some(v) = p.end {
+                req = req.end(v);
+            }
+            if let Some(v) = p.step {
+                req = req.step(v);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| map_sdk_err(e, "query_metrics"))?;
+            json_result(&resp.into_inner())
+        } else {
+            let mut req = client.promql_query().query(p.query);
+            if let Some(v) = p.time {
+                req = req.time(v);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| map_sdk_err(e, "query_metrics"))?;
+            json_result(&resp.into_inner())
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| map_sdk_err(e, "query_metrics"))?;
-        json_result(&resp.into_inner())
     }
 
     #[tool(
-        description = "Search logs with LogQL. Provide `query` as a LogQL expression (e.g. `{service_name=\"api\"} |= \"error\"`) and optionally `limit` and `direction` (`forward`/`backward`). Returns the native Loki result scoped to your tenant."
+        description = "Search logs with LogQL. Provide `query` as a LogQL expression (e.g. `{service_name=\"api\"} |= \"error\"`) and optionally `limit` and `direction` (`forward`/`backward`) for an instant query. Provide `start`/`end` (and optionally `step`) for a range query. Returns the native Loki result scoped to your tenant.",
+        annotations(read_only_hint = true)
     )]
     async fn search_logs(
         &self,
@@ -729,18 +1051,42 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, p.dataset.as_deref())?;
-        let mut req = client.logql_query().query(p.query);
-        if let Some(v) = p.limit {
-            req = req.limit(v);
+        if p.start.is_some() || p.end.is_some() {
+            let mut req = client.logql_query_range().query(p.query);
+            if let Some(v) = p.limit {
+                req = req.limit(v);
+            }
+            if let Some(v) = p.direction {
+                req = req.direction(v);
+            }
+            if let Some(v) = p.start {
+                req = req.start(v);
+            }
+            if let Some(v) = p.end {
+                req = req.end(v);
+            }
+            if let Some(v) = p.step {
+                req = req.step(v);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| map_sdk_err(e, "search_logs"))?;
+            json_result(&resp.into_inner())
+        } else {
+            let mut req = client.logql_query().query(p.query);
+            if let Some(v) = p.limit {
+                req = req.limit(v);
+            }
+            if let Some(v) = p.direction {
+                req = req.direction(v);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| map_sdk_err(e, "search_logs"))?;
+            json_result(&resp.into_inner())
         }
-        if let Some(v) = p.direction {
-            req = req.direction(v);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| map_sdk_err(e, "search_logs"))?;
-        json_result(&resp.into_inner())
     }
 
     #[tool(
@@ -812,7 +1158,8 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List a tenant's API keys with their scopes and dataset restriction (admin API; requires administrative credentials). Raw secrets are never returned."
+        description = "List a tenant's API keys with their scopes and dataset restriction (admin API; requires administrative credentials). Raw secrets are never returned.",
+        annotations(read_only_hint = true)
     )]
     async fn list_api_keys(
         &self,
@@ -884,6 +1231,540 @@ impl McpServer {
             .send()
             .await
             .map_err(|e| map_sdk_err(e, "update_api_key_scopes"))?;
+        json_result(&resp.into_inner())
+    }
+
+    // ---- Platform-admin tools (admin API; requires the administrative
+    // credential). Read-only tools carry `read_only_hint`; `delete_tenant`,
+    // `delete_dataset`, and `revoke_api_key` are destructive and require
+    // `confirm` to equal the identifier being destroyed (design D2). ----
+
+    #[tool(
+        description = "List every configured tenant (admin API; requires the administrative credential).",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_tenants(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .list_tenants()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "list_tenants"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Get one tenant's details by ID (admin API; requires the administrative credential).",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_tenant(
+        &self,
+        Parameters(p): Parameters<TenantIdParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .get_tenant()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "get_tenant"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Create a new tenant (admin API; requires the administrative credential). `id` must be unique."
+    )]
+    async fn create_tenant(
+        &self,
+        Parameters(p): Parameters<CreateTenantParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .create_tenant()
+            .body(signaldb_sdk::types::CreateTenantRequest {
+                id: p.id,
+                name: p.name,
+                default_dataset: p.default_dataset,
+            })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "create_tenant"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Update a tenant's name and/or default dataset (admin API; requires the administrative credential). Absent fields are left unchanged."
+    )]
+    async fn update_tenant(
+        &self,
+        Parameters(p): Parameters<UpdateTenantParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .update_tenant()
+            .tenant_id(&p.tenant_id)
+            .body(signaldb_sdk::types::UpdateTenantRequest {
+                name: p.name,
+                default_dataset: p.default_dataset,
+            })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "update_tenant"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Delete a tenant and everything under it (admin API; requires the administrative credential). Requires `confirm` equal to `tenant_id`.",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn delete_tenant(
+        &self,
+        Parameters(p): Parameters<DeleteTenantParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        require_confirm(&p.confirm, &p.tenant_id, "tenant_id")?;
+        let client = self.router_client(&parts, None)?;
+        client
+            .delete_tenant()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "delete_tenant"))?;
+        json_result(&serde_json::json!({ "deleted": true, "tenant_id": p.tenant_id }))
+    }
+
+    #[tool(
+        description = "Create a human user and grant an initial tenant membership (admin API; requires the administrative credential). Password must be at least 12 characters."
+    )]
+    async fn create_user(
+        &self,
+        Parameters(p): Parameters<CreateUserParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if p.password.len() < 12 {
+            return Err(ErrorData::invalid_params(
+                "password must be at least 12 characters",
+                None,
+            ));
+        }
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .create_user()
+            .body(signaldb_sdk::types::CreateUserRequest {
+                email: p.email,
+                display_name: p.display_name,
+                tenant: p.tenant,
+                role: p.role,
+                instance_admin: p.instance_admin,
+                password: p.password,
+            })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "create_user"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "List a tenant's datasets (admin API; requires the administrative credential).",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_datasets(
+        &self,
+        Parameters(p): Parameters<ListDatasetsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .list_datasets()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "list_datasets"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Create a dataset for a tenant (admin API; requires the administrative credential)."
+    )]
+    async fn create_dataset(
+        &self,
+        Parameters(p): Parameters<CreateDatasetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .create_dataset()
+            .tenant_id(&p.tenant_id)
+            .body(signaldb_sdk::types::CreateDatasetRequest { name: p.name })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "create_dataset"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Delete a tenant's dataset by ID (admin API; requires the administrative credential). Requires `confirm` equal to `dataset_id`.",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn delete_dataset(
+        &self,
+        Parameters(p): Parameters<DeleteDatasetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        require_confirm(&p.confirm, &p.dataset_id, "dataset_id")?;
+        let client = self.router_client(&parts, None)?;
+        client
+            .delete_dataset()
+            .tenant_id(&p.tenant_id)
+            .dataset_id(&p.dataset_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "delete_dataset"))?;
+        json_result(&serde_json::json!({ "deleted": true, "dataset_id": p.dataset_id }))
+    }
+
+    #[tool(
+        description = "Revoke a tenant's API key by ID (admin API; requires the administrative credential). Requires `confirm` equal to `key_id`.",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn revoke_api_key(
+        &self,
+        Parameters(p): Parameters<RevokeApiKeyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        require_confirm(&p.confirm, &p.key_id, "key_id")?;
+        let client = self.router_client(&parts, None)?;
+        client
+            .revoke_api_key()
+            .tenant_id(&p.tenant_id)
+            .key_id(&p.key_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "revoke_api_key"))?;
+        json_result(&serde_json::json!({ "revoked": true, "key_id": p.key_id }))
+    }
+
+    // ---- Tenant self-management tools (management API; act as the caller's
+    // own identity within its tenant — `tenant_id` must match the
+    // authenticated tenant, exactly like the CLI's `tenant` group). ----
+
+    #[tool(
+        description = "List the caller's own tenant's datasets (management API; the caller's tenant credential).",
+        annotations(read_only_hint = true)
+    )]
+    async fn tenant_list_datasets(
+        &self,
+        Parameters(p): Parameters<TenantOnlyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .manage_list_datasets()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_list_datasets"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Create a dataset for the caller's own tenant (management API; the caller's tenant credential)."
+    )]
+    async fn tenant_create_dataset(
+        &self,
+        Parameters(p): Parameters<CreateDatasetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .manage_create_dataset()
+            .tenant_id(&p.tenant_id)
+            .body(signaldb_sdk::types::ManageCreateDatasetRequest { name: p.name })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_create_dataset"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Delete a dataset from the caller's own tenant, by name (management API; the caller's tenant credential). Requires `confirm` equal to `dataset_name`.",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn tenant_delete_dataset(
+        &self,
+        Parameters(p): Parameters<TenantDeleteDatasetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        require_confirm(&p.confirm, &p.dataset_name, "dataset_name")?;
+        let client = self.router_client(&parts, None)?;
+        client
+            .manage_delete_dataset()
+            .tenant_id(&p.tenant_id)
+            .dataset_name(&p.dataset_name)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_delete_dataset"))?;
+        json_result(&serde_json::json!({ "deleted": true, "dataset_name": p.dataset_name }))
+    }
+
+    #[tool(
+        description = "List the caller's own tenant's API keys with their scopes (management API; the caller's tenant credential). Raw secrets are never returned.",
+        annotations(read_only_hint = true)
+    )]
+    async fn tenant_list_api_keys(
+        &self,
+        Parameters(p): Parameters<TenantOnlyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .manage_list_api_keys()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_list_api_keys"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to `dataset_id` (management API; the caller's tenant credential). The raw secret is returned once."
+    )]
+    async fn tenant_create_api_key(
+        &self,
+        Parameters(p): Parameters<TenantCreateApiKeyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if p.scopes.is_empty() {
+            return Err(ErrorData::invalid_params(
+                "at least one scope is required",
+                None,
+            ));
+        }
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .manage_create_api_key()
+            .tenant_id(&p.tenant_id)
+            .body(signaldb_sdk::types::ManageCreateApiKeyRequest {
+                name: p.name,
+                scopes: p.scopes,
+                dataset_id: p.dataset_id,
+            })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_create_api_key"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Revoke one of the caller's own tenant's API keys (management API; the caller's tenant credential). Requires `confirm` equal to `key_id`.",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn tenant_revoke_api_key(
+        &self,
+        Parameters(p): Parameters<TenantRevokeApiKeyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        require_confirm(&p.confirm, &p.key_id, "key_id")?;
+        let client = self.router_client(&parts, None)?;
+        client
+            .manage_revoke_api_key()
+            .tenant_id(&p.tenant_id)
+            .key_id(&p.key_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_revoke_api_key"))?;
+        json_result(&serde_json::json!({ "revoked": true, "key_id": p.key_id }))
+    }
+
+    #[tool(
+        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; the caller's tenant credential)."
+    )]
+    async fn tenant_update_api_key(
+        &self,
+        Parameters(p): Parameters<TenantUpdateApiKeyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if p.scopes.is_none() && p.dataset_id.is_none() {
+            return Err(ErrorData::invalid_params(
+                "nothing to update: pass `scopes` and/or `dataset_id`",
+                None,
+            ));
+        }
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .manage_update_api_key()
+            .tenant_id(&p.tenant_id)
+            .key_id(&p.key_id)
+            .body(signaldb_sdk::types::ManageUpdateApiKeyRequest {
+                scopes: p.scopes,
+                dataset_id: p.dataset_id,
+            })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_update_api_key"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "List the caller's own tenant's memberships (management API; the caller's tenant credential).",
+        annotations(read_only_hint = true)
+    )]
+    async fn tenant_list_memberships(
+        &self,
+        Parameters(p): Parameters<TenantOnlyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .manage_list_memberships()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_list_memberships"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Create or update a member's role in the caller's own tenant (management API; the caller's tenant credential)."
+    )]
+    async fn tenant_upsert_membership(
+        &self,
+        Parameters(p): Parameters<TenantUpsertMembershipParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let role = match p.role {
+            TenantMembershipRole::Admin => signaldb_sdk::types::MembershipRole::Admin,
+            TenantMembershipRole::Member => signaldb_sdk::types::MembershipRole::Member,
+            TenantMembershipRole::Viewer => signaldb_sdk::types::MembershipRole::Viewer,
+        };
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .manage_upsert_membership()
+            .tenant_id(&p.tenant_id)
+            .body(signaldb_sdk::types::UpsertMembershipRequest {
+                email: p.email,
+                role,
+            })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_upsert_membership"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Remove a member from the caller's own tenant (management API; the caller's tenant credential). Requires `confirm` equal to `user_id`.",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn tenant_remove_membership(
+        &self,
+        Parameters(p): Parameters<TenantRemoveMembershipParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        require_confirm(&p.confirm, &p.user_id, "user_id")?;
+        let client = self.router_client(&parts, None)?;
+        client
+            .manage_remove_membership()
+            .tenant_id(&p.tenant_id)
+            .user_id(&p.user_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_remove_membership"))?;
+        json_result(&serde_json::json!({ "removed": true, "user_id": p.user_id }))
+    }
+
+    #[tool(
+        description = "The caller's own tenant's logical + physical schema: materialized labels and custom fields per signal (management API; the caller's tenant credential).",
+        annotations(read_only_hint = true)
+    )]
+    async fn tenant_get_schema(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .manage_get_schema()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_get_schema"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "List the caller's own tenant's provisioned signal tables (tenant self-service API; the caller's tenant credential).",
+        annotations(read_only_hint = true)
+    )]
+    async fn tenant_list_tables(
+        &self,
+        Parameters(p): Parameters<TenantOnlyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .list_tenant_tables()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_list_tables"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Provision (create) the caller's own tenant's enabled signal tables — the manual trigger from the table-provisioning docs (tenant self-service API; the caller's tenant credential)."
+    )]
+    async fn tenant_create_tables(
+        &self,
+        Parameters(p): Parameters<TenantOnlyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .create_tenant_tables()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_create_tables"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "List the caller's own tenant's configured table schema types (tenant self-service API; the caller's tenant credential). Distinct from `tenant_list_tables`, which lists what is actually provisioned.",
+        annotations(read_only_hint = true)
+    )]
+    async fn tenant_list_table_schemas(
+        &self,
+        Parameters(p): Parameters<TenantOnlyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .list_tenant_schemas()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "tenant_list_table_schemas"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "List every table schema type SignalDB knows how to provision, regardless of tenant configuration (tenant self-service API; any authenticated tenant credential).",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_available_table_schemas(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .list_available_schemas()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "list_available_table_schemas"))?;
         json_result(&resp.into_inner())
     }
 
@@ -1067,6 +1948,46 @@ impl McpServer {
             "namespace": p.namespace,
             "version": p.version,
         }))
+    }
+
+    #[tool(
+        description = "Fetch one schema registry's summary and full document by `namespace`/`version`. Use `list_schema_registries` to discover which namespace/version pairs are visible to your tenant.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_schema_registry(
+        &self,
+        Parameters(p): Parameters<GetSchemaRegistryParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .schema_get_registry()
+            .namespace(&p.namespace)
+            .version(&p.version)
+            .send()
+            .await
+            .map_err(|e| map_schema_err(e, "get_schema_registry"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Validate a Weaver-model registry document without storing it. Errors come back with document paths, so this is the way to check a document before `create_schema_registry`/`replace_schema_registry`.",
+        annotations(read_only_hint = true)
+    )]
+    async fn validate_schema_registry(
+        &self,
+        Parameters(p): Parameters<ValidateSchemaRegistryParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let document = registry_document(p.document)?;
+        let client = self.router_client(&parts, None)?;
+        let resp = client
+            .schema_validate_registry()
+            .body(document)
+            .send()
+            .await
+            .map_err(|e| map_schema_err(e, "validate_schema_registry"))?;
+        json_result(&resp.into_inner())
     }
 }
 

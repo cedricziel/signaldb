@@ -12,10 +12,10 @@
 
 ## 3. MCP tools
 
-- [ ] 3.1 Failing tests (`cargo test -p mcp-server`, mock router): platform-admin tools `list_tenants`, `get_tenant`, `create_tenant`, `update_tenant`, `delete_tenant`, `create_user`, `list_datasets`, `create_dataset`, `delete_dataset`, `revoke_api_key` forward the caller's credential to the admin endpoints and return the SDK-shaped JSON; destructive ones refuse without `confirm == id`; annotations present in `tools/list`
-- [ ] 3.2 Implement the platform-admin tools (descriptions state "requires the administrative credential")
-- [ ] 3.3 Failing tests then implement `tenant_list_datasets`, `tenant_create_dataset`, `tenant_delete_dataset`, `tenant_list_api_keys`, `tenant_create_api_key`, `tenant_revoke_api_key`, `tenant_update_api_key`, `tenant_list_memberships`, `tenant_upsert_membership`, `tenant_remove_membership`, `tenant_get_schema`, `tenant_list_tables`, `tenant_create_tables` on the management API; key material once on create, never on list (asserted); `confirm` on delete/revoke; annotations
-- [ ] 3.4 Test: an unauthorized management call (router 403) yields the access-denied error and no change
+- [x] 3.1 Failing tests (`cargo test -p mcp-server`, mock router): platform-admin tools `list_tenants`, `get_tenant`, `create_tenant`, `update_tenant`, `delete_tenant`, `create_user`, `list_datasets`, `create_dataset`, `delete_dataset`, `revoke_api_key` forward the caller's credential to the admin endpoints and return the SDK-shaped JSON; destructive ones refuse without `confirm == id`; annotations present in `tools/list` (`src/mcp-server/tests/admin_tenant_tools.rs`)
+- [x] 3.2 Implement the platform-admin tools (descriptions state "requires the administrative credential")
+- [x] 3.3 Failing tests then implement `tenant_list_datasets`, `tenant_create_dataset`, `tenant_delete_dataset`, `tenant_list_api_keys`, `tenant_create_api_key`, `tenant_revoke_api_key`, `tenant_update_api_key`, `tenant_list_memberships`, `tenant_upsert_membership`, `tenant_remove_membership`, `tenant_get_schema`, `tenant_list_tables`, `tenant_create_tables` on the management API; key material once on create, never on list (asserted); `confirm` on delete/revoke; annotations. Deviation: also added `tenant_list_table_schemas` and `list_available_table_schemas` (for `list_tenant_schemas`/`list_available_schemas`, two tenant.rs operations the design's tool list omitted) and `get_schema_registry`/`validate_schema_registry` (pre-existing SDK operations with no MCP tool at all) — the whole-SDK parity check requires every operation covered. `query_metrics`/`search_logs` gained `start`/`end`/`step` to reach `promql_query_range`/`logql_query_range`, matching the CLI's new `--start`/`--end`/`--step`.
+- [x] 3.4 Test: an unauthorized management call (router 403) yields the access-denied error and no change
 
 ## 4. CLI `tenant` group
 
