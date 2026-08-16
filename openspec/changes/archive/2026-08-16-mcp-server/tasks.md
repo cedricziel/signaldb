@@ -40,8 +40,8 @@ Shipped as three stacked PRs: A → B → C. Each phase is independently mergeab
 - [x] C1. Failing tests (per tool): `search_traces`, `get_trace` (incl. not-found → MCP error), `search_logs`, `query_metrics`, `discover_attributes` return structured results via the SDK; malformed query → actionable error; 429 → retryable error; oversized result → truncated JSON with `truncated: true`. (`cargo test -p mcp-server`)
 - [x] C2. Implement the query tools as thin wrappers over the extended SDK, forwarding the caller's credential; optional `dataset` argument mapped to `X-Dataset-ID` and validated against the tenant context (missing → default, matching → forwarded, mismatched → access-denied); byte-budget payload caps with `truncated` flag + narrowing hint; agent-oriented tool descriptions. Make C1 pass.
 - [x] C3. Implement error mapping (D5): 400/422→bad-query, 401→session-auth failure, 403→access-denied, 404→not-found, 429→throttled, else→tool error.
-- [ ] C4. **Not implemented — pre-existing gap, not part of this session's work.** Discovery tools (`list_datasets`/`list_schemas`/`list_tables`) and table schemas as MCP resources with the `signaldb://schema/{dataset}/{table}` URI grammar were never built; the live server's `ServerHandler::get_info` explicitly notes it "exposes no data resources" (only the MCP Apps UI documents). Needs its own scoping pass — issue #626 is still open for it.
-- [ ] C5. Integration tests for C4 — blocked on C4.
+- [x] C4. **Scoped out at archive (2026-08-16); delta spec pruned accordingly, tracked in issue #626.** Discovery tools (`list_datasets`/`list_schemas`/`list_tables`) and table schemas as MCP resources with the `signaldb://schema/{dataset}/{table}` URI grammar were never built; the live server's `ServerHandler::get_info` explicitly notes it "exposes no data resources" (only the MCP Apps UI documents). Needs its own scoping pass — issue #626 is still open for it.
+- [x] C5. Scoped out with C4 (issue #626).
 - [x] C6. Docs (route via the docs skill): `docs/users/mcp.md` — connecting Claude Code/Claude.ai/generic clients, bearer setup, example flows; `[mcp]` config reference; add the MCP server to the README architecture/service list.
 - [x] C7. `cargo fmt`, clippy, machete.
 
@@ -61,8 +61,8 @@ Delivered as two stacked PRs, mirroring the Tempo slice (A → C).
 
 - [x] EB1. Failing tests: `search_logs` (LogQL) and `query_metrics` (PromQL) return structured results via the SDK; malformed query → bad-query; 429 → retryable; oversized → truncated; optional `dataset` argument honored.
 - [x] EB2. Implement both tools as thin wrappers over the extended SDK (no custom calls), reusing the shared credential-forwarding client, dataset selection, payload cap, and error mapping. Make EB1 pass.
-- [ ] EB3. **Not implemented — deliberate design deviation, not a bug.** No `--token`/`--tenant`/`--dataset` (or `SIGNALDB_MCP_TOKEN`/`_TENANT`/`_DATASET`) credential was added to the standalone binary. Stdio shipped simpler: always unauthenticated, dev-only (`main.rs`: "Stdio has no per-request credential, so downstream calls carry none — dev only"). Revisit only if a real dev workflow needs it.
-- [ ] EB4. Blocked on EB3.
+- [x] EB3. **Scoped out at archive (2026-08-16); the delta spec now specifies unauthenticated dev-only stdio.** No `--token`/`--tenant`/`--dataset` (or `SIGNALDB_MCP_TOKEN`/`_TENANT`/`_DATASET`) credential was added to the standalone binary. Stdio shipped simpler: always unauthenticated, dev-only (`main.rs`: "Stdio has no per-request credential, so downstream calls carry none — dev only"). Revisit only if a real dev workflow needs it.
+- [x] EB4. Scoped out with EB3.
 - [x] EB5. Docs: `docs/users/mcp.md` documents stdio as unauthenticated dev-only (matching what actually shipped, not the originally-planned credentialed stdio).
 
 ## Phase F — Metric/label discovery tools
