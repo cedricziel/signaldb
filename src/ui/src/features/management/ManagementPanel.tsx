@@ -37,7 +37,7 @@ function tablesByDataset(
   }
   const groups = new Map<string, ManagedTable[]>();
   for (const table of data.tables) {
-    const key = table.dataset ?? "";
+    const key = table.dataset ?? "Unknown dataset";
     const existing = groups.get(key);
     if (existing) {
       existing.push(table);

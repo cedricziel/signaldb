@@ -553,7 +553,11 @@ mod tests {
         config.schema.catalog_uri = catalog_uri;
         let app = create_router(RouterAppState::new(catalog, config.clone()));
 
-        // Nothing provisioned yet: the listing is empty, not an error.
+        // Nothing provisioned yet: the flat list is empty, not an error, but
+        // the tenant's known dataset ("production", its implicit default)
+        // still appears in the grouping with an empty `tables` array — a
+        // caller should be able to see the dataset exists before anything
+        // is provisioned in it.
         let request = Request::builder()
             .method("GET")
             .uri("/api/v1/tenants/acme/tables")
@@ -568,7 +572,9 @@ mod tests {
             .unwrap();
         let listed: common::tenant_api::ListTablesResponse = serde_json::from_slice(&body).unwrap();
         assert!(listed.tables.is_empty());
-        assert!(listed.datasets.is_empty());
+        assert_eq!(listed.datasets.len(), 1, "{:?}", listed.datasets);
+        assert_eq!(listed.datasets[0].dataset, "production");
+        assert!(listed.datasets[0].tables.is_empty());
 
         // Provision, then list again.
         let request = Request::builder()
@@ -658,7 +664,7 @@ mod tests {
             .header("x-tenant-id", "dbonly")
             .body(Body::empty())
             .unwrap();
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -681,6 +687,27 @@ mod tests {
             8,
             "a database-only tenant must be provisioned too"
         );
+
+        // `GET .../tables` must see it too — proving the handler's
+        // `with_tenant_source` wiring, not just `create_tenant_tables`'s.
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/v1/tenants/dbonly/tables")
+            .header("authorization", "Bearer sk-db-key")
+            .header("x-tenant-id", "dbonly")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let listed: common::tenant_api::ListTablesResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(listed.tables.len(), 8, "{:?}", listed.tables);
+        assert!(listed.tables.iter().all(|t| t.dataset == "production"));
+        assert_eq!(listed.datasets.len(), 1, "{:?}", listed.datasets);
+        assert_eq!(listed.datasets[0].dataset, "production");
+        assert_eq!(listed.datasets[0].tables.len(), 8);
     }
 
     /// POST /tenants/:tenant_id/tables/create requires the authenticated
