@@ -22,31 +22,31 @@ already allowed to see — tenant isolation stays enforced by the router.
 Tools (available to every authenticated tenant session — there is no role
 gating in v1):
 
-| Tool                  | Purpose                                                                                                                                                         |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server_info`         | Confirm connectivity and which tenant your credential resolves to.                                                                                              |
-| `search_traces`       | TraceQL search over your tenant's traces.                                                                                                                       |
-| `get_trace`           | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                |
-| `get_profile`         | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                   |
-| `discover_attributes` | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels). |
-| `discover_metrics`    | List the distinct metric names visible to your tenant.                                                                                                          |
-| `query_metrics`       | PromQL query over your tenant's metrics (native Prometheus result).                                                                                             |
-| `search_logs`         | LogQL query over your tenant's logs (native Loki result).                                                                                                       |
-| `query_ir`            | Native Query IR document (the structured, versioned query surface).                                                                                             |
-| `compact_run`         | Trigger a compaction pass now (admin-authenticated).                                                                                                            |
-| `compact_status`      | Active compaction leases and metrics (admin-authenticated).                                                                                                     |
-| `compact_dry_run`     | Plan compaction candidates without executing (admin-authenticated).                                                                                             |
-| `list_api_keys`       | List a tenant's API keys with their scopes and dataset restriction (admin-authenticated).                                                                        |
-| `create_api_key`      | Create an API key carrying explicit `scopes` (required; e.g. `traces:write`, `schema:read`) and an optional `dataset_id` (admin-authenticated).                  |
-| `update_api_key_scopes` | Change a live key's scopes and/or dataset restriction without rotating its secret; revoked keys are rejected (admin-authenticated).                            |
-| `list_schema_registries` | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts. |
-| `resolve_attribute`   | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation. |
-| `resolve_entity`      | What an entity type (`k8s.pod`, `service`, ...) means: identifying/descriptive attributes, what it extends, associated metrics.                             |
-| `resolve_metric`      | What a metric means: instrument, unit, brief, recorded attributes, associated entities.                                                                     |
-| `search_schema`       | Prefix search over attributes, entities, or metrics (`kind`, `prefix`, `limit`) to find the right vocabulary before querying.                                |
-| `create_schema_registry` | Upload a custom Weaver-model registry document (JSON object) for your tenant (requires `schema:write`).                                                  |
-| `replace_schema_registry` | Replace a custom registry's document by namespace/version (requires `schema:write`; bundled registries refuse).                                          |
-| `delete_schema_registry` | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                       |
+| Tool                      | Purpose                                                                                                                                                         |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server_info`             | Confirm connectivity and which tenant your credential resolves to.                                                                                              |
+| `search_traces`           | TraceQL search over your tenant's traces.                                                                                                                       |
+| `get_trace`               | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                |
+| `get_profile`             | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                   |
+| `discover_attributes`     | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels). |
+| `discover_metrics`        | List the distinct metric names visible to your tenant.                                                                                                          |
+| `query_metrics`           | PromQL query over your tenant's metrics (native Prometheus result).                                                                                             |
+| `search_logs`             | LogQL query over your tenant's logs (native Loki result).                                                                                                       |
+| `query_ir`                | Native Query IR document (the structured, versioned query surface).                                                                                             |
+| `compact_run`             | Trigger a compaction pass now (admin-authenticated).                                                                                                            |
+| `compact_status`          | Active compaction leases and metrics (admin-authenticated).                                                                                                     |
+| `compact_dry_run`         | Plan compaction candidates without executing (admin-authenticated).                                                                                             |
+| `list_api_keys`           | List a tenant's API keys with their scopes and dataset restriction (admin-authenticated).                                                                       |
+| `create_api_key`          | Create an API key carrying explicit `scopes` (required; e.g. `traces:write`, `schema:read`) and an optional `dataset_id` (admin-authenticated).                 |
+| `update_api_key_scopes`   | Change a live key's scopes and/or dataset restriction without rotating its secret; revoked keys are rejected (admin-authenticated).                             |
+| `list_schema_registries`  | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts.   |
+| `resolve_attribute`       | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation.     |
+| `resolve_entity`          | What an entity type (`k8s.pod`, `service`, ...) means: identifying/descriptive attributes, what it extends, associated metrics.                                 |
+| `resolve_metric`          | What a metric means: instrument, unit, brief, recorded attributes, associated entities.                                                                         |
+| `search_schema`           | Prefix search over attributes, entities, or metrics (`kind`, `prefix`, `limit`) to find the right vocabulary before querying.                                   |
+| `create_schema_registry`  | Upload a custom Weaver-model registry document (JSON object) for your tenant (requires `schema:write`).                                                         |
+| `replace_schema_registry` | Replace a custom registry's document by namespace/version (requires `schema:write`; bundled registries refuse).                                                 |
+| `delete_schema_registry`  | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                             |
 
 Each query tool accepts an optional `dataset` argument. Omit it to use your
 session's default dataset; pass one to target another dataset your tenant may
@@ -125,11 +125,23 @@ enabled = true
 bind_address = "127.0.0.1:8228"      # serves MCP at /mcp; loopback by default
 router_url = "http://localhost:3000" # the router HTTP API to forward to
 router_timeout = 30                  # seconds per forwarded request (default 30)
+max_concurrent_tool_calls = 8        # tool calls in flight per session (default 8)
 ```
 
 Each forwarded request is bounded by `router_timeout` (plus a fixed 5s connect
 timeout), so a hung router fails the tool call cleanly instead of hanging the
 agent indefinitely. Raise it if your agents run slow analytical queries.
+
+`max_concurrent_tool_calls` bounds how many tool calls one MCP session may
+have in flight at once (also `--max-concurrent-tool-calls` /
+`SIGNALDB__MCP__MAX_CONCURRENT_TOOL_CALLS`). A call that arrives while the
+session is at the bound waits up to 2 seconds for an in-flight call to finish
+and then fails with the distinct error `too many concurrent tool calls (limit
+N); wait for in-flight calls to finish` (JSON-RPC `-32600`, `data.limit = N`)
+— the other calls are unaffected, and nothing queues indefinitely. The bound
+is per session, so one runaway agent cannot starve another session's tenant.
+See [Audit and observability](#audit-and-observability) for how such a call
+is logged.
 
 The server forwards live bearer credentials, so it binds **loopback by
 default**. Exposing it off-host means changing `bind_address` to a routable
@@ -147,8 +159,11 @@ cargo run --bin signaldb -- mcp --stdio
 The same settings are available as environment variables (multi-word fields
 need the double-underscore form): `SIGNALDB__MCP__ENABLED`,
 `SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`,
-`SIGNALDB__MCP__ROUTER_TIMEOUT` (seconds, also `--router-timeout`), and
-`SIGNALDB__MCP__ALLOWED_HOSTS` (see below).
+`SIGNALDB__MCP__ROUTER_TIMEOUT` (seconds, also `--router-timeout`),
+`SIGNALDB__MCP__MAX_CONCURRENT_TOOL_CALLS`, and `SIGNALDB__MCP__ALLOWED_HOSTS`
+(see below). The sidecar also honours `[self_monitoring]` (from `--config`,
+`signaldb.toml`, or `SIGNALDB__SELF_MONITORING__*`) so its own spans, audit
+events, and metrics can be exported — see below.
 
 ### The `Host` allowlist (serving beyond localhost)
 
@@ -295,6 +310,38 @@ is granted all of them, and `schema:write` is never grantable through OAuth
 existing `Bearer <api-key>` + `X-Tenant-ID` path is unchanged; OAuth is an
 added credential type, not a replacement.
 
+## Audit and observability
+
+Every tool call is audited: after it completes, the server emits exactly one
+structured log event (target `signaldb_mcp::audit`) with bounded fields —
+never the arguments, the query expression, or the result:
+
+| Field         | Meaning                                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `tool`        | The tool name (`search_traces`, `get_trace`, …).                                                                     |
+| `tenant_id`   | The tenant the router resolved the caller to.                                                                        |
+| `dataset`     | The dataset the call named (its `dataset` argument, else `X-Dataset-ID`); absent when neither is set.                |
+| `session_id`  | The `Mcp-Session-Id` (`stdio` on the stdio transport).                                                               |
+| `outcome`     | `ok`, `truncated` (result cut at the size cap), `denied`, `throttled`, or `error`.                                   |
+| `duration_ms` | Wall time of the call, including any wait for a concurrency permit.                                                  |
+| `error.type`  | Only for `outcome=error`: `concurrency_limit`, `tool_error`, the router's HTTP status (`500`), or the JSON-RPC code. |
+
+Levels: `ok`, `truncated`, and `throttled` log at `info`; `denied` (the router
+rejected the credential or the tenant/dataset access — a `401`/`403`) at
+`warn`, so probing is visible; `error` at `error`. A call refused at the
+concurrency bound is `outcome=error`, `error.type=concurrency_limit`.
+
+The same call is one `tools/call {tool}` span (INTERNAL, `gen_ai.tool.name`,
+`mcp.session.id`, `signaldb.tenant.id`, `signaldb.dataset.id`; status Error
+only for `outcome=error`), the HTTP request that carried it is a `POST /mcp`
+server span parented to the client's `traceparent`, and two metrics count the
+calls: `signaldb.mcp.tool_calls` by tool and outcome and
+`signaldb.mcp.tool_call.duration` by tool (Prometheus:
+`signaldb_mcp_tool_calls_total{gen_ai_tool_name,signaldb_mcp_outcome}` and
+`signaldb_mcp_tool_call_duration_seconds{gen_ai_tool_name}`). All of it is
+exported when `[self_monitoring]` is enabled for the sidecar (service name
+`signaldb-mcp`); see `docs/operations/self-monitoring-traces.md`.
+
 ## Example flow
 
 1. `server_info` — confirm you are connected as the expected tenant.
@@ -314,8 +361,8 @@ registry what it means: `resolve_attribute` with `key: "k8s.pod.uid"` (or
 "attribute", prefix: "k8s.pod."`) returns namespace-tagged, precedence-ordered
 definitions — a tenant's own conventions (uploaded with
 `create_schema_registry`) come first, the bundled OpenTelemetry definition is
-kept as an alternative. `discover_*` tells you which names *have data*;
-`resolve_*` tells you what they *mean*.
+kept as an alternative. `discover_*` tells you which names _have data_;
+`resolve_*` tells you what they _mean_.
 
 ## From the CLI
 

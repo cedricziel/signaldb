@@ -556,6 +556,10 @@ default_tenant = "default"
 #                                       # A non-loopback bind forwards live bearer
 #                                       # credentials and must sit behind TLS.
 # router_url = "http://localhost:3000"  # router HTTP API to forward to
+# router_timeout = 30                   # seconds per forwarded request
+# max_concurrent_tool_calls = 8         # tool calls in flight per MCP session; an
+#                                       # excess call waits 2s for a permit, then fails
+#                                       # with "too many concurrent tool calls (limit N)"
 
 # OAuth 2.1 authorization server for the MCP surface. Lets Claude.ai and
 # OpenAI/ChatGPT register SignalDB as a remote connector with no human
