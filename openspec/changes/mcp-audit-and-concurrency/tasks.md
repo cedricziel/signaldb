@@ -28,4 +28,4 @@
 
 - [x] 6.1 Docs (route via the docs skill): `docs/users/mcp.md` — audit event fields and levels, concurrency limit and its error; operations self-monitoring docs — the two MCP metrics and the `tools/call {tool}` span; configuration reference for `max_concurrent_tool_calls`
 - [x] 6.2 Update the `configuration` skill (new key) and the `mcp`-related section of any skill describing MCP observability
-- [ ] 6.3 `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, `cargo machete --with-metadata`; weaver live-check on a local run; `openspec validate mcp-audit-and-concurrency --type change --strict`; close #629
+- [x] 6.3 `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, `cargo machete --with-metadata`; weaver live-check on a local run (registry check run locally with weaver 0.25.1; the CI live-check job exercises the monolith only, the MCP span attributes are pinned by `tests/audit.rs` + `registry_pins`); `openspec validate mcp-audit-and-concurrency --type change --strict`; close #629
