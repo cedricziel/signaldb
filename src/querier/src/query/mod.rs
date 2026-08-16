@@ -151,3 +151,53 @@ pub struct SearchQueryParams {
     /// Search window end (unix seconds)
     pub end: Option<i64>,
 }
+
+/// Parameters carried in the `trace_tags` Flight ticket (JSON-encoded).
+///
+/// Mirrors [`DetectedFieldsParams`]'s shape: an inclusive nanosecond window
+/// plus an optional narrowing filter — here the Tempo v2 scope instead of a
+/// selector. Omitted (or `None`) `scope` requests all three groups.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TraceTagsParams {
+    /// Inclusive range start, unix epoch nanoseconds.
+    pub start: i64,
+    /// Inclusive range end, unix epoch nanoseconds.
+    pub end: i64,
+    #[serde(default)]
+    pub scope: Option<tempo_api::TagScope>,
+}
+
+/// Parameters carried in the `trace_tag_values` Flight ticket (JSON-encoded).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TraceTagValuesParams {
+    /// Inclusive range start, unix epoch nanoseconds.
+    pub start: i64,
+    /// Inclusive range end, unix epoch nanoseconds.
+    pub end: i64,
+}
+
+/// Trace attribute tag names discovered in a window, grouped the way the
+/// Tempo v2 tag-search endpoint scopes them. The v1 (unscoped) endpoint
+/// flattens the three groups into one sorted list via [`Self::flattened`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TraceTagNames {
+    pub resource: Vec<String>,
+    pub span: Vec<String>,
+    pub intrinsic: Vec<String>,
+}
+
+impl TraceTagNames {
+    /// All discovered names across scopes, sorted and de-duplicated.
+    pub fn flattened(&self) -> Vec<String> {
+        let mut all: Vec<String> = self
+            .resource
+            .iter()
+            .chain(self.span.iter())
+            .chain(self.intrinsic.iter())
+            .cloned()
+            .collect();
+        all.sort();
+        all.dedup();
+        all
+    }
+}

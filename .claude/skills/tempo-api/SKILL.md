@@ -5,6 +5,8 @@ user-invocable: false
 sources:
   - src/router/src/endpoints/tempo.rs
   - src/router/src/endpoints/admin.rs
+  - src/querier/src/query/trace.rs
+  - src/querier/src/flight.rs
   - src/grafana-plugin/src/**
   - src/grafana-plugin/backend/src/**
 ---
@@ -21,29 +23,33 @@ sources:
 
 ## Implemented Endpoints (Router :3000)
 
-| Endpoint                                         | Status              | Description                                                                                                                                                                                                                                                           |
-| ------------------------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /tempo/api/echo`                            | Implemented         | Health check                                                                                                                                                                                                                                                          |
-| `GET /tempo/api/traces/{trace_id}`               | Implemented         | Single trace lookup -> routes to Querier; `start`/`end` time hints prune the scanned range                                                                                                                                                                            |
-| `GET /tempo/api/v2/traces/{trace_id}`            | Implemented         | Same handler as v1 for now                                                                                                                                                                                                                                            |
-| `GET /tempo/api/search`                          | Implemented         | Trace search with filters -> routes to Querier; `spss` caps spans per span set in the response                                                                                                                                                                        |
-| `GET /tempo/api/search/tags`                     | Implemented         | Static tag set of actually-queryable tags (`service.name`, `name`, `status`)                                                                                                                                                                                          |
-| `GET /tempo/api/search/tag/{tag_name}/values`    | Implemented         | Real data: distinct column values via Flight SQL for supported tags; static values for `status`; 501 for unindexed attribute tags. Time-bounded: honors `start`/`end` (unix seconds), defaults to a 24h lookback when absent, 400 for millisecond-scale values (#929) |
-| `GET /tempo/api/v2/search/tags`                  | Implemented         | Same tag set, scoped (resource/intrinsic)                                                                                                                                                                                                                             |
-| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented         | Same backing as v1 tag values (including the `start`/`end` window semantics)                                                                                                                                                                                          |
-| `GET /tempo/api/metrics/query`                   | 501 Not Implemented | TraceQL metrics not implemented (returns 501 since #552, no fabricated series)                                                                                                                                                                                        |
-| `GET /tempo/api/metrics/query_range`             | 501 Not Implemented | Same as above                                                                                                                                                                                                                                                         |
+| Endpoint                                         | Status              | Description                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /tempo/api/echo`                            | Implemented         | Health check                                                                                                                                                                                                                                                                                                                                                                          |
+| `GET /tempo/api/traces/{trace_id}`               | Implemented         | Single trace lookup -> routes to Querier; `start`/`end` time hints prune the scanned range                                                                                                                                                                                                                                                                                            |
+| `GET /tempo/api/v2/traces/{trace_id}`            | Implemented         | Same handler as v1 for now                                                                                                                                                                                                                                                                                                                                                            |
+| `GET /tempo/api/search`                          | Implemented         | Trace search with filters -> routes to Querier; `spss` caps spans per span set in the response                                                                                                                                                                                                                                                                                        |
+| `GET /tempo/api/search/tags`                     | Implemented         | Attribute keys observed in the window (resource + span, via the querier's `trace_tags` ticket) plus the fixed intrinsics (`name`, `status`, `kind`, `duration`, `rootServiceName`, `rootName`) — real discovery, not a hardcoded list (#1073)                                                                                                                                         |
+| `GET /tempo/api/search/tag/{tag_name}/values`    | Implemented         | Real data for any tag via the querier's `trace_tag_values` ticket — dedicated columns, map-stored attributes, and the static `status`/`kind` enums alike; an unknown/unobserved tag is `200` with an empty list, never 501. Honors `start`/`end` (unix seconds), defaults to a 1h lookback when absent (matches the Loki metadata endpoints), 400 for millisecond-scale values (#929) |
+| `GET /tempo/api/v2/search/tags`                  | Implemented         | Same discovery, scoped (`resource`/`span`/`intrinsic`); `scope` query param narrows to one group                                                                                                                                                                                                                                                                                      |
+| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented         | Same backing as v1 tag values (including the `start`/`end` window semantics); scoped names (`resource.x`, `span.x`, `.x`) resolve to the same attribute                                                                                                                                                                                                                               |
+| `GET /tempo/api/metrics/query`                   | 501 Not Implemented | TraceQL metrics not implemented (returns 501 since #552, no fabricated series)                                                                                                                                                                                                                                                                                                        |
+| `GET /tempo/api/metrics/query_range`             | 501 Not Implemented | Same as above                                                                                                                                                                                                                                                                                                                                                                         |
 
 Spanset spans carry optional extras beyond Tempo's shape — `name`,
 `parentSpanID`, `serviceName`, `status` (skipped when absent) — populated by
 `internal_trace_to_tempo` in `endpoints/tempo.rs`; the explore UI's waterfall
 depends on them.
 
-Tag-value SQL (`distinct_values_sql` in `endpoints/tempo.rs`) applies the
-time window twice, mirroring the querier's trace-lookup path: a precise
-`start_time_unix_nano` row bound plus an equivalent bound on the `timestamp`
-partition column (`Hour(timestamp)` transform), so Iceberg partitions
-actually prune instead of every Parquet file being read per tag dropdown.
+Tag discovery lives in the querier (`TraceService::get_tags`/`get_tag_values`
+in `query/trace.rs`), mirroring `LogsService::get_labels`/`get_label_values`:
+a bounded sample (1000 rows) of the window's `resource_attributes`/
+`span_attributes` documents, unioned with the dedicated-column tags
+(`service.name`, `name`) and the fixed intrinsics. The router's handlers
+(`endpoints/tempo.rs`) are thin — they build the `trace_tags:`/
+`trace_tag_values:` Flight ticket (JSON params: `start`, `end`, `scope` for
+tags; `start`, `end` for values) and shape the response; no SQL string
+building happens in the router anymore.
 
 ## Query Flow
 
@@ -71,21 +77,24 @@ use SignalDB as a querier (`src/querier/src/services/tempo.rs`):
 - Tenant: authenticated `TenantContext` extension wins, else `X-Scope-OrgID`
   header (dataset `default`), else `default`/`default`
 - `SearchBlock`: `Unimplemented` (no Tempo block model in SignalDB)
-- Tag endpoints: static queryable tag set; tag values empty (HTTP API serves
-  real values via Flight SQL)
+- Tag endpoints: still the old static three-name set (`service.name`,
+  `name`, `status`) and empty tag values — not yet upgraded to the
+  querier-backed discovery the HTTP API uses (#1073 only touched the HTTP
+  path); a follow-up could route `src/querier/src/services/tempo.rs`
+  through the same `TraceService::get_tags`/`get_tag_values`
 
 ## Admin API Endpoints
 
 Requires `admin_api_key` from config:
 
-| Endpoint                                           | Method         | Description          |
-| -------------------------------------------------- | -------------- | -------------------- |
-| `/api/v1/admin/tenants`                            | GET/POST       | List/create tenants  |
-| `/api/v1/admin/tenants/{id}`                       | GET/PUT/DELETE | Manage tenant        |
-| `/api/v1/admin/tenants/{id}/api-keys`              | GET/POST       | List/create API keys |
+| Endpoint                                           | Method         | Description            |
+| -------------------------------------------------- | -------------- | ---------------------- |
+| `/api/v1/admin/tenants`                            | GET/POST       | List/create tenants    |
+| `/api/v1/admin/tenants/{id}`                       | GET/PUT/DELETE | Manage tenant          |
+| `/api/v1/admin/tenants/{id}/api-keys`              | GET/POST       | List/create API keys   |
 | `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE/PATCH   | Revoke / update scopes |
-| `/api/v1/admin/tenants/{id}/datasets`              | GET/POST       | List/create datasets |
-| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE         | Delete dataset       |
+| `/api/v1/admin/tenants/{id}/datasets`              | GET/POST       | List/create datasets   |
+| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE         | Delete dataset         |
 
 A separate tenant self-service API is mounted at `/api/v1` (see the
 `multi-tenancy` skill).
@@ -106,10 +115,11 @@ The Router's Tempo-compatible endpoints at `/tempo/api/...` work directly with G
 
 ## Key Files
 
-| File                                | Purpose                              |
-| ----------------------------------- | ------------------------------------ |
-| `src/router/src/endpoints/tempo.rs` | Tempo API HTTP handlers              |
-| `src/router/src/endpoints/admin.rs` | Admin API handlers                   |
-| `src/tempo-api/`                    | Protobuf definitions and Tempo types |
-| `src/querier/src/flight.rs`         | Query execution, ticket parsing      |
-| `src/grafana-plugin/`               | Native Grafana plugin                |
+| File                                | Purpose                                                             |
+| ----------------------------------- | ------------------------------------------------------------------- |
+| `src/router/src/endpoints/tempo.rs` | Tempo API HTTP handlers                                             |
+| `src/router/src/endpoints/admin.rs` | Admin API handlers                                                  |
+| `src/tempo-api/`                    | Protobuf definitions and Tempo types                                |
+| `src/querier/src/query/trace.rs`    | Trace search/lookup and tag discovery (`get_tags`/`get_tag_values`) |
+| `src/querier/src/flight.rs`         | Query execution, ticket parsing                                     |
+| `src/grafana-plugin/`               | Native Grafana plugin                                               |

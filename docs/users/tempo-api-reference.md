@@ -15,34 +15,44 @@ authentication headers described in [Authentication](authentication.md)
 
 ## Endpoints
 
-| Method | Path (under `/tempo`)             | Status      | Notes                                                                                                                                                                                                                                                      |
-| ------ | --------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/echo`                       | implemented | Returns `echo`; still requires auth headers                                                                                                                                                                                                                |
-| GET    | `/api/traces/{trace_id}`          | implemented | Trace by ID; optional `start`/`end` (unix seconds) prune the scanned time range — pass a window bracketing the whole trace                                                                                                                                 |
-| GET    | `/api/v2/traces/{trace_id}`       | implemented | Same handler as v1                                                                                                                                                                                                                                         |
-| GET    | `/api/search`                     | implemented | Trace search, executed by the querier; `spss` caps spans per span set (`matched` still reports the full count; omitted = all spans)                                                                                                                        |
-| GET    | `/api/search/tags`                | implemented | Static list of searchable tags: `service.name`, `name`, `status`                                                                                                                                                                                           |
-| GET    | `/api/v2/search/tags`             | implemented | Same tags, grouped into `resource` and `intrinsic` scopes                                                                                                                                                                                                  |
-| GET    | `/api/search/tag/{tag}/values`    | partial     | Real distinct values for `service.name` and `name` (also `resource.`/`span.`-scoped forms); static `ok`/`error`/`unset` for `status`; **501** for any other tag. Honors `start`/`end` (unix seconds) — see [Tag value time window](#tag-value-time-window) |
-| GET    | `/api/v2/search/tag/{tag}/values` | partial     | Same behavior as v1 (including `start`/`end`), v2 response shape                                                                                                                                                                                           |
-| GET    | `/api/metrics/query`              | **501**     | TraceQL metrics not implemented                                                                                                                                                                                                                            |
-| GET    | `/api/metrics/query_range`        | **501**     | TraceQL metrics not implemented                                                                                                                                                                                                                            |
+| Method | Path (under `/tempo`)             | Status      | Notes                                                                                                                                                                                                                                                                                                |
+| ------ | --------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/echo`                       | implemented | Returns `echo`; still requires auth headers                                                                                                                                                                                                                                                          |
+| GET    | `/api/traces/{trace_id}`          | implemented | Trace by ID; optional `start`/`end` (unix seconds) prune the scanned time range — pass a window bracketing the whole trace                                                                                                                                                                           |
+| GET    | `/api/v2/traces/{trace_id}`       | implemented | Same handler as v1                                                                                                                                                                                                                                                                                   |
+| GET    | `/api/search`                     | implemented | Trace search, executed by the querier; `spss` caps spans per span set (`matched` still reports the full count; omitted = all spans)                                                                                                                                                                  |
+| GET    | `/api/search/tags`                | implemented | Attribute keys actually observed in the tenant's traces within the window (resource keys, span keys, and the intrinsics), sorted. Honors `start`/`end` — see [Tag discovery time window](#tag-discovery-time-window)                                                                                 |
+| GET    | `/api/v2/search/tags`             | implemented | Same names, grouped into `resource`/`span`/`intrinsic` scopes; `scope` narrows the response to one group                                                                                                                                                                                             |
+| GET    | `/api/search/tag/{tag}/values`    | implemented | Distinct values observed in the window for any tag — dedicated columns, map-stored attributes, and the static `status`/`kind` enums alike. An unknown or unobserved tag is `200` with an empty list, never `501`. Honors `start`/`end` — see [Tag discovery time window](#tag-discovery-time-window) |
+| GET    | `/api/v2/search/tag/{tag}/values` | implemented | Same behavior as v1 (including `start`/`end`), v2 response shape; scoped names (`resource.x`, `span.x`, `.x`) resolve to the same attribute as their unscoped form                                                                                                                                   |
+| GET    | `/api/metrics/query`              | **501**     | TraceQL metrics not implemented                                                                                                                                                                                                                                                                      |
+| GET    | `/api/metrics/query_range`        | **501**     | TraceQL metrics not implemented                                                                                                                                                                                                                                                                      |
 
-## Tag value time window
+## Tag discovery time window
 
-Tag-value endpoints (`/api/search/tag/{tag}/values` and the v2 variant)
-scan only a bounded time window of the traces table:
+The tag-name endpoints (`/api/search/tags`, `/api/v2/search/tags`) and the
+tag-value endpoints (`/api/search/tag/{tag}/values` and the v2 variant)
+scan only a bounded time window of the traces table — a sampled read, not
+an index, so it stays interactive on large tenants (up to 1000 rows per
+request):
 
 - `start` and `end` query parameters are unix **seconds**, matching
   Tempo's API. Grafana sends them automatically for tag dropdowns.
 - When `end` is absent it defaults to now; when `start` is absent it
-  defaults to 24 hours before `end`. A request without either parameter
-  therefore returns values seen in the last 24 hours — never a scan of
-  all stored data.
+  defaults to 1 hour before `end` — the same default lookback as the
+  [LogQL](logql-reference.md) label endpoints. A request without either
+  parameter therefore returns names/values seen in the last hour, never a
+  scan of all stored data. A tenant with no traces in the window still
+  lists the intrinsic fields (`name`, `status`, `kind`, `duration`,
+  `rootServiceName`, `rootName`) rather than an empty list.
 - Values that are too large to be unix seconds (typically milliseconds
   from a client that guessed the wrong unit) are rejected with **400**.
 
-Values are deduplicated, sorted, and capped at 1000 per tag.
+Names and values are deduplicated and sorted; values are capped at 1000
+per tag. Because discovery samples rather than indexes, a key or value
+that exists only outside the sampled rows can be missed — widen the
+window or narrow it with `start`/`end` around when the data was ingested
+if a key you know exists doesn't show up.
 
 ## Span fields beyond Tempo's
 
@@ -72,7 +82,7 @@ timings (`Server-Timing` with `traceparent`, `querier`/`convert`/`total`
 | 401 / 403   | Authentication or authorization failure                                                                                                |
 | 404         | Trace not found                                                                                                                        |
 | 429         | Per-tenant query rate limit exceeded                                                                                                   |
-| 501         | Feature not implemented (TraceQL metrics, unindexed tag values)                                                                        |
+| 501         | Feature not implemented (TraceQL metrics)                                                                                              |
 | 503         | No querier service available                                                                                                           |
 | 504         | Query deadline exceeded (server-side budget, or the caller's own deadline)                                                             |
 
@@ -119,8 +129,10 @@ can use SignalDB as a querier backend:
   which a stock Tempo query-frontend cannot send — run without the key on
   a trusted network for Tempo interop.
 - `SearchBlock` returns `Unimplemented` (SignalDB stores data in Iceberg
-  tables, not Tempo blocks). Tag endpoints advertise the same static tag
-  set as the HTTP API; tag _value_ enumeration is HTTP-only.
+  tables, not Tempo blocks). Tag endpoints still advertise the old static
+  three-name set (`service.name`, `name`, `status`) rather than the
+  window-scoped discovery the HTTP API now does — not yet upgraded; tag
+  _value_ enumeration remains HTTP-only.
 
 ## Related
 

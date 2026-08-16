@@ -90,6 +90,8 @@ impl Modify for SecurityAddon {
         crate::endpoints::tempo::query_single_trace,
         crate::endpoints::tempo::search_tags,
         crate::endpoints::tempo::search_tag_values,
+        crate::endpoints::tempo::search_tags_v2,
+        crate::endpoints::tempo::search_tag_values_v2,
         // Native Query IR
         crate::endpoints::query::query_ir,
         // Prometheus-compatible metrics query endpoints (PromQL)
@@ -172,8 +174,13 @@ impl Modify for SecurityAddon {
         tempo_api::SpanEvent,
         tempo_api::Attribute,
         tempo_api::ProfileSummary,
+        tempo_api::TagScope,
         tempo_api::TagSearchResponse,
         tempo_api::TagValuesResponse,
+        tempo_api::v2::TagSearchResponse,
+        tempo_api::v2::TagSearchScope,
+        tempo_api::v2::TagValuesResponse,
+        tempo_api::v2::TagWithValue,
         // Native Query IR request/response DTOs
         crate::endpoints::query::QueryIrRequest,
         crate::endpoints::query::QueryRange,
