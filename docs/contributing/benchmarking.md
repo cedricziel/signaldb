@@ -16,7 +16,8 @@ sources:
 SignalDB ships a set of [Criterion](https://bheisler.github.io/criterion.rs/book/)
 micro-benchmarks covering the hot paths that performance work keeps
 touching: OTLP decode, WAL encoding, the Iceberg append, schema
-materialization, compaction, and the querier read paths. This page is how to
+materialization, compaction, and the querier read paths (both raw scan cost
+and the full querier service). This page is how to
 run them, how to compare a branch against `main`, and where the nightly trend
 lives.
 
@@ -53,7 +54,7 @@ building fails CI.
 | `writer`            | `schema_transform_benchmarks` | `transform_trace_v1_to_v2` — the wire→storage materialization plan                                                                                |
 | `writer`            | `iceberg_benchmarks`          | `IcebergTableWriter::append_batches_with_marker` across batch sizes, multi-batch commits, and concurrent tenants; writer creation cost separately |
 | `tests-integration` | `querier_read_paths`          | Trace lookup by id (unbounded, time-windowed, via a point index) and the trace-groups listing over a seeded Iceberg table                         |
-| `tests-integration` | `signal_read_paths`           | Scan/aggregation proxies for a LogQL line filter and a PromQL range aggregate                                                                     |
+| `tests-integration` | `querier_service_read_paths` | The real querier (`QuerierFlightService::do_get` with router ticket formats): bloom-pruned `find_trace` with and without a time hint, `search_traces`, a PromQL range query and a LogQL line filter through the actual engines |
 | `tests-integration` | `compaction`                  | `CompactionExecutor::execute_candidate` rewriting a set of small files                                                                            |
 | `tests-integration` | `trace_index_scaling`         | Point lookup against a prefix-sharded, bloom-filtered Parquet index at 10k → 1M traces                                                            |
 

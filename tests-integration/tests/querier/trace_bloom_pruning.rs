@@ -24,20 +24,15 @@ use anyhow::Result;
 use common::catalog_manager::CatalogManager;
 use datafusion::prelude::SessionContext;
 use object_store::memory::InMemory;
-use tests_integration::generators;
+use tests_integration::generators::{self, BLOOM_TARGET_TRACE_ID};
 use writer::IcebergTableWriter;
-
-/// Low/high sentinel ids present in EVERY file so that per-file `trace_id`
-/// min/max always brackets the target — defeating statistics pruning.
-const LOW_SENTINEL: &str = "00000000000000000000000000000000";
-const HIGH_SENTINEL: &str = "ffffffffffffffffffffffffffffffff";
 
 const NUM_FILES: usize = 5;
 const TARGET_FILE: usize = 2;
 
-/// A mid-range id (starts with `8`) that sorts between the sentinels and is
-/// written into exactly one file.
-const TARGET: &str = "88888888888888888888888888888888";
+/// The mid-range id written into exactly one file; every file's `trace_id`
+/// min/max brackets it (see `generators::generate_bloom_prunable_trace_files`).
+const TARGET: &str = BLOOM_TARGET_TRACE_ID;
 
 #[tokio::test]
 async fn single_trace_lookup_prunes_row_groups_via_bloom_filter() -> Result<()> {
@@ -67,28 +62,17 @@ async fn single_trace_lookup_prunes_row_groups_via_bloom_filter() -> Result<()> 
     .await
     .expect("Failed to create Iceberg writer");
 
-    // Build NUM_FILES files. Each holds the two sentinels plus filler ids in a
-    // disjoint mid-range band (`{file}xxxx…`), and only TARGET_FILE also holds
-    // TARGET. Every file's min/max = [LOW_SENTINEL, HIGH_SENTINEL] ⊇ TARGET, so
-    // statistics can't prune; only the bloom filter can.
-    let files: Vec<Vec<String>> = (0..NUM_FILES)
-        .map(|file| {
-            let mut ids = vec![LOW_SENTINEL.to_string(), HIGH_SENTINEL.to_string()];
-            // Filler in a band that never equals TARGET: prefix with the file
-            // index digit (1..=NUM_FILES) so bands are disjoint and none is `8`.
-            let band = (file + 1) % 10;
-            for i in 0..40 {
-                ids.push(format!("{band}{i:031}"));
-            }
-            if file == TARGET_FILE {
-                ids.push(TARGET.to_string());
-            }
-            ids
-        })
-        .collect();
-
+    // NUM_FILES files, each holding the two sentinels plus a disjoint filler
+    // band, and only TARGET_FILE also holding TARGET. Every file's min/max
+    // brackets TARGET, so statistics can't prune; only the bloom filter can.
     let base_ts = chrono::Utc::now().timestamp_millis() - (60 * 60 * 1000);
-    generators::generate_trace_files_with_ids(&mut writer, &files, base_ts).await?;
+    generators::generate_bloom_prunable_trace_files(
+        &mut writer,
+        NUM_FILES,
+        Some(TARGET_FILE),
+        base_ts,
+    )
+    .await?;
 
     // Load the freshly-written table and expose it to DataFusion exactly as
     // the querier does (bare `DataFusionTable` over the catalog tabular).
