@@ -50,13 +50,35 @@ pub enum ClientBuildError {
 }
 
 /// Builder for a [`Client`] with SignalDB's default policy applied.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClientBuilder {
     base_url: String,
     headers: Vec<(String, String)>,
     timeout: Duration,
     connect_timeout: Duration,
     retry: RetryPolicy,
+}
+
+impl std::fmt::Debug for ClientBuilder {
+    /// Redacts header values (bearer tokens, tenant/dataset ids, custom
+    /// headers) so `{:?}` output is safe to log: only header *names* are
+    /// shown, values are replaced with `<redacted>`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientBuilder")
+            .field("base_url", &self.base_url)
+            .field(
+                "headers",
+                &self
+                    .headers
+                    .iter()
+                    .map(|(name, _)| (name.as_str(), "<redacted>"))
+                    .collect::<Vec<_>>(),
+            )
+            .field("timeout", &self.timeout)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("retry", &self.retry)
+            .finish()
+    }
 }
 
 impl ClientBuilder {
@@ -146,5 +168,43 @@ impl ClientBuilder {
             .connect_timeout(self.connect_timeout)
             .build()?;
         Ok(Client::new_with_client(&self.base_url, http, self.retry))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_redacts_bearer_token_and_custom_headers() {
+        let builder = ClientBuilder::new("http://localhost:3000")
+            .bearer("sk-super-secret-token")
+            .tenant("acme")
+            .dataset("production")
+            .header("x-custom-secret", "another-secret-value");
+
+        let debug = format!("{builder:?}");
+
+        assert!(
+            !debug.contains("sk-super-secret-token"),
+            "debug output leaked bearer token: {debug}"
+        );
+        assert!(
+            !debug.contains("another-secret-value"),
+            "debug output leaked custom header value: {debug}"
+        );
+        assert!(
+            !debug.contains("acme"),
+            "debug output leaked tenant value: {debug}"
+        );
+        assert!(
+            !debug.contains("production"),
+            "debug output leaked dataset value: {debug}"
+        );
+        // Header names are still visible for debugging.
+        assert!(debug.contains("authorization"), "debug: {debug}");
+        assert!(debug.contains("x-tenant-id"), "debug: {debug}");
+        assert!(debug.contains("x-custom-secret"), "debug: {debug}");
+        assert!(debug.contains("<redacted>"), "debug: {debug}");
     }
 }
