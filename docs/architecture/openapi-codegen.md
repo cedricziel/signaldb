@@ -59,8 +59,14 @@ flowchart LR
   the raw registry document is typed as an opaque object). Paths are absolute; operationIds on the
   management handlers are prefixed `manage_*` and their colliding component
   schemas aliased `Manage*` (via `#[schema(as = ...)]`) so admin and manage
-  names don't clash. The PromQL/LogQL handlers set explicit `operation_id`s
-  (`promql_query`, `logql_query`, …) because their bare handler names collide.
+  names don't clash. The same technique disambiguates the Tempo v1/v2 tag
+  types in `tempo-api` (`tempo_api::TagSearchResponse` vs.
+  `tempo_api::v2::TagSearchResponse`, …): utoipa registers schemas by bare
+  type name, so the v2 module's types carry `#[schema(as =
+tempo_api::v2::TagSearchResponse)]` etc. to keep their own component
+  entries instead of colliding with v1's. The PromQL/LogQL handlers set
+  explicit `operation_id`s (`promql_query`, `logql_query`, …) because their
+  bare handler names collide.
 - `src/router/src/openapi.rs` assembles everything into the `ApiDoc`
   (`#[derive(OpenApi)]`) — info, `servers`, the `bearerAuth` security scheme,
   tags, the path list, and the component schemas.
