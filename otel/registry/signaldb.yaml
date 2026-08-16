@@ -190,3 +190,60 @@ groups:
           The query text with all literals replaced by placeholders
           (see common::self_monitoring::sanitize) — never raw user SQL.
         examples: ["SELECT * FROM t WHERE name = ?"]
+
+  # MCP tool-call attributes. The pinned upstream semconv snapshot (1.43)
+  # moved the MCP and GenAI conventions to the GenAI conventions repository
+  # (see vendor/otel-semconv/1.43.0/model/mcp/deprecated/), so the attributes
+  # the `tools/call {tool}` span emits are declared here, mirroring the
+  # upstream definitions (stability development). They migrate back to the
+  # upstream dependency once the pin includes them again.
+  - id: registry.signaldb.mcp
+    type: attribute_group
+    display_name: MCP Tool-Call Attributes (mirrored)
+    brief: >
+      Attributes on the MCP server's per-tool-call span, mirrored from the
+      OpenTelemetry GenAI conventions repository.
+    attributes:
+      - id: mcp.method.name
+        type: string
+        stability: development
+        brief: The name of the request or notification method.
+        examples: ["tools/call"]
+      - id: mcp.session.id
+        type: string
+        stability: development
+        brief: Identifies the MCP session.
+        examples: ["191c4850af6c49e08843a3f6c80e5046", "stdio"]
+      - id: gen_ai.tool.name
+        type: string
+        stability: development
+        brief: Name of the tool utilized by the agent.
+        examples: ["get_trace", "search_logs"]
+      - id: signaldb.mcp.outcome
+        type:
+          members:
+            - id: ok
+              value: ok
+              brief: The call succeeded.
+              stability: development
+            - id: truncated
+              value: truncated
+              brief: The call succeeded but its result was cut at the size cap.
+              stability: development
+            - id: denied
+              value: denied
+              brief: The router rejected the caller's credential or tenant/dataset access.
+              stability: development
+            - id: throttled
+              value: throttled
+              brief: The router throttled the call past the retry budget.
+              stability: development
+            - id: error
+              value: error
+              brief: The call failed.
+              stability: development
+        stability: development
+        brief: >
+          Audit outcome of an MCP tool call, as recorded on the
+          `signaldb.mcp.tool_calls` counter.
+        examples: ["ok", "denied"]

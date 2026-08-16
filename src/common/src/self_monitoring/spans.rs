@@ -241,6 +241,52 @@ pub fn job_span(job_kind: &str, tenant_id: &str, dataset_id: &str, table: Option
     span
 }
 
+/// INTERNAL span for one MCP tool call, per the MCP semantic conventions
+/// (now maintained in the GenAI conventions repository): named
+/// `{mcp.method.name} {gen_ai.tool.name}`, i.e. `tools/call {tool}`, and
+/// carrying the session identity plus SignalDB tenancy. `error.type` starts
+/// empty; the dispatch wrapper records it (and status Error, via
+/// [`record_span_error`]) only for a failed call — a denied or throttled
+/// outcome is the caller's problem and leaves the status unset. Tool
+/// arguments and results are never recorded.
+///
+/// `mcp.method.name`, `gen_ai.tool.name`, and `mcp.session.id` are declared
+/// in `otel/registry/signaldb.yaml` because the pinned semconv snapshot moved
+/// them out of the core registry.
+pub fn mcp_tool_span(
+    tool: &str,
+    tenant_id: &str,
+    dataset_id: Option<&str>,
+    session_id: &str,
+) -> Span {
+    let span = tracing::info_span!(
+        "mcp.tool",
+        otel.name = %format!("tools/call {tool}"),
+        otel.kind = "internal",
+        otel.status_code = Empty,
+        otel.status_message = Empty,
+        error.r#type = Empty,
+        mcp.method.name = "tools/call",
+        gen_ai.tool.name = %tool,
+        mcp.session.id = %session_id,
+        signaldb.tenant.id = %tenant_id,
+        signaldb.dataset.id = Empty,
+    );
+    if let Some(dataset_id) = dataset_id {
+        span.record("signaldb.dataset.id", dataset_id);
+    }
+    span
+}
+
+/// Mark a factory span as failed: status Error plus the classified
+/// `error.type`. Callers decide *whether* an outcome is a failure for their
+/// boundary (see the per-factory docs); this only encodes *how* it is
+/// recorded.
+pub fn record_span_error(span: &Span, error_type: &str) {
+    span.record("otel.status_code", "ERROR");
+    span.record("error.type", error_type);
+}
+
 #[cfg(test)]
 mod tests {
     use opentelemetry_semantic_conventions::attribute;
@@ -262,6 +308,17 @@ mod tests {
         assert_eq!("db.operation.name", attribute::DB_OPERATION_NAME);
         assert_eq!("db.namespace", attribute::DB_NAMESPACE);
         assert_eq!("db.query.text", attribute::DB_QUERY_TEXT);
+    }
+
+    /// The MCP/GenAI constants are marked deprecated in the pinned crate
+    /// (moved to the GenAI conventions repository, not renamed); the names
+    /// are still the ones to emit and are mirrored in otel/registry.
+    #[test]
+    #[allow(deprecated)]
+    fn mcp_literal_field_names_match_semconv_constants() {
+        assert_eq!("mcp.method.name", attribute::MCP_METHOD_NAME);
+        assert_eq!("mcp.session.id", attribute::MCP_SESSION_ID);
+        assert_eq!("gen_ai.tool.name", attribute::GEN_AI_TOOL_NAME);
     }
 
     #[test]

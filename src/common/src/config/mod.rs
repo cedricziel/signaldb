@@ -1126,6 +1126,12 @@ pub struct McpConfig {
     /// Env: SIGNALDB__MCP__ROUTER_TIMEOUT
     #[serde(default = "McpConfig::default_router_timeout")]
     pub router_timeout: u64,
+    /// Maximum number of tool calls one MCP session may have in flight at
+    /// once. A call arriving at the limit waits briefly for a permit and then
+    /// fails with a distinct "too many concurrent tool calls" error.
+    /// Env: SIGNALDB__MCP__MAX_CONCURRENT_TOOL_CALLS
+    #[serde(default = "McpConfig::default_max_concurrent_tool_calls")]
+    pub max_concurrent_tool_calls: usize,
     /// OAuth 2.1 authorization-server settings for the MCP surface. The router
     /// serves the authorization server; the sidecar ignores this section.
     #[serde(default)]
@@ -1201,6 +1207,12 @@ impl McpConfig {
         // small enough that a hung router cannot hang MCP tool calls forever.
         30
     }
+
+    fn default_max_concurrent_tool_calls() -> usize {
+        // Enough for an agent fanning out a handful of parallel lookups; small
+        // enough that one runaway session cannot monopolise the sidecar.
+        8
+    }
 }
 
 impl Default for McpConfig {
@@ -1210,6 +1222,7 @@ impl Default for McpConfig {
             bind_address: Self::default_bind(),
             router_url: None,
             router_timeout: Self::default_router_timeout(),
+            max_concurrent_tool_calls: Self::default_max_concurrent_tool_calls(),
             oauth: OAuthConfig::default(),
         }
     }
@@ -2041,6 +2054,29 @@ mod tests {
     fn mcp_router_timeout_defaults_to_30_seconds() {
         let config = McpConfig::default();
         assert_eq!(config.router_timeout, 30);
+    }
+
+    #[test]
+    fn mcp_max_concurrent_tool_calls_defaults_to_eight() {
+        let config = McpConfig::default();
+        assert_eq!(config.max_concurrent_tool_calls, 8);
+    }
+
+    #[test]
+    fn mcp_max_concurrent_tool_calls_env_var_overrides_default() {
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__MCP__MAX_CONCURRENT_TOOL_CALLS", "3");
+
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract::<Configuration>()
+                .unwrap();
+
+            assert_eq!(config.mcp.max_concurrent_tool_calls, 3);
+
+            Ok(())
+        });
     }
 
     #[test]

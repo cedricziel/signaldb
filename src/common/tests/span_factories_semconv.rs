@@ -8,8 +8,8 @@
 //! factory tests can share this binary.
 
 use common::self_monitoring::spans::{
-    self, FLIGHT_DO_GET, FLIGHT_DO_PUT, RpcBoundary, db_client_span, job_span,
-    record_network_peer_from_addr, rpc_client_span, rpc_server_span,
+    self, FLIGHT_DO_GET, FLIGHT_DO_PUT, RpcBoundary, db_client_span, job_span, mcp_tool_span,
+    record_network_peer_from_addr, record_span_error, rpc_client_span, rpc_server_span,
 };
 use opentelemetry::trace::{SpanKind, Status, TracerProvider as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
@@ -220,4 +220,45 @@ fn job_span_is_internal_with_tenancy_attributes() {
         Some("production")
     );
     assert_eq!(attr(span, "signaldb.table").as_deref(), Some("traces"));
+}
+
+#[test]
+fn mcp_tool_span_is_internal_with_mcp_and_tenancy_attributes() {
+    let spans = capture_spans(|| {
+        let span = mcp_tool_span("get_trace", "acme", Some("prod"), "sess-1");
+        let _guard = span.enter();
+    });
+    let span = &spans[0];
+
+    assert_eq!(span.name, "tools/call get_trace");
+    assert_eq!(span.span_kind, SpanKind::Internal);
+    assert_eq!(attr(span, "mcp.method.name").as_deref(), Some("tools/call"));
+    assert_eq!(attr(span, "gen_ai.tool.name").as_deref(), Some("get_trace"));
+    assert_eq!(attr(span, "mcp.session.id").as_deref(), Some("sess-1"));
+    assert_eq!(attr(span, "signaldb.tenant.id").as_deref(), Some("acme"));
+    assert_eq!(attr(span, "signaldb.dataset.id").as_deref(), Some("prod"));
+    // Not failed: status unset, `error.type` never recorded.
+    assert_eq!(span.status, Status::Unset);
+    assert_eq!(attr(span, "error.type"), None);
+}
+
+#[test]
+fn mcp_tool_span_without_dataset_leaves_the_attribute_unrecorded() {
+    let spans = capture_spans(|| {
+        let span = mcp_tool_span("server_info", "acme", None, "stdio");
+        let _guard = span.enter();
+    });
+    assert_eq!(attr(&spans[0], "signaldb.dataset.id"), None);
+}
+
+#[test]
+fn mcp_tool_span_records_error_only_when_told_to() {
+    let spans = capture_spans(|| {
+        let span = mcp_tool_span("search_logs", "acme", None, "sess-1");
+        let _guard = span.enter();
+        record_span_error(&span, "500");
+    });
+    let span = &spans[0];
+    assert!(matches!(span.status, Status::Error { .. }));
+    assert_eq!(attr(span, "error.type").as_deref(), Some("500"));
 }

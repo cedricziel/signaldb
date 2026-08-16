@@ -62,6 +62,18 @@ pub mod utils {
     /// `log` facade is not a workspace dependency and CI rejects `log::`
     /// macro calls.
     pub fn init_logging(args: &CommonArgs, telemetry: Option<&SelfTelemetry>) {
+        init_logging_with_writer(args, telemetry, std::io::stdout);
+    }
+
+    /// [`init_logging`] with an explicit console writer. The MCP sidecar logs
+    /// to stderr because stdout is its stdio transport's wire.
+    pub fn init_logging_with_writer<W>(
+        args: &CommonArgs,
+        telemetry: Option<&SelfTelemetry>,
+        writer: W,
+    ) where
+        W: for<'w> tracing_subscriber::fmt::MakeWriter<'w> + Send + Sync + 'static,
+    {
         use opentelemetry::trace::TracerProvider as _;
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
@@ -78,7 +90,7 @@ pub mod utils {
 
         let registry = tracing_subscriber::registry()
             .with(filter)
-            .with(tracing_subscriber::fmt::layer());
+            .with(tracing_subscriber::fmt::layer().with_writer(writer));
 
         if let Some(telemetry) = telemetry {
             // Scope carries the pinned semconv schema_url alongside the
