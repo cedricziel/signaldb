@@ -22,7 +22,9 @@ use datafusion::datasource::MemTable;
 use datafusion::prelude::SessionContext;
 use object_store::memory::InMemory;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
-use tests_integration::generators;
+use tests_integration::generators::{
+    self, BLOOM_HIGH_SENTINEL, BLOOM_LOW_SENTINEL, BLOOM_TARGET_TRACE_ID,
+};
 use tokio::runtime::Runtime;
 use writer::IcebergTableWriter;
 
@@ -33,11 +35,9 @@ const TENANT: &str = "bench-tenant";
 const DATASET: &str = "bench-dataset";
 const TABLE: &str = "traces";
 
-/// Low/high sentinel ids plus a mid-range target, mirroring the bloom-pruning
-/// test so the lookup exercises a real random-id point lookup.
-const LOW_SENTINEL: &str = "00000000000000000000000000000000";
-const HIGH_SENTINEL: &str = "ffffffffffffffffffffffffffffffff";
-const TARGET: &str = "88888888888888888888888888888888";
+/// The bloom-pruning point-lookup target, so the lookup exercises a real
+/// random-id point lookup (see `generators::generate_bloom_prunable_trace_files`).
+const TARGET: &str = BLOOM_TARGET_TRACE_ID;
 /// Spans of TARGET, one per spread instant — the completeness ground truth.
 const TARGET_SPAN_COUNT: usize = 3;
 
@@ -77,17 +77,7 @@ async fn seed_traces_context() -> (SessionContext, i64) {
 
     // Filler files with sentinel + banded ids (no TARGET) at base_ts, for
     // realistic bloom/statistics conditions around the target.
-    let filler: Vec<Vec<String>> = (0..3)
-        .map(|file| {
-            let mut ids = vec![LOW_SENTINEL.to_string(), HIGH_SENTINEL.to_string()];
-            let band = (file + 1) % 10;
-            for i in 0..40 {
-                ids.push(format!("{band}{i:031}"));
-            }
-            ids
-        })
-        .collect();
-    generators::generate_trace_files_with_ids(&mut writer, &filler, base_ts)
+    generators::generate_bloom_prunable_trace_files(&mut writer, 3, None, base_ts)
         .await
         .expect("seed filler traces");
 
@@ -98,8 +88,8 @@ async fn seed_traces_context() -> (SessionContext, i64) {
         generators::generate_trace_files_with_ids(
             &mut writer,
             &[vec![
-                LOW_SENTINEL.to_string(),
-                HIGH_SENTINEL.to_string(),
+                BLOOM_LOW_SENTINEL.to_string(),
+                BLOOM_HIGH_SENTINEL.to_string(),
                 TARGET.to_string(),
             ]],
             base_ts + offset_ms,

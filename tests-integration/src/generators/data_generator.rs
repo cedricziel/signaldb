@@ -77,6 +77,55 @@ pub async fn generate_trace_files_with_ids(
     Ok(())
 }
 
+/// Lowest possible trace id; written into every bloom-pruning file.
+pub const BLOOM_LOW_SENTINEL: &str = "00000000000000000000000000000000";
+/// Highest possible trace id; written into every bloom-pruning file.
+pub const BLOOM_HIGH_SENTINEL: &str = "ffffffffffffffffffffffffffffffff";
+/// A mid-range id (leading `8`) that sorts between the sentinels; the point
+/// lookup target of every bloom-pruning test and bench.
+pub const BLOOM_TARGET_TRACE_ID: &str = "88888888888888888888888888888888";
+
+/// Seeds `num_files` trace files laid out so that ONLY a Parquet bloom filter
+/// on `trace_id` can prune a point lookup for [`BLOOM_TARGET_TRACE_ID`]:
+///
+/// - every file holds both sentinels, so each file's `trace_id` min/max is
+///   `[BLOOM_LOW_SENTINEL, BLOOM_HIGH_SENTINEL]` ⊇ target and column
+///   statistics can never skip it (real trace ids are random, so this is
+///   the production case — #826);
+/// - each file additionally holds 40 filler ids in a band with a leading
+///   digit that is never `8`, so bands are disjoint from the target;
+/// - the target itself is written into `target_file` only (or nowhere).
+///
+/// All rows land at `base_timestamp` (one hour partition, one file per
+/// write), so file and row-group counts are deterministic.
+pub async fn generate_bloom_prunable_trace_files(
+    writer: &mut IcebergTableWriter,
+    num_files: usize,
+    target_file: Option<usize>,
+    base_timestamp: i64,
+) -> Result<()> {
+    // Leading digits for filler bands; `8` is skipped so no band can ever
+    // equal or prefix-collide with the target.
+    const BANDS: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 9];
+    let files: Vec<Vec<String>> = (0..num_files)
+        .map(|file| {
+            let mut ids = vec![
+                BLOOM_LOW_SENTINEL.to_string(),
+                BLOOM_HIGH_SENTINEL.to_string(),
+            ];
+            let band = BANDS[file % BANDS.len()];
+            for i in 0..40 {
+                ids.push(format!("{band}{i:031}"));
+            }
+            if target_file == Some(file) {
+                ids.push(BLOOM_TARGET_TRACE_ID.to_string());
+            }
+            ids
+        })
+        .collect();
+    generate_trace_files_with_ids(writer, &files, base_timestamp).await
+}
+
 /// Generates time-partitioned log data
 pub async fn generate_logs(
     writer: &mut IcebergTableWriter,

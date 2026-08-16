@@ -6,6 +6,7 @@
 mod data_generator;
 
 pub use data_generator::{
-    generate_logs, generate_metrics, generate_profiles, generate_trace_files_with_ids,
-    generate_traces,
+    BLOOM_HIGH_SENTINEL, BLOOM_LOW_SENTINEL, BLOOM_TARGET_TRACE_ID,
+    generate_bloom_prunable_trace_files, generate_logs, generate_metrics, generate_profiles,
+    generate_trace_files_with_ids, generate_traces,
 };

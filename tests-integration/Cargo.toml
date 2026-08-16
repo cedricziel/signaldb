@@ -75,7 +75,7 @@ harness = false
 required-features = ["benchmarks"]
 
 [[bench]]
-name = "signal_read_paths"
+name = "querier_service_read_paths"
 harness = false
 required-features = ["benchmarks"]
 
