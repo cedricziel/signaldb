@@ -342,9 +342,46 @@ struct DiscoverAttributesParams {
     /// returns the list of queryable tag/label names.
     #[serde(default)]
     tag: Option<String>,
+    /// Restrict trace tag discovery to one scope (`resource`, `span`, or
+    /// `intrinsic`), routing through the Tempo v2 discovery endpoints
+    /// instead of v1. Only valid with `signal: "traces"`.
+    #[serde(default)]
+    scope: Option<TraceTagScope>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
+}
+
+/// Trace tag scope for `discover_attributes` v2 routing (`signal: "traces"`
+/// only). `rename_all = "lowercase"` matches the Tempo v2 wire values (see
+/// `tempo_api::TagScope`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "lowercase")]
+enum TraceTagScope {
+    Resource,
+    Span,
+    Intrinsic,
+}
+
+impl TraceTagScope {
+    fn into_sdk(self) -> signaldb_sdk::types::TagScope {
+        match self {
+            TraceTagScope::Resource => signaldb_sdk::types::TagScope::Resource,
+            TraceTagScope::Span => signaldb_sdk::types::TagScope::Span,
+            TraceTagScope::Intrinsic => signaldb_sdk::types::TagScope::Intrinsic,
+        }
+    }
+
+    /// The v2 scoped tag name (`resource.<tag>`, `span.<tag>`, or the bare
+    /// `<tag>` for `intrinsic`) that `search_tag_values_v2` expects.
+    fn scoped_tag_name(self, tag: &str) -> String {
+        match self {
+            TraceTagScope::Resource => format!("resource.{tag}"),
+            TraceTagScope::Span => format!("span.{tag}"),
+            TraceTagScope::Intrinsic => tag.to_string(),
+        }
+    }
 }
 
 /// Parameters for `discover_metrics`.
@@ -1108,16 +1145,31 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Discover queryable attributes for your tenant. Call with no arguments to list trace tag names; pass `tag` to list the known values for that tag. Pass `signal: \"logs\"`, `signal: \"metrics\"`, or `signal: \"profiles\"` to discover Loki log labels, Prometheus metric labels, or Pyroscope profile labels instead. Use this to construct valid `search_traces`/`search_logs`/`query_metrics`/`search_profiles` queries."
+        description = "Discover queryable attributes for your tenant. Call with no arguments to list trace tag names; pass `tag` to list the known values for that tag. Pass `signal: \"logs\"`, `signal: \"metrics\"`, or `signal: \"profiles\"` to discover Loki log labels, Prometheus metric labels, or Pyroscope profile labels instead. With `signal: \"traces\"`, pass `scope: \"resource\"|\"span\"|\"intrinsic\"` to restrict discovery to one tag scope (routes through the Tempo v2 discovery endpoints). Use this to construct valid `search_traces`/`search_logs`/`query_metrics`/`search_profiles` queries."
     )]
     async fn discover_attributes(
         &self,
         Parameters(p): Parameters<DiscoverAttributesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        if p.scope.is_some() && !matches!(p.signal, Signal::Traces) {
+            return Err(ErrorData::invalid_params(
+                "discover_attributes: `scope` is only valid with signal: \"traces\"".to_string(),
+                None,
+            ));
+        }
         let client = self.router_client(&parts, p.dataset.as_deref())?;
-        match (p.signal, p.tag) {
-            (Signal::Traces, Some(tag)) => {
+        match (p.signal, p.tag, p.scope) {
+            (Signal::Traces, Some(tag), Some(scope)) => {
+                let resp = client
+                    .search_tag_values_v2()
+                    .tag_name(scope.scoped_tag_name(&tag))
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
+                json_result(&resp.into_inner())
+            }
+            (Signal::Traces, Some(tag), None) => {
                 let resp = client
                     .search_tag_values()
                     .tag_name(tag)
@@ -1126,7 +1178,16 @@ impl McpServer {
                     .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
                 json_result(&resp.into_inner())
             }
-            (Signal::Traces, None) => {
+            (Signal::Traces, None, Some(scope)) => {
+                let resp = client
+                    .search_tags_v2()
+                    .scope(scope.into_sdk())
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
+                json_result(&resp.into_inner())
+            }
+            (Signal::Traces, None, None) => {
                 let resp = client
                     .search_tags()
                     .send()
@@ -1134,7 +1195,7 @@ impl McpServer {
                     .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
                 json_result(&resp.into_inner())
             }
-            (Signal::Logs, Some(name)) => {
+            (Signal::Logs, Some(name), _) => {
                 let resp = client
                     .logql_label_values()
                     .name(name)
@@ -1143,7 +1204,7 @@ impl McpServer {
                     .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
                 json_result(&resp.into_inner())
             }
-            (Signal::Logs, None) => {
+            (Signal::Logs, None, _) => {
                 let resp = client
                     .logql_labels()
                     .send()
@@ -1151,7 +1212,7 @@ impl McpServer {
                     .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
                 json_result(&resp.into_inner())
             }
-            (Signal::Metrics, Some(name)) => {
+            (Signal::Metrics, Some(name), _) => {
                 let resp = client
                     .promql_label_values()
                     .name(name)
@@ -1160,7 +1221,7 @@ impl McpServer {
                     .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
                 json_result(&resp.into_inner())
             }
-            (Signal::Metrics, None) => {
+            (Signal::Metrics, None, _) => {
                 let resp = client
                     .promql_labels()
                     .send()
@@ -1168,7 +1229,7 @@ impl McpServer {
                     .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
                 json_result(&resp.into_inner())
             }
-            (Signal::Profiles, Some(label)) => {
+            (Signal::Profiles, Some(label), _) => {
                 let resp = client
                     .pyroscope_label_values()
                     .label(label)
@@ -1177,7 +1238,7 @@ impl McpServer {
                     .map_err(|e| map_sdk_err(e, "discover_attributes"))?;
                 json_result(&resp.into_inner())
             }
-            (Signal::Profiles, None) => {
+            (Signal::Profiles, None, _) => {
                 let resp = client
                     .pyroscope_label_names()
                     .send()
@@ -2980,6 +3041,7 @@ mod tests {
                 Parameters(DiscoverAttributesParams {
                     signal: Signal::Profiles,
                     tag: None,
+                    scope: None,
                     dataset: None,
                 }),
                 Extension(valid_parts()),
@@ -3003,6 +3065,7 @@ mod tests {
                 Parameters(DiscoverAttributesParams {
                     signal: Signal::Profiles,
                     tag: Some("service_name".to_string()),
+                    scope: None,
                     dataset: None,
                 }),
                 Extension(valid_parts()),
@@ -3013,6 +3076,85 @@ mod tests {
         let values = text_json(&result);
         assert_eq!(values["names"][0], "checkout");
         router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn discover_attributes_traces_scope_without_tag_routes_to_v2_tags() {
+        let (base_url, router) = mock_json_router(
+            "GET /tempo/api/v2/search/tags?",
+            r#"{"scopes":[{"scope":"resource","tags":["service.name"]}]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_attributes(
+                Parameters(DiscoverAttributesParams {
+                    signal: Signal::Traces,
+                    tag: None,
+                    scope: Some(TraceTagScope::Resource),
+                    dataset: None,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("discover_attributes succeeds");
+
+        let value = text_json(&result);
+        assert_eq!(value["scopes"][0]["scope"], "resource");
+        assert_eq!(value["scopes"][0]["tags"][0], "service.name");
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn discover_attributes_traces_scope_with_tag_routes_to_v2_tag_values() {
+        let (base_url, router) = mock_json_router(
+            "GET /tempo/api/v2/search/tag/resource.service.name/values",
+            r#"{"tagValues":[{"tag":"resource.service.name","value":"checkout"}]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_attributes(
+                Parameters(DiscoverAttributesParams {
+                    signal: Signal::Traces,
+                    tag: Some("service.name".to_string()),
+                    scope: Some(TraceTagScope::Resource),
+                    dataset: None,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("discover_attributes succeeds");
+
+        let value = text_json(&result);
+        assert_eq!(value["tagValues"][0]["value"], "checkout");
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn discover_attributes_scope_on_a_non_traces_signal_is_rejected() {
+        // No mock router needed: the tool must reject before any request is
+        // sent, since `scope` (Tempo v2) has no meaning for logs/metrics.
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .discover_attributes(
+                Parameters(DiscoverAttributesParams {
+                    signal: Signal::Logs,
+                    tag: None,
+                    scope: Some(TraceTagScope::Resource),
+                    dataset: None,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect_err("scope on signal: logs must be rejected");
+        assert!(err.message.contains("traces"), "got {}", err.message);
     }
 
     #[tokio::test]
