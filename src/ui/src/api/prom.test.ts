@@ -140,8 +140,9 @@ describe("metadata pickers", () => {
   });
 
   it("throws on HTTP failure", async () => {
-    stubApiFetch("nope", 503);
-    await expect(promLabelNames(RANGE)).rejects.toThrow(/\(503\)/);
+    // 500 is not retried by `retryingFetch`; a 503 on GET would back off first.
+    stubApiFetch("nope", 500);
+    await expect(promLabelNames(RANGE)).rejects.toThrow(/\(500\)/);
   });
 });
 
