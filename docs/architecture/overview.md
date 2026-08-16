@@ -184,7 +184,7 @@ flowchart LR
 - Transforms v1 Flight schema to v2 Iceberg schema before WAL write
 - `WalProcessor`: Background task (5s interval, exponential backoff on failure) that reads WAL entries and writes to Iceberg tables
 - Caches `IcebergTableWriter` instances per `{tenant}:{dataset}:{table}` combination
-- Creates Iceberg tables with schema and partition spec from `iceberg_schemas` — on first write, and ahead of it via the table reconciler (`reconcile.rs`): a startup pass plus one every `[writer].table_reconcile_interval` over the tenant registry, so every registered tenant/dataset holds a table for each signal type enabled for it before any telemetry arrives. Both paths go through the same load-or-create `CatalogManager::ensure_table`, so a failing reconciler degrades to create-on-first-write. See [Signal table provisioning](../operations/table-provisioning.md)
+- Creates Iceberg tables with schema and partition spec from `iceberg_schemas` — on first write, and ahead of it via the table reconciler (`reconcile.rs`): a startup pass plus one every `[writer].table_reconcile_interval` over the tenant registry, so every registered tenant/dataset holds a table for each signal type enabled for it before any telemetry arrives. Both paths go through the same load-or-create `CatalogManager::ensure_table`, so a failing reconciler degrades to create-on-first-write. What actually landed in the catalog is visible through the router's tenant self-service `GET /api/v1/tenants/{id}/tables`, grouped by dataset. See [Signal table provisioning](../operations/table-provisioning.md)
 
 ### Router
 

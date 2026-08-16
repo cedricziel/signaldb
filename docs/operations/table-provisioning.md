@@ -136,9 +136,17 @@ lists what is really in the Iceberg catalog — the same place provisioning
 writes to — grouped by dataset. Each table carries the dataset it belongs to
 (`dataset` on every entry); the response also groups them under `datasets`
 (one entry per dataset, each with its own `tables`), while the flat `tables`
-list is kept for existing consumers. A dataset with nothing provisioned yet
-lists as empty, not as an error, and a listing right after
-`POST …/tables/create` reflects exactly what was just created.
+list is kept for existing consumers.
+
+- **`datasets`** always has one entry per dataset the tenant is known to
+  have, even one with nothing provisioned in it yet — that entry's `tables`
+  is simply empty, it is never omitted. A tenant with no datasets at all (or
+  one this endpoint cannot resolve) gets `datasets: []`.
+- **`tables`** (the flat list) contains only tables that actually exist —
+  never invented, never one per known dataset.
+- A listing right after `POST …/tables/create` reflects exactly what was
+  just created: the provisioned dataset's group gains those tables, and
+  `tables` gains their flat entries.
 
 ```bash
 $ signaldb-cli tenant table list --api-key "$SIGNALDB_API_KEY" --tenant-id acme

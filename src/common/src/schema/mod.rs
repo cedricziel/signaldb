@@ -485,24 +485,29 @@ impl TenantSchemaRegistry {
     }
 
     /// List every table actually provisioned for a tenant, across all of its
-    /// datasets, as `(dataset, table)` pairs.
+    /// datasets, as one entry per dataset with the table names found in it.
     ///
-    /// Reads from the same place [`Self::create_default_tables_for_tenant`]
-    /// writes to — the Iceberg catalog, per dataset namespace — so a listing
-    /// agrees with what provisioning created. Never invents entries: a
-    /// dataset whose namespace has nothing in it (or does not exist yet)
-    /// lists as empty, not as an error.
+    /// Every dataset the tenant is known to have is present — including one
+    /// with nothing provisioned yet, listed with an empty table vector — so
+    /// a caller can show "this dataset has no tables" rather than silently
+    /// omitting it. Reads from the same place
+    /// [`Self::create_default_tables_for_tenant`] writes to — the Iceberg
+    /// catalog, per dataset namespace — so a listing agrees with what
+    /// provisioning created. Never invents table entries: a dataset whose
+    /// namespace has nothing in it (or does not exist yet) lists with an
+    /// empty table vector, not as an error.
     ///
     /// A tenant that resolves only through the legacy
     /// [`Configuration::is_tenant_enabled`] fallback (the unconfigured
     /// `"default"` tenant, or one named only in `[tenants.tenants]`) but is
-    /// absent from `datasets_for_tenant`'s registry has no datasets to list
-    /// yet, which is an empty result rather than an error. A tenant absent
-    /// from *both* registries is genuinely unknown and stays an error.
+    /// absent from `datasets_for_tenant`'s registry has no known datasets to
+    /// list yet, which is an empty result rather than an error. A tenant
+    /// absent from *both* registries is genuinely unknown and stays an
+    /// error.
     pub async fn list_tables_for_tenant(
         &mut self,
         tenant_id: &str,
-    ) -> Result<Vec<(String, String)>> {
+    ) -> Result<Vec<(String, Vec<String>)>> {
         let manager = self.catalog_manager().await?;
 
         let datasets = match self.datasets_for_tenant(&manager, tenant_id).await {
@@ -516,21 +521,22 @@ impl TenantSchemaRegistry {
             }
         };
 
-        let mut tables = Vec::new();
+        let mut result = Vec::with_capacity(datasets.len());
         for dataset in &datasets {
-            let Ok(namespace) = manager.build_namespace(tenant_id, dataset) else {
-                continue;
+            let tables = match manager.build_namespace(tenant_id, dataset) {
+                Ok(namespace) => manager
+                    .catalog()
+                    .list_tabulars(&namespace)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|identifier| identifier.name().to_string())
+                    .collect(),
+                Err(_) => Vec::new(),
             };
-            let tabulars = manager
-                .catalog()
-                .list_tabulars(&namespace)
-                .await
-                .unwrap_or_default();
-            for identifier in tabulars {
-                tables.push((dataset.clone(), identifier.name().to_string()));
-            }
+            result.push((dataset.clone(), tables));
         }
-        Ok(tables)
+        Ok(result)
     }
 }
 
@@ -1143,30 +1149,41 @@ traces = ["http.method"]
         let mut registry = TenantSchemaRegistry::new(config.clone());
         let manager = crate::CatalogManager::new(config).await.unwrap();
 
-        // Nothing provisioned yet in either dataset.
+        // Both known datasets are present even though nothing has been
+        // provisioned yet — each with an empty table list, not omitted.
         let tables = registry.list_tables_for_tenant("acme").await.unwrap();
-        assert!(tables.is_empty(), "{tables:?}");
+        let by_dataset: std::collections::BTreeMap<&str, &[String]> = tables
+            .iter()
+            .map(|(dataset, names)| (dataset.as_str(), names.as_slice()))
+            .collect();
+        assert_eq!(by_dataset.len(), 2, "{tables:?}");
+        assert!(by_dataset["alpha"].is_empty());
+        assert!(by_dataset["beta"].is_empty());
 
         // Provision "alpha" only.
         manager.ensure_dataset_tables("acme", "alpha").await;
         let tables = registry.list_tables_for_tenant("acme").await.unwrap();
-        assert!(!tables.is_empty());
+        let by_dataset: std::collections::BTreeMap<&str, &[String]> = tables
+            .iter()
+            .map(|(dataset, names)| (dataset.as_str(), names.as_slice()))
+            .collect();
         assert!(
-            tables.iter().all(|(dataset, _)| dataset == "alpha"),
-            "only 'alpha' has been provisioned: {tables:?}"
+            by_dataset["alpha"].iter().any(|name| name == "traces"),
+            "'alpha' must be provisioned: {tables:?}"
         );
-        assert!(tables.iter().any(|(_, name)| name == "traces"));
+        assert!(
+            by_dataset["beta"].is_empty(),
+            "'beta' has not been provisioned yet: {tables:?}"
+        );
 
-        // Provision "beta" too; both datasets now show up.
+        // Provision "beta" too; both datasets now hold tables.
         manager.ensure_dataset_tables("acme", "beta").await;
         let tables = registry.list_tables_for_tenant("acme").await.unwrap();
-        let datasets: std::collections::BTreeSet<String> =
-            tables.into_iter().map(|(dataset, _)| dataset).collect();
-        assert_eq!(
-            datasets,
-            ["alpha".to_string(), "beta".to_string()]
-                .into_iter()
-                .collect()
-        );
+        let by_dataset: std::collections::BTreeMap<&str, &[String]> = tables
+            .iter()
+            .map(|(dataset, names)| (dataset.as_str(), names.as_slice()))
+            .collect();
+        assert!(by_dataset["alpha"].iter().any(|name| name == "traces"));
+        assert!(by_dataset["beta"].iter().any(|name| name == "traces"));
     }
 }

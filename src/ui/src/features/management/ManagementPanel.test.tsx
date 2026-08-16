@@ -150,6 +150,32 @@ describe("ManagementPanel tables section", () => {
     });
   });
 
+  it("falls back to client-side grouping, with an 'Unknown dataset' heading, when a response omits the dataset grouping", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      {
+        match: TABLES_PATH,
+        // No `dataset` on the table and no `datasets` grouping at all — an
+        // older cached response shape the client must still render sanely.
+        body: {
+          tenant_id: "acme",
+          tables: [{ name: "traces", schema_type: "traces", description: "d" }],
+        },
+        method: "GET",
+      },
+    ]);
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", { level: 4, name: "Unknown dataset" }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("traces")).toBeInTheDocument();
+    });
+  });
+
   it("shows an empty state when no tables are provisioned yet", async () => {
     stubFetchRoutes([
       { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
