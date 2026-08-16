@@ -38,5 +38,6 @@ mod schema_registry_clients;
 mod sdk_query_methods;
 mod self_monitoring;
 mod storage_quota;
+mod tenant_manage_clients;
 mod tenant_table_cli;
 mod wal_retry_rejected_entries;
