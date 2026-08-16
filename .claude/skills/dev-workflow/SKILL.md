@@ -30,6 +30,16 @@ cargo test -p tests-integration compactor   # Compactor integration tests
 cargo test -p compactor             # Compactor unit tests
 ```
 
+## Benchmarks
+
+```bash
+scripts/run-benches.sh                        # every Criterion target (release)
+scripts/run-benches.sh -p writer              # one crate
+scripts/run-benches.sh -- --baseline main     # compare against a saved baseline
+```
+
+Nightly trend + baseline/compare workflow: `docs/contributing/benchmarking.md`.
+
 ## Pre-Commit Checks (MANDATORY before committing)
 
 These run automatically via cargo-husky hooks, but run manually to catch issues early:

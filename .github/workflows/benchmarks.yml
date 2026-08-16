@@ -1,0 +1,105 @@
+name: Benchmarks
+
+# Nightly Criterion run over every `[[bench]]` target in the workspace. Results
+# are appended to the `benchmark-data` branch by github-action-benchmark,
+# which renders a per-benchmark trend chart there; docs.yml folds that page
+# and a "latest results" table into the published docs site.
+#
+# The compile guard for these benches is ci.yml's clippy step
+# (`--all-targets --all-features`); this workflow only *runs* them. Numbers
+# are single-runner, in-memory measurements: a relative regression signal,
+# not production latency.
+
+on:
+  schedule:
+    # 03:17 UTC daily — off the hour to avoid the GitHub-wide cron rush.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write # push trend data to the benchmark-data branch
+
+# One run at a time: two runs pushing to benchmark-data would race.
+concurrency:
+  group: benchmarks
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  # Keep Criterion's own logging quiet; the bench binaries reduce to timings.
+  RUST_LOG: warn
+
+jobs:
+  criterion:
+    name: Criterion suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Init submodules
+        run: git submodule update --init --recursive
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false # Using Swatinem/rust-cache instead
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "bench"
+          cache-on-failure: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler mold clang jq
+
+      - name: Run every Criterion bench target
+        run: scripts/run-benches.sh -- --output-format bencher
+
+      - name: Upload raw bencher output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-output
+          path: target/bench-output.txt
+          if-no-files-found: error
+
+      # github-action-benchmark fetches and `git switch`es to its data branch,
+      # so the branch must exist before the first run. Seed it once with an
+      # empty root commit through the checkout's own credentials.
+      - name: Ensure the benchmark-data branch exists
+        run: |
+          if git ls-remote --exit-code --heads origin benchmark-data >/dev/null; then
+            echo "benchmark-data branch already exists"
+          else
+            root=$(git -c user.name=github-actions[bot] \
+                       -c user.email=github-actions[bot]@users.noreply.github.com \
+                       commit-tree "$(git hash-object -t tree /dev/null)" \
+                       -m "chore: seed the benchmark-data branch")
+            git push origin "$root:refs/heads/benchmark-data"
+          fi
+
+      - name: Store results and render the trend
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Criterion
+          tool: cargo
+          output-file-path: target/bench-output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          gh-pages-branch: benchmark-data
+          benchmark-data-dir-path: dev/bench
+          auto-push: true
+          # Generous to start: single-runner noise on in-memory benches easily
+          # hits 20-30%. Tighten once a few weeks of variance are visible.
+          alert-threshold: "150%"
+          # Nightly runs have no PR to comment on; the job summary and the
+          # trend page carry the alert. Flip fail-on-alert once the threshold
+          # has been observed against real variance.
+          comment-on-alert: false
+          fail-on-alert: false
+          summary-always: true

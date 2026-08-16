@@ -87,3 +87,4 @@ nav:
           - architecture/decisions/users-tenant-membership.md
   - Contributing:
       - contributing/rust.md
+      - contributing/benchmarking.md
