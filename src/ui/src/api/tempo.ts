@@ -8,7 +8,12 @@
 import "./client";
 import { searchTags } from "./gen";
 import type { ResolvedRange } from "../lib/time";
-import { ApiError, tenantHeaders } from "./http";
+import {
+  ApiError,
+  retryAfterMsFrom,
+  retryingFetch,
+  tenantHeaders,
+} from "./http";
 
 export type AttrValue = string | number | boolean;
 
@@ -176,7 +181,7 @@ async function tempoFetch<T>(
   params: URLSearchParams,
 ): Promise<T> {
   const query = params.size > 0 ? `?${params}` : "";
-  const res = await fetch(`/tempo/api/${path}${query}`, {
+  const res = await retryingFetch(`/tempo/api/${path}${query}`, {
     headers: tenantHeaders(),
   });
   if (!res.ok) {
@@ -184,6 +189,7 @@ async function tempoFetch<T>(
     throw new ApiError(
       `Tempo API ${path} failed (${res.status}): ${body.slice(0, 300)}`,
       res.status,
+      retryAfterMsFrom(res),
     );
   }
   return (await res.json()) as T;
@@ -261,7 +267,7 @@ export async function tempoSearchTags(range: ResolvedRange): Promise<string[]> {
     const message =
       (error as { error?: string } | undefined)?.error ??
       `Tempo tags request failed (${status})`;
-    throw new ApiError(message, status);
+    throw new ApiError(message, status, retryAfterMsFrom(response));
   }
   return data!.tagNames;
 }

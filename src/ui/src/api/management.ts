@@ -29,7 +29,7 @@ import {
   type ManageSchemaResponse,
   type MembershipResponse,
 } from "./gen";
-import { ApiError } from "./http";
+import { ApiError, retryAfterMsFrom } from "./http";
 
 /** Ingestion scopes an API key may be granted. */
 export type IngestScope =
@@ -107,7 +107,7 @@ function unwrap<T>(result: SdkResult<T>): T {
     const message =
       (error as { error?: string } | undefined)?.error ??
       `Management request failed (${status})`;
-    throw new ApiError(message, status);
+    throw new ApiError(message, status, retryAfterMsFrom(response));
   }
   return result.data as T;
 }

@@ -26,6 +26,9 @@ separate services backed by PostgreSQL and S3 when you need it.
   [Sending OTLP data](users/sending-otlp.md)
 - **Explore it** — the built-in UI for logs, traces, and metrics:
   [Explore UI](users/explore-ui.md)
+- **Clients retry throttling for you** — the SDK, CLI, MCP server, and UI
+  back off on `429` the same way:
+  [Client retry](users/client-retry.md)
 - **Use Grafana** — connect via the Tempo/Loki/Prometheus-compatible
   APIs or the native plugin: [Grafana datasource](users/grafana-datasource.md)
 - **Run it** — deployment, storage, WAL durability, retention:

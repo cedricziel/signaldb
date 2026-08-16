@@ -5,8 +5,11 @@
 //!
 //! The mock router picks its behaviour from the `X-Dataset-ID` it receives,
 //! which the tools forward from their `dataset` argument: `deny` → 403,
-//! `boom` → 500, `throttle` → 429, `big` → an oversized payload, `slow` →
-//! hold the request until released; anything else → an empty 200.
+//! `boom` → 500, `throttle` → 429, `throttle-once` → 429 (`Retry-After: 0`)
+//! for the first request then 200, `throttle-long` → 429 with
+//! `Retry-After: 30` (beyond the SDK's per-attempt cap, so it fails fast),
+//! `big` → an oversized payload, `slow` → hold the request until released;
+//! anything else → an empty 200.
 //!
 //! Every test runs on a current-thread runtime with a thread-local tracing
 //! subscriber, so the events and spans the session worker emits are captured
@@ -161,6 +164,8 @@ struct MockRouter {
     /// Flipped to `true` by the test to let `slow` requests complete — a
     /// latched state, so a request that arrives after the release passes too.
     release: watch::Sender<bool>,
+    /// Requests seen for `throttle-once`; only the first is throttled.
+    throttle_once_hits: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 async fn whoami() -> Response {
@@ -185,6 +190,27 @@ async fn behaviour(
         "deny" => (StatusCode::FORBIDDEN, "forbidden").into_response(),
         "boom" => (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response(),
         "throttle" => (StatusCode::TOO_MANY_REQUESTS, "slow down").into_response(),
+        "throttle-once" => {
+            let hit = mock
+                .throttle_once_hits
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if hit == 0 {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "0")],
+                    "slow down",
+                )
+                    .into_response()
+            } else {
+                ok_body(uri.path(), false)
+            }
+        }
+        "throttle-long" => (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", "30")],
+            "slow down",
+        )
+            .into_response(),
         "slow" => {
             let mut released = mock.release.subscribe();
             while !*released.borrow_and_update() {
@@ -214,6 +240,7 @@ fn ok_body(path: &str, big: bool) -> Response {
 async fn spawn_mock_router() -> (String, MockRouter) {
     let mock = MockRouter {
         release: watch::Sender::new(false),
+        throttle_once_hits: Arc::default(),
     };
     let app = axum::Router::new()
         .route("/api/v1/whoami", get(whoami))
@@ -479,6 +506,57 @@ async fn throttled_and_truncated_calls_are_classified() {
     let truncated = the_audit_event(&events, "search_logs");
     assert_eq!(truncated.level, Level::INFO);
     assert_eq!(truncated.field("outcome"), Some("truncated"));
+}
+
+/// `sdk-retry-on-throttle`: a brief 429 is absorbed by the SDK's retry policy
+/// (the agent sees the result); an exhausted/unaffordable one is a distinct
+/// `throttled:` error carrying `retryAfterMs`, still classified `throttled`.
+#[tokio::test]
+async fn brief_throttle_is_invisible_and_exhausted_throttle_names_the_wait() {
+    let (_guard, events, _spans, _provider) = install_capture();
+    let (app, mock) = app_with_limit(8).await;
+    let mut session = McpSession::open(app, None).await;
+
+    let ok = session
+        .call_tool(
+            "search_traces",
+            serde_json::json!({"dataset": "throttle-once"}),
+        )
+        .await;
+    assert!(ok.get("error").is_none(), "429 then 200 is a success: {ok}");
+    assert_eq!(
+        mock.throttle_once_hits
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the SDK retried once"
+    );
+    assert_eq!(
+        the_audit_event(&events, "search_traces").field("outcome"),
+        Some("ok")
+    );
+
+    let throttled = session
+        .call_tool(
+            "search_logs",
+            serde_json::json!({"query": "{app=\"x\"}", "dataset": "throttle-long"}),
+        )
+        .await;
+    let error = &throttled["error"];
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(
+        message.starts_with("throttled:"),
+        "distinct throttled prefix: {message}"
+    );
+    assert!(
+        message.contains("retry in 30s"),
+        "names the wait: {message}"
+    );
+    assert_eq!(error["data"]["retryAfterMs"], 30_000);
+    assert_eq!(error["data"]["http_status"], 429);
+    assert_eq!(
+        the_audit_event(&events, "search_logs").field("outcome"),
+        Some("throttled")
+    );
 }
 
 #[tokio::test]

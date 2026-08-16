@@ -122,7 +122,21 @@ UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date
 `cargo xtask generate` reads `api/signaldb-api.json` and regenerates both
 clients; `cargo xtask check` verifies they are current (used in CI):
 
-- **Rust SDK** (`signaldb-sdk`, consumed by `signaldb-cli`) via progenitor.
+- **Rust SDK** (`signaldb-sdk`, consumed by `signaldb-cli` and `mcp-server`)
+  via progenitor. xtask sets `with_inner_type(crate::retry::RetryPolicy)`, so
+  the generated `Client::new`/`new_with_client` take the retry policy and
+  carry it as the client's inner value; the hand-written
+  `impl ClientHooks<RetryPolicy> for Client` in `src/signaldb-sdk/src/retry.rs`
+  overrides progenitor's `exec` — the single choke point every generated
+  operation goes through — with `signaldb_sdk::retry::execute` (the shared
+  retry-on-throttle policy and W3C trace-context injection; see
+  `docs/users/client-retry.md`). This uses progenitor's documented auto-ref
+  specialization (the generated code implements the hooks only for
+  `&Client`, so an impl for `Client` wins method resolution); no
+  post-processing of progenitor's output is involved, and
+  `signaldb-sdk/tests/retry.rs` guards both halves. Consumers construct
+  clients through `signaldb_sdk::ClientBuilder`, never `reqwest` directly
+  (source-scan tests in both crates enforce it).
   progenitor parses through the `openapiv3` crate, which only understands
   OpenAPI 3.0, so xtask downconverts _its input only_ (`downconvert_nullable_types`
   in `xtask/src/main.rs`), handling both 3.1 nullable encodings utoipa emits:

@@ -2416,9 +2416,10 @@ fn map_sdk_err<E: std::fmt::Debug>(err: signaldb_sdk::Error<E>, what: &str) -> E
             None,
         ),
         Some(404) => ErrorData::resource_not_found(format!("{what}: not found"), None),
-        Some(429) => {
-            ErrorData::internal_error(format!("{what}: rate limited, retry shortly"), None)
-        }
+        // Retries are exhausted by the time a 429 reaches here (the SDK's
+        // policy absorbed the brief ones): report a distinct throttled error
+        // naming the server-stated wait, with `retryAfterMs` in `data`.
+        Some(429) => throttled_error(what, signaldb_sdk::retry::retry_after(&err)),
         _ => ErrorData::internal_error(format!("{what}: {err}"), None),
     };
     // Carry the downstream status so the audit wrapper classifies denied /
@@ -2427,6 +2428,26 @@ fn map_sdk_err<E: std::fmt::Debug>(err: signaldb_sdk::Error<E>, what: &str) -> E
         Some(status) => with_http_status(mapped, status),
         None => mapped,
     }
+}
+
+/// The distinct throttled tool error: message prefix `throttled:` plus a
+/// structured `retryAfterMs` so an agent can wait or narrow the query. Kept
+/// JSON-RPC-safe by reusing the internal-error code; distinctness is by
+/// prefix and data (the audit wrapper classifies it as `throttled`).
+fn throttled_error(what: &str, retry_after: Option<std::time::Duration>) -> ErrorData {
+    let message = match retry_after {
+        Some(wait) => format!(
+            "throttled: {what} was rate limited; the server asked to retry in {}s",
+            wait.as_secs_f64().ceil() as u64
+        ),
+        None => format!("throttled: {what} was rate limited; retry shortly"),
+    };
+    ErrorData::internal_error(
+        message,
+        Some(serde_json::json!({
+            "retryAfterMs": retry_after.map(|w| w.as_millis() as u64),
+        })),
+    )
 }
 
 /// Map a schema-API error to an MCP error, keeping the router's typed body
@@ -2789,6 +2810,49 @@ mod tests {
                 .and_then(|t| t.as_str()),
             Some("object")
         );
+    }
+
+    #[test]
+    fn exhausted_429_maps_to_a_throttled_error_naming_the_wait() {
+        let response = axum::http::Response::builder()
+            .status(429)
+            .header("retry-after", "30")
+            .body("")
+            .unwrap();
+        let err: signaldb_sdk::Error<()> =
+            signaldb_sdk::Error::UnexpectedResponse(reqwest::Response::from(response));
+        let mapped = map_sdk_err(err, "search_logs");
+        assert!(
+            mapped.message.starts_with("throttled:"),
+            "distinct prefix: {}",
+            mapped.message
+        );
+        assert!(
+            mapped.message.contains("retry in 30s"),
+            "names the wait: {}",
+            mapped.message
+        );
+        let data = mapped.data.expect("structured data");
+        assert_eq!(data["retryAfterMs"], 30_000);
+        assert_eq!(
+            data["http_status"], 429,
+            "audit classifier still sees the status"
+        );
+    }
+
+    #[test]
+    fn exhausted_429_without_retry_after_still_reads_as_throttled() {
+        let response = axum::http::Response::builder()
+            .status(429)
+            .body("")
+            .unwrap();
+        let err: signaldb_sdk::Error<()> =
+            signaldb_sdk::Error::UnexpectedResponse(reqwest::Response::from(response));
+        let mapped = map_sdk_err(err, "search_logs");
+        assert!(mapped.message.starts_with("throttled:"));
+        let data = mapped.data.expect("structured data");
+        assert!(data["retryAfterMs"].is_null());
+        assert_eq!(data["http_status"], 429);
     }
 
     #[test]

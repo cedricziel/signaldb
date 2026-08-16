@@ -73,19 +73,11 @@ fn fetch_tenants(url: &str, admin_key: Option<&str>, timeout: Duration) -> Vec<(
     runtime.block_on(async {
         let fetch = async {
             // Generated SDK URLs are absolute; base is the router root.
-            let base_url = url.trim_end_matches('/').to_string();
-            let mut headers = reqwest::header::HeaderMap::new();
+            let mut builder = crate::retry::client_builder(url).timeout(timeout);
             if let Some(key) = admin_key {
-                let value =
-                    reqwest::header::HeaderValue::from_str(&format!("Bearer {key}")).ok()?;
-                headers.insert(reqwest::header::AUTHORIZATION, value);
+                builder = builder.bearer(key);
             }
-            let http = reqwest::Client::builder()
-                .default_headers(headers)
-                .timeout(timeout)
-                .build()
-                .ok()?;
-            let client = signaldb_sdk::Client::new_with_client(&base_url, http);
+            let client = builder.build().ok()?;
             let resp = client.list_tenants().send().await.ok()?;
             Some(
                 resp.into_inner()

@@ -9,7 +9,6 @@ signaldb-sdk.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 tokio.workspace = true
-reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_norway = "0.9"

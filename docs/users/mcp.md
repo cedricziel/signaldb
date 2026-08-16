@@ -126,6 +126,18 @@ Destructive tools carry the MCP `destructiveHint` annotation; read-only tools
 carry `readOnlyHint` — a client that inspects `tools/list` annotations can
 tell which is which without trying the call.
 
+When the router throttles a tool's downstream request (`429`, the tenant's
+query rate limit), the server first lets the SDK's shared retry policy absorb
+it — waiting the server-stated `Retry-After` within the policy's bounds (see
+[client retry](client-retry.md)) — so a brief burst is invisible to the
+agent. Only once retries are exhausted (or the server asks for more than the
+policy's 10 s per-attempt ceiling) does the tool fail, with a **throttled
+error** distinct from an internal failure: the message starts with
+`throttled:` and names the wait (`throttled: search_logs was rate limited; the
+server asked to retry in 30s`), and the error `data` carries `retryAfterMs`
+(milliseconds; `null` when no wait was stated) plus `http_status: 429`. An
+agent should wait that long or narrow the query.
+
 ## Prompts
 
 `prompts/list` offers ready-made investigation templates a client can surface

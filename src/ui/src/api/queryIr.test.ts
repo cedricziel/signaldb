@@ -28,6 +28,33 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 describe("runIrQuery", () => {
+  // `client-retry-on-throttle`: a 429 that survives the retry budget reaches
+  // the panel as an ApiError whose message names the server-stated wait, so
+  // per-panel `error.message` renderers show throttling, not "failed".
+  it("reports an exhausted 429 as a throttling message naming the wait", async () => {
+    // Retry-After beyond the per-attempt cap: the client fails fast, so no
+    // timers are involved.
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "rate_limited" }), {
+        status: 429,
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": "3600",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const err = await runIrQuery(DOC).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(429);
+    expect((err as ApiError).retryAfterMs).toBe(3_600_000);
+    expect((err as ApiError).message).toBe(
+      "Rate limited — server asked to retry in 3600 s",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("submits the IR document and returns the response envelope", async () => {
     const fetchMock = vi
       .fn()

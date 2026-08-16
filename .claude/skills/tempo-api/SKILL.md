@@ -60,7 +60,7 @@ building happens in the router anymore.
 5. Ticket format: `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]` (unix-second time hints, appended only when present) or `search_traces:{tenant_slug}:{dataset_slug}:{params}`
 6. Querier executes DataFusion SQL against Iceberg tables
 7. Results stream back as Arrow RecordBatches (trace not found -> Flight `not_found` status -> HTTP 404; `deadline_exceeded` or `cancelled` -> HTTP 504, never 500)
-8. Router formats as Tempo JSON response; errors carry the shared JSON envelope `{"status":"error","errorType":...,"error":<tonic Status message>}` (`ApiError` in `src/router/src/endpoints/api_error.rs`), never an empty body (#921). A `429` (per-tenant query rate limit) additionally carries `retryAfterMs` and the `Retry-After`/`X-RateLimit-Limit`/`X-RateLimit-Burst` headers, via `ApiError::rate_limited`
+8. Router formats as Tempo JSON response; errors carry the shared JSON envelope `{"status":"error","errorType":...,"error":<tonic Status message>}` (`ApiError` in `src/router/src/endpoints/api_error.rs`), never an empty body (#921). A `429` (per-tenant query rate limit) additionally carries `retryAfterMs` and the `Retry-After`/`X-RateLimit-Limit`/`X-RateLimit-Burst` headers, via `ApiError::rate_limited`; the SDK, CLI, MCP, and UI clients retry it automatically per `docs/users/client-retry.md`
 
 Responses carry the server span's trace context and stage timings
 (`Server-Timing: traceparent;desc="..."` + `traceresponse`; trace lookup adds

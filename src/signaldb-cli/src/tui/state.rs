@@ -369,20 +369,14 @@ pub async fn detect_permission(
 
 /// Try admin authentication by calling the admin API
 async fn try_admin_auth(url: &str, admin_key: &str) -> bool {
-    let client = reqwest::Client::new();
-    let admin_url = format!("{}/api/v1/admin/tenants", url.trim_end_matches('/'));
-
-    let response = client
-        .get(&admin_url)
-        .header("Authorization", format!("Bearer {}", admin_key))
+    let Ok(client) = crate::retry::client_builder(url)
+        .bearer(admin_key)
         .timeout(Duration::from_secs(5))
-        .send()
-        .await;
-
-    match response {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
-    }
+        .build()
+    else {
+        return false;
+    };
+    client.list_tenants().send().await.is_ok()
 }
 
 #[cfg(test)]

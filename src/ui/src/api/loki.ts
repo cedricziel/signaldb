@@ -8,7 +8,7 @@ import "./client";
 
 import { logqlLabels, logqlLabelValues, logqlQueryRange } from "./gen";
 import { msToNanos, nanosToMs, type ResolvedRange } from "../lib/time";
-import { ApiError, tenantHeaders } from "./http";
+import { ApiError, retryAfterMsFrom, tenantHeaders } from "./http";
 
 export interface LogRow {
   tsNs: string;
@@ -53,7 +53,11 @@ function unwrapLoki<T>(
   if (res.error || !res.data) {
     const status = res.response?.status ?? 500;
     const detail = typeof res.error === "string" ? `: ${res.error}` : "";
-    throw new ApiError(`${what} failed (${status})${detail}`, status);
+    throw new ApiError(
+      `${what} failed (${status})${detail}`,
+      status,
+      retryAfterMsFrom(res.response),
+    );
   }
   return (res.data as { data: T }).data;
 }

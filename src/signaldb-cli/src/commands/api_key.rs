@@ -133,7 +133,9 @@ mod tests {
     }
 
     fn sdk_client(server: &mockito::ServerGuard) -> Client {
-        Client::new_with_client(server.url().trim_end_matches('/'), reqwest::Client::new())
+        signaldb_sdk::ClientBuilder::new(server.url())
+            .build()
+            .unwrap()
     }
 
     #[test]

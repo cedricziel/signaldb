@@ -337,7 +337,7 @@ impl AdminSchemaAction {
                     .version(&version)
                     .send()
                     .await
-                    .map_err(|e| anyhow::anyhow!("admin schema delete failed: {e}"))?;
+                    .map_err(|e| anyhow::Error::new(e).context("admin schema delete failed"))?;
                 println!("Schema registry '{namespace}@{version}' deleted.");
                 Ok(())
             }

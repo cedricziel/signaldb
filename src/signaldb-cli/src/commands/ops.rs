@@ -44,7 +44,7 @@ impl OpsAction {
                     .map(|r| r.into_inner()),
             },
         };
-        let value = result.map_err(|e| anyhow::anyhow!("ops request failed: {e}"))?;
+        let value = result.map_err(|e| anyhow::Error::new(e).context("ops request failed"))?;
         crate::commands::print_json(&value)?;
         Ok(())
     }

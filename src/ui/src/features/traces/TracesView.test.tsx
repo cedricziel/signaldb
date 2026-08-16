@@ -1148,15 +1148,17 @@ describe("TracesView detail", () => {
   });
 
   it("surfaces non-404 trace lookup failures verbatim", async () => {
+    // 500 is not retried by `retryingFetch` (only 429 and, for GET,
+    // 502/503/504 are), so the failure surfaces immediately.
     stubFetchRoutes([
       {
         match: "/tempo/api/traces/broken",
         body: { error: "Flight backend unavailable" },
-        status: 503,
+        status: 500,
       },
     ]);
     renderView({ trace: "broken" });
-    expect(await screen.findByRole("alert")).toHaveTextContent(/503/);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
   });
 
   it("renders a skeleton while the trace is loading", async () => {

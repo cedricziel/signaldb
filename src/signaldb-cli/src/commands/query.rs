@@ -260,34 +260,17 @@ pub(crate) fn build_http_client(
     tenant_id: Option<&str>,
     dataset_id: Option<&str>,
 ) -> anyhow::Result<Client> {
-    use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
-    let base_url = url.trim_end_matches('/').to_string();
-    let mut headers = HeaderMap::new();
+    let mut builder = crate::retry::client_builder(url).timeout(Duration::from_secs(60));
     if let Some(key) = api_key {
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {key}"))
-                .context("invalid API key for Authorization header")?,
-        );
+        builder = builder.bearer(key);
     }
     if let Some(tenant) = tenant_id {
-        headers.insert(
-            "x-tenant-id",
-            HeaderValue::from_str(tenant).context("invalid tenant id")?,
-        );
+        builder = builder.tenant(tenant);
     }
     if let Some(dataset) = dataset_id {
-        headers.insert(
-            "x-dataset-id",
-            HeaderValue::from_str(dataset).context("invalid dataset id")?,
-        );
+        builder = builder.dataset(dataset);
     }
-    let http = reqwest::Client::builder()
-        .default_headers(headers)
-        .timeout(Duration::from_secs(60))
-        .build()
-        .context("building HTTP client")?;
-    Ok(Client::new_with_client(&base_url, http))
+    builder.build().context("building HTTP client")
 }
 
 /// Read the IR document from the argument, else a file, else stdin.
@@ -327,7 +310,7 @@ async fn submit_ir(
         .body(request)
         .send()
         .await
-        .map_err(|e| anyhow::anyhow!("IR query failed: {e}"))?;
+        .map_err(|e| anyhow::Error::new(e).context("IR query failed"))?;
     Ok(response.into_inner())
 }
 
@@ -337,14 +320,16 @@ async fn submit_ir(
 pub(crate) fn print_json_response<T, E>(result: Result<T, E>, what: &str) -> anyhow::Result<()>
 where
     T: serde::Serialize,
-    E: std::fmt::Display,
+    E: std::error::Error + Send + Sync + 'static,
 {
     match result {
         Ok(value) => {
             println!("{}", serde_json::to_string_pretty(&value)?);
             Ok(())
         }
-        Err(e) => anyhow::bail!("{what} failed: {e}"),
+        // Keep the SDK error as the source (not just its text) so `main` can
+        // recognise a throttled outcome and exit with the throttled code.
+        Err(e) => Err(anyhow::Error::new(e).context(format!("{what} failed"))),
     }
 }
 

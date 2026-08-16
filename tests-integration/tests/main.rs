@@ -32,6 +32,7 @@ mod prometheus_remote_write_test;
 mod promql_queries;
 mod query_ir_e2e;
 mod query_parity;
+mod retry_on_throttle;
 mod router_tempo_endpoints;
 mod schema_registry_clients;
 mod sdk_query_methods;

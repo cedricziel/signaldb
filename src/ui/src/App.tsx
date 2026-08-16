@@ -6,6 +6,7 @@ import {
   setTenantContext,
 } from "./api/http";
 import { LoginGate } from "./features/shell/LoginPanel";
+import { ThrottleBanner } from "./features/shell/ThrottleBanner";
 import { TopBar } from "./features/shell/TopBar";
 import { useExploreState } from "./lib/urlState";
 
@@ -49,6 +50,7 @@ export function App() {
   return (
     <div className="app-frame">
       <TopBar state={effective} update={update} />
+      <ThrottleBanner />
       <main className="app-main">
         <Outlet context={{ state: effective, update }} />
       </main>

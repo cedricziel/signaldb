@@ -7,11 +7,24 @@ license.workspace = true
 [lib]
 doctest = false
 
+[features]
+default = ["tracing"]
+# One `debug` event per retry on the `signaldb_sdk::retry` target, and W3C
+# `traceparent`/`tracestate` injection from the current span through the
+# OpenTelemetry global propagator (a no-op without an OTel layer).
+tracing = ["dep:tracing", "dep:opentelemetry", "dep:tracing-opentelemetry"]
+
 [dependencies]
 progenitor-client = { workspace = true }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, features = ["time"] }
+httpdate.workspace = true
+rand.workspace = true
+tracing = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 
 # Hand-written Flight SQL query transport (OpenAPI cannot describe gRPC/Arrow
 # Flight; see design.md D1). Kept version-aligned with the workspace.
@@ -22,4 +35,6 @@ futures.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true
+opentelemetry_sdk.workspace = true

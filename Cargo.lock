@@ -6915,7 +6915,6 @@ dependencies = [
  "insta",
  "mockito",
  "ratatui",
- "reqwest 0.13.4",
  "serde",
  "serde_json",
  "serde_norway",
@@ -6933,13 +6932,20 @@ dependencies = [
  "arrow",
  "arrow-flight",
  "futures",
+ "httpdate",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "progenitor-client",
+ "rand 0.10.2",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "tonic",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -9239,6 +9245,7 @@ dependencies = [
  "openapiv3",
  "prettyplease 0.3.0",
  "progenitor",
+ "quote",
  "serde_json",
  "syn 3.0.3",
 ]

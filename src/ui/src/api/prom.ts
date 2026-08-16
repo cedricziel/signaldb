@@ -6,7 +6,12 @@ import "./client";
 
 import { promqlLabels, promqlLabelValues, promqlQueryRange } from "./gen";
 import type { ResolvedRange } from "../lib/time";
-import { ApiError, tenantHeaders } from "./http";
+import {
+  ApiError,
+  retryAfterMsFrom,
+  retryingFetch,
+  tenantHeaders,
+} from "./http";
 
 export interface PromSeries {
   labels: Record<string, string>;
@@ -40,7 +45,11 @@ function unwrapProm<T>(
   if (res.error || !res.data) {
     const status = res.response?.status ?? 500;
     const detail = typeof res.error === "string" ? `: ${res.error}` : "";
-    throw new ApiError(`${what} failed (${status})${detail}`, status);
+    throw new ApiError(
+      `${what} failed (${status})${detail}`,
+      status,
+      retryAfterMsFrom(res.response),
+    );
   }
   const body = res.data as PromEnvelope<T>;
   if (body.status !== "success") {
@@ -148,7 +157,7 @@ export async function promLabelStats(
     start: String(range.fromMs / 1000),
     end: String(range.toMs / 1000),
   });
-  const res = await fetch(`/prometheus/api/v1/label_stats?${params}`, {
+  const res = await retryingFetch(`/prometheus/api/v1/label_stats?${params}`, {
     headers: tenantHeaders(),
   });
   if (!res.ok) {
@@ -156,6 +165,7 @@ export async function promLabelStats(
     throw new ApiError(
       `Prometheus label_stats failed (${res.status}): ${body.slice(0, 300)}`,
       res.status,
+      retryAfterMsFrom(res),
     );
   }
   const json = (await res.json()) as PromEnvelope<LabelStat[]>;

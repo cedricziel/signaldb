@@ -9,7 +9,7 @@ import {
   oauthConsentContext,
   oauthConsentDecision,
 } from "./gen";
-import { ApiError } from "./http";
+import { ApiError, retryAfterMsFrom } from "./http";
 
 interface SdkResult<T> {
   data?: T;
@@ -29,7 +29,7 @@ function unwrap<T>(result: SdkResult<T>): T {
       err?.error_description ??
       err?.error ??
       `Consent request failed (${status})`;
-    throw new ApiError(message, status);
+    throw new ApiError(message, status, retryAfterMsFrom(response));
   }
   return result.data as T;
 }

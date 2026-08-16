@@ -37,7 +37,6 @@ use axum::{
     routing::get,
 };
 use dashmap::DashMap;
-use reqwest::header::{HeaderMap, HeaderName};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager,
     tower::{StreamableHttpServerConfig, StreamableHttpService},
@@ -400,29 +399,28 @@ pub fn sdk_client_for(
     dataset_override: Option<&str>,
     timeout: Duration,
 ) -> anyhow::Result<signaldb_sdk::Client> {
-    let mut headers = HeaderMap::new();
+    // The SDK builder owns the HTTP client (headers, timeouts) and installs
+    // the shared retry-on-throttle policy, so a brief 429 from the router is
+    // absorbed here and only an exhausted one reaches `map_sdk_err`.
+    let mut builder = signaldb_sdk::ClientBuilder::new(router_base_url)
+        .connect_timeout(ROUTER_CONNECT_TIMEOUT)
+        .timeout(timeout);
     for name in FORWARDED_HEADERS {
         if name == "x-dataset-id" && dataset_override.is_some() {
             continue;
         }
         if let Some(value) = parts.headers.get(name)
-            && let Ok(header_name) = HeaderName::from_bytes(name.as_bytes())
+            && let Ok(value) = value.to_str()
         {
-            headers.insert(header_name, value.clone());
+            builder = builder.header(name, value);
         }
     }
-    if let Some(dataset) = dataset_override
-        && let Ok(value) = dataset.parse()
-    {
-        headers.insert(HeaderName::from_static("x-dataset-id"), value);
+    if let Some(dataset) = dataset_override {
+        builder = builder.dataset(dataset);
     }
-    let http = reqwest::Client::builder()
-        .default_headers(headers)
-        .connect_timeout(ROUTER_CONNECT_TIMEOUT)
-        .timeout(timeout)
+    builder
         .build()
-        .context("Failed to build router HTTP client")?;
-    Ok(signaldb_sdk::Client::new_with_client(router_base_url, http))
+        .context("Failed to build router HTTP client")
 }
 
 #[cfg(test)]
