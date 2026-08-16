@@ -43,14 +43,21 @@ batch-construction control flow itself.
 - **THEN** the batch-construction code that assembles physical columns is
   unchanged; only the schema declaration changes
 
-### Requirement: Materialized output is behaviorally identical across the transition to plan-based construction
+### Requirement: Materialized output is byte-for-byte identical across the transition to plan-based construction
 
 Replacing hand-written, per-field materialization code with plan
-execution SHALL NOT change the physical output for any existing field:
-same values, same types, same nullability, for the same input.
+execution SHALL NOT change the physical output for any existing field, nor
+the shape of the output batch: same field names, same field order, same
+types, same nullability, same schema metadata, same row order, same
+values, for the same input. A check limited to per-field value/type/
+nullability comparison SHALL NOT be treated as satisfying this
+requirement, since it cannot detect a plan that reorders fields or rows or
+drops schema metadata while every individual value still matches.
 
 #### Scenario: Plan-based materialization matches prior hand-written output
 
 - **WHEN** the same input is materialized by the plan-based path and by
   the hand-written code it replaces
-- **THEN** the two produce identical physical batches
+- **THEN** the two produce identical `RecordBatch`es: equal `Schema`
+  (field names, order, types, nullability, metadata) and equal `Array`
+  content column-for-column, row-for-row

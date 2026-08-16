@@ -65,26 +65,38 @@ batch).
 
 ### The compiled plan: an ordered list of (physical column, extractor), resolved once
 
-For a given schema version, a `MaterializationPlan` is
-`Vec<(ColumnSpec, Extractor<Source>)>` where `ColumnSpec` carries the
-target physical position/type and `Extractor<Source>` is a function
-pointer `fn(&[Source]) -> ArrayRef` (or `fn(&Source, &mut dyn ArrayBuilder)`
-per-row, batched at the call site — exact signature is an implementation
-choice, not a spec-level concern) selected by the field's extraction-rule
-name at plan-build time. Building the plan does the name resolution;
-running it does not. Alternative considered: resolve lazily, memoizing per
-field name inside the hot loop (e.g. a `HashMap` cache keyed by name,
-populated on first miss). Rejected — it still pays a hash lookup per field
-per batch, and a version-keyed plan cache (below) removes even that.
+**[CodeRabbit review, PR #1230]** requires the extractor interface be
+columnar by contract, not merely by convention — a per-row signature must
+not exist as an option a future rule could reach for. For a given schema
+version, a `TraceV1ToV2Plan` is `Vec<ColumnPlan>` where `ColumnPlan` pairs
+the target field with an `Extractor = Box<dyn Fn(&RecordBatch) -> Result<ArrayRef> + Send + Sync>`
+— always whole-batch-in, whole-array-out, never per-row. A boxed closure
+(not a bare `fn` pointer) is required specifically because
+field-parameterized extractors (e.g. "cast this UInt64 column, whichever
+one, to Int64") need to capture the source column name; a bare `fn`
+pointer can't close over that. Extractor selection happens once, in plan
+construction, via the same match `transform_trace_v1_to_v2`'s inline code
+uses today. Building the plan does the name resolution; running it does
+not. Alternative considered: resolve lazily, memoizing per field name
+inside the hot loop (e.g. a `HashMap` cache keyed by name, populated on
+first miss). Rejected — it still pays a hash lookup per field per batch,
+and a version-keyed plan cache (below) removes even that.
 
-### Plan cache keyed by schema version pair, not recomputed per call
+### Plan cache built eagerly at startup, never lazily under traffic
 
-`schema_transform` holds a `OnceLock`/`Lazy`-style cache from
-`(source_version, target_version)` to its resolved `MaterializationPlan`.
-First use of a version pair builds and caches the plan; every subsequent
-batch reuses it. This is the direct fix for the `get_column_by_name`-per-field
-problem: the lookup happens once per version pair for the lifetime of the
-process, not once per batch.
+**[CodeRabbit review, PR #1230]** flagged first-use plan construction
+combined with a panic on an unregistered rule as a production hazard:
+`panic = "abort"` in the release profile means the first ingested batch
+after a bad deploy kills the process instead of failing at startup. Plan
+construction returns `Result<TraceV1ToV2Plan, PlanError>`, never panics,
+and the writer resolves the plan once during startup (alongside its other
+init calls) rather than on first use — a bad rule reference fails the
+process before it accepts traffic, with a clear error, not mid-ingest.
+`schema_transform` holds a `OnceLock` populated by that startup call;
+`transform_trace_v1_to_v2` reads the already-built plan, never triggers
+construction itself. This is the direct fix for the
+`get_column_by_name`-per-field problem: the lookup happens once, at
+startup, for the lifetime of the process, not once per batch.
 
 ### Extractors are named and registered per extraction rule, selected in Rust, not declared in `schemas.toml`
 
@@ -102,28 +114,39 @@ extractor parameterized by field name — genuinely new extraction shapes
 still require a genuinely new hand-written rule. The _set_ of rules is small
 and hand-written; what's generic is selecting and sequencing them.
 
-### Golden tests carry across from `unified-table-schema`
+### Golden tests compare the complete output batch, not a weaker subset
 
-The same discipline applies: a test asserts identical output (same values,
-types, nullability) between plan-based `transform_trace_v1_to_v2` and the
-hand-written code it replaces, on representative fixtures, before the
-hand-written code is deleted.
+**[CodeRabbit review, PR #1230]** flagged that "same values, types,
+nullability" doesn't rule out a plan that reorders fields, drops schema
+metadata, or reorders rows while still passing a field-by-field value
+check. The golden test asserts full `RecordBatch` equality against the
+hand-written output: same `Schema` (field names, order, types, nullability,
+metadata) and the same `Array` content column-for-column, row-for-row —
+not a hand-picked subset of properties. This fixture is kept permanently
+(not deleted once the migration lands) as a standing regression guard,
+since the plan's field selection and ordering logic is exactly the kind of
+thing a future rule addition could silently disturb.
 
 ## Risks / Trade-offs
 
 - **[Risk]** A subtly wrong extraction rule selected for a field (e.g. a
-  copy-paste mistake in the Rust selection match) fails silently at
-  plan-build time if rules aren't exhaustively validated → **Mitigation**:
-  plan construction SHALL fail fast (panic or startup error, not silent
-  default) on a field with no matching rule; a test enumerates every field
-  in the current traces schema version and asserts its rule resolves.
+  copy-paste mistake in the Rust selection match) goes unnoticed if rules
+  aren't exhaustively validated → **Mitigation**: plan construction returns
+  `Err` (never panics — see the startup-validation decision above) on a
+  field with no matching rule, resolved eagerly at startup so a bad build
+  fails before the process serves traffic; a test enumerates every field in
+  the current traces schema version and asserts its rule resolves.
 - **[Risk]** Benchmark-driven claims ("this will be faster") not landing
   as claimed if the plan abstraction itself introduces overhead (e.g.
   boxed closures with dynamic dispatch instead of monomorphized function
   pointers) → **Mitigation**: the explicit benchmark gate in `proposal.md`
   — this ships only once the new writer v1→v2-transform benchmark and the
   existing acceptor-decode benchmark confirm no regression, treated as a
-  hard gate, not a nice-to-have.
+  hard gate, not a nice-to-have. A boxed-closure `Fn(&RecordBatch) -> Result<ArrayRef>`
+  still avoids the actual measured cost (string-keyed lookup per field per
+  batch); dynamic dispatch overhead on a handful of calls per batch is not
+  in the same order of magnitude as a `HashMap`/linear-scan lookup per
+  field per batch.
 - **[Trade-off]** Indirection through a plan/registry is harder to read at
   a call site than an inline match arm — a maintainer can no longer see
   "what happens to `span_kind`" by reading one function top to bottom, only
