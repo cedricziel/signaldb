@@ -114,7 +114,12 @@ describe("App", () => {
       {
         match: "/api/v1/whoami",
         body: {
-          user: { id: "u1", email: "a@b", display_name: "A", is_instance_admin: false },
+          user: {
+            id: "u1",
+            email: "a@b",
+            display_name: "A",
+            is_instance_admin: false,
+          },
           memberships: [{ tenant_id: "acme", role: "admin" }],
           tenant: { id: "acme", slug: "acme", name: "Acme" },
           dataset: "prod",
@@ -131,6 +136,10 @@ describe("App", () => {
     await waitFor(() =>
       expect(window.location.search).toContain("tenant=acme"),
     );
+    // Writing the context back must not rewrite the path: /schema is not
+    // an explore route, and rebuilding it via the explore state would send
+    // the user to /logs.
+    expect(window.location.pathname).toBe("/schema/conventions");
     expect(getTenantContext()).toEqual({ tenant: "acme", dataset: "prod" });
   });
 
@@ -143,7 +152,12 @@ describe("App", () => {
       {
         match: "/api/v1/whoami",
         body: {
-          user: { id: "u1", email: "a@b", display_name: "A", is_instance_admin: true },
+          user: {
+            id: "u1",
+            email: "a@b",
+            display_name: "A",
+            is_instance_admin: true,
+          },
           memberships: [{ tenant_id: "acme", role: "admin" }],
           tenant: { id: "acme", slug: "acme", name: "Acme" },
           dataset: "prod",
@@ -161,6 +175,7 @@ describe("App", () => {
     await waitFor(() =>
       expect(window.location.search).toContain("tenant=acme"),
     );
+    expect(window.location.pathname).toBe("/schema/storage");
     expect(getTenantContext()).toEqual({ tenant: "acme", dataset: "prod" });
   });
 
