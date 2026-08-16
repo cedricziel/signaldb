@@ -1,5 +1,12 @@
 // Client for the router's Tempo-compatible API (/tempo/api).
+//
+// Everything below `tempoSearchTags` predates the generated OpenAPI client
+// and talks to `/tempo/api` directly via `tempoFetch`; new endpoints go
+// through the generated client instead (see `./schema.ts` for the same
+// `unwrap`-a-`SdkResult` shape) — `tempoSearchTags` is the first of those.
 
+import "./client";
+import { searchTags } from "./gen";
 import type { ResolvedRange } from "../lib/time";
 import { ApiError, tenantHeaders } from "./http";
 
@@ -237,4 +244,24 @@ export async function tempoSearch(
       rootError: root?.status === "error",
     };
   });
+}
+
+/** Trace attribute tag names observed in the window (#1073), for filter/
+ * group-by key autocomplete — the traces-tab analog of `lokiLabels`. */
+export async function tempoSearchTags(range: ResolvedRange): Promise<string[]> {
+  const result = await searchTags({
+    query: {
+      start: Math.floor(range.fromMs / 1000),
+      end: Math.ceil(range.toMs / 1000),
+    },
+  });
+  const { data, error, response } = result;
+  if (error !== undefined || !response?.ok) {
+    const status = response?.status ?? 0;
+    const message =
+      (error as { error?: string } | undefined)?.error ??
+      `Tempo tags request failed (${status})`;
+    throw new ApiError(message, status);
+  }
+  return data!.tagNames;
 }

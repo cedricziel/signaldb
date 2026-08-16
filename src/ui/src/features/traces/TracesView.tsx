@@ -3,6 +3,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -10,6 +11,7 @@ import {
 } from "react";
 import {
   tempoGetTrace,
+  tempoSearchTags,
   type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
@@ -25,7 +27,8 @@ import {
 import { SignalHistogram } from "../explore/SignalHistogram";
 import { AttributeValue } from "../../components/AttributeValue";
 import { SemanticKey } from "../../components/SemanticKey";
-import { useSemantics } from "../../hooks/useSemantics";
+import { useAttributeSearch, useSemantics } from "../../hooks/useSemantics";
+import { mergeLabelSuggestions } from "../../lib/labelSuggestions";
 import { groupBySemanticTitle } from "../../lib/semantics";
 import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
@@ -262,7 +265,12 @@ function TraceSearch({ state, update }: Props) {
             </form>
             {state.group === "" && (
               <>
-                <DimensionPickers groupBy={state.groupBy} update={update} />
+                <DimensionPickers
+                  groupBy={state.groupBy}
+                  update={update}
+                  range={resolvedForStep}
+                  rangeKey={rangeKey}
+                />
                 <GrainToggle grain={state.grain} update={update} />
               </>
             )}
@@ -296,9 +304,13 @@ function rangeSeconds(state: ExploreState): number {
 function DimensionPickers({
   groupBy,
   update,
+  range,
+  rangeKey,
 }: {
   groupBy: string;
   update: UpdateFn;
+  range: ResolvedRange;
+  rangeKey: string;
 }) {
   const dims = parseGroupBy(groupBy);
   const primary = dims[0] ?? "";
@@ -341,27 +353,116 @@ function DimensionPickers({
             ))}
         </select>
       </label>
-      {/* There's no trace sample to derive attribute names from any more
-          (the group table is a server-side aggregate) — typing one in is how
-          a user reaches an attribute the built-ins don't cover. */}
-      <form
-        className="group-custom"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const value = new FormData(e.currentTarget).get("dim");
-          if (typeof value === "string" && value.trim() !== "") {
-            setDims([value.trim(), secondary]);
-            e.currentTarget.reset();
-          }
-        }}
-      >
-        <input
-          name="dim"
-          aria-label="Custom dimension"
-          placeholder="Group by attribute…"
-        />
-      </form>
+      <CustomDimensionInput
+        range={range}
+        rangeKey={rangeKey}
+        onSubmit={(dim) => setDims([dim, secondary])}
+      />
     </div>
+  );
+}
+
+/**
+ * Free-text "group by attribute" input: the group table is a server-side
+ * aggregate with no trace sample to derive attribute names from, so this is
+ * how a user reaches a field the built-in dimensions don't cover. Suggests
+ * the attribute keys actually observed in the window (`/api/search/tags`,
+ * #1073) merged with schema-registry hits, the same
+ * `mergeLabelSuggestions`-backed combobox as the logs tab's filter-key
+ * input (`FilterChips`).
+ */
+function CustomDimensionInput({
+  range,
+  rangeKey,
+  onSubmit,
+}: {
+  range: ResolvedRange;
+  rangeKey: string;
+  onSubmit: (dim: string) => void;
+}) {
+  const listId = useId();
+  const [value, setValue] = useState("");
+  const [picked, setPicked] = useState<string | null>(null);
+  const tags = useQuery({
+    queryKey: ["trace-tag-names", rangeKey],
+    queryFn: () => tempoSearchTags(range),
+    staleTime: 60_000,
+  });
+  const hits = useAttributeSearch(value);
+  const suggestions = useMemo(
+    () => mergeLabelSuggestions(value, hits, tags.data ?? []),
+    [value, hits, tags.data],
+  );
+  const open =
+    value.trim() !== "" && picked !== value && suggestions.length > 0;
+
+  const submit = (dim: string) => {
+    const trimmed = dim.trim();
+    if (trimmed === "") return;
+    onSubmit(trimmed);
+    setValue("");
+    setPicked(null);
+  };
+
+  return (
+    <form
+      className="group-custom"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit(value);
+      }}
+    >
+      <span className="chip-label">
+        <input
+          role="combobox"
+          aria-label="Custom dimension"
+          aria-autocomplete="list"
+          aria-expanded={open}
+          aria-controls={open ? listId : undefined}
+          placeholder="Group by attribute…"
+          value={value}
+          onChange={(e) => {
+            setPicked(null);
+            setValue(e.target.value);
+          }}
+        />
+        {open && (
+          <ul
+            id={listId}
+            role="listbox"
+            aria-label="Attribute suggestions"
+            className="chip-suggest"
+          >
+            {suggestions.map((s) => (
+              <li
+                key={s.key}
+                role="option"
+                aria-selected={false}
+                data-key={s.key}
+                className="chip-suggest-item"
+                // Mouse down would blur the input before click lands.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  setPicked(s.key);
+                  submit(s.key);
+                }}
+              >
+                <span className="chip-suggest-head">
+                  <span className="chip-suggest-key">{s.key}</span>
+                  {s.namespace && (
+                    <span className="chip-suggest-ns">{s.namespace}</span>
+                  )}
+                  {s.seen && <span className="chip-suggest-seen">● seen</span>}
+                </span>
+                {s.brief && (
+                  <span className="chip-suggest-brief">{s.brief}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </span>
+    </form>
   );
 }
 

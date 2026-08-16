@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { flattenAttrValue, tempoGetTrace, tempoSearch } from "./tempo";
+import { resetApiClient, stubApiFetch } from "../test/apiClient";
+import { ApiError } from "./http";
+import {
+  flattenAttrValue,
+  tempoGetTrace,
+  tempoSearch,
+  tempoSearchTags,
+} from "./tempo";
 
 const RANGE = { fromMs: 1_000_000, toMs: 2_000_500 };
 
@@ -368,5 +375,33 @@ describe("tempoSearch", () => {
   it("tolerates an empty result", async () => {
     mockFetchOnce({ metrics: {} });
     expect(await tempoSearch(RANGE, 10)).toEqual([]);
+  });
+});
+
+// `tempoSearchTags` goes through the generated OpenAPI client (#1073), not
+// the hand-written `tempoFetch` helper the tests above stub via a raw
+// `fetch` mock — it needs the generated client's own test transport.
+describe("tempoSearchTags", () => {
+  afterEach(() => resetApiClient());
+
+  it("passes unix-second window bounds and returns the tag names", async () => {
+    const calls = stubApiFetch({
+      tagNames: ["deployment.environment.name", "http.route", "service.name"],
+    });
+    const names = await tempoSearchTags(RANGE);
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe("/tempo/api/search/tags");
+    expect(url.searchParams.get("start")).toBe("1000");
+    expect(url.searchParams.get("end")).toBe("2001");
+    expect(names).toEqual([
+      "deployment.environment.name",
+      "http.route",
+      "service.name",
+    ]);
+  });
+
+  it("surfaces failures as ApiError with the status", async () => {
+    stubApiFetch({ error: "forbidden" }, 403);
+    await expect(tempoSearchTags(RANGE)).rejects.toBeInstanceOf(ApiError);
   });
 });

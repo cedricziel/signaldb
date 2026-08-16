@@ -429,6 +429,60 @@ describe("TracesView group list", () => {
     expect(update).toHaveBeenCalledWith({ groupBy: "http.route", group: "" });
   });
 
+  // #1073: the custom dimension input suggests attribute keys actually
+  // observed in the window (via the querier's tag discovery), merged with
+  // schema-registry hits — the traces-tab analog of the logs tab's
+  // FilterChips key autocomplete.
+  it("suggests observed tag names merged with registry hits for the custom dimension", async () => {
+    stubFetchRoutes([
+      {
+        match: "/tempo/api/search/tags",
+        body: { tagNames: ["http.route", "http.retries", "deployment.env"] },
+      },
+      {
+        match: "/api/v1/schema/attributes",
+        body: {
+          hits: [
+            {
+              key: "http.route",
+              brief: "The matched route.",
+              type: "string",
+              group_id: "registry.http",
+              namespace: "otel",
+              version: "1.43.0",
+              source: "bundled",
+            },
+          ],
+        },
+      },
+    ]);
+    const update = renderView();
+    await userEvent.type(screen.getByLabelText("Custom dimension"), "http.re");
+
+    // The registry hit and the observed-tags list land via independent
+    // async fetches; wait for the registry hit's brief specifically so the
+    // list below is read after both have merged in, not just whichever
+    // landed first.
+    await screen.findByText("The matched route.");
+    const list = screen.getByRole("listbox", { name: "Attribute suggestions" });
+    const options = within(list).getAllByRole("option");
+    expect(options.map((o) => o.getAttribute("data-key"))).toEqual([
+      "http.route",
+      "http.retries",
+    ]);
+    expect(options[0]).toHaveTextContent("The matched route.");
+    expect(options[0]).toHaveTextContent("seen");
+
+    await userEvent.click(options[1]!);
+    expect(update).toHaveBeenCalledWith({
+      groupBy: "http.retries",
+      group: "",
+    });
+    expect(
+      screen.queryByRole("listbox", { name: "Attribute suggestions" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("keeps a non-builtin groupBy selectable in the picker", async () => {
     renderView({ groupBy: "resource.env" });
     expect(await screen.findByLabelText("Group by")).toHaveValue(
@@ -945,7 +999,9 @@ describe("TracesView detail", () => {
     expect(
       await within(detail).findByText("The UID of the Pod."),
     ).toBeInTheDocument();
-    expect(within(detail).getByText("Kubernetes Attributes")).toBeInTheDocument();
+    expect(
+      within(detail).getByText("Kubernetes Attributes"),
+    ).toBeInTheDocument();
     expect(within(detail).getByText("otel")).toBeInTheDocument();
     // Unknown keys stay bare, grouped under "Other" after the titled group.
     expect(within(detail).getByText("Other")).toBeInTheDocument();
