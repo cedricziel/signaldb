@@ -723,7 +723,10 @@ pub struct TenantConfig {
 /// Per-tenant rate limits and quotas.
 ///
 /// Unset fields mean unlimited. `burst_seconds` controls how many
-/// seconds' worth of budget a tenant may consume in a burst.
+/// seconds' worth of budget a tenant may consume in a burst; it defaults to
+/// 10.0 so an interactive client's fan-out (an Explore page load, an MCP
+/// investigation) is admitted without tripping a freshly configured
+/// deployment, while the sustained rate still protects capacity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TenantLimits {
@@ -755,7 +758,7 @@ impl Default for TenantLimits {
             max_api_keys: None,
             max_datasets: None,
             max_storage_bytes: None,
-            burst_seconds: 2.0,
+            burst_seconds: 10.0,
         }
     }
 }
@@ -1659,6 +1662,14 @@ mod tests {
         assert_eq!(discovery.heartbeat_interval, Duration::from_secs(30));
         assert_eq!(discovery.poll_interval, Duration::from_secs(60));
         assert_eq!(discovery.ttl, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn tenant_limits_default_burst_seconds_is_generous() {
+        // Generous by default: a burst allowance tight enough to trip on an
+        // Explore page's fan-out punishes bursty interactive clients even
+        // when the sustained rate is perfectly reasonable.
+        assert_eq!(TenantLimits::default().burst_seconds, 10.0);
     }
 
     #[test]

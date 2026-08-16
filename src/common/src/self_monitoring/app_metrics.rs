@@ -76,6 +76,13 @@ pub struct AppMetrics {
     // and `signaldb_mcp_tool_call_duration_seconds`.
     pub mcp_tool_calls: Counter<u64>,
     pub mcp_tool_call_duration: Histogram<f64>,
+
+    // Rate limiting: one increment per rejected request, labelled by the
+    // surface that rejected it (`query`, `admin`, `otlp_http`, `otlp_grpc`,
+    // `prometheus`) and the exhausted dimension (`query_requests`,
+    // `requests`, `bytes`, `quota`). Exported as
+    // `signaldb_rate_limit_rejections_total` over Prometheus.
+    pub rate_limit_rejections: Counter<u64>,
 }
 
 /// Attribute key naming the tool on the MCP metrics (`gen_ai.tool.name`).
@@ -100,7 +107,6 @@ impl AppMetrics {
             &[KeyValue::new(MCP_TOOL_ATTR, tool.to_owned())],
         );
     }
-}
 
 static APP_METRICS: OnceLock<AppMetrics> = OnceLock::new();
 
@@ -273,8 +279,31 @@ impl AppMetrics {
                 .with_description("Duration of MCP tool calls by tool")
                 .with_unit("s")
                 .build(),
+            rate_limit_rejections: meter
+                .u64_counter("signaldb.rate_limit.rejections")
+                .with_description(
+                    "Requests rejected by a per-tenant rate limit or quota, by surface and dimension",
+                )
+                .with_unit("{rejection}")
+                .build(),
         }
     }
+}
+
+/// Record one rate-limit rejection, labelled by the rejecting surface
+/// (`query`, `admin`, `otlp_http`, `otlp_grpc`, `prometheus`) and the
+/// exhausted dimension (`query_requests`, `requests`, `bytes`, `quota`).
+/// Both are bounded, low-cardinality `&'static str` by design.
+pub fn record_rate_limit_rejection(surface: &'static str, kind: &'static str) {
+    use opentelemetry::KeyValue;
+
+    app_metrics().rate_limit_rejections.add(
+        1,
+        &[
+            KeyValue::new("surface", surface),
+            KeyValue::new("kind", kind),
+        ],
+    );
 }
 
 /// Decrements `http.server.active_requests` on drop so the gauge stays
@@ -596,6 +625,16 @@ mod tests {
         metrics.http_active_requests.add(1, &[]);
         metrics.http_active_requests.add(-1, &[]);
         metrics.query_duration.record(0.001, &[]);
+    }
+
+    #[test]
+    fn record_rate_limit_rejection_does_not_panic_against_noop_provider() {
+        // No real meter provider is installed in unit tests, so this only
+        // exercises that the recording site is wired up (bounded labels,
+        // builds and records without panicking); the counted value isn't
+        // observable without an exporter.
+        record_rate_limit_rejection("query", "query_requests");
+        record_rate_limit_rejection("admin", "quota");
     }
 
     #[test]

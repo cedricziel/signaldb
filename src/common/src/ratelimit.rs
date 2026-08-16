@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 
@@ -37,17 +37,40 @@ impl TokenBucket {
         }
     }
 
-    /// Refill for elapsed time, then try to take `cost` tokens.
-    fn try_acquire(&mut self, cost: f64, now: Instant) -> bool {
+    /// Refill for elapsed time, then try to take `cost` tokens. On
+    /// rejection, `Err` carries the time until `cost` tokens would be
+    /// available.
+    fn try_acquire(&mut self, cost: f64, now: Instant) -> Result<(), Duration> {
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
         self.tokens = (self.tokens + elapsed * self.rate).min(self.burst);
         self.last_refill = now;
         if self.tokens >= cost {
             self.tokens -= cost;
-            true
-        } else {
-            false
+            return Ok(());
         }
+        Err(self.wait_for(cost))
+    }
+
+    /// Time until `cost` tokens would be available.
+    ///
+    /// A `cost` larger than the whole burst (only possible for the bytes
+    /// dimension, where a single request can outweigh the burst) can never
+    /// be admitted by this bucket; rather than report an unbounded wait, we
+    /// report the time to fill the whole burst from empty, so the caller
+    /// always gets a finite, honest number. A misconfigured zero rate (an
+    /// explicit `0` limit, which denies everything) similarly never
+    /// refills; report a bounded "effectively never" wait instead of
+    /// dividing by zero.
+    fn wait_for(&self, cost: f64) -> Duration {
+        if self.rate <= 0.0 {
+            return Duration::from_secs(u32::MAX as u64);
+        }
+        let deficit = if cost > self.burst {
+            self.burst
+        } else {
+            (cost - self.tokens).max(0.0)
+        };
+        Duration::from_secs_f64(deficit / self.rate)
     }
 }
 
@@ -70,11 +93,39 @@ pub enum RateLimitKind {
     QueryRequests,
 }
 
-/// Error returned when a tenant exceeds an ingest limit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl RateLimitKind {
+    /// Low-cardinality label value for metrics (`kind` on
+    /// `signaldb_rate_limit_rejections_total`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Requests => "requests",
+            Self::Bytes => "bytes",
+            Self::QueryRequests => "query_requests",
+        }
+    }
+}
+
+/// Error returned when a tenant exceeds an ingest or query limit.
+#[derive(Debug, Clone, PartialEq)]
 pub struct RateLimitExceeded {
     pub tenant_id: String,
     pub kind: RateLimitKind,
+    /// Time until the rejected request would be admitted, computed from the
+    /// bucket's actual state (see [`TokenBucket::wait_for`]).
+    pub retry_after: Duration,
+    /// The dimension's per-second budget (tokens/second).
+    pub limit: f64,
+    /// The dimension's burst allowance (tokens).
+    pub burst: f64,
+}
+
+impl RateLimitExceeded {
+    /// `Retry-After` value: whole seconds, rounded up, never below 1 — the
+    /// contract every SignalDB 429 honors so a client has one retry rule
+    /// regardless of which surface rejected it.
+    pub fn retry_after_secs(&self) -> u64 {
+        (self.retry_after.as_secs_f64().ceil() as u64).max(1)
+    }
 }
 
 impl std::fmt::Display for RateLimitExceeded {
@@ -86,13 +137,51 @@ impl std::fmt::Display for RateLimitExceeded {
         };
         write!(
             f,
-            "tenant '{}' exceeded its {what} limit; retry later or raise the tenant's limits",
-            self.tenant_id
+            "tenant '{}' exceeded its {what} limit; retry after {}s or raise the tenant's limits",
+            self.tenant_id,
+            self.retry_after_secs()
         )
     }
 }
 
 impl std::error::Error for RateLimitExceeded {}
+
+/// The `Retry-After` / `X-RateLimit-Limit` / `X-RateLimit-Burst` header trio
+/// every SignalDB 429 carries, computed from the rejected bucket's actual
+/// state. Shared by the router and the acceptor so both surfaces answer with
+/// identical headers (`http` crate types, which both already depend on via
+/// `axum`).
+pub fn retry_headers(
+    err: &RateLimitExceeded,
+) -> [(axum::http::HeaderName, axum::http::HeaderValue); 3] {
+    [
+        (
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from(err.retry_after_secs()),
+        ),
+        (
+            axum::http::HeaderName::from_static("x-ratelimit-limit"),
+            header_value_from_budget(err.limit),
+        ),
+        (
+            axum::http::HeaderName::from_static("x-ratelimit-burst"),
+            header_value_from_budget(err.burst),
+        ),
+    ]
+}
+
+/// Render a token-bucket budget (rate or burst, always a non-negative whole
+/// number of requests or bytes in practice) as a header value. Falls back to
+/// `"0"` rather than panicking on the unreachable case of a non-finite
+/// value, per the no-`unwrap`-in-production-paths rule.
+fn header_value_from_budget(value: f64) -> axum::http::HeaderValue {
+    let rounded = if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    };
+    axum::http::HeaderValue::from(rounded as u64)
+}
 
 /// Per-tenant ingest rate limiter.
 ///
@@ -152,19 +241,25 @@ impl TenantRateLimiter {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if let Some(bucket) = buckets.requests.as_mut()
-            && !bucket.try_acquire(1.0, now)
+            && let Err(retry_after) = bucket.try_acquire(1.0, now)
         {
             return Err(RateLimitExceeded {
                 tenant_id: tenant_id.to_string(),
                 kind: RateLimitKind::Requests,
+                retry_after,
+                limit: bucket.rate,
+                burst: bucket.burst,
             });
         }
         if let Some(bucket) = buckets.bytes.as_mut()
-            && !bucket.try_acquire(bytes as f64, now)
+            && let Err(retry_after) = bucket.try_acquire(bytes as f64, now)
         {
             return Err(RateLimitExceeded {
                 tenant_id: tenant_id.to_string(),
                 kind: RateLimitKind::Bytes,
+                retry_after,
+                limit: bucket.rate,
+                burst: bucket.burst,
             });
         }
         Ok(())
@@ -189,11 +284,14 @@ impl TenantRateLimiter {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if let Some(bucket) = buckets.query_requests.as_mut()
-            && !bucket.try_acquire(1.0, now)
+            && let Err(retry_after) = bucket.try_acquire(1.0, now)
         {
             return Err(RateLimitExceeded {
                 tenant_id: tenant_id.to_string(),
                 kind: RateLimitKind::QueryRequests,
+                retry_after,
+                limit: bucket.rate,
+                burst: bucket.burst,
             });
         }
         Ok(())
@@ -421,5 +519,94 @@ mod tests {
         // Non-override tenants use the default.
         assert!(limiter.check_ingest_at("acme", 0, start).is_ok());
         assert!(limiter.check_ingest_at("acme", 0, start).is_err());
+    }
+
+    #[test]
+    fn try_acquire_reports_wait_as_deficit_over_rate() {
+        let start = Instant::now();
+        let mut bucket = TokenBucket::new(4.0, 4.0, start);
+        for _ in 0..4 {
+            assert!(bucket.try_acquire(1.0, start).is_ok());
+        }
+        // Empty bucket, rate 4/s: 1 more token needs 0.25s.
+        let wait = bucket.try_acquire(1.0, start).unwrap_err();
+        assert!((wait.as_secs_f64() - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn try_acquire_reports_full_burst_fill_time_when_cost_exceeds_burst() {
+        let start = Instant::now();
+        let mut bucket = TokenBucket::new(100.0, 500.0, start);
+        // A single request costing more than the whole burst (e.g. an
+        // oversized ingest payload) can never be admitted; the wait is the
+        // time to fill the burst from empty, not an unbounded number.
+        let wait = bucket.try_acquire(1_000.0, start).unwrap_err();
+        assert!((wait.as_secs_f64() - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rate_limit_exceeded_carries_wait_limit_and_burst() {
+        let limiter = limiter(
+            TenantLimits {
+                max_query_requests_per_sec: Some(4),
+                burst_seconds: 1.0,
+                ..Default::default()
+            },
+            vec![],
+        );
+        let start = Instant::now();
+        for _ in 0..4 {
+            assert!(limiter.check_query_at("acme", start).is_ok());
+        }
+        let denied = limiter.check_query_at("acme", start).unwrap_err();
+        assert_eq!(denied.kind, RateLimitKind::QueryRequests);
+        assert_eq!(denied.limit, 4.0);
+        assert_eq!(denied.burst, 4.0);
+        assert!((denied.retry_after.as_secs_f64() - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn retry_after_secs_rounds_up_and_is_never_below_one() {
+        let base = RateLimitExceeded {
+            tenant_id: "acme".to_string(),
+            kind: RateLimitKind::QueryRequests,
+            retry_after: Duration::from_millis(10),
+            limit: 10.0,
+            burst: 10.0,
+        };
+        assert_eq!(base.retry_after_secs(), 1);
+
+        let longer = RateLimitExceeded {
+            retry_after: Duration::from_millis(1_500),
+            ..base.clone()
+        };
+        assert_eq!(longer.retry_after_secs(), 2);
+
+        let zero = RateLimitExceeded {
+            retry_after: Duration::ZERO,
+            ..base
+        };
+        assert_eq!(zero.retry_after_secs(), 1);
+    }
+
+    #[test]
+    fn retry_headers_carry_the_bucket_state() {
+        let err = RateLimitExceeded {
+            tenant_id: "acme".to_string(),
+            kind: RateLimitKind::QueryRequests,
+            retry_after: Duration::from_millis(2_500),
+            limit: 10.0,
+            burst: 100.0,
+        };
+        let headers = retry_headers(&err);
+        let find = |name: &str| {
+            headers
+                .iter()
+                .find(|(n, _)| n.as_str() == name)
+                .map(|(_, v)| v.to_str().unwrap().to_string())
+        };
+        assert_eq!(find("retry-after").as_deref(), Some("3"));
+        assert_eq!(find("x-ratelimit-limit").as_deref(), Some("10"));
+        assert_eq!(find("x-ratelimit-burst").as_deref(), Some("100"));
     }
 }
