@@ -3,6 +3,7 @@ pub mod completions;
 pub mod dataset;
 pub mod discover;
 pub mod ops;
+pub mod profiles;
 pub mod query;
 pub mod schema;
 pub mod tenant;
@@ -61,6 +62,12 @@ enum Commands {
     Schema {
         #[command(subcommand)]
         action: schema::SchemaAction,
+    },
+    /// Pyroscope-compatible profile query surface (types, labels,
+    /// label-values, render, diff, by-trace)
+    Profiles {
+        #[command(subcommand)]
+        action: profiles::ProfilesAction,
     },
     /// Administrative operations (tenants, API keys, datasets, schema registries)
     Admin {
@@ -194,6 +201,10 @@ impl Cli {
             return action.run().await;
         }
 
+        if let Commands::Profiles { action } = self.command {
+            return action.run().await;
+        }
+
         // The `tenant` group and `whoami` authenticate with a tenant API key
         // (management API / `/api/v1/whoami`), like `discover` and `schema`
         // above — never the instance admin key `admin` uses.
@@ -276,6 +287,7 @@ impl Cli {
             Commands::Query(_) => unreachable!(),
             Commands::Discover { .. } => unreachable!(),
             Commands::Schema { .. } => unreachable!(),
+            Commands::Profiles { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
             Commands::Tenant { .. } => unreachable!(),
