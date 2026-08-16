@@ -15,8 +15,12 @@ Management tools come in two families that differ only in which credential the
 router expects: **platform-admin tools** wrap the admin API and succeed when the
 session's forwarded credential is the administrative key; **tenant tools**
 (prefixed `tenant_`) wrap the management API and act as the caller's own
-identity within its tenant. Neither family is hidden from `tools/list`; a call
-the router does not authorize returns a clean access-denied error. Tools that
+identity within its tenant; the dataset/API-key/membership/schema tenant tools
+succeed only for a human-authenticated (OAuth) session, because the router
+rejects bare API keys on those endpoints by design, and their descriptions say
+so, while the table/schema-listing tenant tools work with an API key. Neither
+family is hidden from `tools/list`; a call the router does not authorize
+returns a clean access-denied error. Tools that
 delete or revoke SHALL carry the MCP destructive annotation and SHALL require a
 `confirm` argument equal to the identifier being destroyed; read-only tools
 SHALL carry the read-only annotation. Tools that create an API key SHALL return
@@ -55,7 +59,7 @@ return key material.
 - **WHEN** an MCP client lists available tools
 - **THEN** the list includes `tenant_`-prefixed tools for the caller's datasets
   (list/create/delete), API keys (list/create/update/revoke), memberships
-  (list/upsert/remove), schema, and signal tables (list/provision)
+  (list/upsert/remove), schema, and signal tables (list/provision/schemas)
 
 #### Scenario: Destructive tool requires confirmation
 

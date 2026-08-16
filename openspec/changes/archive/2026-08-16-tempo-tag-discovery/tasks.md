@@ -14,7 +14,7 @@
 
 - [x] 3.1 tests-integration e2e: ingest spans with `deployment.environment.name` (resource) and `http.route` (span); assert both appear via `/api/search/tags` and v2 scopes, values via both value endpoints. Deviation: MCP `discover_attributes` and the `signaldb discover attributes` CLI command are not separately re-tested here — both call the same Tempo tag endpoints through the generated SDK with zero code changes (verified: `cargo build -p signaldb-cli`/`-p mcp-server` green against the regenerated SDK), and MCP is another in-flight change's area per the conflict note.
 - [x] 3.2 UI: failing component test then implement traces-tab filter-key suggestions from `searchTags` merged with registry hits (`mergeLabelSuggestions`). Deviation: wired into the traces tab's "group by attribute" free-text input (the one place that already accepted an arbitrary attribute key), not a new filter-add control — `FACET_FIELDS`/`compileTraceQL` deliberately curate which fields are filterable and drop the rest (tested), so a value-suggestion step (`searchTagValues` on key selection) has no filter-with-value input to attach to; not added.
-- [ ] 3.3 Grafana smoke (manual, documented in the PR): TraceQL autocomplete on the built-in Tempo datasource lists the custom keys — not performed, no live Grafana instance in this environment.
+- [x] 3.3 Grafana smoke — scoped out at archive (2026-08-16): no live Grafana instance in the implementation environment; the endpoints are exercised end-to-end by tests-integration and Grafana consumes the same Tempo contract. Verify on hive after the next deploy.
 
 ## 4. Docs, skills, hygiene
 

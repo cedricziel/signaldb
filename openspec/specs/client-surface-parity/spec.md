@@ -10,7 +10,10 @@ the four surfaces cannot drift apart in what they can do.
 The CLI (`signaldb-cli`) and the MCP server (`signaldb-mcp`) SHALL reach every
 SignalDB capability exclusively through `signaldb-sdk`. Neither SHALL construct
 its own HTTP client to a SignalDB endpoint, its own Arrow Flight client, or any
-other direct transport to a SignalDB service.
+other direct transport to a SignalDB service. Both SHALL obtain their HTTP
+client through the SDK's client builder rather than assembling one themselves,
+so cross-cutting client policy — retry on throttling, timeouts, default
+headers — is defined once in the SDK and cannot drift between consumers.
 
 #### Scenario: CLI issues a query
 
@@ -25,13 +28,28 @@ other direct transport to a SignalDB service.
 - **THEN** it invokes a `signaldb-sdk` client method
 - **AND** the `mcp-server` crate depends on SignalDB only via `signaldb-sdk`
 
+#### Scenario: Consumers build clients through the SDK
+
+- **WHEN** the CLI or the MCP server needs an HTTP client for SignalDB
+- **THEN** it obtains it from the SDK's client builder, and neither crate
+  constructs a bare HTTP client for a SignalDB endpoint
+
+#### Scenario: Throttling is retried on every surface
+
+- **WHEN** the parity check evaluates the CLI, the MCP server, and the UI
+- **THEN** each is shown to route SignalDB requests through a client that
+  applies the shared retry-on-throttle policy
+
 ### Requirement: SDK covers the full API surface
 
 `signaldb-sdk` SHALL expose every capability the SignalDB API offers, spanning
-its HTTP surface (admin/management, operational control, and the
-PromQL/LogQL/TraceQL query-compat endpoints) and its Arrow Flight surface (SQL
-query). A capability reachable through the API but absent from the SDK is a
-defect.
+its HTTP surface (admin/management, tenant self-management including tables
+and schemas, operational control, and the PromQL/LogQL/TraceQL query-compat
+endpoints) and its Arrow Flight surface (SQL query). A capability reachable
+through the API but absent from the SDK is a defect. Every HTTP endpoint the
+router serves to tenants or administrators SHALL be declared in the OpenAPI
+document, because that document is the SDK's only source; an endpoint outside
+it is invisible to every client and is therefore a parity defect.
 
 #### Scenario: A new API capability lacks SDK coverage
 
@@ -39,17 +57,28 @@ defect.
   method
 - **THEN** the parity check fails and identifies the uncovered operation
 
+#### Scenario: A router endpoint is missing from the OpenAPI document
+
+- **WHEN** the router registers a tenant- or admin-facing HTTP route that has no
+  OpenAPI operation
+- **THEN** the OpenAPI drift check fails and names the route
+
 ### Requirement: Query-surface parity is enforced
 
-An automated check SHALL assert query-capability parity against a manifest of the
-query languages SignalDB supports (SQL, TraceQL, LogQL, PromQL, and Query IR).
-Every language SHALL be reachable through a CLI `query` flag. Every language
-served over the router's **HTTP** surface (TraceQL, LogQL, PromQL, Query IR)
-SHALL additionally be reachable through an MCP tool. **SQL** is served over Arrow
-Flight (gRPC); because the MCP server is an HTTP forwarder that holds no Flight
-client, SQL is intentionally CLI-only, and this boundary SHALL be asserted
-explicitly so it cannot erode silently. The check SHALL fail when a surface
-under-exposes a language its transport requires.
+An automated check SHALL assert capability parity across the CLI and the MCP
+server for **every** operation the SDK exposes — derived from the SDK's own
+operation list, not a hand-maintained subset — against a reviewed exclusion
+list of operations that are intentionally single-surface (browser session and
+OAuth consent endpoints, and identity lookup that the MCP server exposes as
+`server_info`). Query languages keep their specific rules: every language SHALL
+be reachable through a CLI `query` flag; every language served over the
+router's **HTTP** surface (TraceQL, LogQL, PromQL, Query IR) SHALL additionally
+be reachable through an MCP tool; **SQL** is served over Arrow Flight (gRPC)
+and, because the MCP server is an HTTP forwarder that holds no Flight client,
+SQL is intentionally CLI-only, asserted explicitly. The check SHALL fail and
+name the surface and operation whenever a non-excluded SDK operation lacks a
+CLI command or an MCP tool, and SHALL fail when the exclusion list names an
+operation that no longer exists.
 
 #### Scenario: An HTTP query language is missing from the CLI or MCP
 
@@ -63,9 +92,23 @@ under-exposes a language its transport requires.
 - **THEN** it requires a CLI `--sql` flag and requires that no MCP tool claims
   SQL, matching the HTTP-forwarder boundary
 
+#### Scenario: A management operation lacks a surface
+
+- **WHEN** the SDK gains an operation (for example a new tenant-management call)
+  and either the CLI or the MCP server does not expose it and it is not on the
+  exclusion list
+- **THEN** the parity check fails and names the operation and the missing
+  surface
+
+#### Scenario: Stale exclusion is rejected
+
+- **WHEN** the exclusion list names an operation the SDK no longer has
+- **THEN** the parity check fails so the list cannot silently rot
+
 #### Scenario: All surfaces are aligned
 
-- **WHEN** every query language has its required CLI flag, every HTTP language
-  has an MCP tool, and SQL remains CLI-only
+- **WHEN** every non-excluded SDK operation has a CLI command and an MCP tool,
+  every query language has its required CLI flag, every HTTP language has an
+  MCP tool, and SQL remains CLI-only
 - **THEN** the parity check passes
 

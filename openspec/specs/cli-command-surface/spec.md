@@ -10,11 +10,16 @@ renders query results for downstream tooling.
 The CLI SHALL organize commands into top-level capability groups: a single
 `query` command that takes the query language as a mutually-exclusive flag
 (`--sql`, `--promql`, `--logql`, `--traceql`), `admin <noun> <verb>` for
-management, `ops <verb>` for operational control, and `schema <noun> <verb>` for
-schema-registry lookup — plus the existing `tui`, `completions`, and
-user-bootstrap utilities. Tenant, API-key, dataset, and custom schema-registry
-management SHALL live under `admin`. Exactly one language flag SHALL be required
-on `query`.
+platform administration through the admin API, `tenant <noun> <verb>` for the
+caller's own tenant with its API key (today: signal tables and table schemas —
+the management API's dataset/API-key/membership operations require a human
+session, which the CLI does not hold, so they are MCP/UI-only), `ops <verb>`
+for operational control,
+and `schema <noun> <verb>` for schema-registry lookup — plus the existing
+`tui`, `completions`, and user-bootstrap utilities. Tenant, API-key, dataset,
+user, and custom schema-registry administration SHALL live under `admin`;
+self-management of the authenticated tenant SHALL live under `tenant`. Exactly
+one language flag SHALL be required on `query`.
 
 #### Scenario: Query language is a flag on one `query` command
 
@@ -33,6 +38,14 @@ on `query`.
 
 - **WHEN** a user runs `signaldb admin tenant list`
 - **THEN** the CLI performs the tenant-list operation through the SDK
+
+#### Scenario: Self-management lives under tenant
+
+- **WHEN** a user runs `signaldb tenant dataset list`, `signaldb tenant api-key
+create --name ci`, `signaldb tenant membership list`, or `signaldb tenant
+table provision --dataset production`
+- **THEN** the CLI performs the corresponding management-API operation through
+  the SDK as the caller's own identity
 
 #### Scenario: Schema lookup lives under schema
 
@@ -105,3 +118,22 @@ need not know which transport a given capability uses.
 - **WHEN** an endpoint is set in the environment and a different endpoint is
   passed as a flag
 - **THEN** the CLI uses the flag value
+
+### Requirement: Throttled commands retry, then exit distinctly
+
+The CLI SHALL retry a throttled request through the SDK's shared retry policy before failing. When retries are exhausted it SHALL write a diagnostic to stderr stating the command was rate limited and, when the server stated one, how long it asked to wait, and SHALL exit with a dedicated exit code (`4`) distinct from generic failure so scripts can back off and re-run. `--no-retry` (or `SIGNALDB_NO_RETRY=1`) SHALL disable retry for scripting that prefers fail-fast. When stderr is a terminal the CLI SHALL print one short note per retry so an interactive user knows the command is waiting, not hung.
+
+#### Scenario: Throttled command exits with the throttled code
+
+- **WHEN** a command's request is throttled past the retry budget with `Retry-After: 5` on the last response
+- **THEN** stderr reads that the command was rate limited and the server asked to retry in 5 seconds, stdout carries no partial result, and the exit code is `4`
+
+#### Scenario: Fail-fast opt-out
+
+- **WHEN** a command is run with `--no-retry` and its first request is throttled
+- **THEN** the CLI exits with code `4` immediately without waiting
+
+#### Scenario: Interactive retry is visible
+
+- **WHEN** an interactive command is retried after throttling
+- **THEN** stderr shows one line per retry naming the wait, and stdout is untouched

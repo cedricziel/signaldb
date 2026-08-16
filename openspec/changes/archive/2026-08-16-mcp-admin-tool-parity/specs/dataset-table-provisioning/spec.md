@@ -15,8 +15,10 @@ reporting success.
 
 - **WHEN** a caller lists a tenant's tables through the CLI, an MCP tool, or the
   UI management area
-- **THEN** the result names each dataset's provisioned signal tables, sourced
-  through the generated client
+- **THEN** the result is sourced through the generated client and names each
+  dataset's provisioned signal tables once the router's table listing is
+  implemented (today the endpoint is a placeholder that answers an empty list;
+  provisioning itself is verified against the catalog)
 
 #### Scenario: Provisioning through the UI
 
