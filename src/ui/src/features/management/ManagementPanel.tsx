@@ -7,6 +7,8 @@ import {
   deleteDataset,
   listApiKeys,
   listMemberships,
+  listTables,
+  provisionTables,
   removeMembership,
   revokeApiKey,
   upsertMembership,
@@ -42,12 +44,17 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
     queryKey: ["managed-memberships", tenant],
     queryFn: () => listMemberships(tenant),
   });
+  const tables = useQuery({
+    queryKey: ["managed-tables", tenant],
+    queryFn: () => listTables(tenant),
+  });
   const refresh = () => {
     void client.invalidateQueries({ queryKey: ["managed-api-keys", tenant] });
     void client.invalidateQueries({ queryKey: ["whoami"] });
     void client.invalidateQueries({
       queryKey: ["managed-memberships", tenant],
     });
+    void client.invalidateQueries({ queryKey: ["managed-tables", tenant] });
   };
   const datasetMutation = useMutation({
     mutationFn: (name: string) => createDataset(tenant, name),
@@ -65,6 +72,11 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
       setError(null);
       refresh();
     },
+    onError: (value) => setError(toErrorMessage(value)),
+  });
+  const provisionMutation = useMutation({
+    mutationFn: () => provisionTables(tenant),
+    onSuccess: refresh,
     onError: (value) => setError(toErrorMessage(value)),
   });
 
@@ -250,6 +262,33 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
             </select>
             <button>Add or update member</button>
           </form>
+        </section>
+
+        <section className="tables">
+          <h3>Tables</h3>
+          {tables.isLoading && <p>Loading tables…</p>}
+          {tables.isError && (
+            <p className="manage-error">{toErrorMessage(tables.error)}</p>
+          )}
+          <ul className="compact-list">
+            {(tables.data?.tables ?? []).map((table) => (
+              <li key={table.name}>
+                <div>
+                  <strong>{table.name}</strong>
+                  <span>{table.description}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {tables.data && tables.data.tables.length === 0 && (
+            <p>No signal tables provisioned yet for this dataset.</p>
+          )}
+          <button
+            onClick={() => provisionMutation.mutate()}
+            disabled={provisionMutation.isPending}
+          >
+            Provision tables
+          </button>
         </section>
 
         {who.user?.is_instance_admin && (

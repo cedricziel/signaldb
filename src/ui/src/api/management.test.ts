@@ -7,6 +7,8 @@ import {
   getSchema,
   listApiKeys,
   listMemberships,
+  listTables,
+  provisionTables,
   removeMembership,
   revokeApiKey,
   updateApiKey,
@@ -90,7 +92,11 @@ describe("management API", () => {
   it("creates a key carrying schema scopes", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse(
-        { id: "key-2", key: "sdbk_schema", scopes: ["schema:read", "schema:write"] },
+        {
+          id: "key-2",
+          key: "sdbk_schema",
+          scopes: ["schema:read", "schema:write"],
+        },
         201,
       ),
     );
@@ -302,5 +308,46 @@ describe("management API", () => {
     const req = fetchMock.mock.calls[0]?.[0] as Request;
     expect(req.url).toContain("/api/v1/manage/tenants/acme/memberships/u1");
     expect(req.method).toBe("DELETE");
+  });
+
+  it("lists a tenant's provisioned signal tables", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        tenant_id: "acme",
+        tables: [{ name: "traces", schema_type: "traces", description: "x" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await listTables("acme");
+
+    expect(result.tables).toEqual([
+      { name: "traces", schema_type: "traces", description: "x" },
+    ]);
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(req.url).toContain("/api/v1/tenants/acme/tables");
+    expect(req.method).toBe("GET");
+  });
+
+  it("provisions a tenant's enabled signal tables", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(
+          {
+            message: "Default tables created for tenant 'acme'",
+            tenant_id: "acme",
+          },
+          201,
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await provisionTables("acme");
+
+    expect(result.tenant_id).toBe("acme");
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(req.url).toContain("/api/v1/tenants/acme/tables/create");
+    expect(req.method).toBe("POST");
   });
 });

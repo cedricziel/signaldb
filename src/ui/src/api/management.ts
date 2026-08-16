@@ -7,6 +7,8 @@
 import "./client";
 
 import {
+  createTenantTables,
+  listTenantTables,
   manageCreateApiKey,
   manageCreateDataset,
   manageCreateTenant,
@@ -18,6 +20,8 @@ import {
   manageRevokeApiKey,
   manageUpdateApiKey,
   manageUpsertMembership,
+  type CreateTenantTablesResponse,
+  type ListTablesResponse,
   type ManageApiKeyResponse,
   type ManageCreatedApiKey,
   type ManageCreatedTenant,
@@ -63,8 +67,7 @@ export const SCOPE_GROUPS: ReadonlyArray<{
       },
       {
         scope: "schema:write",
-        description:
-          "Create, replace, validate, and delete custom registries",
+        description: "Create, replace, validate, and delete custom registries",
       },
     ],
   },
@@ -195,3 +198,16 @@ export const removeMembership = async (
     }),
   );
 };
+
+/** The tenant's provisioned signal tables. */
+export type ManagedTables = ListTablesResponse;
+
+export const listTables = async (tenant: string): Promise<ManagedTables> =>
+  unwrap(await listTenantTables({ path: { tenant_id: tenant } }));
+
+/** Provision (create) the tenant's enabled signal tables — the manual
+ * trigger from the table-provisioning docs. */
+export const provisionTables = async (
+  tenant: string,
+): Promise<CreateTenantTablesResponse> =>
+  unwrap(await createTenantTables({ path: { tenant_id: tenant } }));

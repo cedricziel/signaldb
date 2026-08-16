@@ -25,8 +25,8 @@
 
 ## 5. UI
 
-- [ ] 5.1 Failing component test: management area shows a "Tables" section per dataset from `listTenantTables` and a "Provision tables" action calling `createTenantTables`, visible only with management rights
-- [ ] 5.2 Implement using the generated client; refresh after provisioning; error state via `error.message`
+- [x] 5.1 Failing component test: management area shows a "Tables" section per dataset from `listTenantTables` and a "Provision tables" action calling `createTenantTables`, visible only with management rights (`src/ui/src/features/management/ManagementPanel.test.tsx`; the panel itself is only reachable behind the `/manage` route's existing `canManage` redirect, so no additional per-section gating was needed)
+- [x] 5.2 Implement using the generated client; refresh after provisioning; error state via `toErrorMessage` (the panel's existing error-rendering convention — `error.message` is not used directly elsewhere in this component either)
 
 ## 6. Parity green + closure
 
