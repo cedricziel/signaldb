@@ -78,12 +78,14 @@ async fn throttled_command_reports_the_wait_and_the_throttled_exit_code() {
     // Phase 3: a non-throttling failure is not classified as throttled, and
     // the switch does not stick across invocations that don't pass it.
     let mut server = mockito::Server::new_async().await;
-    let _forbidden = server
+    let forbidden = server
         .mock("GET", "/api/v1/admin/tenants")
         .with_status(403)
+        .expect(1)
         .create_async()
         .await;
     let err = cli(&server.url(), &[]).run().await.expect_err("403");
+    forbidden.assert_async().await;
     assert!(throttled(&err).is_none());
     assert!(!signaldb_cli::retry::no_retry());
 }

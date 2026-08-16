@@ -386,7 +386,7 @@ fn shared_fixture_replays_against_the_policy_engine() {
                         case.name
                     );
                 }
-                (Decision::FailFast, false, true) => {}
+                (Decision::FailFast(_), false, true) => {}
                 (Decision::Return, false, false) => {}
                 (other, _, _) => panic!(
                     "{}: got {other:?}, expected retry={} fail_fast={}",

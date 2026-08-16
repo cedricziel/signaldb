@@ -1,7 +1,10 @@
 .throttle-banner {
   padding: 5px 14px;
   font-size: 12px;
-  color: var(--warn);
+  /* Not --warn: on this tinted background --warn falls under WCAG AA
+     (~3.9:1) in the light theme. --warn-banner-text is darker there and
+     matches --warn in the dark theme, where it already clears 4.5:1. */
+  color: var(--warn-banner-text);
   background: color-mix(in srgb, var(--warn-bar) 14%, var(--surface));
   border-bottom: 1px solid var(--border);
 }

@@ -479,6 +479,39 @@ async fn denied_call_is_warn_and_distinguishable_from_a_failed_one() {
     assert_eq!(failed.field("error.type"), Some("500"));
 }
 
+/// A router that never responds (`"slow"` in the mock, never released) must
+/// not keep a tool call alive for the SDK retry policy's full worst case
+/// (up to `max_attempts` × `router_timeout` plus `total_cap` of retry
+/// sleeps — see `mcp_server::tool_call_deadline`). `call_tool` wraps the
+/// whole dispatch in a `tokio::time::timeout` at a much shorter deadline
+/// here, so this observes that outer bound firing rather than the SDK's own
+/// per-attempt timeout or retry budget.
+#[tokio::test]
+async fn tool_call_past_the_deadline_is_reported_distinctly_and_audited() {
+    let (_guard, events, _spans, _provider) = install_capture();
+    metrics_exporter();
+    let (router_url, _mock) = spawn_mock_router().await;
+    let state = McpAppState::new(router_url)
+        .with_router_timeout(Duration::from_secs(10))
+        .with_tool_call_deadline(Duration::from_millis(200));
+    let app = mcp_http_router(state, &[]);
+    let mut session = McpSession::open(app, None).await;
+
+    let reply = session
+        .call_tool("search_traces", serde_json::json!({"dataset": "slow"}))
+        .await;
+    let message = reply["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("deadline"),
+        "expected a deadline error, got: {reply}"
+    );
+
+    let audit = the_audit_event(&events, "search_traces");
+    assert_eq!(audit.level, Level::ERROR);
+    assert_eq!(audit.field("outcome"), Some("error"));
+    assert_eq!(audit.field("error.type"), Some("deadline"));
+}
+
 #[tokio::test]
 async fn throttled_and_truncated_calls_are_classified() {
     let (_guard, events, _spans, _provider) = install_capture();

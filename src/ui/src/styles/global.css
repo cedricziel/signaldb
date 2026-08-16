@@ -25,6 +25,10 @@
   --svc-c: #8a56c9;
   --svc-d: #b08a10;
   --svc-e: #c04f8a;
+  /* Darker than --warn: text-on-tint contexts (e.g. ThrottleBanner) sit on
+     a `color-mix(--warn-bar, --surface)` background, where --warn itself
+     falls under WCAG AA (~3.9:1) in the light theme. */
+  --warn-banner-text: #7a5f0a;
   --mono:
     ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas,
     monospace;
@@ -57,6 +61,8 @@
     --svc-c: #b183e6;
     --svc-d: #e4c452;
     --svc-e: #e070a8;
+    /* Dark theme's --warn already clears WCAG AA against the banner tint. */
+    --warn-banner-text: #e4c452;
   }
 }
 
@@ -85,6 +91,7 @@
   --svc-c: #b183e6;
   --svc-d: #e4c452;
   --svc-e: #e070a8;
+  --warn-banner-text: #e4c452;
 }
 
 :root[data-theme="light"] {
@@ -112,6 +119,7 @@
   --svc-c: #8a56c9;
   --svc-d: #b08a10;
   --svc-e: #c04f8a;
+  --warn-banner-text: #7a5f0a;
 }
 
 * {

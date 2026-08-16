@@ -43,6 +43,10 @@ pub const ERROR_TYPE_DATA_KEY: &str = "error_type";
 /// `error.type` for a call refused at the per-session concurrency bound.
 pub const CONCURRENCY_LIMIT_ERROR_TYPE: &str = "concurrency_limit";
 
+/// `error.type` for a call still running past its total per-`tools/call`
+/// deadline (see `crate::tool_call_deadline`).
+pub const DEADLINE_ERROR_TYPE: &str = "deadline";
+
 /// `_meta` key marking a result whose payload was cut at the size cap, so the
 /// wrapper can classify it `truncated` without re-parsing the content.
 pub const TRUNCATED_META_KEY: &str = "dev.signaldb/truncated";
@@ -68,6 +72,22 @@ pub fn concurrency_limit_error(limit: usize) -> ErrorData {
             "limit": limit,
             ERROR_TYPE_DATA_KEY: CONCURRENCY_LIMIT_ERROR_TYPE,
         })),
+    )
+}
+
+/// The distinct error a call receives when it is still running after the
+/// total per-`tools/call` deadline (`crate::tool_call_deadline`) elapses:
+/// the per-attempt `.timeout` in `sdk_client_for` bounds one HTTP attempt,
+/// but up to `max_attempts` attempts plus the retry policy's `total_cap` of
+/// sleeps between them can otherwise keep a single tool call alive far
+/// longer than any one attempt's timeout suggests.
+pub fn deadline_exceeded_error(deadline: Duration) -> ErrorData {
+    ErrorData::internal_error(
+        format!(
+            "tool call exceeded the {}s deadline",
+            deadline.as_secs_f64()
+        ),
+        Some(serde_json::json!({ ERROR_TYPE_DATA_KEY: DEADLINE_ERROR_TYPE })),
     )
 }
 

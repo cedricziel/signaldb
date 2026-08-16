@@ -207,12 +207,20 @@ value; consumers construct via `signaldb_sdk::ClientBuilder`) and the UI's `retr
 (`src/ui/src/api/http.ts`) retry `429` on any method and `502/503/504`,
 connection failures, and timeouts on idempotent methods, waiting
 `Retry-After` (else jittered backoff), capped at 10 s per attempt / 30 s per
-call / 4 attempts, failing fast when the server asks for more. Exhaustion:
-CLI prints `rate limited; server asked to retry in Ns` and exits `4`
-(`--no-retry` / `SIGNALDB_NO_RETRY=1` for fail-fast); MCP returns a
-`throttled:`-prefixed error with `data.retryAfterMs`; UI panels show
-`Rate limited — server asked to retry in N s` and a shell banner while
-retries are pending.
+call / 4 attempts, failing fast when the server asks for more — a `Retry-After`
+that carries no header (e.g. a 429 from an upstream `ResourceExhausted`,
+mapped by `ApiError::new` rather than `ApiError::rate_limited`) falls back to
+jittered backoff, not the minimum-wait guarantee. Exhaustion: CLI prints `rate
+limited; server asked to retry in Ns` and exits `4` (`--no-retry` /
+`SIGNALDB_NO_RETRY=1` for fail-fast — `main` applies the env var via
+`init_no_retry_from_env()` before dynamic shell completion runs, since
+completion builds its own client before `Cli::run` gets a chance to);
+MCP returns a `throttled:`-prefixed error with `data.retryAfterMs`. Per-call,
+MCP additionally bounds the whole retry loop with a total deadline
+(`router_timeout + 30s`, distinct from `router_timeout` itself, which only
+bounds one attempt) — a call still running past it is `outcome=error`,
+`error.type=deadline` (`docs/users/mcp.md`). UI panels show `Rate limited —
+server asked to retry in N s` and a shell banner while retries are pending.
 
 ## Admin API (Router)
 

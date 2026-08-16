@@ -107,7 +107,7 @@ use serde::Deserialize;
 use crate::apps;
 use crate::audit::{
     self, AuditContext, DEFAULT_MAX_CONCURRENT_TOOL_CALLS, Outcome, PERMIT_WAIT,
-    concurrency_limit_error, with_http_status,
+    concurrency_limit_error, deadline_exceeded_error, with_http_status,
 };
 use crate::prompts;
 use crate::sdk_client_for;
@@ -128,6 +128,10 @@ pub struct McpServer {
     /// that is dropped with the session — no registry to evict from.
     tool_permits: std::sync::Arc<tokio::sync::Semaphore>,
     max_concurrent_tool_calls: usize,
+    /// Total deadline for one `tools/call`, defaulting to
+    /// [`crate::tool_call_deadline`] of `router_timeout`; see
+    /// [`Self::with_tool_call_deadline`].
+    tool_call_deadline: std::time::Duration,
 }
 
 /// Parameters for `search_traces`.
@@ -780,7 +784,17 @@ impl McpServer {
                 max_concurrent_tool_calls,
             )),
             max_concurrent_tool_calls,
+            tool_call_deadline: crate::tool_call_deadline(router_timeout),
         }
+    }
+
+    /// Override the total per-`tools/call` deadline (default
+    /// `crate::tool_call_deadline(router_timeout)`). Mainly for tests that
+    /// need to observe a deadline-exceeded error without waiting out the
+    /// full default (`router_timeout + RetryPolicy::default().total_cap`).
+    pub fn with_tool_call_deadline(mut self, deadline: std::time::Duration) -> Self {
+        self.tool_call_deadline = deadline;
+        self
     }
 
     /// Run one tool call under the session's concurrency bound: wait up to
@@ -2219,10 +2233,19 @@ impl ServerHandler for McpServer {
             common::flight::trace_context::set_parent_from_http_headers(&span, &parts.headers);
         }
         let started = std::time::Instant::now();
-        let result = self
-            .dispatch_tool(request, context)
+        // Bound the whole call, not just one downstream HTTP attempt:
+        // `sdk_client_for` times out each retry attempt individually, so
+        // without this the retry policy's up-to-4-attempts-plus-sleeps could
+        // otherwise keep a call alive far longer than any one attempt's
+        // timeout suggests (see `tool_call_deadline`).
+        let deadline = self.tool_call_deadline;
+        let result = match tokio::time::timeout(deadline, self.dispatch_tool(request, context))
             .instrument(span.clone())
-            .await;
+            .await
+        {
+            Ok(result) => result,
+            Err(_elapsed) => Err(deadline_exceeded_error(deadline)),
+        };
         let duration = started.elapsed();
         let outcome = Outcome::of(&result);
         if let Some(error_type) = outcome.error_type() {

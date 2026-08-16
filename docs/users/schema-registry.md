@@ -103,7 +103,9 @@ The MCP server exposes the same lookups as tools (`resolve_attribute`,
 `get_schema_registry`), so an AI agent can learn what a key means before
 building a query. `validate_schema_registry` checks a document without
 storing it, mirroring `signaldb-cli admin schema validate` — see
-[the MCP tool catalogue](mcp.md#what-it-exposes) for the full list.
+[the MCP tool catalogue](mcp.md#what-it-exposes) for the full list. Like
+every MCP tool call, these are subject to the server's total per-call
+deadline — see [Running it](mcp.md#running-it).
 
 ## Add your own conventions
 

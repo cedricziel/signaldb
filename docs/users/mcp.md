@@ -221,6 +221,16 @@ Each forwarded request is bounded by `router_timeout` (plus a fixed 5s connect
 timeout), so a hung router fails the tool call cleanly instead of hanging the
 agent indefinitely. Raise it if your agents run slow analytical queries.
 
+That per-request bound alone does not bound one `tools/call`: the SDK's
+shared retry policy can spend up to 4 attempts plus 30s of retry sleeps
+underneath it, so with the default `router_timeout` a single call could
+otherwise run for close to 150s. A total deadline of `router_timeout +
+30s` (60s with defaults) wraps the whole call instead: a call still running
+past it fails with a distinct `tool call exceeded the Ns deadline` error
+(`outcome=error`, `error.type=deadline` — see
+[Audit and observability](#audit-and-observability)). Raising
+`router_timeout` raises this deadline with it.
+
 `max_concurrent_tool_calls` bounds how many tool calls one MCP session may
 have in flight at once (also `--max-concurrent-tool-calls` /
 `SIGNALDB__MCP__MAX_CONCURRENT_TOOL_CALLS`). A call that arrives while the
@@ -405,20 +415,22 @@ Every tool call is audited: after it completes, the server emits exactly one
 structured log event (target `signaldb_mcp::audit`) with bounded fields —
 never the arguments, the query expression, or the result:
 
-| Field         | Meaning                                                                                                              |
-| ------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `tool`        | The tool name (`search_traces`, `get_trace`, …).                                                                     |
-| `tenant_id`   | The tenant the router resolved the caller to.                                                                        |
-| `dataset`     | The dataset the call named (its `dataset` argument, else `X-Dataset-ID`); absent when neither is set.                |
-| `session_id`  | The `Mcp-Session-Id` (`stdio` on the stdio transport).                                                               |
-| `outcome`     | `ok`, `truncated` (result cut at the size cap), `denied`, `throttled`, or `error`.                                   |
-| `duration_ms` | Wall time of the call, including any wait for a concurrency permit.                                                  |
-| `error.type`  | Only for `outcome=error`: `concurrency_limit`, `tool_error`, the router's HTTP status (`500`), or the JSON-RPC code. |
+| Field         | Meaning                                                                                                                          |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `tool`        | The tool name (`search_traces`, `get_trace`, …).                                                                                 |
+| `tenant_id`   | The tenant the router resolved the caller to.                                                                                    |
+| `dataset`     | The dataset the call named (its `dataset` argument, else `X-Dataset-ID`); absent when neither is set.                            |
+| `session_id`  | The `Mcp-Session-Id` (`stdio` on the stdio transport).                                                                           |
+| `outcome`     | `ok`, `truncated` (result cut at the size cap), `denied`, `throttled`, or `error`.                                               |
+| `duration_ms` | Wall time of the call, including any wait for a concurrency permit.                                                              |
+| `error.type`  | Only for `outcome=error`: `concurrency_limit`, `deadline`, `tool_error`, the router's HTTP status (`500`), or the JSON-RPC code. |
 
 Levels: `ok`, `truncated`, and `throttled` log at `info`; `denied` (the router
 rejected the credential or the tenant/dataset access — a `401`/`403`) at
 `warn`, so probing is visible; `error` at `error`. A call refused at the
-concurrency bound is `outcome=error`, `error.type=concurrency_limit`.
+concurrency bound is `outcome=error`, `error.type=concurrency_limit`; a call
+still running past the total per-call deadline (see [Running it](#running-it))
+is `outcome=error`, `error.type=deadline`.
 
 The same call is one `tools/call {tool}` span (INTERNAL, `gen_ai.tool.name`,
 `mcp.session.id`, `signaldb.tenant.id`, `signaldb.dataset.id`; status Error

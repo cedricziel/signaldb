@@ -176,11 +176,13 @@ enum AdminAction {
 impl Cli {
     pub async fn run(self) -> anyhow::Result<()> {
         // Retry policy for every client this invocation builds: `--no-retry`
-        // or SIGNALDB_NO_RETRY=1 means fail-fast (see `crate::retry`).
-        let env_no_retry = crate::retry::env_value_disables_retry(
-            std::env::var(crate::retry::NO_RETRY_ENV).ok().as_deref(),
-        );
-        crate::retry::set_no_retry(self.no_retry || env_no_retry);
+        // or SIGNALDB_NO_RETRY=1 means fail-fast (see `crate::retry`). `main`
+        // already applied the env var alone before dynamic completion ran;
+        // this re-applies it ORed with the now-parsed `--no-retry` flag.
+        crate::retry::init_no_retry_from_env();
+        if self.no_retry {
+            crate::retry::set_no_retry(true);
+        }
 
         if let Commands::Query(args) = self.command {
             return args.run().await;

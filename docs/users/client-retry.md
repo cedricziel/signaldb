@@ -11,6 +11,7 @@ sources:
   - src/ui/src/api/http.ts
   - src/ui/src/api/client.ts
   - src/ui/src/features/shell/ThrottleBanner.tsx
+  - src/router/src/endpoints/api_error.rs
   - api/retry-cases.json
 ---
 
@@ -18,11 +19,14 @@ sources:
 
 SignalDB's clients — the Rust SDK (`signaldb-sdk`, behind the CLI and the MCP
 server) and the web UI's TypeScript client — retry throttled and transiently
-failing requests before they surface a failure. A brief burst past a tenant's
-query budget therefore never shows up as a red panel, a non-zero exit, or an
-agent giving up: the client waits as long as the server asks and re-sends.
-Every surface backs off the same way; the shared table `api/retry-cases.json`
-is the executable form of the rules below and both test suites replay it.
+failing requests before they surface a failure. Retries absorb transient
+throttling while the retry budget lasts, so a brief burst past a tenant's
+query budget usually never shows up as a red panel, a non-zero exit, or an
+agent giving up. But the budget is bounded (four attempts, a 10 s per-attempt
+cap, a 30 s total cap — see below): a sustained burst, or a wait beyond a
+cap, still surfaces an error in the UI, CLI, or MCP server. Every surface
+backs off the same way; the shared table `api/retry-cases.json` is the
+executable form of the rules below and both test suites replay it.
 
 ## What is retried
 
@@ -38,10 +42,15 @@ on `503` or a connection reset because the server may have acted on it.
 
 ## How long it waits
 
-- When the rejection carries `Retry-After` (seconds or an HTTP-date, which
-  every SignalDB `429` does — see the [Tempo API reference](tempo-api-reference.md)),
-  the client waits at least that long.
-- Otherwise it waits a fully jittered exponential backoff: uniform in
+- When the rejection carries `Retry-After` (seconds or an HTTP-date), the
+  client waits at least that long. Most SignalDB `429`s do — a request
+  rejected by the rate limiter (see the
+  [Tempo API reference](tempo-api-reference.md)) — but not all: a `429`
+  produced from an upstream `ResourceExhausted` status (for example, Flight
+  backpressure from the querier, mapped by `ApiError::new` rather than
+  `ApiError::rate_limited`) carries no `Retry-After`.
+- Otherwise — no `Retry-After`, including that upstream-`ResourceExhausted`
+  case — it waits a fully jittered exponential backoff: uniform in
   `[0, min(cap, 250 ms · 2ⁿ)]` for the n-th retry.
 - Every wait is capped at **10 s**; the sum of waits per call at **30 s**.
   If the server asks for more than the per-attempt cap, the client **fails
