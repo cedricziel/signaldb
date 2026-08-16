@@ -6,11 +6,14 @@
 //     (the router serves the UI and the API from the same host); and
 //   * a request interceptor that attaches the tenant/dataset headers to every
 //     outgoing request, mirroring what the hand-written clients used to do via
-//     `tenantHeaders()`.
+//     `tenantHeaders()`; and
+//   * `retryingFetch` as the client's fetch, so every generated operation
+//     backs off on throttling (429) and idempotent transient failures the same
+//     way the Rust SDK does (see `client-retry-on-throttle`).
 import { client } from "./gen/client.gen";
-import { tenantHeaders } from "./http";
+import { retryingFetch, tenantHeaders } from "./http";
 
-client.setConfig({ baseUrl: "" });
+client.setConfig({ baseUrl: "", fetch: retryingFetch });
 
 client.interceptors.request.use((request) => {
   for (const [key, value] of Object.entries(tenantHeaders())) {

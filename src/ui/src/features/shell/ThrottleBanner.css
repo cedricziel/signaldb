@@ -1,0 +1,7 @@
+.throttle-banner {
+  padding: 5px 14px;
+  font-size: 12px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn-bar) 14%, var(--surface));
+  border-bottom: 1px solid var(--border);
+}

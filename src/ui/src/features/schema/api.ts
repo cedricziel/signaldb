@@ -23,7 +23,7 @@ import {
   type RegistrySummary,
   type ValidationReport,
 } from "../../api/gen";
-import { ApiError } from "../../api/http";
+import { ApiError, retryAfterMsFrom } from "../../api/http";
 
 export type {
   AttributeHit,
@@ -53,7 +53,7 @@ function unwrap<T>(result: SdkResult<T>): T {
     const message =
       (error as { error?: string } | undefined)?.error ??
       `Schema request failed (${status})`;
-    throw new ApiError(message, status);
+    throw new ApiError(message, status, retryAfterMsFrom(response));
   }
   return result.data as T;
 }

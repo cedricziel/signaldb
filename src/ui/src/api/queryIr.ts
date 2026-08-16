@@ -4,7 +4,7 @@
 import "./client";
 
 import { queryIr, type QueryIrRequest, type QueryIrResponse } from "./gen";
-import { ApiError, tenantHeaders } from "./http";
+import { ApiError, retryAfterMsFrom, tenantHeaders } from "./http";
 
 /** Submit an IR document and return the enveloped result. */
 export async function runIrQuery(
@@ -21,7 +21,11 @@ export async function runIrQuery(
       error && typeof error === "object" && "error" in error
         ? String((error as { error: unknown }).error)
         : undefined;
-    throw new ApiError(detail ?? `IR query failed (${status})`, status);
+    throw new ApiError(
+      detail ?? `IR query failed (${status})`,
+      status,
+      retryAfterMsFrom(res.response),
+    );
   }
   return res.data;
 }

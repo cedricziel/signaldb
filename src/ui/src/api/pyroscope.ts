@@ -5,7 +5,12 @@
 // for "what distinct values does this signal have" yet.
 
 import type { ResolvedRange } from "../lib/time";
-import { ApiError, tenantHeaders } from "./http";
+import {
+  ApiError,
+  retryAfterMsFrom,
+  retryingFetch,
+  tenantHeaders,
+} from "./http";
 
 /** A profile kind, e.g. `{ID: "cpu:nanoseconds", sampleType: "cpu", ...}`. */
 export interface ProfileType {
@@ -47,7 +52,7 @@ async function pyroscopeFetch<T>(
   params: URLSearchParams,
 ): Promise<T> {
   const query = params.size > 0 ? `?${params}` : "";
-  const res = await fetch(`/pyroscope/${path}${query}`, {
+  const res = await retryingFetch(`/pyroscope/${path}${query}`, {
     headers: tenantHeaders(),
   });
   if (!res.ok) {
@@ -55,6 +60,7 @@ async function pyroscopeFetch<T>(
     throw new ApiError(
       `Pyroscope API ${path} failed (${res.status}): ${body.slice(0, 300)}`,
       res.status,
+      retryAfterMsFrom(res),
     );
   }
   return (await res.json()) as T;

@@ -8,7 +8,7 @@ import {
   type AttributeHit,
   type AttributeResolution,
 } from "./gen";
-import { ApiError } from "./http";
+import { ApiError, retryAfterMsFrom } from "./http";
 
 export type { AttributeHit, AttributeResolution };
 
@@ -28,7 +28,7 @@ function unwrap<T>(result: SdkResult<T>): T {
     const message =
       (error as { error?: string } | undefined)?.error ??
       `Schema request failed (${status})`;
-    throw new ApiError(message, status);
+    throw new ApiError(message, status, retryAfterMsFrom(response));
   }
   return result.data as T;
 }

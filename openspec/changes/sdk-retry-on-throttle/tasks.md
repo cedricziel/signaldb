@@ -25,10 +25,10 @@
 
 ## 5. UI
 
-- [ ] 5.1 Failing tests (`vitest`) for `retryingFetch` replaying `api/retry-cases.json` with a fake timer and a stub `fetch`: waits, caps, `AbortSignal` cancels a pending wait, disabled policy
-- [ ] 5.2 Implement `retryingFetch` and `throttleState` in `src/ui/src/api/http.ts`; `ApiError.retryAfterMs` + throttling message; install via `client.setConfig({ fetch: retryingFetch })` in `client.ts`; switch the raw `fetch` in `session.ts`, `tempo.ts`, `prom.ts`, `pyroscope.ts` to `retryingFetch`
-- [ ] 5.3 Shell banner "Some requests are being retried after throttling…" bound to `throttleState`; test that it appears while a retry is pending and disappears after
-- [ ] 5.4 Test that a panel rendering `error.message` shows the throttling message with the wait for an exhausted 429
+- [x] 5.1 Failing tests (`vitest`) for `retryingFetch` replaying `api/retry-cases.json` with a fake timer and a stub `fetch`: waits, caps, `AbortSignal` cancels a pending wait, disabled policy
+- [x] 5.2 Implement `retryingFetch` and `throttleState` in `src/ui/src/api/http.ts`; `ApiError.retryAfterMs` + throttling message; install via `client.setConfig({ fetch: retryingFetch })` in `client.ts`; switch the raw `fetch` in `session.ts`, `tempo.ts`, `prom.ts`, `pyroscope.ts` to `retryingFetch`
+- [x] 5.3 Shell banner "Some requests are being retried after throttling…" bound to `throttleState`; test that it appears while a retry is pending and disappears after
+- [x] 5.4 Test that a panel rendering `error.message` shows the throttling message with the wait for an exhausted 429
 
 ## 6. Parity + end-to-end
 

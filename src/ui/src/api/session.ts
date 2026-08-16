@@ -2,7 +2,12 @@
 // tenant-scoped whoami endpoint (/api/v1/whoami). The session cookie is
 // HttpOnly — browser code never reads it; it only creates and clears it.
 
-import { ApiError, tenantHeaders } from "./http";
+import {
+  ApiError,
+  retryAfterMsFrom,
+  retryingFetch,
+  tenantHeaders,
+} from "./http";
 
 export interface SessionCredentials {
   email: string;
@@ -54,7 +59,7 @@ export interface WhoamiResponse {
 export async function createSession(
   creds: SessionCredentials,
 ): Promise<SessionResult> {
-  const res = await fetch("/ui/session", {
+  const res = await retryingFetch("/ui/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -71,6 +76,7 @@ export async function createSession(
     throw new ApiError(
       body?.error ?? `Login failed (${res.status})`,
       res.status,
+      retryAfterMsFrom(res),
     );
   }
   return (await res.json()) as SessionResult;
@@ -78,9 +84,13 @@ export async function createSession(
 
 /** Log out: the server clears the session cookie. */
 export async function deleteSession(): Promise<void> {
-  const res = await fetch("/ui/session", { method: "DELETE" });
+  const res = await retryingFetch("/ui/session", { method: "DELETE" });
   if (!res.ok) {
-    throw new ApiError(`Logout failed (${res.status})`, res.status);
+    throw new ApiError(
+      `Logout failed (${res.status})`,
+      res.status,
+      retryAfterMsFrom(res),
+    );
   }
 }
 
@@ -92,9 +102,13 @@ export async function whoami(tenant?: string): Promise<WhoamiResponse> {
   const headers = tenant
     ? { Accept: "application/json", "X-Tenant-ID": tenant }
     : tenantHeaders();
-  const res = await fetch("/api/v1/whoami", { headers });
+  const res = await retryingFetch("/api/v1/whoami", { headers });
   if (!res.ok) {
-    throw new ApiError(`whoami failed (${res.status})`, res.status);
+    throw new ApiError(
+      `whoami failed (${res.status})`,
+      res.status,
+      retryAfterMsFrom(res),
+    );
   }
   return (await res.json()) as WhoamiResponse;
 }
