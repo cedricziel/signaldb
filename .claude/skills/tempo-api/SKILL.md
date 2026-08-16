@@ -96,8 +96,15 @@ Requires `admin_api_key` from config:
 | `/api/v1/admin/tenants/{id}/datasets`              | GET/POST       | List/create datasets   |
 | `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE         | Delete dataset         |
 
-A separate tenant self-service API is mounted at `/api/v1` (see the
-`multi-tenancy` skill).
+Every row above is also in the OpenAPI document, and reachable through
+`signaldb-sdk`, the `signaldb-cli admin` group, and the MCP server's
+unprefixed platform-admin tools (`list_tenants`, `create_tenant`,
+`revoke_api_key`, ...) — not only raw HTTP.
+
+A separate tenant self-service API is mounted at `/api/v1`, and a
+human-session-only management API at `/api/v1/manage` (see the
+`multi-tenancy` skill for both, including which CLI/MCP surfaces reach
+each).
 
 ## Grafana Integration
 

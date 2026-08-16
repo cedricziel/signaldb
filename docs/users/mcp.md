@@ -19,40 +19,112 @@ already allowed to see — tenant isolation stays enforced by the router.
 
 ## What it exposes
 
-Tools (available to every authenticated tenant session — there is no role
-gating in v1):
+Neither family below is hidden from `tools/list` — a call your credential
+does not authorize comes back as a clean access-denied tool error, not a
+missing tool.
 
-| Tool                      | Purpose                                                                                                                                                         |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server_info`             | Confirm connectivity and which tenant your credential resolves to.                                                                                              |
-| `search_traces`           | TraceQL search over your tenant's traces.                                                                                                                       |
-| `get_trace`               | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                |
-| `get_profile`             | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                   |
-| `discover_attributes`     | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels). |
-| `discover_metrics`        | List the distinct metric names visible to your tenant.                                                                                                          |
-| `query_metrics`           | PromQL query over your tenant's metrics (native Prometheus result).                                                                                             |
-| `search_logs`             | LogQL query over your tenant's logs (native Loki result).                                                                                                       |
-| `query_ir`                | Native Query IR document (the structured, versioned query surface).                                                                                             |
-| `compact_run`             | Trigger a compaction pass now (admin-authenticated).                                                                                                            |
-| `compact_status`          | Active compaction leases and metrics (admin-authenticated).                                                                                                     |
-| `compact_dry_run`         | Plan compaction candidates without executing (admin-authenticated).                                                                                             |
-| `list_api_keys`           | List a tenant's API keys with their scopes and dataset restriction (admin-authenticated).                                                                       |
-| `create_api_key`          | Create an API key carrying explicit `scopes` (required; e.g. `traces:write`, `schema:read`) and an optional `dataset_id` (admin-authenticated).                 |
-| `update_api_key_scopes`   | Change a live key's scopes and/or dataset restriction without rotating its secret; revoked keys are rejected (admin-authenticated).                             |
-| `list_schema_registries`  | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts.   |
-| `resolve_attribute`       | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation.     |
-| `resolve_entity`          | What an entity type (`k8s.pod`, `service`, ...) means: identifying/descriptive attributes, what it extends, associated metrics.                                 |
-| `resolve_metric`          | What a metric means: instrument, unit, brief, recorded attributes, associated entities.                                                                         |
-| `search_schema`           | Prefix search over attributes, entities, or metrics (`kind`, `prefix`, `limit`) to find the right vocabulary before querying.                                   |
-| `create_schema_registry`  | Upload a custom Weaver-model registry document (JSON object) for your tenant (requires `schema:write`).                                                         |
-| `replace_schema_registry` | Replace a custom registry's document by namespace/version (requires `schema:write`; bundled registries refuse).                                                 |
-| `delete_schema_registry`  | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                             |
+### Query and discovery
+
+Available to every authenticated tenant session — there is no role gating on
+these:
+
+| Tool                       | Purpose                                                                                                                                                         |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server_info`              | Confirm connectivity and which tenant your credential resolves to.                                                                                              |
+| `search_traces`            | TraceQL search over your tenant's traces.                                                                                                                       |
+| `get_trace`                | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                |
+| `get_profile`              | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                   |
+| `discover_attributes`      | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels). |
+| `discover_metrics`         | List the distinct metric names visible to your tenant.                                                                                                          |
+| `query_metrics`            | PromQL query over your tenant's metrics (native Prometheus result); instant by default, or a range query when `start`/`end` (and optionally `step`) are given.  |
+| `search_logs`              | LogQL query over your tenant's logs (native Loki result); instant or range, same as `query_metrics`.                                                            |
+| `query_ir`                 | Native Query IR document (the structured, versioned query surface).                                                                                             |
+| `list_schema_registries`   | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts.   |
+| `get_schema_registry`      | Fetch one registry's summary and full document by `namespace`/`version`.                                                                                        |
+| `resolve_attribute`        | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation.     |
+| `resolve_entity`           | What an entity type (`k8s.pod`, `service`, ...) means: identifying/descriptive attributes, what it extends, associated metrics.                                 |
+| `resolve_metric`           | What a metric means: instrument, unit, brief, recorded attributes, associated entities.                                                                         |
+| `search_schema`            | Prefix search over attributes, entities, or metrics (`kind`, `prefix`, `limit`) to find the right vocabulary before querying.                                   |
+| `create_schema_registry`   | Upload a custom Weaver-model registry document (JSON object) for your tenant (requires `schema:write`).                                                         |
+| `replace_schema_registry`  | Replace a custom registry's document by namespace/version (requires `schema:write`; bundled registries refuse).                                                 |
+| `validate_schema_registry` | Validate a registry document without storing it; errors carry document paths (requires `schema:write`).                                                         |
+| `delete_schema_registry`   | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                             |
 
 Each query tool accepts an optional `dataset` argument. Omit it to use your
 session's default dataset; pass one to target another dataset your tenant may
 access (the router validates access and rejects the rest). Large results are
 capped and returned with a `truncated: true` flag telling the agent to narrow
 the query.
+
+### Operational control
+
+Admin-authenticated (the administrative API key, not a tenant key):
+
+| Tool              | Purpose                                       |
+| ----------------- | --------------------------------------------- |
+| `compact_run`     | Trigger a compaction pass now.                |
+| `compact_status`  | Active compaction leases and metrics.         |
+| `compact_dry_run` | Plan compaction candidates without executing. |
+
+### Platform administration
+
+Unprefixed, admin-authenticated (the administrative API key can manage
+**any** tenant — this is the same credential the `admin` CLI group and the
+[admin HTTP API](authentication.md) use):
+
+| Tool                               | Purpose                                                                                                                                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `list_tenants` / `get_tenant`      | List every tenant, or fetch one by ID.                                                                                                                                               |
+| `create_tenant` / `update_tenant`  | Create a tenant, or update its name/default dataset.                                                                                                                                 |
+| `delete_tenant`                    | Delete a tenant and everything under it. **Destructive**: requires `confirm` equal to `tenant_id`.                                                                                   |
+| `create_user`                      | Create a human user and grant an initial tenant membership.                                                                                                                          |
+| `list_datasets` / `create_dataset` | List or create a tenant's datasets.                                                                                                                                                  |
+| `delete_dataset`                   | Delete a dataset by ID. **Destructive**: requires `confirm` equal to `dataset_id`.                                                                                                   |
+| `list_api_keys`                    | List a tenant's API keys with their scopes and dataset restriction. Raw secrets are never returned.                                                                                  |
+| `create_api_key`                   | Create an API key carrying explicit `scopes` (required; e.g. `traces:write`, `schema:read`) and an optional `dataset_id`. The raw secret is returned exactly once, in this response. |
+| `update_api_key_scopes`            | Change a live key's scopes and/or dataset restriction without rotating its secret; revoked keys are rejected.                                                                        |
+| `revoke_api_key`                   | Revoke an API key by ID. **Destructive**: requires `confirm` equal to `key_id`.                                                                                                      |
+
+### Tenant self-management
+
+`tenant_`-prefixed; act as the caller's own identity within its own tenant.
+Two sub-groups, by which endpoint they wrap:
+
+**Tables and schemas** (tenant self-service API) — work with a plain tenant
+API key, exactly like the query tools above:
+
+| Tool                           | Purpose                                                                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tenant_list_tables`           | List the tenant's provisioned signal tables.                                                                                               |
+| `tenant_create_tables`         | Provision (create) the tenant's enabled signal tables — the manual trigger from [table provisioning](../operations/table-provisioning.md). |
+| `tenant_list_table_schemas`    | List the tenant's configured table schema types (distinct from `tenant_list_tables`, which lists what is actually provisioned).            |
+| `list_available_table_schemas` | List every table schema type SignalDB knows how to provision, regardless of tenant configuration.                                          |
+
+**Datasets, API keys, and memberships** (management API) — **require a
+human-authenticated session**: a browser session cookie, or an OAuth
+access token (see [Claude.ai and ChatGPT](#claudeai-and-chatgpt-oauth-connector)
+below) carrying a real per-tenant role. A plain API key is denied — this is
+a deliberate privilege boundary, not a bug: an API key can already write any
+signal data and provision tables, but minting or revoking _other_ API keys,
+deleting datasets, or changing memberships is reserved for a human with a
+real role in the tenant. Calling one of these with a plain-API-key session
+returns a clean access-denied error rather than succeeding or 404ing.
+
+| Tool                                                   | Purpose                                                                                                                                            |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tenant_list_datasets` / `tenant_create_dataset`       | List or create the caller's own tenant's datasets.                                                                                                 |
+| `tenant_delete_dataset`                                | Delete a dataset by name. **Destructive**: requires `confirm` equal to `dataset_name`.                                                             |
+| `tenant_list_api_keys`                                 | List the caller's own tenant's API keys. Raw secrets are never returned.                                                                           |
+| `tenant_create_api_key`                                | Create an API key for the caller's own tenant. The raw secret is returned exactly once.                                                            |
+| `tenant_update_api_key`                                | Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys.                                                         |
+| `tenant_revoke_api_key`                                | Revoke one of the caller's own tenant's API keys. **Destructive**: requires `confirm` equal to `key_id`.                                           |
+| `tenant_list_memberships` / `tenant_upsert_membership` | List the caller's own tenant's memberships, or create/update a member's role.                                                                      |
+| `tenant_remove_membership`                             | Remove a member from the caller's own tenant. **Destructive**: requires `confirm` equal to `user_id`.                                              |
+| `tenant_get_schema`                                    | The caller's own tenant's logical + physical schema. Stricter still: requires an **instance** administrator session, not just a tenant-admin role. |
+
+Destructive tools carry the MCP `destructiveHint` annotation; read-only tools
+carry `readOnlyHint` — a client that inspects `tools/list` annotations can
+tell which is which without trying the call.
 
 ## Prompts
 
@@ -381,6 +453,7 @@ Schema-registry lookup and custom-registry management mirror the schema tools
 
 ```bash
 signaldb-cli schema registry list
+signaldb-cli schema registry get otel 1.43.0
 signaldb-cli schema attribute get k8s.pod.uid
 signaldb-cli schema entity get k8s.pod
 signaldb-cli schema metric search k8s.pod. --limit 20
@@ -389,3 +462,29 @@ signaldb-cli admin schema create --file conventions.yaml     # YAML or JSON
 signaldb-cli admin schema replace acme 1.0.0 --file conventions.yaml
 signaldb-cli admin schema delete acme 1.0.0
 ```
+
+`server_info` mirrors `signaldb-cli whoami`; `query_metrics`/`search_logs`'s
+range mode mirrors `signaldb query --promql|--logql ... --start ... --end
+...`; `get_trace` mirrors `signaldb query --trace-id <id>`:
+
+```bash
+signaldb-cli whoami
+signaldb-cli query --promql 'up' --start 0 --end 3600 --step 15s
+signaldb-cli query --trace-id 4bf92f3577b34da6a3ce929d0e0e4736
+```
+
+`tenant_list_tables`/`tenant_create_tables` (and the two schema-listing
+tools) mirror `signaldb-cli tenant table`, the only `tenant` subcommand the
+CLI has — datasets/API-keys/memberships/schema management need a human
+session, which the CLI cannot present (see the table above):
+
+```bash
+signaldb-cli tenant table list --api-key sk-your-key --tenant-id your-tenant
+signaldb-cli tenant table provision --api-key sk-your-key --tenant-id your-tenant
+signaldb-cli tenant table schemas --api-key sk-your-key --tenant-id your-tenant
+signaldb-cli tenant table available-schemas --api-key sk-your-key
+```
+
+Platform administration (`list_tenants`, `create_dataset`, `revoke_api_key`,
+...) mirrors the `admin` command group, authenticated with the administrative
+key instead of a tenant key — see `signaldb-cli admin --help`.

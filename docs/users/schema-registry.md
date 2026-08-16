@@ -97,8 +97,11 @@ Prefix search (`GET /api/v1/schema/attributes?prefix=http.re&limit=20`, also
 attribute keys in one call.
 
 The MCP server exposes the same lookups as tools (`resolve_attribute`,
-`resolve_entity`, `resolve_metric`, `search_schema`, `list_schema_registries`),
-so an AI agent can learn what a key means before building a query.
+`resolve_entity`, `resolve_metric`, `search_schema`, `list_schema_registries`,
+`get_schema_registry`), so an AI agent can learn what a key means before
+building a query. `validate_schema_registry` checks a document without
+storing it, mirroring `signaldb-cli admin schema validate` — see
+[the MCP tool catalogue](mcp.md#what-it-exposes) for the full list.
 
 ## Add your own conventions
 

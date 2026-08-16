@@ -30,8 +30,11 @@ signaldb-cli query --sql "SELECT trace_id, span_name, service_name FROM traces L
 ```
 
 `query` takes exactly one language flag; `--sql` runs Arrow-Flight SQL. (The
-other flags — `--promql`, `--logql`, `--traceql` — run the corresponding query
-language and return its native JSON.) You get a pretty-printed table and a
+other flags — `--promql`, `--logql`, `--traceql`, `--ir` — run the
+corresponding query language and return its native JSON; `--trace-id`
+fetches one trace by ID instead of running a query. `--start`/`--end`
+switch `--promql`/`--logql` from an instant query to a range query, with
+`--step` as the resolution.) You get a pretty-printed table and a
 `10 row(s) returned.` summary on stderr. All flags can also come from the
 environment: `SIGNALDB_FLIGHT_URL` (default `http://localhost:50053`),
 `SIGNALDB_API_KEY`, `SIGNALDB_TENANT_ID`, `SIGNALDB_DATASET_ID`.

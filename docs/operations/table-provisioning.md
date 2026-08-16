@@ -99,17 +99,40 @@ behavior — rather than to data loss.
 
 ## Provisioning a tenant on demand
 
-To create a tenant's tables immediately instead of waiting for the next pass:
+To create a tenant's tables immediately instead of waiting for the next pass,
+and to list what is already provisioned, `POST /api/v1/tenants/{id}/tables/create`
+and `GET /api/v1/tenants/{id}/tables` are in the OpenAPI contract, so every
+client surface reaches them through the generated SDK — raw HTTP, the CLI,
+an MCP tool, and the UI's management area:
 
 ```bash
+# raw HTTP
 curl -X POST http://localhost:3000/api/v1/tenants/acme/tables/create \
   -H "Authorization: Bearer $SIGNALDB_API_KEY" \
   -H "X-Tenant-ID: acme"
+
+# CLI (signaldb-cli tenant table)
+signaldb-cli tenant table list --api-key "$SIGNALDB_API_KEY" --tenant-id acme
+signaldb-cli tenant table provision --api-key "$SIGNALDB_API_KEY" --tenant-id acme
 ```
+
+Through an MCP agent session: the `tenant_list_tables` and
+`tenant_create_tables` tools (see [the MCP server doc](../users/mcp.md)).
+Through the web UI: the management area's **Tables** section for a
+dataset, with a **Provision tables** action.
 
 The call provisions the tenant's datasets before returning `201`, and returns
 `500` if any table could not be created. Tenant-administrator privileges are
-required.
+required — in practice any valid tenant API key, since a tenant-scoped key is
+already trusted to shape its own tenant's infrastructure (see
+`TenantContext::can_manage_tenant`); this is a lower bar than the
+[management API](../users/authentication.md)'s dataset/API-key/membership
+endpoints, which require a human-authenticated session.
+
+`GET /api/v1/tenants/{id}/tables` (`tenant table list` / `tenant_list_tables`)
+is, as of this writing, a stub that always answers an empty list regardless
+of what has actually been provisioned — use the metrics/logs below, or the
+Iceberg catalog directly, to verify provisioning until that is implemented.
 
 ## Verifying
 
