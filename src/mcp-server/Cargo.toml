@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 signaldb-sdk.workspace = true
+# Self-monitoring only: span factories, app metrics, HTTP server-span
+# middleware, and telemetry init. No catalog, storage, or auth from here.
+common.workspace = true
 rmcp.workspace = true
 
 tokio.workspace = true
@@ -22,6 +25,10 @@ dashmap.workspace = true
 
 [dev-dependencies]
 tower.workspace = true
+futures.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
+tracing-opentelemetry.workspace = true
 # `client` drives an in-memory MCP session against the server in tests, so the
 # MCP Apps surface is asserted over the real protocol rather than in isolation.
 rmcp = { workspace = true, features = ["client"] }

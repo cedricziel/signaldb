@@ -2,11 +2,12 @@
 //!
 //! Serves MCP over Streamable HTTP at `/mcp` (production) or over stdio
 //! (`--stdio`, local development). It is a sidecar that forwards the caller's
-//! credential to a SignalDB router via `signaldb-sdk`; it depends on no
-//! SignalDB internal crate. See the crate docs for the trust model.
+//! credential to a SignalDB router via `signaldb-sdk`; it holds no privileged
+//! state of its own. See the crate docs for the trust model.
 
 use crate::{McpAppState, mcp_http_router, server::McpServer};
 use anyhow::{Context, Result};
+use common::cli::CommonArgs;
 use std::net::SocketAddr;
 
 /// Command-line arguments of the `mcp` subcommand (`signaldb mcp`).
@@ -45,6 +46,17 @@ pub struct Args {
     #[arg(long, env = "SIGNALDB__MCP__ROUTER_TIMEOUT", default_value_t = 30)]
     pub router_timeout: u64,
 
+    /// Maximum number of tool calls one MCP session may have in flight at once.
+    /// A call arriving at the limit waits briefly for a permit and then fails
+    /// with a distinct "too many concurrent tool calls" error, so a runaway
+    /// agent fails fast instead of piling up.
+    #[arg(
+        long,
+        env = "SIGNALDB__MCP__MAX_CONCURRENT_TOOL_CALLS",
+        default_value_t = crate::audit::DEFAULT_MAX_CONCURRENT_TOOL_CALLS
+    )]
+    pub max_concurrent_tool_calls: usize,
+
     /// Serve MCP over stdio instead of HTTP (local development). Stdio has no
     /// per-request credential, so downstream calls carry none — dev only.
     #[arg(long)]
@@ -64,14 +76,30 @@ pub struct Args {
     pub oauth_issuer_url: Option<String>,
 }
 
-/// Run the `mcp` server with its own arguments.
-pub async fn run(args: Args) -> Result<()> {
-    init_tracing();
+/// Run the `mcp` server with the shared options and its own arguments.
+///
+/// Self-monitoring (`[self_monitoring]` in the config file named by `--config`,
+/// or `signaldb.toml` + `SIGNALDB__*` env) is honoured like every other
+/// service: when enabled, the `POST /mcp` server spans, `tools/call {tool}`
+/// spans, audit events, and metrics are exported as `signaldb-mcp`. The
+/// configuration is otherwise unused — the sidecar still needs no catalog or
+/// storage.
+pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
+    let telemetry = init_tracing(common);
 
     let router_timeout = std::time::Duration::from_secs(args.router_timeout);
 
     if args.stdio {
-        return serve_stdio(args.router_url, router_timeout).await;
+        let result = serve_stdio(
+            args.router_url,
+            router_timeout,
+            args.max_concurrent_tool_calls,
+        )
+        .await;
+        if let Some(telemetry) = telemetry {
+            telemetry.shutdown();
+        }
+        return result;
     }
 
     let addr: SocketAddr = args
@@ -79,7 +107,9 @@ pub async fn run(args: Args) -> Result<()> {
         .parse()
         .with_context(|| format!("Invalid bind address: {}", args.bind_address))?;
 
-    let mut state = McpAppState::new(args.router_url.clone()).with_router_timeout(router_timeout);
+    let mut state = McpAppState::new(args.router_url.clone())
+        .with_router_timeout(router_timeout)
+        .with_max_concurrent_tool_calls(args.max_concurrent_tool_calls);
     match (
         args.oauth_resource_url.clone(),
         args.oauth_issuer_url.clone(),
@@ -109,28 +139,64 @@ pub async fn run(args: Args) -> Result<()> {
         .await
         .context("MCP server error")?;
 
+    if let Some(telemetry) = telemetry {
+        telemetry.shutdown();
+    }
     Ok(())
 }
 
-/// Initialize tracing from `RUST_LOG` (default `info`), plain-text to stderr.
-fn init_tracing() {
-    use tracing_subscriber::{EnvFilter, fmt};
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
+/// Initialize tracing from `RUST_LOG` (default `info`; `--verbose` / `--quiet`
+/// shift it), plain-text to stderr — stdout is the stdio transport's wire.
+/// When the loaded configuration enables self-monitoring, the OTel span and
+/// log bridges are attached too and the returned handle must be shut down on
+/// exit to flush. Configuration or telemetry failures degrade to plain logging
+/// with a warning: the sidecar must start without either.
+fn init_tracing(common: &CommonArgs) -> Option<common::self_monitoring::Telemetry> {
+    let config = match &common.config {
+        Some(path) => common::config::Configuration::load_from_path(path),
+        None => common::config::Configuration::load(),
+    };
+    let (telemetry, deferred_warning) = match config {
+        Ok(config) => match common::self_monitoring::init_telemetry(&config, "signaldb-mcp") {
+            Ok(telemetry) => (telemetry, None),
+            Err(e) => (None, Some(format!("Self-monitoring init failed: {e}"))),
+        },
+        Err(e) => (
+            None,
+            Some(format!(
+                "Configuration not loaded, self-monitoring off: {e}"
+            )),
+        ),
+    };
+    common::cli::utils::init_logging_with_writer(common, telemetry.as_ref(), std::io::stderr);
+    if let Some(warning) = deferred_warning {
+        tracing::warn!("{warning}");
+    } else if let Some(telemetry) = &telemetry {
+        tracing::info!(
+            sampler = %telemetry.sampler_description(),
+            "Self-monitoring telemetry initialized"
+        );
+    }
+    telemetry
 }
 
 /// Serve the MCP handler over stdio for local development.
-async fn serve_stdio(router_url: String, router_timeout: std::time::Duration) -> Result<()> {
+async fn serve_stdio(
+    router_url: String,
+    router_timeout: std::time::Duration,
+    max_concurrent_tool_calls: usize,
+) -> Result<()> {
     use rmcp::ServiceExt;
 
     tracing::info!("SignalDB MCP server starting on stdio (development)");
-    let service = McpServer::new(router_url, router_timeout)
-        .serve(rmcp::transport::stdio())
-        .await
-        .context("Failed to start MCP stdio transport")?;
+    let service = McpServer::with_max_concurrent_tool_calls(
+        router_url,
+        router_timeout,
+        max_concurrent_tool_calls,
+    )
+    .serve(rmcp::transport::stdio())
+    .await
+    .context("Failed to start MCP stdio transport")?;
     service.waiting().await.context("MCP stdio server error")?;
     Ok(())
 }

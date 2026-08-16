@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
         SignalDbCommands::Compactor(args) => {
             return compactor::cli::run(&cli.common, args).await;
         }
-        SignalDbCommands::Mcp(args) => return mcp_server::cli::run(args).await,
+        SignalDbCommands::Mcp(args) => return mcp_server::cli::run(&cli.common, args).await,
         SignalDbCommands::Common(common_cmd) => common_cmd,
     };
 
