@@ -1,0 +1,259 @@
+{
+  "$comment": "Shared retry contract fixture for SignalDB's generated clients (Rust SDK: signaldb_sdk::retry, TypeScript: src/ui/src/api/http.ts). Both test suites replay every case against their policy engine. `attempt` is the number of attempts already made (1 = the first request just failed). `retry_after` is the raw Retry-After header value (seconds; the engines also accept an HTTP-date, exercised in unit tests). `failure` is `status:<code>`, `connect`, or `timeout`. A backoff wait for attempt n is uniform in [0, min(per_attempt_cap_ms, base_ms * 2^(n-1))].",
+  "policy": {
+    "max_attempts": 4,
+    "base_ms": 250,
+    "per_attempt_cap_ms": 10000,
+    "total_cap_ms": 30000
+  },
+  "cases": [
+    {
+      "name": "429 on GET without Retry-After: jittered backoff, attempt 1",
+      "failure": "status:429",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 250 }
+    },
+    {
+      "name": "429 on GET without Retry-After: backoff doubles on attempt 2",
+      "failure": "status:429",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 2,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 500 }
+    },
+    {
+      "name": "429 on GET without Retry-After: backoff doubles on attempt 3",
+      "failure": "status:429",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 3,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 1000 }
+    },
+    {
+      "name": "429 on POST is retried (the server did not act on it)",
+      "failure": "status:429",
+      "method": "POST",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 250 }
+    },
+    {
+      "name": "429 on DELETE is retried",
+      "failure": "status:429",
+      "method": "DELETE",
+      "retry_after": "1",
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 1000, "wait_ms_max": 1000 }
+    },
+    {
+      "name": "429 with Retry-After: 2 waits exactly the server-stated time",
+      "failure": "status:429",
+      "method": "GET",
+      "retry_after": "2",
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 2000, "wait_ms_max": 2000 }
+    },
+    {
+      "name": "429 with Retry-After: 0 retries immediately",
+      "failure": "status:429",
+      "method": "GET",
+      "retry_after": "0",
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 0 }
+    },
+    {
+      "name": "429 with Retry-After at the per-attempt cap is honoured",
+      "failure": "status:429",
+      "method": "GET",
+      "retry_after": "10",
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 10000, "wait_ms_max": 10000 }
+    },
+    {
+      "name": "429 with Retry-After beyond the per-attempt cap fails fast",
+      "failure": "status:429",
+      "method": "GET",
+      "retry_after": "11",
+      "attempt": 1,
+      "expect": { "retry": false, "fail_fast": true }
+    },
+    {
+      "name": "429 with an unparseable Retry-After falls back to backoff",
+      "failure": "status:429",
+      "method": "GET",
+      "retry_after": "soon",
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 250 }
+    },
+    {
+      "name": "429 after the last permitted attempt is not retried",
+      "failure": "status:429",
+      "method": "GET",
+      "retry_after": "1",
+      "attempt": 4,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "429 on the penultimate attempt is still retried",
+      "failure": "status:429",
+      "method": "GET",
+      "retry_after": "1",
+      "attempt": 3,
+      "expect": { "retry": true, "wait_ms_min": 1000, "wait_ms_max": 1000 }
+    },
+    {
+      "name": "503 on GET is retried",
+      "failure": "status:503",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 250 }
+    },
+    {
+      "name": "502 on HEAD is retried",
+      "failure": "status:502",
+      "method": "HEAD",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 250 }
+    },
+    {
+      "name": "504 on PUT is retried",
+      "failure": "status:504",
+      "method": "PUT",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 250 }
+    },
+    {
+      "name": "503 on DELETE is retried",
+      "failure": "status:503",
+      "method": "DELETE",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 250 }
+    },
+    {
+      "name": "503 on POST is not retried (the server may have acted on it)",
+      "failure": "status:503",
+      "method": "POST",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "502 on POST is not retried",
+      "failure": "status:502",
+      "method": "POST",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "504 on PATCH is not retried",
+      "failure": "status:504",
+      "method": "PATCH",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "503 with Retry-After on GET honours the header",
+      "failure": "status:503",
+      "method": "GET",
+      "retry_after": "3",
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 3000, "wait_ms_max": 3000 }
+    },
+    {
+      "name": "connection failure on GET is retried",
+      "failure": "connect",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 250 }
+    },
+    {
+      "name": "timeout on GET is retried",
+      "failure": "timeout",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 2,
+      "expect": { "retry": true, "wait_ms_min": 0, "wait_ms_max": 500 }
+    },
+    {
+      "name": "connection failure on POST is not retried",
+      "failure": "connect",
+      "method": "POST",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "timeout on POST is not retried",
+      "failure": "timeout",
+      "method": "POST",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "400 is never retried",
+      "failure": "status:400",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "401 is never retried",
+      "failure": "status:401",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "403 is never retried",
+      "failure": "status:403",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "404 is never retried",
+      "failure": "status:404",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "500 is never retried",
+      "failure": "status:500",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "500 with Retry-After is still not retried",
+      "failure": "status:500",
+      "method": "GET",
+      "retry_after": "1",
+      "attempt": 1,
+      "expect": { "retry": false }
+    },
+    {
+      "name": "2xx is not a failure",
+      "failure": "status:200",
+      "method": "GET",
+      "retry_after": null,
+      "attempt": 1,
+      "expect": { "retry": false }
+    }
+  ]
+}

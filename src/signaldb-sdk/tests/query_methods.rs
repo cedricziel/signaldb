@@ -10,7 +10,10 @@ use signaldb_sdk::Client;
 
 #[test]
 fn client_exposes_trace_query_builders() {
-    let client = Client::new("http://localhost:8080");
+    let client = Client::new(
+        "http://localhost:8080",
+        signaldb_sdk::RetryPolicy::default(),
+    );
 
     // Each call must compile — this is the exact surface the MCP tools
     // (search_traces, get_trace, discover_attributes) forward to.
@@ -22,7 +25,10 @@ fn client_exposes_trace_query_builders() {
 
 #[test]
 fn client_exposes_label_discovery_builders() {
-    let client = Client::new("http://localhost:8080");
+    let client = Client::new(
+        "http://localhost:8080",
+        signaldb_sdk::RetryPolicy::default(),
+    );
 
     // Loki/Prometheus label-name and label-value discovery, wrapped by the
     // MCP server's signal-aware `discover_attributes` and `discover_metrics`
@@ -39,7 +45,10 @@ fn client_exposes_label_discovery_builders() {
 fn client_exposes_ir_query_and_round_trips_the_request() {
     use signaldb_sdk::types::{QueryIrRequest, QueryRange};
 
-    let client = Client::new("http://localhost:8080");
+    let client = Client::new(
+        "http://localhost:8080",
+        signaldb_sdk::RetryPolicy::default(),
+    );
     let _query = client.query_ir(); // the native IR operation builder exists
 
     let request = QueryIrRequest {
@@ -125,7 +134,11 @@ async fn client_forwards_credentials_via_default_headers() {
         .build()
         .expect("reqwest client builds");
 
-    let client = Client::new_with_client(&format!("http://{addr}"), http);
+    let client = Client::new_with_client(
+        &format!("http://{addr}"),
+        http,
+        signaldb_sdk::RetryPolicy::default(),
+    );
     client
         .list_tenants()
         .send()

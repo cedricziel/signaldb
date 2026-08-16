@@ -10,7 +10,10 @@ use signaldb_sdk::Client;
 
 #[test]
 fn client_exposes_registry_management_builders() {
-    let client = Client::new("http://localhost:8080");
+    let client = Client::new(
+        "http://localhost:8080",
+        signaldb_sdk::RetryPolicy::default(),
+    );
 
     let _list = client.schema_list_registries();
     let _get = client
@@ -31,7 +34,10 @@ fn client_exposes_registry_management_builders() {
 
 #[test]
 fn client_exposes_resolve_and_search_builders() {
-    let client = Client::new("http://localhost:8080");
+    let client = Client::new(
+        "http://localhost:8080",
+        signaldb_sdk::RetryPolicy::default(),
+    );
 
     let _attr = client.schema_resolve_attribute().key("k8s.pod.uid");
     let _attrs = client
@@ -51,7 +57,10 @@ fn client_exposes_resolve_and_search_builders() {
 /// a YAML upload converts to `serde_json::Value` first (the CLI does this).
 #[test]
 fn registry_document_body_is_a_json_object() {
-    let client = Client::new("http://localhost:8080");
+    let client = Client::new(
+        "http://localhost:8080",
+        signaldb_sdk::RetryPolicy::default(),
+    );
     let document = serde_json::json!({
         "name": "acme",
         "version": "1.0.0",

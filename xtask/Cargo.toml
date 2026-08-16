@@ -10,5 +10,6 @@ openapiv3 = "2.2.0"
 serde_json.workspace = true
 prettyplease = "0.3"
 syn = "3"
+quote = "1"
 anyhow.workspace = true
 clap.workspace = true

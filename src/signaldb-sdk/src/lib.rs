@@ -11,15 +11,24 @@
 //!   `generated.rs` by hand** — change the router annotations and regenerate.
 //! - [`query`] is hand-written. SQL is served over Arrow Flight (gRPC), which
 //!   OpenAPI cannot describe, so [`query::QueryClient`] wraps that transport.
-//!   It is the only non-generated code in this crate.
+//! - [`retry`] is hand-written: the shared retry-on-throttle policy every
+//!   generated operation runs through (`cargo xtask generate` installs it as
+//!   the progenitor `ClientHooks::exec` override; see the note at the top of
+//!   `generated.rs`).
+//! - [`builder`] is hand-written: [`ClientBuilder`], the one way consumers
+//!   construct a [`Client`] (headers, timeouts, retry policy).
 
 #[allow(clippy::all)]
 mod generated;
 
+pub mod builder;
 pub mod query;
+pub mod retry;
 
+pub use builder::{ClientBuildError, ClientBuilder};
 pub use generated::*;
 pub use query::{QueryClient, QueryError};
+pub use retry::RetryPolicy;
 
 #[cfg(test)]
 mod tests {
