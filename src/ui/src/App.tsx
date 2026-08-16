@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Outlet, useLocation, useNavigate } from "react-router";
+import { Outlet } from "react-router";
 import {
   loadPersistedTenantContext,
   persistTenantContext,
@@ -17,8 +17,6 @@ import { useExploreState } from "./lib/urlState";
  */
 export function App() {
   const [state, update] = useExploreState();
-  const location = useLocation();
-  const navigate = useNavigate();
 
   // The tenant/dataset context lives in the URL (`?tenant=&dataset=`), but
   // plain links (user menu → Schema, /manage, deep links inside the schema
@@ -40,25 +38,13 @@ export function App() {
   const effective = state.tenant ? state : { ...state, ...remembered.current };
   // Keep the API clients' tenant headers in sync with the (effective) state.
   setTenantContext({ tenant: effective.tenant, dataset: effective.dataset });
-  // Write the remembered context back onto the *current* path. Not via
-  // `update`: that rebuilds the path from the explore signal, which is
-  // "logs" on any non-explore route (/schema, /manage, …) and would send
-  // the user there instead.
+  // `update` keeps the current path off the explore routes (see
+  // useExploreState), so this only adds the search params.
   useEffect(() => {
     if (!state.tenant && remembered.current.tenant) {
-      const params = new URLSearchParams(location.search);
-      params.set("tenant", remembered.current.tenant);
-      if (remembered.current.dataset) {
-        params.set("dataset", remembered.current.dataset);
-      } else {
-        params.delete("dataset");
-      }
-      navigate(
-        { pathname: location.pathname, search: `?${params}` },
-        { replace: true },
-      );
+      update(remembered.current);
     }
-  }, [state.tenant, location.pathname, location.search, navigate]);
+  }, [state.tenant, update]);
 
   return (
     <div className="app-frame">

@@ -35,9 +35,9 @@ export function ManagementRoute() {
       who={who}
       onClose={() => navigate(-1)}
       onTenantCreated={(tenant, dataset) => {
-        // update() navigates to /logs itself (the route's signal defaults to
-        // "logs" off /manage), which closes the panel as a side effect.
-        update({ tenant, dataset });
+        // Setting the signal explicitly leaves /manage for /logs, which
+        // closes the panel as a side effect.
+        update({ tenant, dataset, signal: "logs" });
       }}
     />
   );

@@ -106,6 +106,25 @@ describe("App", () => {
     );
   });
 
+  it("changing the tenant context from the top bar stays on a non-explore route", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/labels?", body: emptyLabels },
+      { match: "/api/v1/schema/registries", body: { registries: [] } },
+    ]);
+    renderApp("/schema/conventions?tenant=acme&dataset=prod");
+    const user = (await import("@testing-library/user-event")).default;
+    await user.click(
+      screen.getByTitle("Tenant / dataset context for all queries"),
+    );
+    await user.clear(screen.getByLabelText("Dataset"));
+    await user.type(screen.getByLabelText("Dataset"), "staging");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(window.location.search).toContain("dataset=staging");
+    // Only the context changed; the route must not fall back to /logs.
+    expect(window.location.pathname).toBe("/schema/conventions");
+  });
+
   it("keeps the last tenant/dataset when navigating to a route without them in the URL", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
