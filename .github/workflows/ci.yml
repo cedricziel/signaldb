@@ -229,6 +229,11 @@ jobs:
 
       # clippy drives the same type-check pass as `cargo check`, so a
       # separate check step only repeats ~80s of work on the gating path.
+      # `--all-targets --all-features` also covers every `[[bench]]` target
+      # behind the per-crate `benchmarks` feature (common, writer,
+      # tests-integration), so this step doubles as the Criterion suites'
+      # compile guard on every core PR (plugin/UI-only PRs skip this job) —
+      # the benches cannot silently bit-rot.
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
