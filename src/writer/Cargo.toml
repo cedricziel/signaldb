@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 default = []
-benchmarks = ["dep:criterion", "dep:rand"]
+benchmarks = ["dep:criterion"]
 
 [dependencies]
 common.workspace = true
@@ -38,15 +38,9 @@ serde_json.workspace = true
 
 # Optional dependencies for benchmarks
 criterion = { workspace = true, optional = true }
-rand = { workspace = true, optional = true }
 
 [[bench]]
 name = "iceberg_benchmarks"
-harness = false
-required-features = ["benchmarks"]
-
-[[bench]]
-name = "connection_pool_benchmarks"
 harness = false
 required-features = ["benchmarks"]
 

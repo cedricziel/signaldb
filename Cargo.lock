@@ -9195,7 +9195,6 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-proto",
  "opentelemetry_sdk",
- "rand 0.10.2",
  "serde_json",
  "tempfile",
  "tokio",
