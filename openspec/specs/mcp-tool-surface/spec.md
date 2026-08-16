@@ -19,10 +19,9 @@ Management tools come in two families that differ only in which credential the
 router expects: **platform-admin tools** wrap the admin API and succeed when the
 session's forwarded credential is the administrative key; **tenant tools**
 (prefixed `tenant_`) wrap the management API and act as the caller's own
-identity within its tenant; the dataset/API-key/membership/schema tenant tools
-succeed only for a human-authenticated (OAuth) session, because the router
-rejects bare API keys on those endpoints by design, and their descriptions say
-so, while the table/schema-listing tenant tools work with an API key. Neither
+identity within its tenant, for a human-authenticated (OAuth) session or an
+API-key session whose key carries `tenant:manage` (the table/schema-listing
+tenant tools need only a valid key of that tenant). Neither
 family is hidden from `tools/list`; a call the router does not authorize
 returns a clean access-denied error. Tools that
 delete or revoke SHALL carry the MCP destructive annotation and SHALL require a
@@ -63,7 +62,15 @@ return key material.
 - **WHEN** an MCP client lists available tools
 - **THEN** the list includes `tenant_`-prefixed tools for the caller's datasets
   (list/create/delete), API keys (list/create/update/revoke), memberships
-  (list/upsert/remove), schema, and signal tables (list/provision/schemas)
+  (list/upsert/remove), schema, signal tables (list/provision/schemas), and the
+  tenant self view (`tenant_info`)
+
+#### Scenario: A tenant:manage key drives the tenant tools
+
+- **WHEN** an MCP session authenticated with an API key carrying
+  `tenant:manage` calls `tenant_create_dataset`
+- **THEN** the dataset is created in the key's tenant and the tool returns the
+  SDK-shaped result
 
 #### Scenario: Destructive tool requires confirmation
 
@@ -112,3 +119,43 @@ details.
   operation
 - **THEN** the tool returns an error result derived from the SDK error
 - **AND** the server continues serving subsequent requests
+
+### Requirement: Profile discovery and query are available as tools
+
+The MCP server SHALL expose the Pyroscope-compatible profile surface as tools,
+tenant-scoped like every other tool: `discover_profile_types` (the profile
+types with data), `discover_attributes` with `signal: "profiles"` (label names
+and, with `tag`, label values), `search_profiles` (a Pyroscope selector plus a
+time range → the aggregated flame graph, subject to the same payload cap and
+truncation flag as other query tools), `compare_profiles` (two ranges → the
+diff flame graph), and `profiles_for_trace` (the profiles correlated with a
+trace id). The existing `get_profile` (single profile by id) is unchanged.
+Results SHALL be the SDK's native shapes.
+
+#### Scenario: Profile types are discoverable
+
+- **WHEN** a tenant has ingested CPU profiles and a session calls
+  `discover_profile_types`
+- **THEN** the tool returns the CPU profile type among the types with data,
+  scoped to the caller's tenant
+
+#### Scenario: Profile labels through discover_attributes
+
+- **WHEN** a session calls `discover_attributes` with `signal: "profiles"` and
+  no `tag`
+- **THEN** the tool returns the profile label names for the caller's tenant;
+  with a `tag` it returns that label's values
+
+#### Scenario: A selector renders a flame graph
+
+- **WHEN** a session calls `search_profiles` with a selector such as
+  `process_cpu:cpu:nanoseconds{service_name="checkout"}` and a range
+- **THEN** the tool returns the aggregated flame graph as structured JSON,
+  truncated with `truncated: true` if it exceeds the payload cap
+
+#### Scenario: Profiles for a trace
+
+- **WHEN** a session calls `profiles_for_trace` with a trace id that has
+  correlated profiles
+- **THEN** the tool returns those profiles' identities scoped to the caller's
+  tenant

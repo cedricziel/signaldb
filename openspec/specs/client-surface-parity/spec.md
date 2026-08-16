@@ -44,12 +44,16 @@ headers — is defined once in the SDK and cannot drift between consumers.
 
 `signaldb-sdk` SHALL expose every capability the SignalDB API offers, spanning
 its HTTP surface (admin/management, tenant self-management including tables
-and schemas, operational control, and the PromQL/LogQL/TraceQL query-compat
-endpoints) and its Arrow Flight surface (SQL query). A capability reachable
-through the API but absent from the SDK is a defect. Every HTTP endpoint the
-router serves to tenants or administrators SHALL be declared in the OpenAPI
-document, because that document is the SDK's only source; an endpoint outside
-it is invisible to every client and is therefore a parity defect.
+and schemas, operational control, and the PromQL/LogQL/TraceQL/Pyroscope
+query-compat endpoints including trace-to-profile correlation) and its Arrow
+Flight surface (SQL query). A capability reachable through the API but absent
+from the SDK is a defect. Every HTTP endpoint the router serves to tenants or
+administrators SHALL be declared in the OpenAPI document, because that document
+is the SDK's only source; an endpoint outside it is invisible to every client
+and is therefore a parity defect. The route drift guard's allowlist SHALL name
+only routes that are genuinely not part of the client contract (health, the
+OpenAPI document itself, browser session and OAuth flows, static UI); a
+compat query route SHALL NOT be allowlisted.
 
 #### Scenario: A new API capability lacks SDK coverage
 
@@ -63,22 +67,35 @@ it is invisible to every client and is therefore a parity defect.
   OpenAPI operation
 - **THEN** the OpenAPI drift check fails and names the route
 
+#### Scenario: Pyroscope compat endpoints are in the contract
+
+- **WHEN** the OpenAPI document is inspected
+- **THEN** it declares operations for `/pyroscope/render`, `/render-diff`,
+  `/label-names`, `/label-values`, `/profile-types`, and
+  `/api/profiles/trace/{trace_id}`, and the generated Rust SDK and TypeScript
+  client expose them
+
 ### Requirement: Query-surface parity is enforced
 
 An automated check SHALL assert capability parity across the CLI and the MCP
 server for **every** operation the SDK exposes — derived from the SDK's own
 operation list, not a hand-maintained subset — against a reviewed exclusion
-list of operations that are intentionally single-surface (browser session and
-OAuth consent endpoints, and identity lookup that the MCP server exposes as
-`server_info`). Query languages keep their specific rules: every language SHALL
-be reachable through a CLI `query` flag; every language served over the
-router's **HTTP** surface (TraceQL, LogQL, PromQL, Query IR) SHALL additionally
-be reachable through an MCP tool; **SQL** is served over Arrow Flight (gRPC)
-and, because the MCP server is an HTTP forwarder that holds no Flight client,
-SQL is intentionally CLI-only, asserted explicitly. The check SHALL fail and
-name the surface and operation whenever a non-excluded SDK operation lacks a
-CLI command or an MCP tool, and SHALL fail when the exclusion list names an
-operation that no longer exists.
+list of operations that are intentionally single-surface. That list SHALL be
+limited to operations that are inherently tied to a browser or a signed-in
+human: the OAuth 2.1 consent endpoints (session-cookie authenticated) and the
+human self-serve tenant creation performed by an instance administrator
+(API-key clients create tenants through the admin API instead). Every other
+operation — including the whole tenant management API, which an API key with
+`tenant:manage` may call — SHALL have both a CLI command and an MCP tool.
+Query languages keep their specific rules: every language SHALL be reachable
+through a CLI `query` flag; every language served over the router's **HTTP**
+surface (TraceQL, LogQL, PromQL, Query IR) SHALL additionally be reachable
+through an MCP tool; **SQL** is served over Arrow Flight (gRPC) and, because
+the MCP server is an HTTP forwarder that holds no Flight client, SQL is
+intentionally CLI-only, asserted explicitly. The check SHALL fail and name the
+surface and operation whenever a non-excluded SDK operation lacks a CLI command
+or an MCP tool, and SHALL fail when the exclusion list names an operation that
+no longer exists.
 
 #### Scenario: An HTTP query language is missing from the CLI or MCP
 
@@ -99,6 +116,13 @@ operation that no longer exists.
   exclusion list
 - **THEN** the parity check fails and names the operation and the missing
   surface
+
+#### Scenario: Management operations are not excluded
+
+- **WHEN** the parity check evaluates the tenant management operations
+  (datasets, API keys, memberships, schema, tenant self view)
+- **THEN** each has a CLI command and an MCP tool; only the OAuth consent
+  endpoints and human self-serve tenant creation are excluded
 
 #### Scenario: Stale exclusion is rejected
 

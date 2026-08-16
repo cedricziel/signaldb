@@ -19,4 +19,4 @@
 ## 4. Docs, hygiene
 
 - [x] 4.1 Docs (route via the docs skill): `docs/operations/table-provisioning.md` — listing is catalog-backed and grouped by dataset; `docs/users/explore-ui.md` Tables section
-- [ ] 4.2 `cargo fmt`, clippy on touched crates, `cargo machete --with-metadata`; UI lint/test; `openspec validate tenant-table-listing --type change --strict`
+- [x] 4.2 `cargo fmt`, clippy on touched crates, `cargo machete --with-metadata`; UI lint/test; `openspec validate tenant-table-listing --type change --strict` (verified in #1267/#1269 CI; ticked at archive)

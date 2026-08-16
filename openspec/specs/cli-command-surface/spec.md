@@ -11,13 +11,13 @@ The CLI SHALL organize commands into top-level capability groups: a single
 `query` command that takes the query language as a mutually-exclusive flag
 (`--sql`, `--promql`, `--logql`, `--traceql`), `admin <noun> <verb>` for
 platform administration through the admin API, `tenant <noun> <verb>` for the
-caller's own tenant with its API key (today: signal tables and table schemas —
-the management API's dataset/API-key/membership operations require a human
-session, which the CLI does not hold, so they are MCP/UI-only), `ops <verb>`
-for operational control,
-and `schema <noun> <verb>` for schema-registry lookup — plus the existing
-`tui`, `completions`, and user-bootstrap utilities. Tenant, API-key, dataset,
-user, and custom schema-registry administration SHALL live under `admin`;
+caller's own tenant through the management API — datasets, API keys,
+memberships, schema, signal tables, and `show` — authenticated by an API key
+carrying `tenant:manage` (tables and table schemas need only a valid key of
+that tenant), `ops <verb>` for operational control, and `schema <noun> <verb>`
+for schema-registry lookup — plus the existing `tui`, `completions`, `whoami`,
+and user-bootstrap utilities. Tenant, API-key, dataset, user, and custom
+schema-registry administration across tenants SHALL live under `admin`;
 self-management of the authenticated tenant SHALL live under `tenant`. Exactly
 one language flag SHALL be required on `query`.
 
@@ -42,10 +42,19 @@ one language flag SHALL be required on `query`.
 #### Scenario: Self-management lives under tenant
 
 - **WHEN** a user runs `signaldb tenant dataset list`, `signaldb tenant api-key
-create --name ci`, `signaldb tenant membership list`, or `signaldb tenant
-table provision --dataset production`
+create --name ci --scope traces:write`, `signaldb tenant membership list`,
+  `signaldb tenant schema get`, `signaldb tenant show`, or `signaldb tenant
+table provision --dataset production` with an API key carrying
+  `tenant:manage`
 - **THEN** the CLI performs the corresponding management-API operation through
-  the SDK as the caller's own identity
+  the SDK as the caller's own tenant identity
+
+#### Scenario: A key without tenant:manage is refused, not hidden
+
+- **WHEN** a user runs `signaldb tenant dataset create staging` with a key that
+  lacks `tenant:manage`
+- **THEN** the CLI reports the server's access-denied error naming the required
+  scope and exits non-zero
 
 #### Scenario: Schema lookup lives under schema
 
@@ -137,3 +146,32 @@ The CLI SHALL retry a throttled request through the SDK's shared retry policy be
 
 - **WHEN** an interactive command is retried after throttling
 - **THEN** stderr shows one line per retry naming the wait, and stdout is untouched
+
+### Requirement: The profile compat surface lives under profiles
+
+The CLI SHALL expose the Pyroscope-compatible profile surface as a
+`profiles <verb>` group — `types`, `labels`, `label-values <label>`,
+`render <selector> --from --until`, `diff <selector> --left-from --left-until
+--right-from --right-until`, and `by-trace <trace_id>` — dispatched through the
+SDK and printing the native Pyroscope JSON responses unchanged, consistent with
+how the other compat surfaces are surfaced. It lives outside `query` because
+Pyroscope has no single query-language flag; the selector and ranges are
+per-verb parameters.
+
+#### Scenario: Profile types are listed
+
+- **WHEN** a user runs `signaldb profiles types`
+- **THEN** the CLI prints the tenant's profile types with data as the native
+  JSON response
+
+#### Scenario: A flame graph is rendered
+
+- **WHEN** a user runs `signaldb profiles render
+'process_cpu:cpu:nanoseconds{service_name="checkout"}' --from now-1h`
+- **THEN** the CLI prints the native flame-graph JSON returned by the render
+  endpoint through the SDK
+
+#### Scenario: Profiles for a trace
+
+- **WHEN** a user runs `signaldb profiles by-trace <trace_id>`
+- **THEN** the CLI prints the correlated profiles for that trace
