@@ -85,11 +85,6 @@ harness = false
 required-features = ["benchmarks"]
 
 [[bench]]
-name = "trace_read_analysis"
-harness = false
-required-features = ["benchmarks"]
-
-[[bench]]
 name = "trace_index_scaling"
 harness = false
 required-features = ["benchmarks"]

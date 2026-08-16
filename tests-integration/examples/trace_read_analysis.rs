@@ -1,5 +1,10 @@
 //! Diagnostic for the trace point-lookup read path (not a Criterion bench).
 //!
+//! Run with `cargo run -p tests-integration --example trace_read_analysis`.
+//! It lives next to the read-path benches as an example rather than a
+//! `[[bench]]` target so `cargo bench` does not run a plan dump as if it were
+//! a timing.
+//!
 //! Baseline ANALYZE showed the lookup is dominated by `time_elapsed_opening`
 //! (opening ~73 file footers across shattered hour-partitions) — pruning
 //! already discards ~99% of row groups and `bytes_scanned` is a handful of
