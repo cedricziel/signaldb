@@ -1,9 +1,16 @@
 ## Context
 
-See `proposal.md` for motivation. This change assumes `unified-table-schema`
-has landed: `schemas.toml` is the generated source for physical, wire, and
-logical-registry schema, and (per that change's design) fields carry the
-metadata needed to know how each is sourced.
+See `proposal.md` for motivation and its scope-correction note.
+`unified-table-schema` has landed, but without the field-level
+provenance/extraction-rule metadata this design originally planned to
+build on — that piece was dropped during its implementation, for the same
+structural reasons (wire/physical divergence across renames, attribute
+representation, and metrics' table fan-out) this change's own OTLP→wire
+migration would have hit. This design now targets only the writer's v1→v2
+transform, whose extraction-rule selection is fully determined by the
+(v1, physical version) pair and needs no schema-declared metadata beyond
+`schemas.toml`'s existing resolved field list (name, type, rename/addition
+history) that `unified-table-schema` already provides.
 
 **The concrete inefficiency this replaces.** `writer::schema_transform::transform_trace_v1_to_v2`
 loops the v2 schema's fields and, per field, calls `get_column_by_name(&batch, &field.name)`
@@ -12,13 +19,13 @@ field, for every batch, forever. The mapping from a v1 column name to its
 position and cast rule is fully determined by the (v1, v2) version pair
 alone; it never needs to be recomputed once those two versions are fixed.
 
-**Where extraction logic already lives.** `conversion_traces.rs`'s
-`otlp_traces_to_arrow` already builds columns in a columnar style — a
-`Vec<T>` accumulated across every span, then converted to one Arrow array
-per column (e.g. `StringArray::from(span_kinds)`) — not row-by-row
-dispatch. Any compiled-plan design must preserve exactly this shape: the
-genericization target is _which_ extractor runs for _which_ column, not
-the batching strategy that makes today's code fast.
+**Preserving the existing batching shape.** `transform_trace_v1_to_v2`
+already builds output columns in a columnar style — one Arrow array
+constructed per field across the whole incoming batch, not row-by-row
+dispatch. The compiled plan changes _which code decides_ which extractor
+runs for which column (resolved once, ahead of time) not _how_ each
+extractor builds its array (unchanged: still one array per column per
+batch).
 
 ## Goals / Non-Goals
 
@@ -33,9 +40,9 @@ the batching strategy that makes today's code fast.
   batch-construction control flow.
 - Preserve today's columnar (whole-column-at-once) construction style
   exactly; no per-row dynamic dispatch.
-- No ingest throughput regression, verified by
-  `performance-benchmarking-suite`'s acceptor-decode and writer-append
-  benchmarks; the v1→v2 step specifically is expected to improve by
+- No ingest throughput regression, verified by the acceptor-decode
+  benchmark that already exists and a new writer v1→v2-transform benchmark
+  this change adds; the v1→v2 step specifically is expected to improve by
   removing string lookups from its hot loop.
 
 **Non-Goals:**
@@ -72,74 +79,73 @@ per batch, and a version-keyed plan cache (below) removes even that.
 
 ### Plan cache keyed by schema version pair, not recomputed per call
 
-`schema_transform` (and the OTLP→wire step) holds a
-`OnceLock`/`Lazy`-style cache from `(source_version, target_version)` (or
-just `target_version` for the OTLP→wire case, whose source is always "the
-current OTel proto shape") to its resolved `MaterializationPlan`. First use
-of a version pair builds and caches the plan; every subsequent batch reuses
-it. This is the direct fix for the `get_column_by_name`-per-field problem:
-the lookup happens once per version pair for the lifetime of the process,
-not once per batch.
+`schema_transform` holds a `OnceLock`/`Lazy`-style cache from
+`(source_version, target_version)` to its resolved `MaterializationPlan`.
+First use of a version pair builds and caches the plan; every subsequent
+batch reuses it. This is the direct fix for the `get_column_by_name`-per-field
+problem: the lookup happens once per version pair for the lifetime of the
+process, not once per batch.
 
-### Extractors are named and registered per extraction rule, not per column
+### Extractors are named and registered per extraction rule, selected in Rust, not declared in `schemas.toml`
 
-An extraction rule is identified by a short name (`verbatim:span.kind`,
-`derived:span_kind_str_from_number`, `verbatim:dropped_attributes_count`,
-...) mapping to a hand-written Rust function. `schemas.toml` fields declare
-which rule they use (this is the field-level metadata `unified-table-schema`
-introduces — the "provenance" concept discussed alongside these proposals:
-`verbatim` fields name the source path directly; `derived` fields name the
-rule). Multiple fields with the same shape of extraction (e.g. every
-plain int64 counter read verbatim off a same-shaped proto field) can share
-one generic verbatim-extractor parameterized by field name — genuinely new
-extraction shapes still require a genuinely new hand-written rule. This is
-the same non-goal as `unified-table-schema`'s: the _set_ of rules is small
+An extraction rule is identified by a short name (`verbatim:cast_uint64_to_int64`,
+`derived:span_kind_str_from_number`, `verbatim:same_name`, ...) mapping to
+a hand-written Rust function. Plan construction selects a field's rule the
+same way `transform_trace_v1_to_v2`'s match arms do today — a Rust match
+on the field name/shape, not a `schemas.toml`-declared rule reference (the
+"provenance" metadata that would have driven this was dropped along with
+the OTLP→wire migration; see Context). This keeps the plan's selection
+logic exactly as inspectable as today's match arms, just evaluated once
+per version pair instead of once per batch. Multiple fields with the same
+shape of extraction (e.g. every plain UInt64→Int64 cast) share one generic
+extractor parameterized by field name — genuinely new extraction shapes
+still require a genuinely new hand-written rule. The _set_ of rules is small
 and hand-written; what's generic is selecting and sequencing them.
 
 ### Golden tests carry across from `unified-table-schema`
 
-The same discipline applies: for each conversion function migrated to
-plan-based construction, a test asserts identical output (same values,
-types, nullability) against the hand-written code it replaces, on
-representative fixtures, before the hand-written code is deleted.
+The same discipline applies: a test asserts identical output (same values,
+types, nullability) between plan-based `transform_trace_v1_to_v2` and the
+hand-written code it replaces, on representative fixtures, before the
+hand-written code is deleted.
 
 ## Risks / Trade-offs
 
-- **[Risk]** A subtly wrong extraction rule selected by name (e.g. a typo
-  in `schemas.toml`'s rule reference resolving to the wrong registered
-  closure) fails silently at plan-build time if rule names aren't
-  exhaustively validated → **Mitigation**: plan construction SHALL fail
-  fast (panic or startup error, not silent default) on an unregistered
-  rule name; a test enumerates every field in every current schema version
-  and asserts its rule resolves.
+- **[Risk]** A subtly wrong extraction rule selected for a field (e.g. a
+  copy-paste mistake in the Rust selection match) fails silently at
+  plan-build time if rules aren't exhaustively validated → **Mitigation**:
+  plan construction SHALL fail fast (panic or startup error, not silent
+  default) on a field with no matching rule; a test enumerates every field
+  in the current traces schema version and asserts its rule resolves.
 - **[Risk]** Benchmark-driven claims ("this will be faster") not landing
   as claimed if the plan abstraction itself introduces overhead (e.g.
   boxed closures with dynamic dispatch instead of monomorphized function
   pointers) → **Mitigation**: the explicit benchmark gate in `proposal.md`
-  — this ships only once `performance-benchmarking-suite`'s acceptor/writer
-  benchmarks confirm no regression, treated as a hard gate, not a
-  nice-to-have.
+  — this ships only once the new writer v1→v2-transform benchmark and the
+  existing acceptor-decode benchmark confirm no regression, treated as a
+  hard gate, not a nice-to-have.
 - **[Trade-off]** Indirection through a plan/registry is harder to read at
   a call site than an inline match arm — a maintainer can no longer see
   "what happens to `span_kind`" by reading one function top to bottom, only
-  by following the rule name to its registration → accepted: the
-  alternative (today's state) is the exact duplication-across-layers
-  problem this proposal and `unified-table-schema` both exist to remove.
+  by following the rule name to its registration → accepted: the plan's
+  selection logic is still a single Rust match, read in one place
+  (`build_trace_v1_to_v2_plan` or equivalent) rather than re-executed
+  inline in the hot loop — the indirection is "moved once," not "hidden
+  behind a second file format."
 
 ## Migration Plan
 
-1. Requires `unified-table-schema` landed (schema-level provenance/rule
-   metadata to select from).
-2. Requires `performance-benchmarking-suite`'s acceptor-decode and
-   writer-append benchmarks in place as the regression gate.
-3. Build `MaterializationPlan`/extractor registry in `common`; golden tests
+1. `unified-table-schema` is a prerequisite in name only now — this design
+   needs nothing from it beyond the `SCHEMA_DEFINITIONS`/`ResolvedSchema`
+   API that predates it.
+2. Add the writer v1→v2-transform benchmark `performance-benchmarking-suite`
+   didn't have; record a baseline on `main` before changing
+   `schema_transform.rs`.
+3. Build `MaterializationPlan`/extractor registry in `writer`; golden test
    against current hand-written output.
-4. Migrate `schema_transform.rs`'s v1→v2 step first (the identified
-   inefficiency, isolated, lowest-risk starting point); benchmark before
-   deleting the old code.
-5. Migrate `conversion_traces.rs`/logs/metrics OTLP→wire construction the
-   same way.
-6. No deployment-visible change; no rollback machinery beyond redeploying
+4. Migrate `schema_transform.rs`'s v1→v2 step; benchmark before deleting
+   the old code — require no regression, expect measurable improvement.
+5. No deployment-visible change; no rollback machinery beyond redeploying
    the previous binary, since output is byte-for-byte identical by golden
    test.
 

@@ -1,70 +1,79 @@
 ## 1. Prerequisites
 
-- [ ] 1.1 Confirm `unified-table-schema` has landed and its field-level
-      provenance/extraction-rule metadata is available to resolve against.
-      If not landed yet, this change is blocked — do not proceed with a
-      parallel, divergent metadata model.
-- [ ] 1.2 Confirm `performance-benchmarking-suite`'s acceptor-OTLP-decode
-      and writer-append benchmarks exist and have a recorded baseline on
-      `main`. If not, add the minimum needed baseline first rather than
-      landing this change unmeasured.
+**Scope correction found while confirming this task**: `unified-table-schema`
+landed without the field-level provenance/extraction-rule metadata this
+proposal originally planned to build on — that piece was dropped during
+its implementation for the same structural reasons (wire/physical
+divergence) this change's own OTLP→wire migration would have hit. See
+`proposal.md`/`design.md`'s scope-correction notes. This change now
+targets only the writer's v1→v2 transform, which needs nothing from
+`unified-table-schema` beyond the `SCHEMA_DEFINITIONS`/`ResolvedSchema` API
+that predates it.
 
-## 2. Golden references
+- [x] 1.1 Confirmed `unified-table-schema` landed (#1241, #1243). Its
+      field-level provenance/extraction-rule metadata did not land with it
+      (dropped as unworkable) — not a blocker for this change's narrowed
+      scope, which resolves extraction rules in Rust rather than from
+      `schemas.toml`.
+- [x] 1.2 Confirmed the acceptor OTLP-decode benchmark exists
+      (`common/benches/ingest_and_wal.rs`'s `bench_ingest_decode`, covering
+      `otlp_traces_to_arrow`). No writer v1→v2-transform benchmark existed
+      — added one as part of this change (§2) rather than landing
+      unmeasured.
 
-- [ ] 2.1 Capture representative-fixture golden output (values, types,
-      nullability) for `transform_trace_v1_to_v2`'s current hand-written
-      behavior.
-- [ ] 2.2 Capture the same for `otlp_traces_to_arrow`'s current
-      hand-written behavior.
+## 2. Benchmark baseline
 
-## 3. Plan and extractor registry (`common`)
+- [ ] 2.1 Add `writer/benches/schema_transform_benchmarks.rs`: a Criterion
+      benchmark for `transform_trace_v1_to_v2` on a representative
+      multi-span v1 batch, gated behind the existing `benchmarks` feature
+      (same convention as `iceberg_benchmarks.rs`/
+      `connection_pool_benchmarks.rs`).
+- [ ] 2.2 Record a baseline run on the pre-plan hand-written
+      implementation before starting the migration.
 
-- [ ] 3.1 Failing test: building a `MaterializationPlan` for a schema
-      version resolves every field to its registered extraction rule, and
-      fails fast (not silently) on an unregistered rule name.
-- [ ] 3.2 Implement `MaterializationPlan`, the extraction-rule registry,
-      and plan construction. Test from 3.1 passes.
-- [ ] 3.3 Failing test: a plan resolved for a given version pair is
-      reused (not rebuilt) across repeated materialization calls (assert
-      via a call counter on the resolution path, not by timing).
-- [ ] 3.4 Implement the version-keyed plan cache. Test from 3.3 passes.
-- [ ] 3.5 Failing test: every field in every current schema version
-      (traces, logs, metrics) resolves to a registered rule — catches a
-      typo'd or missing rule reference before it reaches runtime.
-- [ ] 3.6 Populate the initial extraction-rule set covering every field in
-      every current schema version. Test from 3.5 passes.
+## 3. Plan and extractor registry (`writer::schema_transform`)
 
-## 4. Migrate the writer v1→v2 transform (the identified inefficiency)
+- [ ] 3.1 Failing test: building a `TraceV1ToV2Plan` for the current
+      target schema version resolves every non-computed field to a
+      registered extractor, and panics with a clear message on a field
+      with no matching extraction rule.
+- [ ] 3.2 Implement `TraceV1ToV2Plan`/`ColumnPlan`/`Extractor` and plan
+      construction, selecting each field's extractor via the same match
+      `transform_trace_v1_to_v2` uses inline today. Test from 3.1 passes.
+- [ ] 3.3 Failing test: the plan for a given target version is built once
+      and reused across repeated `transform_trace_v1_to_v2` calls (a
+      call-counter on the build path, not timing-based).
+- [ ] 3.4 Implement a `OnceLock`-cached plan keyed by target version. Test
+      from 3.3 passes.
 
-- [ ] 4.1 Failing test: `transform_trace_v1_to_v2` via plan execution
-      matches the golden reference from 2.1.
-- [ ] 4.2 Implement plan-based `transform_trace_v1_to_v2`. Test from 4.1
-      passes.
-- [ ] 4.3 Benchmark: writer v1→v2 transform before/after, using
-      `performance-benchmarking-suite`'s harness. Require no regression;
-      record the improvement.
-- [ ] 4.4 Delete the hand-written `get_column_by_name`-per-field code path
-      and the golden reference from 2.1 (job done).
+## 4. Migrate the writer v1→v2 transform
 
-## 5. Migrate OTLP → wire construction
+- [ ] 4.1 Failing test: plan-based `transform_trace_v1_to_v2` matches the
+      existing hand-written output field-for-field (values, types,
+      nullability) on the existing `#1208`-columns fixture and the
+      missing-columns-tolerance fixture.
+- [ ] 4.2 Implement plan-based `transform_trace_v1_to_v2`, replacing the
+      per-batch `match field.name.as_str()` with plan execution. Tests
+      from 4.1 pass, plus the full existing `schema_transform` test suite
+      (unchanged behavior).
+- [ ] 4.3 Benchmark: writer v1→v2 transform before/after using the bench
+      from §2. Require no regression; record the improvement.
+- [ ] 4.4 Delete the hand-written per-batch match arm; the plan becomes
+      the only code path.
 
-- [ ] 5.1 Failing test: `otlp_traces_to_arrow` via plan execution matches
-      the golden reference from 2.2.
-- [ ] 5.2 Implement plan-based `otlp_traces_to_arrow`. Test from 5.1
-      passes.
-- [ ] 5.3 Repeat 5.1/5.2 for the logs and metrics OTLP→wire conversion
-      functions.
-- [ ] 5.4 Benchmark: acceptor OTLP-decode before/after. Require no
-      regression against the baseline from task 1.2.
-- [ ] 5.5 Delete the hand-written match-arm code paths and the golden
-      reference from 2.2 (job done).
+## 5. Docs and specs hygiene
 
-## 6. Docs and specs hygiene
-
-- [ ] 6.1 Update the `flight-schemas` skill to describe materialization as
-      plan-based, extractor-registered, resolved once per version.
-- [ ] 6.2 Note in `docs/architecture/` (per the `architecture` skill's
-      source list) that the write path resolves a materialization plan
-      once per schema version rather than dispatching per field per batch.
-- [ ] 6.3 Run `openspec validate --strict compiled-schema-materializer` and
+- [ ] 5.1 Update the `flight-schemas` skill to describe
+      `transform_trace_v1_to_v2` as plan-based, resolved once per target
+      version and cached, rather than a per-batch field-name match.
+- [ ] 5.2 Note in `docs/architecture/flight-communication.md` that the
+      v1→v2 step resolves a materialization plan once per schema version.
+- [ ] 5.3 Run `openspec validate --strict compiled-schema-materializer` and
       fix any findings before archiving.
+
+## Not implemented in this change
+
+Migrating OTLP→wire construction (`conversion_traces.rs`/logs/metrics) to
+compiled plans — dropped in the scope correction above, same disposition
+as `unified-table-schema`'s dropped wire-schema-generation goal. Remains
+hand-written.
