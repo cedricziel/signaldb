@@ -1,13 +1,13 @@
 ## 1. API contract: tenant tables/schemas into OpenAPI
 
-- [ ] 1.1 Failing router test: the OpenAPI document contains operations for `GET /api/v1/tenants`, `GET /api/v1/tenants/{tenant_id}`, `GET /api/v1/tenants/{tenant_id}/tables`, `POST /api/v1/tenants/{tenant_id}/tables/create`, `GET /api/v1/tenants/{tenant_id}/schemas`, `GET /api/v1/schemas/available` (`cargo test -p router`)
-- [ ] 1.2 Annotate the six handlers in `endpoints/tenant.rs` (`utoipa::path`, tag `tenants`, `ToSchema` on the DTOs), register in `openapi.rs`
-- [ ] 1.3 Failing test then implement the route-vs-OpenAPI drift guard (every `/api/v1/**`, `/tempo/**`, `/loki/**`, `/prometheus/**` route has an operation; explicit allowlist for `/pyroscope/**`, session/login, UI static)
-- [ ] 1.4 `cargo xtask generate` — regenerate `api/signaldb-api.json`, `src/signaldb-sdk/src/generated.rs`, `src/ui/src/api/gen`; commit
+- [x] 1.1 Failing router test: the OpenAPI document contains operations for `GET /api/v1/tenants`, `GET /api/v1/tenants/{tenant_id}`, `GET /api/v1/tenants/{tenant_id}/tables`, `POST /api/v1/tenants/{tenant_id}/tables/create`, `GET /api/v1/tenants/{tenant_id}/schemas`, `GET /api/v1/schemas/available` (`cargo test -p router`)
+- [x] 1.2 Annotate the six handlers in `endpoints/tenant.rs` (`utoipa::path`, tag `tenants`, `ToSchema` on the DTOs), register in `openapi.rs`. Deviation: `list_tenants`/`get_tenant` needed distinct operation ids (`list_tenants_self`/`get_tenant_self`) to avoid colliding with `endpoints/admin.rs`'s `list_tenants`/`get_tenant`.
+- [x] 1.3 Failing test then implement the route-vs-OpenAPI drift guard (every `/api/v1/**`, `/tempo/**`, `/loki/**`, `/prometheus/**` route has an operation; explicit allowlist for `/pyroscope/**`, session/login, UI static). Deviation: axum 0.8 has no route-introspection API, so the guard extracts route literals straight out of the endpoint `router()` fn source (`known_routes_match_router_fn_source` in `router/src/openapi.rs`) and diffs them against `KNOWN_ROUTES`/`ALLOWLISTED_ROUTES`, per design's Risk-section fallback. Pre-existing Tempo v2/echo/metrics, Loki `series`/`detected_fields`, and Prometheus `label_stats`/`series` routes are allowlisted (out of this change's scope, tracked separately) rather than newly annotated.
+- [x] 1.4 `cargo xtask generate` — regenerate `api/signaldb-api.json`, `src/signaldb-sdk/src/generated.rs`, `src/ui/src/api/gen`; commit
 
 ## 2. Parity manifest derived from the SDK
 
-- [ ] 2.1 xtask emits `signaldb_sdk::OPERATIONS: &[&str]` (all operation ids) alongside `generated.rs`; test that it matches the OpenAPI document's operation ids
+- [x] 2.1 xtask emits `signaldb_sdk::OPERATIONS: &[&str]` (all operation ids) alongside `generated.rs`; test that it matches the OpenAPI document's operation ids
 - [ ] 2.2 Rewrite `tests-integration/tests/query_parity.rs`: iterate `OPERATIONS`, `EXCLUDED` (with reasons), `(operation → CLI path)` and `(operation → MCP tool)` maps; fail naming missing surface/operation; fail on stale exclusions/mappings; keep the language and SQL-CLI-only assertions. Run it — it must fail now, listing every gap this change fills
 
 ## 3. MCP tools

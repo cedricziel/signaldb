@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use utoipa::ToSchema;
 
 use crate::auth::validation::validate_id;
 use crate::config::{Configuration, SchemaConfig};
@@ -33,11 +34,12 @@ pub struct UpdateTenantRequest {
 }
 
 /// API response for tenant information
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct TenantInfo {
     /// Tenant ID
     pub tenant_id: String,
     /// Tenant-specific schema configuration
+    #[schema(value_type = Object, nullable)]
     pub schema: Option<SchemaConfig>,
     /// Custom schema definitions
     pub custom_schemas: Option<HashMap<String, String>>,
@@ -46,7 +48,14 @@ pub struct TenantInfo {
 }
 
 /// API response for listing tenants
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// Renamed in the OpenAPI document (`#[schema(as = ...)]`) to avoid
+/// colliding with `signaldb_api::ListTenantsResponse` (the admin API's
+/// tenant list, a different shape) — both are plain Rust structs named
+/// `ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust
+/// type name unless told otherwise.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[schema(as = TenantSelfListResponse)]
 pub struct ListTenantsResponse {
     /// List of tenants
     pub tenants: Vec<TenantInfo>,
@@ -55,7 +64,7 @@ pub struct ListTenantsResponse {
 }
 
 /// API response for table information
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct TableInfo {
     /// Table name
     pub name: String,
@@ -66,7 +75,7 @@ pub struct TableInfo {
 }
 
 /// API response for listing tables
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ListTablesResponse {
     /// List of tables for the tenant
     pub tables: Vec<TableInfo>,
