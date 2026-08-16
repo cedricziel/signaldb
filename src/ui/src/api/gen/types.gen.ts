@@ -369,6 +369,21 @@ export type DatasetResponse = {
 };
 
 /**
+ * The tables provisioned in a single dataset, as part of
+ * [`ListTablesResponse::datasets`].
+ */
+export type DatasetTables = {
+    /**
+     * Dataset ID.
+     */
+    dataset: string;
+    /**
+     * Tables provisioned in this dataset.
+     */
+    tables: Array<TableInfo>;
+};
+
+/**
  * Deprecation info in resolved form.
  */
 export type DeprecatedInfo = {
@@ -545,7 +560,15 @@ export type ListDatasetsResponse = {
  */
 export type ListTablesResponse = {
     /**
-     * List of tables for the tenant
+     * The same tables, grouped by dataset.
+     *
+     * Defaulted on deserialization so an older client-recorded response
+     * (or a hand-written test fixture) that predates this field still
+     * parses.
+     */
+    datasets?: Array<DatasetTables>;
+    /**
+     * List of tables for the tenant, flat across all of its datasets.
      */
     tables: Array<TableInfo>;
     /**
@@ -993,6 +1016,14 @@ export type SpanSet = {
  * API response for table information
  */
 export type TableInfo = {
+    /**
+     * The dataset this table belongs to.
+     *
+     * Defaulted on deserialization so an older client-recorded response
+     * (or a hand-written test fixture) that predates this field still
+     * parses.
+     */
+    dataset?: string;
     /**
      * Table description
      */

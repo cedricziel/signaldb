@@ -153,6 +153,7 @@ impl Modify for SecurityAddon {
         common::tenant_api::TenantInfo,
         common::tenant_api::ListTenantsResponse,
         common::tenant_api::TableInfo,
+        common::tenant_api::DatasetTables,
         common::tenant_api::ListTablesResponse,
         crate::endpoints::tenant::CreateTenantTablesResponse,
         crate::endpoints::tenant::AvailableSchemasResponse,

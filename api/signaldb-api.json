@@ -4423,6 +4423,27 @@
           }
         }
       },
+      "DatasetTables": {
+        "type": "object",
+        "description": "The tables provisioned in a single dataset, as part of\n[`ListTablesResponse::datasets`].",
+        "required": [
+          "dataset",
+          "tables"
+        ],
+        "properties": {
+          "dataset": {
+            "type": "string",
+            "description": "Dataset ID."
+          },
+          "tables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableInfo"
+            },
+            "description": "Tables provisioned in this dataset."
+          }
+        }
+      },
       "DeprecatedInfo": {
         "type": "object",
         "description": "Deprecation info in resolved form.",
@@ -4847,12 +4868,19 @@
           "tenant_id"
         ],
         "properties": {
+          "datasets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DatasetTables"
+            },
+            "description": "The same tables, grouped by dataset.\n\nDefaulted on deserialization so an older client-recorded response\n(or a hand-written test fixture) that predates this field still\nparses."
+          },
           "tables": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/TableInfo"
             },
-            "description": "List of tables for the tenant"
+            "description": "List of tables for the tenant, flat across all of its datasets."
           },
           "tenant_id": {
             "type": "string",
@@ -5921,6 +5949,10 @@
           "description"
         ],
         "properties": {
+          "dataset": {
+            "type": "string",
+            "description": "The dataset this table belongs to.\n\nDefaulted on deserialization so an older client-recorded response\n(or a hand-written test fixture) that predates this field still\nparses."
+          },
           "description": {
             "type": "string",
             "description": "Table description"

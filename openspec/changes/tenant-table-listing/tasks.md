@@ -1,13 +1,13 @@
 ## 1. Catalog-backed listing (common)
 
-- [ ] 1.1 Failing tests in `common` (in-memory catalog): tenant with datasets `a` and `b`; after `ensure_dataset_tables(a)`, `list_tables_for_tenant` returns exactly `a`'s signal tables tagged `dataset="a"` and nothing for `b`; after provisioning `b`, both; a tenant with no datasets returns an empty list without error; the existing `test_list_tables_for_tenant_empty` still holds (`cargo test -p common`)
-- [ ] 1.2 Implement `list_tables_for_tenant` via `catalog_manager()` + `datasets_for_tenant()` + `build_namespace` + `list_tabulars` (tables only); return `(dataset, table)` pairs
-- [ ] 1.3 Failing test then implement the response shape: `TableInfo.dataset`, `ListTablesResponse.datasets` grouping (flat `tables` kept); signal-type mapping includes `profiles`
+- [x] 1.1 Failing tests in `common` (in-memory catalog): tenant with datasets `a` and `b`; after `ensure_dataset_tables(a)`, `list_tables_for_tenant` returns exactly `a`'s signal tables tagged `dataset="a"` and nothing for `b`; after provisioning `b`, both; a tenant with no datasets returns an empty list without error; the existing `test_list_tables_for_tenant_empty` still holds (`cargo test -p common`)
+- [x] 1.2 Implement `list_tables_for_tenant` via `catalog_manager()` + `datasets_for_tenant()` + `build_namespace` + `list_tabulars` (tables only); return `(dataset, table)` pairs
+- [x] 1.3 Failing test then implement the response shape: `TableInfo.dataset`, `ListTablesResponse.datasets` grouping (flat `tables` kept); signal-type mapping includes `profiles`
 
 ## 2. Router + generated clients
 
-- [ ] 2.1 Router handler test: `GET /api/v1/tenants/{id}/tables` returns the grouped shape from an in-memory catalog after provisioning through `POST …/tables/create` (`cargo test -p router`)
-- [ ] 2.2 utoipa schema updates; `UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date`; `cargo xtask generate`; commit generated files
+- [x] 2.1 Router handler test: `GET /api/v1/tenants/{id}/tables` returns the grouped shape from an in-memory catalog after provisioning through `POST …/tables/create` (`cargo test -p router`)
+- [x] 2.2 utoipa schema updates; `UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date`; `cargo xtask generate`; commit generated files
 
 ## 3. Surfaces
 

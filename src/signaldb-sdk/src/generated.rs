@@ -1112,6 +1112,47 @@ pub mod types {
             Default::default()
         }
     }
+    /**The tables provisioned in a single dataset, as part of
+    [`ListTablesResponse::datasets`].*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The tables provisioned in a single dataset, as part of\n[`ListTablesResponse::datasets`].",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "dataset",
+    ///    "tables"
+    ///  ],
+    ///  "properties": {
+    ///    "dataset": {
+    ///      "description": "Dataset ID.",
+    ///      "type": "string"
+    ///    },
+    ///    "tables": {
+    ///      "description": "Tables provisioned in this dataset.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/TableInfo"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct DatasetTables {
+        ///Dataset ID.
+        pub dataset: ::std::string::String,
+        ///Tables provisioned in this dataset.
+        pub tables: ::std::vec::Vec<TableInfo>,
+    }
+    impl DatasetTables {
+        pub fn builder() -> builder::DatasetTables {
+            Default::default()
+        }
+    }
     ///Deprecation info in resolved form.
     ///
     /// <details><summary>JSON schema</summary>
@@ -1912,8 +1953,15 @@ pub mod types {
     ///    "tenant_id"
     ///  ],
     ///  "properties": {
+    ///    "datasets": {
+    ///      "description": "The same tables, grouped by dataset.\n\nDefaulted on deserialization so an older client-recorded response\n(or a hand-written test fixture) that predates this field still\nparses.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/DatasetTables"
+    ///      }
+    ///    },
     ///    "tables": {
-    ///      "description": "List of tables for the tenant",
+    ///      "description": "List of tables for the tenant, flat across all of its datasets.",
     ///      "type": "array",
     ///      "items": {
     ///        "$ref": "#/components/schemas/TableInfo"
@@ -1929,7 +1977,14 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ListTablesResponse {
-        ///List of tables for the tenant
+        /**The same tables, grouped by dataset.
+
+        Defaulted on deserialization so an older client-recorded response
+        (or a hand-written test fixture) that predates this field still
+        parses.*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub datasets: ::std::vec::Vec<DatasetTables>,
+        ///List of tables for the tenant, flat across all of its datasets.
         pub tables: ::std::vec::Vec<TableInfo>,
         ///Tenant ID
         pub tenant_id: ::std::string::String,
@@ -4159,6 +4214,10 @@ pub mod types {
     ///    "schema_type"
     ///  ],
     ///  "properties": {
+    ///    "dataset": {
+    ///      "description": "The dataset this table belongs to.\n\nDefaulted on deserialization so an older client-recorded response\n(or a hand-written test fixture) that predates this field still\nparses.",
+    ///      "type": "string"
+    ///    },
     ///    "description": {
     ///      "description": "Table description",
     ///      "type": "string"
@@ -4177,6 +4236,13 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TableInfo {
+        /**The dataset this table belongs to.
+
+        Defaulted on deserialization so an older client-recorded response
+        (or a hand-written test fixture) that predates this field still
+        parses.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset: ::std::option::Option<::std::string::String>,
         ///Table description
         pub description: ::std::string::String,
         ///Table name
@@ -6936,6 +7002,60 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct DatasetTables {
+            dataset: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tables: ::std::result::Result<::std::vec::Vec<super::TableInfo>, ::std::string::String>,
+        }
+        impl ::std::default::Default for DatasetTables {
+            fn default() -> Self {
+                Self {
+                    dataset: Err("no value supplied for dataset".to_string()),
+                    tables: Err("no value supplied for tables".to_string()),
+                }
+            }
+        }
+        impl DatasetTables {
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn tables<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::TableInfo>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tables = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tables: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<DatasetTables> for super::DatasetTables {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: DatasetTables,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset: value.dataset?,
+                    tables: value.tables?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::DatasetTables> for DatasetTables {
+            fn from(value: super::DatasetTables) -> Self {
+                Self {
+                    dataset: Ok(value.dataset),
+                    tables: Ok(value.tables),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct DeprecatedInfo {
             note: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -8211,18 +8331,31 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ListTablesResponse {
+            datasets:
+                ::std::result::Result<::std::vec::Vec<super::DatasetTables>, ::std::string::String>,
             tables: ::std::result::Result<::std::vec::Vec<super::TableInfo>, ::std::string::String>,
             tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
         impl ::std::default::Default for ListTablesResponse {
             fn default() -> Self {
                 Self {
+                    datasets: Ok(Default::default()),
                     tables: Err("no value supplied for tables".to_string()),
                     tenant_id: Err("no value supplied for tenant_id".to_string()),
                 }
             }
         }
         impl ListTablesResponse {
+            pub fn datasets<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::DatasetTables>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.datasets = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for datasets: {e}"));
+                self
+            }
             pub fn tables<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::vec::Vec<super::TableInfo>>,
@@ -8250,6 +8383,7 @@ pub mod types {
                 value: ListTablesResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    datasets: value.datasets?,
                     tables: value.tables?,
                     tenant_id: value.tenant_id?,
                 })
@@ -8258,6 +8392,7 @@ pub mod types {
         impl ::std::convert::From<super::ListTablesResponse> for ListTablesResponse {
             fn from(value: super::ListTablesResponse) -> Self {
                 Self {
+                    datasets: Ok(value.datasets),
                     tables: Ok(value.tables),
                     tenant_id: Ok(value.tenant_id),
                 }
@@ -11486,6 +11621,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct TableInfo {
+            dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
             description: ::std::result::Result<::std::string::String, ::std::string::String>,
             name: ::std::result::Result<::std::string::String, ::std::string::String>,
             schema_type: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -11493,6 +11632,7 @@ pub mod types {
         impl ::std::default::Default for TableInfo {
             fn default() -> Self {
                 Self {
+                    dataset: Ok(Default::default()),
                     description: Err("no value supplied for description".to_string()),
                     name: Err("no value supplied for name".to_string()),
                     schema_type: Err("no value supplied for schema_type".to_string()),
@@ -11500,6 +11640,16 @@ pub mod types {
             }
         }
         impl TableInfo {
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
             pub fn description<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -11537,6 +11687,7 @@ pub mod types {
                 value: TableInfo,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    dataset: value.dataset?,
                     description: value.description?,
                     name: value.name?,
                     schema_type: value.schema_type?,
@@ -11546,6 +11697,7 @@ pub mod types {
         impl ::std::convert::From<super::TableInfo> for TableInfo {
             fn from(value: super::TableInfo) -> Self {
                 Self {
+                    dataset: Ok(value.dataset),
                     description: Ok(value.description),
                     name: Ok(value.name),
                     schema_type: Ok(value.schema_type),

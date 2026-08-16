@@ -143,7 +143,12 @@ pub async fn list_tenant_tables<S: RouterState>(
     if tenant_id != ctx.tenant_id {
         return forbidden_tenant().into_response();
     }
-    let mut api = TenantApi::new(state.config().clone());
+    // Attach the SQL catalog so a tenant created through the admin API — one
+    // with no `[[auth.tenants]]` block — resolves here too, the same as
+    // `create_tenant_tables`; otherwise a listing right after provisioning
+    // such a tenant would see nothing.
+    let mut api = TenantApi::new(state.config().clone())
+        .with_tenant_source(std::sync::Arc::new(state.catalog().clone()));
 
     match api.list_tables(&tenant_id).await {
         Ok(response) => (
@@ -516,6 +521,93 @@ mod tests {
                 "traces",
             ]
         );
+    }
+
+    /// GET /tenants/:tenant_id/tables reads from the same place
+    /// POST …/tables/create writes to: listing right after provisioning
+    /// shows exactly what was created, grouped by dataset.
+    #[tokio::test]
+    async fn list_tenant_tables_reflects_provisioning_grouped_by_dataset() {
+        let temp_catalog = common::testing::TempCatalog::new();
+        let catalog_uri = temp_catalog.uri().to_string();
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme".to_string(),
+                    default_dataset: Some("production".to_string()),
+                    datasets: vec![],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "sk-test-key".to_string(),
+                        name: Some("test".to_string()),
+                    }],
+                    schema_config: None,
+                    limits: None,
+                }],
+                ..Default::default()
+            },
+            ..Configuration::default()
+        };
+        config.schema.catalog_uri = catalog_uri;
+        let app = create_router(RouterAppState::new(catalog, config.clone()));
+
+        // Nothing provisioned yet: the listing is empty, not an error.
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/v1/tenants/acme/tables")
+            .header("authorization", "Bearer sk-test-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let listed: common::tenant_api::ListTablesResponse = serde_json::from_slice(&body).unwrap();
+        assert!(listed.tables.is_empty());
+        assert!(listed.datasets.is_empty());
+
+        // Provision, then list again.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/tenants/acme/tables/create")
+            .header("authorization", "Bearer sk-test-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/v1/tenants/acme/tables")
+            .header("authorization", "Bearer sk-test-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let listed: common::tenant_api::ListTablesResponse = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(listed.tables.len(), 8, "{:?}", listed.tables);
+        assert!(listed.tables.iter().all(|t| t.dataset == "production"));
+        assert!(listed.tables.iter().any(|t| t.name == "traces"));
+        let profiles = listed
+            .tables
+            .iter()
+            .find(|t| t.name == "profiles")
+            .expect("profiles table listed");
+        assert_eq!(profiles.schema_type, "profiles");
+
+        assert_eq!(listed.datasets.len(), 1, "{:?}", listed.datasets);
+        assert_eq!(listed.datasets[0].dataset, "production");
+        assert_eq!(listed.datasets[0].tables.len(), 8);
     }
 
     /// The endpoint must work for a tenant that exists ONLY in the database —
