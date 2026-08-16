@@ -36,14 +36,19 @@ dsn = "sqlite://.data/signaldb.db"
 # [auth.default_limits]
 # max_ingest_requests_per_sec = 100
 # max_ingest_bytes_per_sec = 10485760   # 10 MiB/s
-# max_query_requests_per_sec = 50       # router HTTP query API
+# max_query_requests_per_sec = 100      # router HTTP query API
 # max_api_keys = 10                     # active (non-revoked) keys per tenant
 # max_datasets = 25                     # datasets per tenant
 # max_storage_bytes = 107374182400      # 100 GiB of live Iceberg data files;
 #                                       # ingest is rejected while usage is at
 #                                       # or above this cap (eventually
 #                                       # consistent, refreshed periodically)
-# burst_seconds = 2.0                   # burst allowance in seconds of budget
+# burst_seconds = 10.0                  # burst allowance in seconds of budget;
+#                                       # generous by default so an Explore page
+#                                       # load or an agent's multi-tool
+#                                       # investigation (a fan-out of requests
+#                                       # in one instant) doesn't trip a freshly
+#                                       # configured deployment
 
 # Tenant definitions with API keys and datasets
 # Each tenant is isolated with separate WAL paths and Iceberg catalogs
@@ -59,7 +64,7 @@ default_dataset = "production"  # Used when X-Dataset-ID header is not provided
 # [auth.tenants.limits]
 # max_ingest_requests_per_sec = 500
 # max_ingest_bytes_per_sec = 52428800   # 50 MiB/s
-# max_query_requests_per_sec = 200
+# max_query_requests_per_sec = 500
 # max_api_keys = 20
 # max_datasets = 50
 # max_storage_bytes = 1073741824000     # 1 TiB

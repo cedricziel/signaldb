@@ -53,9 +53,14 @@ other signals' per-request lines, so an idle-looking `INFO` log is normal.
 Per-tenant ingest rate limits and storage quotas cover profiles like
 every other signal: gRPC exports over the limit fail with
 `RESOURCE_EXHAUSTED` (retryable — back off), HTTP exports with `429 Too
-Many Requests`. An error mentioning `quota_exceeded` means the tenant is
-at or over its storage quota (`max_storage_bytes`); retrying will not
-help until data is deleted, retention shortens, or the quota is raised.
+Many Requests`, carrying `Retry-After` (whole seconds, rounded up, at
+least 1), `X-RateLimit-Limit`, and `X-RateLimit-Burst` computed from the
+tenant's actual token-bucket state, so a client can back off precisely
+instead of guessing. An error mentioning `quota_exceeded` means the tenant
+is at or over its storage quota (`max_storage_bytes`); retrying will not
+help until data is deleted, retention shortens, or the quota is raised
+(the storage quota has no token bucket, so its `429` carries no
+`Retry-After`).
 
 ## Profiling SignalDB itself
 
@@ -175,7 +180,10 @@ body in the same error shape as the other query APIs, with the reason in
 `error` — e.g. `{"status":"error","errorType":"bad_data","error":"missing
 or empty 'label' parameter"}`. `errorType` is `bad_data` (400),
 `not_found` (404), `rate_limited` (429), `timeout` (504), `unavailable`
-(503, no querier), or `internal` (500).
+(503, no querier), or `internal` (500). A `429` here is the router's query
+budget (`max_query_requests_per_sec`), not the ingest limit above; it
+carries `retryAfterMs` in the body and the same `Retry-After` /
+`X-RateLimit-Limit` / `X-RateLimit-Burst` headers.
 
 ### SQL
 

@@ -279,6 +279,21 @@ Failures return a JSON body in the Prometheus/Loki error shape:
 or `internal` (500). A query that matches nothing is not an error — it
 returns `200` with an empty `result` array.
 
+A `429` (per-tenant query rate limit exceeded) additionally carries
+`retryAfterMs` in the body and three response headers computed from the
+tenant's actual token-bucket state: `Retry-After` (whole seconds, rounded
+up, at least 1), `X-RateLimit-Limit` (the per-second budget), and
+`X-RateLimit-Burst` (the burst allowance):
+
+```json
+{
+  "status": "error",
+  "errorType": "rate_limited",
+  "error": "tenant 'acme' exceeded its query request rate limit; retry after 1s or raise the tenant's limits",
+  "retryAfterMs": 1000
+}
+```
+
 ## Query-demand statistics
 
 Attribute labels used in filters (any label that is not a dedicated

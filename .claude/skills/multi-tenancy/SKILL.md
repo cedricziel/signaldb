@@ -152,12 +152,39 @@ fields mean unlimited; DB-provisioned tenants get the defaults.
 | `[querier] max_concurrent_queries_per_tenant`              | Querier                                                               | query rejected                            |
 
 Token buckets per dimension (`common::ratelimit::TenantRateLimiter`);
-ingest and query budgets are independent. Storage quotas
+ingest and query budgets are independent. `burst_seconds` (default **10.0**,
+minimum 1.0) sets how many seconds of budget a tenant may consume in a
+burst — generous by default so an interactive fan-out (an Explore page
+load, an MCP investigation running several tools back-to-back) doesn't trip
+a freshly configured deployment. Storage quotas
 (`common::storage_usage::StorageUsageTracker`) compare cached per-tenant
 usage — refreshed from Iceberg manifests every
 `[auth].storage_usage_refresh_interval` (default 60s) — against
 `max_storage_bytes`; enforcement is eventually consistent by design and
 usage is exported as the `signaldb.tenant.storage_usage` gauge.
+
+### The 429 retry contract
+
+Every rate-limit rejection over HTTP — router query budget, admin quotas,
+acceptor OTLP/HTTP and Prometheus `remote_write` — carries the same three
+headers, computed from the rejected bucket's actual state
+(`common::ratelimit::retry_headers`):
+
+- `Retry-After`: whole seconds until the request would be admitted, rounded
+  up, never below 1
+- `X-RateLimit-Limit`: the per-second budget of the rejected dimension
+- `X-RateLimit-Burst`: the burst allowance of the rejected dimension (admin
+  count quotas omit this — there is no token bucket to report a burst for)
+
+The router's query 429 body is the standard `ApiError` JSON envelope
+(`endpoints::api_error::ApiError::rate_limited`):
+`{"status":"error","errorType":"rate_limited","error":"...","retryAfterMs":N}`
+— `retryAfterMs` is the same wait as `Retry-After`, in milliseconds.
+Rejections increment `signaldb_rate_limit_rejections_total{surface,kind}`
+(`surface` ∈ `query | admin | otlp_http | otlp_grpc | prometheus`; `kind` ∈
+`query_requests | requests | bytes | quota`) and log one `warn` with
+`retry_after_ms`. OTLP/gRPC keeps `RESOURCE_EXHAUSTED` unchanged (no
+`retry-after` gRPC trailer — not part of the OTLP contract).
 
 ## Admin API (Router)
 
@@ -168,7 +195,7 @@ Mounted at `/api/v1/admin`, requires `admin_api_key` (`src/router/src/lib.rs`):
 | `/api/v1/admin/tenants`                            | GET, POST        | List/create tenants                                                                  |
 | `/api/v1/admin/tenants/{id}`                       | GET, PUT, DELETE | Manage a tenant                                                                      |
 | `/api/v1/admin/tenants/{id}/api-keys`              | GET, POST        | List/create API keys                                                                 |
-| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE, PATCH    | Revoke API key / update its scopes and dataset restriction                          |
+| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE, PATCH    | Revoke API key / update its scopes and dataset restriction                           |
 | `/api/v1/admin/tenants/{id}/datasets`              | GET, POST        | List/create datasets                                                                 |
 | `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE           | Delete dataset                                                                       |
 | `/api/v1/admin/users`                              | POST             | Create a human user + initial tenant membership (used by `signaldb-cli user create`) |

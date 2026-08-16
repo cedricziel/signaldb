@@ -81,7 +81,7 @@ timings (`Server-Timing` with `traceparent`, `querier`/`convert`/`total`
 | 400         | Invalid search parameters, including `start`/`end` values that are not unix seconds (missing/invalid headers also yield 400 from auth) |
 | 401 / 403   | Authentication or authorization failure                                                                                                |
 | 404         | Trace not found                                                                                                                        |
-| 429         | Per-tenant query rate limit exceeded                                                                                                   |
+| 429         | Per-tenant query rate limit exceeded — carries `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Burst` (see below)                     |
 | 501         | Feature not implemented (TraceQL metrics)                                                                                              |
 | 503         | No querier service available                                                                                                           |
 | 504         | Query deadline exceeded (server-side budget, or the caller's own deadline)                                                             |
@@ -107,6 +107,21 @@ error popup):
 `timeout` (504), `unavailable` (503, no querier), `not_implemented` (501),
 or `internal` (500). Note this is a JSON envelope where upstream Tempo
 returns `text/plain` bodies; the message content is equivalent.
+
+A `429` additionally carries `retryAfterMs` (the same wait as the
+`Retry-After` header, in milliseconds) and three response headers computed
+from the tenant's actual token-bucket state: `Retry-After` (whole seconds,
+rounded up, at least 1), `X-RateLimit-Limit` (the per-second budget of the
+rejected dimension), and `X-RateLimit-Burst` (its burst allowance):
+
+```json
+{
+  "status": "error",
+  "errorType": "rate_limited",
+  "error": "tenant 'acme' exceeded its query request rate limit; retry after 1s or raise the tenant's limits",
+  "retryAfterMs": 1000
+}
+```
 
 Decoding the querier's Flight response is dictionary-safe: it goes through
 `common::flight::decode::flight_data_vec_to_batches` rather than
