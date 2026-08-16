@@ -471,6 +471,56 @@ export type EnumMember = {
 export type Filterability = 'filterable' | 'retrieval_only';
 
 /**
+ * Flamegraph payload in flamebearer encoding.
+ */
+export type Flamebearer = {
+    /**
+     * One flat array per depth level. `format: "single"` uses
+     * `[offset_delta, total, self, name_index]` quadruples; `"double"`
+     * uses `[off_l, total_l, self_l, off_r, total_r, self_r, name_index]`.
+     */
+    levels: Array<Array<number>>;
+    /**
+     * Largest self value of any block, for color scaling.
+     */
+    maxSelf: number;
+    /**
+     * Function name table referenced by block name indices.
+     */
+    names: Array<string>;
+    /**
+     * Total number of ticks (root width).
+     */
+    numTicks: number;
+};
+
+/**
+ * Metadata describing how to interpret flamebearer values.
+ */
+export type FlamebearerMetadata = {
+    /**
+     * `"single"` for one profile set, `"double"` for a diff.
+     */
+    format: string;
+    /**
+     * Display name of the rendered profile/query.
+     */
+    name: string;
+    /**
+     * Sample rate in Hz; 100 is the Pyroscope default for CPU profiles.
+     */
+    sampleRate: number;
+    /**
+     * Profiler that produced the data, when known (e.g. "gospy").
+     */
+    spyName?: string | null;
+    /**
+     * Value units (e.g. "samples", "objects", "bytes").
+     */
+    units: string;
+};
+
+/**
  * A flamegraph in Pyroscope flamebearer encoding — the same shape and
  * aggregation `/pyroscope/render` returns, reused here so the native Query
  * IR surface can retrieve an actual profile payload (bounded, aggregated)
@@ -533,6 +583,13 @@ export type HeatmapResult = {
     value: string;
     x: HeatmapAxisX;
     y: HeatmapAxisY;
+};
+
+/**
+ * Response body of the label-names / label-values endpoints.
+ */
+export type LabelsResponse = {
+    names: Array<string>;
 };
 
 /**
@@ -794,6 +851,21 @@ export type ProfileSummary = {
 };
 
 /**
+ * One entry of `GET /pyroscope/profile-types`.
+ */
+export type ProfileType = {
+    /**
+     * Canonical ID: `{name}:{sample_type}:{sample_unit}`.
+     */
+    ID: string;
+    name: string;
+    periodType?: string;
+    periodUnit?: string;
+    sampleType: string;
+    sampleUnit: string;
+};
+
+/**
  * An entity role qualified by the registry that declares it.
  */
 export type QualifiedEntityRole = {
@@ -906,6 +978,23 @@ export type RegistrySummary = {
     source: RegistrySource;
     updated_at?: string | null;
     version: string;
+};
+
+/**
+ * Response body of `GET /pyroscope/render` (and the diff variant).
+ */
+export type RenderResponse = {
+    flamebearer: Flamebearer;
+    /**
+     * Total baseline ticks; present when `format` is `"double"`.
+     */
+    leftTicks?: number | null;
+    metadata: FlamebearerMetadata;
+    /**
+     * Total comparison ticks; present when `format` is `"double"`.
+     */
+    rightTicks?: number | null;
+    timeline?: null | Timeline;
 };
 
 /**
@@ -1133,6 +1222,24 @@ export type TenantSelfListResponse = {
 };
 
 /**
+ * Optional per-interval sample counts for the render timeline.
+ */
+export type Timeline = {
+    /**
+     * Interval width in seconds.
+     */
+    durationDelta: number;
+    /**
+     * One aggregated value per interval.
+     */
+    samples: Array<number>;
+    /**
+     * Start of the timeline, unix seconds.
+     */
+    startTime: number;
+};
+
+/**
  * A trace is a collection of spans that represent a single request
  *
  * Example:
@@ -1306,6 +1413,53 @@ export type TempoApiV2TagWithValue = {
     tag: string;
     value: string;
 };
+
+export type ProfilesByTraceData = {
+    body?: never;
+    path: {
+        /**
+         * Trace ID to fetch correlated profiles for
+         */
+        trace_id: string;
+    };
+    query?: never;
+    url: '/api/profiles/trace/{trace_id}';
+};
+
+export type ProfilesByTraceErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProfilesByTraceError = ProfilesByTraceErrors[keyof ProfilesByTraceErrors];
+
+export type ProfilesByTraceResponses = {
+    /**
+     * Summaries of the profiles linked to the trace
+     */
+    200: Array<ProfileSummary>;
+};
+
+export type ProfilesByTraceResponse = ProfilesByTraceResponses[keyof ProfilesByTraceResponses];
 
 export type ListTenantsData = {
     body?: never;
@@ -4002,6 +4156,313 @@ export type PromqlQueryRangeResponses = {
      */
     200: unknown;
 };
+
+export type PyroscopeLabelNamesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
+         */
+        from?: string;
+        /**
+         * Range end, same forms as `from`.
+         */
+        until?: string;
+        /**
+         * Label name for `/label-values`.
+         */
+        label?: string;
+    };
+    url: '/pyroscope/label-names';
+};
+
+export type PyroscopeLabelNamesErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type PyroscopeLabelNamesError = PyroscopeLabelNamesErrors[keyof PyroscopeLabelNamesErrors];
+
+export type PyroscopeLabelNamesResponses = {
+    /**
+     * Known profile label names
+     */
+    200: LabelsResponse;
+};
+
+export type PyroscopeLabelNamesResponse = PyroscopeLabelNamesResponses[keyof PyroscopeLabelNamesResponses];
+
+export type PyroscopeLabelValuesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
+         */
+        from?: string;
+        /**
+         * Range end, same forms as `from`.
+         */
+        until?: string;
+        /**
+         * Label name for `/label-values`.
+         */
+        label?: string;
+    };
+    url: '/pyroscope/label-values';
+};
+
+export type PyroscopeLabelValuesErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type PyroscopeLabelValuesError = PyroscopeLabelValuesErrors[keyof PyroscopeLabelValuesErrors];
+
+export type PyroscopeLabelValuesResponses = {
+    /**
+     * Known values for the requested label
+     */
+    200: LabelsResponse;
+};
+
+export type PyroscopeLabelValuesResponse = PyroscopeLabelValuesResponses[keyof PyroscopeLabelValuesResponses];
+
+export type PyroscopeProfileTypesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
+         */
+        from?: string;
+        /**
+         * Range end, same forms as `from`.
+         */
+        until?: string;
+        /**
+         * Label name for `/label-values`.
+         */
+        label?: string;
+    };
+    url: '/pyroscope/profile-types';
+};
+
+export type PyroscopeProfileTypesErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type PyroscopeProfileTypesError = PyroscopeProfileTypesErrors[keyof PyroscopeProfileTypesErrors];
+
+export type PyroscopeProfileTypesResponses = {
+    /**
+     * Profile types with data in the requested window
+     */
+    200: Array<ProfileType>;
+};
+
+export type PyroscopeProfileTypesResponse = PyroscopeProfileTypesResponses[keyof PyroscopeProfileTypesResponses];
+
+export type PyroscopeRenderData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Pyroscope query: `{app}` or `{type}{label="value",...}`.
+         */
+        query?: string;
+        /**
+         * Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
+         */
+        from?: string;
+        /**
+         * Range end, same forms as `from`.
+         */
+        until?: string;
+        /**
+         * Diff-only: baseline range start.
+         */
+        leftFrom?: string;
+        /**
+         * Diff-only: baseline range end.
+         */
+        leftUntil?: string;
+        /**
+         * Diff-only: comparison range start.
+         */
+        rightFrom?: string;
+        /**
+         * Diff-only: comparison range end.
+         */
+        rightUntil?: string;
+    };
+    url: '/pyroscope/render';
+};
+
+export type PyroscopeRenderErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type PyroscopeRenderError = PyroscopeRenderErrors[keyof PyroscopeRenderErrors];
+
+export type PyroscopeRenderResponses = {
+    /**
+     * Aggregated flame graph (flamebearer encoding)
+     */
+    200: RenderResponse;
+};
+
+export type PyroscopeRenderResponse = PyroscopeRenderResponses[keyof PyroscopeRenderResponses];
+
+export type PyroscopeRenderDiffData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Pyroscope query: `{app}` or `{type}{label="value",...}`.
+         */
+        query?: string;
+        /**
+         * Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
+         */
+        from?: string;
+        /**
+         * Range end, same forms as `from`.
+         */
+        until?: string;
+        /**
+         * Diff-only: baseline range start.
+         */
+        leftFrom?: string;
+        /**
+         * Diff-only: baseline range end.
+         */
+        leftUntil?: string;
+        /**
+         * Diff-only: comparison range start.
+         */
+        rightFrom?: string;
+        /**
+         * Diff-only: comparison range end.
+         */
+        rightUntil?: string;
+    };
+    url: '/pyroscope/render-diff';
+};
+
+export type PyroscopeRenderDiffErrors = {
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type PyroscopeRenderDiffError = PyroscopeRenderDiffErrors[keyof PyroscopeRenderDiffErrors];
+
+export type PyroscopeRenderDiffResponses = {
+    /**
+     * Differential flame graph (baseline vs comparison)
+     */
+    200: RenderResponse;
+};
+
+export type PyroscopeRenderDiffResponse = PyroscopeRenderDiffResponses[keyof PyroscopeRenderDiffResponses];
 
 export type SearchData = {
     body?: never;

@@ -30,6 +30,7 @@ use pyroscope_api::{
 };
 use serde::Deserialize;
 use tracing::Instrument;
+use utoipa::IntoParams;
 
 pub fn router<S: RouterState>() -> Router<S> {
     Router::new()
@@ -46,28 +47,36 @@ pub fn profiles_router<S: RouterState>() -> Router<S> {
 }
 
 /// Query parameters for `/render` and `/render-diff`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct RenderParams {
     /// Pyroscope query: `{app}` or `{type}{label="value",...}`.
     pub query: Option<String>,
+    /// Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
     pub from: Option<String>,
+    /// Range end, same forms as `from`.
     pub until: Option<String>,
-    /// Diff-only: baseline range.
+    /// Diff-only: baseline range start.
     #[serde(rename = "leftFrom")]
     pub left_from: Option<String>,
+    /// Diff-only: baseline range end.
     #[serde(rename = "leftUntil")]
     pub left_until: Option<String>,
-    /// Diff-only: comparison range.
+    /// Diff-only: comparison range start.
     #[serde(rename = "rightFrom")]
     pub right_from: Option<String>,
+    /// Diff-only: comparison range end.
     #[serde(rename = "rightUntil")]
     pub right_until: Option<String>,
 }
 
 /// Query parameters for the discovery endpoints.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DiscoveryParams {
+    /// Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
     pub from: Option<String>,
+    /// Range end, same forms as `from`.
     pub until: Option<String>,
     /// Label name for `/label-values`.
     pub label: Option<String>,
@@ -292,6 +301,18 @@ fn decode_json_result<T: serde::de::DeserializeOwned>(
 }
 
 /// GET /pyroscope/render — aggregate profiles into a flamegraph.
+#[utoipa::path(
+    get,
+    path = "/pyroscope/render",
+    operation_id = "pyroscope_render",
+    tag = "profiles",
+    security(("bearerAuth" = [])),
+    params(RenderParams),
+    responses(
+        (status = 200, description = "Aggregated flame graph (flamebearer encoding)", body = pyroscope_api::RenderResponse),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
@@ -338,6 +359,18 @@ pub async fn render<S: RouterState>(
 }
 
 /// GET /pyroscope/render-diff — differential flamegraph between two ranges.
+#[utoipa::path(
+    get,
+    path = "/pyroscope/render-diff",
+    operation_id = "pyroscope_render_diff",
+    tag = "profiles",
+    security(("bearerAuth" = [])),
+    params(RenderParams),
+    responses(
+        (status = 200, description = "Differential flame graph (baseline vs comparison)", body = pyroscope_api::RenderResponse),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx, params),
     fields(
@@ -402,6 +435,18 @@ fn discovery_params_json(params: &DiscoveryParams) -> String {
 }
 
 /// GET /pyroscope/label-names
+#[utoipa::path(
+    get,
+    path = "/pyroscope/label-names",
+    operation_id = "pyroscope_label_names",
+    tag = "profiles",
+    security(("bearerAuth" = [])),
+    params(DiscoveryParams),
+    responses(
+        (status = 200, description = "Known profile label names", body = pyroscope_api::LabelsResponse),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+    )
+)]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
 pub async fn label_names<S: RouterState>(
     State(state): State<S>,
@@ -421,6 +466,18 @@ pub async fn label_names<S: RouterState>(
 }
 
 /// GET /pyroscope/label-values?label=<name>
+#[utoipa::path(
+    get,
+    path = "/pyroscope/label-values",
+    operation_id = "pyroscope_label_values",
+    tag = "profiles",
+    security(("bearerAuth" = [])),
+    params(DiscoveryParams),
+    responses(
+        (status = 200, description = "Known values for the requested label", body = pyroscope_api::LabelsResponse),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+    )
+)]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
 pub async fn label_values<S: RouterState>(
     State(state): State<S>,
@@ -445,6 +502,18 @@ pub async fn label_values<S: RouterState>(
 }
 
 /// GET /pyroscope/profile-types
+#[utoipa::path(
+    get,
+    path = "/pyroscope/profile-types",
+    operation_id = "pyroscope_profile_types",
+    tag = "profiles",
+    security(("bearerAuth" = [])),
+    params(DiscoveryParams),
+    responses(
+        (status = 200, description = "Profile types with data in the requested window", body = [pyroscope_api::ProfileType]),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+    )
+)]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
 pub async fn profile_types<S: RouterState>(
     State(state): State<S>,
@@ -547,6 +616,20 @@ pub(crate) async fn fetch_profiles_for_trace<S: RouterState>(
 }
 
 /// GET /api/profiles/trace/{trace_id} — profiles linked to a trace.
+#[utoipa::path(
+    get,
+    path = "/api/profiles/trace/{trace_id}",
+    operation_id = "profiles_by_trace",
+    tag = "profiles",
+    security(("bearerAuth" = [])),
+    params(
+        ("trace_id" = String, Path, description = "Trace ID to fetch correlated profiles for"),
+    ),
+    responses(
+        (status = 200, description = "Summaries of the profiles linked to the trace", body = [tempo_api::ProfileSummary]),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+    )
+)]
 #[tracing::instrument(
     skip(state, tenant_ctx),
     fields(
@@ -572,6 +655,122 @@ pub async fn profiles_by_trace<S: RouterState>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- OpenAPI wire-format fixtures (task 1.1): the typed response
+    // structs' `Serialize` output must stay byte-identical to the fixed
+    // fixtures below, guarding against an accidental field rename/reorder
+    // when the structs gained `ToSchema` for the OpenAPI document. ----
+
+    #[test]
+    fn render_response_wire_format_is_stable() {
+        let response = RenderResponse {
+            flamebearer: Flamebearer {
+                names: vec!["total".to_string(), "main".to_string()],
+                levels: vec![vec![0, 100, 0, 0], vec![0, 100, 40, 1]],
+                num_ticks: 100,
+                max_self: 40,
+            },
+            metadata: FlamebearerMetadata {
+                format: "single".to_string(),
+                spy_name: None,
+                sample_rate: 100,
+                units: "samples".to_string(),
+                name: "cpu".to_string(),
+            },
+            timeline: None,
+            left_ticks: None,
+            right_ticks: None,
+        };
+        let expected = serde_json::json!({
+            "flamebearer": {
+                "names": ["total", "main"],
+                "levels": [[0, 100, 0, 0], [0, 100, 40, 1]],
+                "numTicks": 100,
+                "maxSelf": 40
+            },
+            "metadata": {
+                "format": "single",
+                "sampleRate": 100,
+                "units": "samples",
+                "name": "cpu"
+            }
+        });
+        assert_eq!(serde_json::to_value(&response).unwrap(), expected);
+    }
+
+    #[test]
+    fn render_diff_response_wire_format_is_stable() {
+        let response = RenderResponse {
+            metadata: FlamebearerMetadata {
+                format: "double".to_string(),
+                ..FlamebearerMetadata::default()
+            },
+            left_ticks: Some(175),
+            right_ticks: Some(250),
+            ..RenderResponse::default()
+        };
+        let expected = serde_json::json!({
+            "flamebearer": {
+                "names": [],
+                "levels": [],
+                "numTicks": 0,
+                "maxSelf": 0
+            },
+            "metadata": {
+                "format": "double",
+                "sampleRate": 0,
+                "units": "",
+                "name": ""
+            },
+            "leftTicks": 175,
+            "rightTicks": 250
+        });
+        assert_eq!(serde_json::to_value(&response).unwrap(), expected);
+    }
+
+    #[test]
+    fn labels_response_wire_format_is_stable() {
+        let response = LabelsResponse {
+            names: vec!["service_name".to_string(), "env".to_string()],
+        };
+        let expected = serde_json::json!({ "names": ["service_name", "env"] });
+        assert_eq!(serde_json::to_value(&response).unwrap(), expected);
+    }
+
+    #[test]
+    fn profile_type_wire_format_is_stable() {
+        let types = vec![ProfileType::from_type_unit("cpu", "nanoseconds")];
+        let expected = serde_json::json!([{
+            "ID": "cpu:cpu:nanoseconds",
+            "name": "cpu",
+            "sampleType": "cpu",
+            "sampleUnit": "nanoseconds"
+        }]);
+        assert_eq!(serde_json::to_value(&types).unwrap(), expected);
+    }
+
+    #[test]
+    fn profile_summary_wire_format_is_stable() {
+        let summaries = vec![tempo_api::ProfileSummary {
+            profile_id: "p1".to_string(),
+            time_unix_nano: "1700000000000000000".to_string(),
+            duration_nano: "1000000".to_string(),
+            sample_type: "cpu".to_string(),
+            sample_unit: "nanoseconds".to_string(),
+            service_name: "checkout".to_string(),
+            span_id: Some("abc123".to_string()),
+        }];
+        let expected = serde_json::json!([{
+            "profileID": "p1",
+            "timeUnixNano": "1700000000000000000",
+            "durationNano": "1000000",
+            "sampleType": "cpu",
+            "sampleUnit": "nanoseconds",
+            "serviceName": "checkout",
+            "spanID": "abc123"
+        }]);
+        assert_eq!(serde_json::to_value(&summaries).unwrap(), expected);
+    }
 
     #[test]
     fn parses_full_pyroscope_query() {

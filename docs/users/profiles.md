@@ -7,6 +7,7 @@ sources:
   - src/router/src/endpoints/pyroscope.rs
   - src/common/src/flight/conversion/conversion_profiles.rs
   - src/querier/src/query/profile.rs
+  - src/signaldb-cli/src/commands/profiles.rs
 ---
 
 # Profiles
@@ -153,15 +154,19 @@ profiles_enabled = false
 
 ### Pyroscope API (Grafana-compatible)
 
-The router serves a Pyroscope-compatible surface under `/pyroscope`:
+The router serves a Pyroscope-compatible surface under `/pyroscope` (plus
+trace correlation at `/api/profiles`). Every endpoint below is part of the
+OpenAPI contract (operation ids in parentheses), so it is generated into the
+Rust SDK and the TypeScript client, not hand-maintained:
 
-| Endpoint                              | Purpose                                                           |
-| ------------------------------------- | ----------------------------------------------------------------- |
-| `GET /pyroscope/render`               | Flamegraph for a query and time range                             |
-| `GET /pyroscope/render-diff`          | Differential flamegraph between two ranges                        |
-| `GET /pyroscope/profile-types`        | Available profile types                                           |
-| `GET /pyroscope/label-names`          | Label discovery (reads JSON-string or map-typed attribute tables) |
-| `GET /pyroscope/label-values?label=…` | Values for one label                                              |
+| Endpoint                              | Purpose                                                           | Operation id              |
+| ------------------------------------- | ----------------------------------------------------------------- | ------------------------- |
+| `GET /pyroscope/render`               | Flamegraph for a query and time range                             | `pyroscope_render`        |
+| `GET /pyroscope/render-diff`          | Differential flamegraph between two ranges                        | `pyroscope_render_diff`   |
+| `GET /pyroscope/profile-types`        | Available profile types                                           | `pyroscope_profile_types` |
+| `GET /pyroscope/label-names`          | Label discovery (reads JSON-string or map-typed attribute tables) | `pyroscope_label_names`   |
+| `GET /pyroscope/label-values?label=…` | Values for one label                                              | `pyroscope_label_values`  |
+| `GET /api/profiles/trace/{trace_id}`  | Profiles linked to a trace                                        | `profiles_by_trace`       |
 
 Queries use Pyroscope selector syntax; time bounds accept unix seconds,
 unix milliseconds, or `now-1h` style expressions:
@@ -184,6 +189,35 @@ or empty 'label' parameter"}`. `errorType` is `bad_data` (400),
 budget (`max_query_requests_per_sec`), not the ingest limit above; it
 carries `retryAfterMs` in the body and the same `Retry-After` /
 `X-RateLimit-Limit` / `X-RateLimit-Burst` headers.
+
+#### CLI
+
+```bash
+signaldb profiles types [--from now-1h --until now]
+signaldb profiles labels [--from now-1h --until now]
+signaldb profiles label-values service_name [--from now-1h --until now]
+signaldb profiles render 'cpu{service_name="checkout"}' --from now-1h --until now
+signaldb profiles diff 'cpu' \
+  --left-from now-2h --left-until now-1h --right-from now-1h --right-until now
+signaldb profiles by-trace <trace_id>
+```
+
+Each verb dispatches through `signaldb-sdk` and prints the native Pyroscope
+JSON response unchanged, consistent with the other compat query surfaces.
+`profiles` is a standalone group (not under `signaldb query`) because
+Pyroscope has no single query-language flag — the selector and ranges are
+per-verb parameters.
+
+#### MCP
+
+Agent sessions reach the same surface through dedicated tools:
+`discover_profile_types` (profile types with data), `discover_attributes`
+with `signal: "profiles"` (label names, or values with `tag`),
+`search_profiles` (selector + range → the aggregated flame graph, subject to
+the same payload cap and `truncated` flag as the other query tools),
+`compare_profiles` (two ranges → the diff flame graph), and
+`profiles_for_trace` (profiles correlated with a trace id). See
+[MCP server](mcp.md).
 
 ### SQL
 

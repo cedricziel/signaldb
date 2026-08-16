@@ -28,27 +28,31 @@ missing tool.
 Available to every authenticated tenant session — there is no role gating on
 these:
 
-| Tool                       | Purpose                                                                                                                                                         |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server_info`              | Confirm connectivity and which tenant your credential resolves to.                                                                                              |
-| `search_traces`            | TraceQL search over your tenant's traces.                                                                                                                       |
-| `get_trace`                | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                |
-| `get_profile`              | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                   |
-| `discover_attributes`      | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels). |
-| `discover_metrics`         | List the distinct metric names visible to your tenant.                                                                                                          |
-| `query_metrics`            | PromQL query over your tenant's metrics (native Prometheus result); instant by default, or a range query when `start`/`end` (and optionally `step`) are given.  |
-| `search_logs`              | LogQL query over your tenant's logs (native Loki result); instant or range, same as `query_metrics`.                                                            |
-| `query_ir`                 | Native Query IR document (the structured, versioned query surface).                                                                                             |
-| `list_schema_registries`   | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts.   |
-| `get_schema_registry`      | Fetch one registry's summary and full document by `namespace`/`version`.                                                                                        |
-| `resolve_attribute`        | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation.     |
-| `resolve_entity`           | What an entity type (`k8s.pod`, `service`, ...) means: identifying/descriptive attributes, what it extends, associated metrics.                                 |
-| `resolve_metric`           | What a metric means: instrument, unit, brief, recorded attributes, associated entities.                                                                         |
-| `search_schema`            | Prefix search over attributes, entities, or metrics (`kind`, `prefix`, `limit`) to find the right vocabulary before querying.                                   |
-| `create_schema_registry`   | Upload a custom Weaver-model registry document (JSON object) for your tenant (requires `schema:write`).                                                         |
-| `replace_schema_registry`  | Replace a custom registry's document by namespace/version (requires `schema:write`; bundled registries refuse).                                                 |
-| `validate_schema_registry` | Validate a registry document without storing it; errors carry document paths (requires `schema:write`).                                                         |
-| `delete_schema_registry`   | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                             |
+| Tool                       | Purpose                                                                                                                                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server_info`              | Confirm connectivity and which tenant your credential resolves to.                                                                                                                             |
+| `search_traces`            | TraceQL search over your tenant's traces.                                                                                                                                                      |
+| `get_trace`                | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                                               |
+| `get_profile`              | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                                                  |
+| `discover_attributes`      | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels), `profiles` (Pyroscope labels). |
+| `discover_metrics`         | List the distinct metric names visible to your tenant.                                                                                                                                         |
+| `discover_profile_types`   | List the Pyroscope profile types with data for your tenant (e.g. CPU, heap).                                                                                                                   |
+| `query_metrics`            | PromQL query over your tenant's metrics (native Prometheus result); instant by default, or a range query when `start`/`end` (and optionally `step`) are given.                                 |
+| `search_logs`              | LogQL query over your tenant's logs (native Loki result); instant or range, same as `query_metrics`.                                                                                           |
+| `search_profiles`          | Search profiles with a Pyroscope selector and a time range; returns the aggregated flame graph (flamebearer encoding).                                                                         |
+| `compare_profiles`         | Compare profiles between two time ranges with a shared Pyroscope selector; returns the differential flame graph.                                                                               |
+| `profiles_for_trace`       | List the profiles correlated with a trace id.                                                                                                                                                  |
+| `query_ir`                 | Native Query IR document (the structured, versioned query surface).                                                                                                                            |
+| `list_schema_registries`   | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts.                                  |
+| `get_schema_registry`      | Fetch one registry's summary and full document by `namespace`/`version`.                                                                                                                       |
+| `resolve_attribute`        | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation.                                    |
+| `resolve_entity`           | What an entity type (`k8s.pod`, `service`, ...) means: identifying/descriptive attributes, what it extends, associated metrics.                                                                |
+| `resolve_metric`           | What a metric means: instrument, unit, brief, recorded attributes, associated entities.                                                                                                        |
+| `search_schema`            | Prefix search over attributes, entities, or metrics (`kind`, `prefix`, `limit`) to find the right vocabulary before querying.                                                                  |
+| `create_schema_registry`   | Upload a custom Weaver-model registry document (JSON object) for your tenant (requires `schema:write`).                                                                                        |
+| `replace_schema_registry`  | Replace a custom registry's document by namespace/version (requires `schema:write`; bundled registries refuse).                                                                                |
+| `validate_schema_registry` | Validate a registry document without storing it; errors carry document paths (requires `schema:write`).                                                                                        |
+| `delete_schema_registry`   | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                                                            |
 
 Each query tool accepts an optional `dataset` argument. Omit it to use your
 session's default dataset; pass one to target another dataset your tenant may

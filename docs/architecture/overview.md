@@ -226,7 +226,12 @@ available for machine clients and ingestion.
 | `GET /tempo/api/metrics/query`                   | 501 Not Implemented (TraceQL metrics)                                                    |
 | `GET /tempo/api/metrics/query_range`             | 501 Not Implemented (TraceQL metrics)                                                    |
 
-**Pyroscope API Endpoints** (profiles, nested at `/pyroscope` plus `/api/profiles`):
+**Pyroscope API Endpoints** (profiles, nested at `/pyroscope` plus
+`/api/profiles`; all six are in the OpenAPI document, tag `profiles`, and
+reachable via `signaldb-sdk`, `signaldb-cli profiles`, and the MCP
+`discover_profile_types`/`search_profiles`/`compare_profiles`/
+`profiles_for_trace` tools, not only raw HTTP -- see
+[profiles](../users/profiles.md)):
 
 | Endpoint                                                        | Status                                    |
 | --------------------------------------------------------------- | ----------------------------------------- |

@@ -15,6 +15,49 @@
     }
   ],
   "paths": {
+    "/api/profiles/trace/{trace_id}": {
+      "get": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "GET /api/profiles/trace/{trace_id} — profiles linked to a trace.",
+        "operationId": "profiles_by_trace",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "description": "Trace ID to fetch correlated profiles for",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Summaries of the profiles linked to the trace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProfileSummary"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/tenants": {
       "get": {
         "tags": [
@@ -3406,6 +3449,371 @@
         ]
       }
     },
+    "/pyroscope/label-names": {
+      "get": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "GET /pyroscope/label-names",
+        "operationId": "pyroscope_label_names",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Range end, same forms as `from`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "description": "Label name for `/label-values`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Known profile label names",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelsResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/pyroscope/label-values": {
+      "get": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "GET /pyroscope/label-values?label=<name>",
+        "operationId": "pyroscope_label_values",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Range end, same forms as `from`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "description": "Label name for `/label-values`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Known values for the requested label",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelsResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/pyroscope/profile-types": {
+      "get": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "GET /pyroscope/profile-types",
+        "operationId": "pyroscope_profile_types",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Range end, same forms as `from`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "description": "Label name for `/label-values`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Profile types with data in the requested window",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProfileType"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/pyroscope/render": {
+      "get": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "GET /pyroscope/render — aggregate profiles into a flamegraph.",
+        "operationId": "pyroscope_render",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Pyroscope query: `{app}` or `{type}{label=\"value\",...}`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Range end, same forms as `from`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "leftFrom",
+            "in": "query",
+            "description": "Diff-only: baseline range start.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "leftUntil",
+            "in": "query",
+            "description": "Diff-only: baseline range end.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rightFrom",
+            "in": "query",
+            "description": "Diff-only: comparison range start.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rightUntil",
+            "in": "query",
+            "description": "Diff-only: comparison range end.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aggregated flame graph (flamebearer encoding)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/pyroscope/render-diff": {
+      "get": {
+        "tags": [
+          "profiles"
+        ],
+        "summary": "GET /pyroscope/render-diff — differential flamegraph between two ranges.",
+        "operationId": "pyroscope_render_diff",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Pyroscope query: `{app}` or `{type}{label=\"value\",...}`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Range end, same forms as `from`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "leftFrom",
+            "in": "query",
+            "description": "Diff-only: baseline range start.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "leftUntil",
+            "in": "query",
+            "description": "Diff-only: baseline range end.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rightFrom",
+            "in": "query",
+            "description": "Diff-only: comparison range start.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rightUntil",
+            "in": "query",
+            "description": "Diff-only: comparison range end.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Differential flame graph (baseline vs comparison)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/tempo/api/search": {
       "get": {
         "tags": [
@@ -4690,6 +5098,83 @@
           "retrieval_only"
         ]
       },
+      "Flamebearer": {
+        "type": "object",
+        "description": "Flamegraph payload in flamebearer encoding.",
+        "required": [
+          "names",
+          "levels",
+          "numTicks",
+          "maxSelf"
+        ],
+        "properties": {
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int64"
+              }
+            },
+            "description": "One flat array per depth level. `format: \"single\"` uses\n`[offset_delta, total, self, name_index]` quadruples; `\"double\"`\nuses `[off_l, total_l, self_l, off_r, total_r, self_r, name_index]`."
+          },
+          "maxSelf": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Largest self value of any block, for color scaling."
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Function name table referenced by block name indices."
+          },
+          "numTicks": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total number of ticks (root width)."
+          }
+        }
+      },
+      "FlamebearerMetadata": {
+        "type": "object",
+        "description": "Metadata describing how to interpret flamebearer values.",
+        "required": [
+          "format",
+          "sampleRate",
+          "units",
+          "name"
+        ],
+        "properties": {
+          "format": {
+            "type": "string",
+            "description": "`\"single\"` for one profile set, `\"double\"` for a diff."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name of the rendered profile/query."
+          },
+          "sampleRate": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Sample rate in Hz; 100 is the Pyroscope default for CPU profiles.",
+            "minimum": 0
+          },
+          "spyName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Profiler that produced the data, when known (e.g. \"gospy\")."
+          },
+          "units": {
+            "type": "string",
+            "description": "Value units (e.g. \"samples\", \"objects\", \"bytes\")."
+          }
+        }
+      },
       "FlamegraphResult": {
         "type": "object",
         "description": "A flamegraph in Pyroscope flamebearer encoding — the same shape and\naggregation `/pyroscope/render` returns, reused here so the native Query\nIR surface can retrieve an actual profile payload (bounded, aggregated)\nrather than raw `samples_json`/`stacktraces_json`. See `query-ir-core`'s\n\"Profile flamegraph retrieval\" requirement.",
@@ -4825,6 +5310,21 @@
           },
           "y": {
             "$ref": "#/components/schemas/HeatmapAxisY"
+          }
+        }
+      },
+      "LabelsResponse": {
+        "type": "object",
+        "description": "Response body of the label-names / label-values endpoints.",
+        "required": [
+          "names"
+        ],
+        "properties": {
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -5473,6 +5973,37 @@
           }
         }
       },
+      "ProfileType": {
+        "type": "object",
+        "description": "One entry of `GET /pyroscope/profile-types`.",
+        "required": [
+          "ID",
+          "name",
+          "sampleType",
+          "sampleUnit"
+        ],
+        "properties": {
+          "ID": {
+            "type": "string",
+            "description": "Canonical ID: `{name}:{sample_type}:{sample_unit}`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "periodType": {
+            "type": "string"
+          },
+          "periodUnit": {
+            "type": "string"
+          },
+          "sampleType": {
+            "type": "string"
+          },
+          "sampleUnit": {
+            "type": "string"
+          }
+        }
+      },
       "QualifiedEntityRole": {
         "type": "object",
         "description": "An entity role qualified by the registry that declares it.",
@@ -5713,6 +6244,48 @@
           },
           "version": {
             "type": "string"
+          }
+        }
+      },
+      "RenderResponse": {
+        "type": "object",
+        "description": "Response body of `GET /pyroscope/render` (and the diff variant).",
+        "required": [
+          "flamebearer",
+          "metadata"
+        ],
+        "properties": {
+          "flamebearer": {
+            "$ref": "#/components/schemas/Flamebearer"
+          },
+          "leftTicks": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Total baseline ticks; present when `format` is `\"double\"`."
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/FlamebearerMetadata"
+          },
+          "rightTicks": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Total comparison ticks; present when `format` is `\"double\"`."
+          },
+          "timeline": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Timeline"
+              }
+            ]
           }
         }
       },
@@ -6101,6 +6674,36 @@
               "$ref": "#/components/schemas/TenantInfo"
             },
             "description": "List of tenants"
+          }
+        }
+      },
+      "Timeline": {
+        "type": "object",
+        "description": "Optional per-interval sample counts for the render timeline.",
+        "required": [
+          "startTime",
+          "samples",
+          "durationDelta"
+        ],
+        "properties": {
+          "durationDelta": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Interval width in seconds."
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "One aggregated value per interval."
+          },
+          "startTime": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Start of the timeline, unix seconds."
           }
         }
       },
@@ -6517,6 +7120,10 @@
     {
       "name": "ops",
       "description": "Operational control (compaction)"
+    },
+    {
+      "name": "profiles",
+      "description": "Pyroscope-compatible continuous-profiling query (flame graphs, trace correlation)"
     },
     {
       "name": "oauth",

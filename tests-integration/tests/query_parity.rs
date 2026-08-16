@@ -31,14 +31,6 @@ const EXCLUDED: &[(&str, &str)] = &[
         "manage_create_tenant",
         "human self-serve tenant creation by a signed-in instance administrator (`TenantContext::is_instance_admin`); API-key clients create tenants through the admin API's `create_tenant` (`admin tenant create` / MCP `create_tenant`), so no `tenant`-group surface is owed (management-api-key-scope, design D5)",
     ),
-    (
-        "search_tags_v2",
-        "Tempo v2 tag search, added to the OpenAPI document by a concurrent change (trace-tag-discovery, #1258) merged into main while this change was in flight; neither the CLI's `discover attributes` nor the MCP `discover_attributes` tool has been updated to the v2 endpoints yet (they still call v1 search_tags/search_tag_values) — out of this change's scope (tempo.rs tag handlers), tracked separately",
-    ),
-    (
-        "search_tag_values_v2",
-        "Tempo v2 tag value search — same rationale as search_tags_v2",
-    ),
 ];
 
 /// How an operation is reached through the CLI: either a subcommand path
@@ -328,6 +320,16 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "discover_attributes",
     ),
     (
+        "search_tags_v2",
+        CliSurface::Path(&["discover", "attributes"]),
+        "discover_attributes",
+    ),
+    (
+        "search_tag_values_v2",
+        CliSurface::Path(&["discover", "attributes"]),
+        "discover_attributes",
+    ),
+    (
         "logql_labels",
         CliSurface::Path(&["discover", "attributes"]),
         "discover_attributes",
@@ -349,6 +351,37 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
     ),
     // ---- Identity ----
     ("whoami", CliSurface::Path(&["whoami"]), "server_info"),
+    // ---- Pyroscope-compatible profile query (change: pyroscope-openapi-parity) ----
+    (
+        "pyroscope_render",
+        CliSurface::Path(&["profiles", "render"]),
+        "search_profiles",
+    ),
+    (
+        "pyroscope_render_diff",
+        CliSurface::Path(&["profiles", "diff"]),
+        "compare_profiles",
+    ),
+    (
+        "pyroscope_label_names",
+        CliSurface::Path(&["profiles", "labels"]),
+        "discover_attributes",
+    ),
+    (
+        "pyroscope_label_values",
+        CliSurface::Path(&["profiles", "label-values"]),
+        "discover_attributes",
+    ),
+    (
+        "pyroscope_profile_types",
+        CliSurface::Path(&["profiles", "types"]),
+        "discover_profile_types",
+    ),
+    (
+        "profiles_by_trace",
+        CliSurface::Path(&["profiles", "by-trace"]),
+        "profiles_for_trace",
+    ),
 ];
 
 /// Walks `cmd`'s subcommand tree along `path`, returning whether every

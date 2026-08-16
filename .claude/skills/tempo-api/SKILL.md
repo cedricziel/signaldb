@@ -5,6 +5,7 @@ user-invocable: false
 sources:
   - src/router/src/endpoints/tempo.rs
   - src/router/src/endpoints/admin.rs
+  - src/router/src/endpoints/pyroscope.rs
   - src/querier/src/query/trace.rs
   - src/querier/src/flight.rs
   - src/grafana-plugin/src/**
@@ -35,6 +36,21 @@ sources:
 | `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented         | Same backing as v1 tag values (including the `start`/`end` window semantics); scoped names (`resource.x`, `span.x`, `.x`) resolve to the same attribute                                                                                                                                                                                                                               |
 | `GET /tempo/api/metrics/query`                   | 501 Not Implemented | TraceQL metrics not implemented (returns 501 since #552, no fabricated series)                                                                                                                                                                                                                                                                                                        |
 | `GET /tempo/api/metrics/query_range`             | 501 Not Implemented | Same as above                                                                                                                                                                                                                                                                                                                                                                         |
+
+### Pyroscope-Compatible Profile Query (Router :3000)
+
+`endpoints/pyroscope.rs` serves the profiles signal in the Pyroscope wire
+format, mounted at `/pyroscope` and `/api/profiles`: `GET render`,
+`GET render-diff`, `GET label-names`, `GET label-values`,
+`GET profile-types` (operation ids `pyroscope_render`,
+`pyroscope_render_diff`, `pyroscope_label_names`, `pyroscope_label_values`,
+`pyroscope_profile_types`), and `GET /api/profiles/trace/{trace_id}`
+(`profiles_by_trace`). All six are in the OpenAPI document (tag `profiles`)
+and reachable through `signaldb-sdk`, `signaldb-cli profiles
+{types,labels,label-values,render,diff,by-trace}`, and the MCP server's
+`discover_profile_types`/`search_profiles`/`compare_profiles`/
+`profiles_for_trace` tools plus `discover_attributes(signal="profiles")` —
+not only raw HTTP. See `docs/users/profiles.md`.
 
 Spanset spans carry optional extras beyond Tempo's shape — `name`,
 `parentSpanID`, `serviceName`, `status` (skipped when absent) — populated by

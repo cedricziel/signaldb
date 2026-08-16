@@ -236,6 +236,10 @@ null`, in `to_schema.rs`) — the panic was in client generation, so
   string/int/bool/double) serializes as an untyped object in the schema, so the
   generated clients see it as an arbitrary JSON value rather than a typed enum.
 - The Pyroscope-compatible query endpoints (`/pyroscope/...`,
-  `/api/profiles/...`) are not yet annotated, so they are absent from the
-  code-first spec. Annotating them requires `ToSchema` on the `pyroscope-api`
-  types and is tracked as a follow-up.
+  `/api/profiles/...`) are annotated and in the code-first spec (change:
+  `pyroscope-openapi-parity`). Their responses are **typed**
+  (`pyroscope_api::RenderResponse`, `LabelsResponse`, `ProfileType`,
+  `tempo_api::ProfileSummary`) — `pyroscope-api`'s types derive `ToSchema`
+  alongside their existing `Serialize`/`Deserialize`, and router fixture
+  tests pin the wire JSON so the schema addition can't silently change the
+  serialized shape.
