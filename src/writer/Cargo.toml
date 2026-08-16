@@ -50,6 +50,11 @@ name = "connection_pool_benchmarks"
 harness = false
 required-features = ["benchmarks"]
 
+[[bench]]
+name = "schema_transform_benchmarks"
+harness = false
+required-features = ["benchmarks"]
+
 [dev-dependencies]
 common = { workspace = true, features = ["testing"] }
 tokio-stream.workspace = true

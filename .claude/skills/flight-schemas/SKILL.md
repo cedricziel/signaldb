@@ -51,13 +51,20 @@ The wire format and storage format differ intentionally. Writer applies `transfo
 
 ## Write-Time Transformation
 
-`transform_trace_v1_to_v2()` in `src/writer/src/schema_transform.rs`:
-
-1. **Detection**: Check for `name` field (v1) vs `span_name` (v2)
-2. **Field renames**: Map v1 -> v2 names
-3. **Type conversions**: `UInt64` -> `Int64` for Iceberg compatibility
-4. **Complex type serialization**: `List<Struct>` events/links -> JSON strings
-5. **Computed fields**: Generate `timestamp`, `date_day`, `hour` from `start_time_unix_nano`
+`transform_trace_v1_to_v2()` in `src/writer/src/schema_transform.rs` is
+**compiled-plan-based** (`compiled-schema-materializer`): a
+`TraceV1ToV2Plan` — one extractor closure per physical-v3 field, selecting
+field renames, `UInt64`→`Int64` casts, `List<Struct>` events/links → JSON
+serialization, and the `timestamp`/`date_day`/`hour` computed fields — is
+resolved once (`warm_trace_v1_to_v2_plan()`, called from
+`IcebergTableWriter::new` for the traces table) rather than re-matched by
+field name on every batch. Plan construction returns `Err` (never panics)
+on a field with no matching rule, so a bad extraction-rule reference fails
+before the writer serves traffic. Only this trace v1→v2 step is
+plan-based; `transform_logs_v1_to_iceberg`/`transform_profiles_v1_to_iceberg`/
+the five metrics transforms stay hand-written per-field code (none of them
+have a v1→v2 split the way traces does — they go wire-to-physical
+directly).
 
 Applied in Writer's Flight `do_put` handler before WAL write -- all WAL data is in physical-v3 format.
 
