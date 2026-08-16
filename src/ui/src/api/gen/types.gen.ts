@@ -951,6 +951,16 @@ export type SpanSet = {
     spans: Array<Span>;
 };
 
+/**
+ * GET /api/search/tags?scope=<resource|span|intrinsic>
+ *
+ * `rename_all = "lowercase"` matters here: the Tempo API (and Grafana's
+ * Tempo datasource, which is what actually sends this) uses lowercase
+ * scope values. Without it, serde only accepts the Rust variant names
+ * (`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).
+ */
+export type TagScope = 'resource' | 'span' | 'intrinsic';
+
 export type TagSearchResponse = {
     tagNames: Array<string>;
 };
@@ -1137,6 +1147,31 @@ export type WhoamiTenant = {
     id: string;
     name: string;
     slug: string;
+};
+
+export type TempoApiV2TagSearchResponse = {
+    scopes: Array<TempoApiV2TagSearchScope>;
+};
+
+export type TempoApiV2TagSearchScope = {
+    scope: string;
+    tags: Array<string>;
+};
+
+/**
+ * GET /api/v2/search/tag/.service.name/values
+ *
+ * Todo: Add types to values
+ *
+ * See <https://grafana.com/docs/tempo/latest/api_docs/#search-tag-values-v2>
+ */
+export type TempoApiV2TagValuesResponse = {
+    tagValues: Array<TempoApiV2TagWithValue>;
+};
+
+export type TempoApiV2TagWithValue = {
+    tag: string;
+    value: string;
 };
 
 export type ListTenantsData = {
@@ -3777,10 +3812,6 @@ export type SearchTagValuesErrors = {
          */
         status: string;
     };
-    /**
-     * Tag not queryable yet
-     */
-    501: unknown;
 };
 
 export type SearchTagValuesError = SearchTagValuesErrors[keyof SearchTagValuesErrors];
@@ -3797,11 +3828,24 @@ export type SearchTagValuesResponse = SearchTagValuesResponses[keyof SearchTagVa
 export type SearchTagsData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Window start (unix seconds); default lookback is 1 hour
+         */
+        start?: number;
+        /**
+         * Window end (unix seconds); defaults to now
+         */
+        end?: number;
+    };
     url: '/tempo/api/search/tags';
 };
 
 export type SearchTagsErrors = {
+    /**
+     * start/end are not unix-second timestamps
+     */
+    400: unknown;
     /**
      * The JSON envelope every query-surface error responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
@@ -3829,7 +3873,7 @@ export type SearchTagsError = SearchTagsErrors[keyof SearchTagsErrors];
 
 export type SearchTagsResponses = {
     /**
-     * Searchable tag names
+     * Searchable tag names observed in the window
      */
     200: TagSearchResponse;
 };
@@ -3893,3 +3937,80 @@ export type QuerySingleTraceResponses = {
 };
 
 export type QuerySingleTraceResponse = QuerySingleTraceResponses[keyof QuerySingleTraceResponses];
+
+export type SearchTagValuesV2Data = {
+    body?: never;
+    path: {
+        /**
+         * Scoped or unscoped tag name to fetch values for
+         */
+        tag_name: string;
+    };
+    query?: {
+        /**
+         * Window start (unix seconds)
+         */
+        start?: number;
+        /**
+         * Window end (unix seconds)
+         */
+        end?: number;
+        /**
+         * Accepted for Tempo API compatibility; unused
+         */
+        q?: string;
+    };
+    url: '/tempo/api/v2/search/tag/{tag_name}/values';
+};
+
+export type SearchTagValuesV2Errors = {
+    /**
+     * start/end are not unix-second timestamps
+     */
+    400: unknown;
+};
+
+export type SearchTagValuesV2Responses = {
+    /**
+     * Values for the tag
+     */
+    200: TempoApiV2TagValuesResponse;
+};
+
+export type SearchTagValuesV2Response = SearchTagValuesV2Responses[keyof SearchTagValuesV2Responses];
+
+export type SearchTagsV2Data = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Restrict to one scope
+         */
+        scope?: TagScope;
+        /**
+         * Window start (unix seconds); default lookback is 1 hour
+         */
+        start?: number;
+        /**
+         * Window end (unix seconds); defaults to now
+         */
+        end?: number;
+    };
+    url: '/tempo/api/v2/search/tags';
+};
+
+export type SearchTagsV2Errors = {
+    /**
+     * start/end are not unix-second timestamps
+     */
+    400: unknown;
+};
+
+export type SearchTagsV2Responses = {
+    /**
+     * Searchable tag names, grouped by scope
+     */
+    200: TempoApiV2TagSearchResponse;
+};
+
+export type SearchTagsV2Response = SearchTagsV2Responses[keyof SearchTagsV2Responses];
