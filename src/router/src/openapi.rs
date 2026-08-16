@@ -55,6 +55,7 @@ impl Modify for SecurityAddon {
         (name = "metrics", description = "Prometheus-compatible metrics query (PromQL)"),
         (name = "logs", description = "Loki-compatible log query (LogQL)"),
         (name = "ops", description = "Operational control (compaction)"),
+        (name = "profiles", description = "Pyroscope-compatible continuous-profiling query (flame graphs, trace correlation)"),
         (name = "oauth", description = "OAuth 2.1 connector consent flow"),
         (name = "schema", description = "Schema registry: semantic-convention registries, attribute/entity/metric resolution"),
     ),
@@ -115,6 +116,13 @@ impl Modify for SecurityAddon {
         crate::endpoints::ops::compact,
         crate::endpoints::ops::compact_status,
         crate::endpoints::ops::compact_dry_run,
+        // Pyroscope-compatible profile query endpoints
+        crate::endpoints::pyroscope::render,
+        crate::endpoints::pyroscope::render_diff,
+        crate::endpoints::pyroscope::label_names,
+        crate::endpoints::pyroscope::label_values,
+        crate::endpoints::pyroscope::profile_types,
+        crate::endpoints::pyroscope::profiles_by_trace,
         // OAuth 2.1 connector consent flow (change: mcp-oauth-dcr)
         crate::endpoints::oauth::consent_context,
         crate::endpoints::oauth::authorize_decision,
@@ -240,6 +248,13 @@ impl Modify for SecurityAddon {
         schema_model::Role,
         // Rate-limit rejection envelope (change: query-throttle-signalling)
         crate::endpoints::api_error::ApiErrorBody,
+        // Pyroscope-compatible profile query DTOs
+        pyroscope_api::RenderResponse,
+        pyroscope_api::Flamebearer,
+        pyroscope_api::FlamebearerMetadata,
+        pyroscope_api::Timeline,
+        pyroscope_api::ProfileType,
+        pyroscope_api::LabelsResponse,
     ), responses(
         crate::endpoints::api_error::RateLimited,
     )),
@@ -294,7 +309,11 @@ mod tests {
     /// inline in `lib.rs`, not a standalone `router()` fn) and the
     /// public/infra routes (`/health`, `/api/v1/openapi.json`, session,
     /// OAuth) are out of scope for the extraction and are trusted by
-    /// inspection instead.
+    /// inspection instead. `endpoints/pyroscope.rs` mounts two separate
+    /// routers (`router()` at `/pyroscope`, `profiles_router()` at
+    /// `/api/profiles`) from one file, so its extraction in
+    /// `known_routes_match_router_fn_source` scopes to each function body
+    /// rather than the whole file (see `extract_fn_body`).
     const KNOWN_ROUTES: &[&str] = &[
         // endpoints/tempo.rs, mounted at /tempo
         "/tempo/api/search",
@@ -326,6 +345,14 @@ mod tests {
         "/api/v1/ops/compact",
         "/api/v1/ops/compact/status",
         "/api/v1/ops/compact/dry-run",
+        // endpoints/pyroscope.rs::router, mounted at /pyroscope
+        "/pyroscope/render",
+        "/pyroscope/render-diff",
+        "/pyroscope/label-names",
+        "/pyroscope/label-values",
+        "/pyroscope/profile-types",
+        // endpoints/pyroscope.rs::profiles_router, mounted at /api/profiles
+        "/api/profiles/trace/{trace_id}",
         // endpoints/tenant.rs, mounted at /api/v1
         "/api/v1/tenants",
         "/api/v1/tenants/{tenant_id}",
@@ -360,11 +387,13 @@ mod tests {
     /// `known_routes_match_router_fn_source`) that are deliberately outside
     /// the OpenAPI document: pre-existing Tempo/Loki/Prometheus compat
     /// surface not yet in the API contract (tracked separately — not part of
-    /// this change's scope). `/pyroscope/**`, `/api/profiles/**`, session
-    /// login/logout, OAuth 2.1 endpoints, `/health`, and
-    /// `/api/v1/openapi.json` are outside the extraction entirely (assembled
-    /// directly in `lib.rs`, not through one of the extracted `router()`
-    /// functions) and need no allowlist entry.
+    /// this change's scope). Session login/logout, OAuth 2.1 endpoints,
+    /// `/health`, and `/api/v1/openapi.json` are outside the extraction
+    /// entirely (assembled directly in `lib.rs`, not through one of the
+    /// extracted `router()` functions) and need no allowlist entry. The
+    /// Pyroscope-compatible routes (`/pyroscope/**`, `/api/profiles/**`) used
+    /// to be here too — they now have OpenAPI operations and live in
+    /// `KNOWN_ROUTES` instead (change: `pyroscope-openapi-parity`).
     const ALLOWLISTED_ROUTES: &[&str] = &[
         "/tempo/api/echo",
         "/tempo/api/v2/traces/{trace_id}",
@@ -399,6 +428,34 @@ mod tests {
         paths
     }
 
+    /// Slices `content` down to one `fn {fn_name}` body (from its opening to
+    /// its matching closing brace), for source files that assemble more than
+    /// one router under different mount prefixes — `extract_route_paths`
+    /// otherwise can't tell which `.route(...)` call belongs to which prefix.
+    fn extract_fn_body<'a>(content: &'a str, fn_name: &str) -> &'a str {
+        let marker = format!("fn {fn_name}");
+        let start = content
+            .find(&marker)
+            .unwrap_or_else(|| panic!("`fn {fn_name}` not found in source"));
+        let after = &content[start..];
+        let brace_start = after
+            .find('{')
+            .unwrap_or_else(|| panic!("no fn body found for `fn {fn_name}`"));
+        let bytes = after.as_bytes();
+        let mut depth: i32 = 0;
+        for (i, &b) in bytes.iter().enumerate().skip(brace_start) {
+            if b == b'{' {
+                depth += 1;
+            } else if b == b'}' {
+                depth -= 1;
+                if depth == 0 {
+                    return &after[..=i];
+                }
+            }
+        }
+        panic!("unbalanced braces while extracting `fn {fn_name}` body")
+    }
+
     /// Cross-checks `KNOWN_ROUTES`/`ALLOWLISTED_ROUTES` against the actual
     /// `.route(...)` calls in the endpoint modules whose `router()` function
     /// registers routes under one fixed mount prefix, catching drift in both
@@ -407,15 +464,23 @@ mod tests {
     #[test]
     fn known_routes_match_router_fn_source() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let files_with_prefix = [
-            ("src/endpoints/tempo.rs", "/tempo"),
-            ("src/endpoints/logql.rs", "/loki"),
-            ("src/endpoints/promql.rs", "/prometheus"),
-            ("src/endpoints/ops.rs", "/api/v1/ops"),
-            ("src/endpoints/tenant.rs", "/api/v1"),
-            ("src/endpoints/query.rs", "/api/v1"),
-            ("src/endpoints/management.rs", "/api/v1/manage"),
-            ("src/endpoints/schema.rs", "/api/v1/schema"),
+        // (file, mount prefix, Some(fn name) to scope extraction to one
+        // function body when the file assembles more than one router).
+        let files_with_prefix: [(&str, &str, Option<&str>); 10] = [
+            ("src/endpoints/tempo.rs", "/tempo", None),
+            ("src/endpoints/logql.rs", "/loki", None),
+            ("src/endpoints/promql.rs", "/prometheus", None),
+            ("src/endpoints/ops.rs", "/api/v1/ops", None),
+            ("src/endpoints/tenant.rs", "/api/v1", None),
+            ("src/endpoints/query.rs", "/api/v1", None),
+            ("src/endpoints/management.rs", "/api/v1/manage", None),
+            ("src/endpoints/schema.rs", "/api/v1/schema", None),
+            ("src/endpoints/pyroscope.rs", "/pyroscope", Some("router")),
+            (
+                "src/endpoints/pyroscope.rs",
+                "/api/profiles",
+                Some("profiles_router"),
+            ),
         ];
 
         let known: std::collections::HashSet<&str> = KNOWN_ROUTES.iter().copied().collect();
@@ -423,11 +488,15 @@ mod tests {
             ALLOWLISTED_ROUTES.iter().copied().collect();
 
         let mut actual: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (file, prefix) in files_with_prefix {
+        for (file, prefix, fn_name) in files_with_prefix {
             let path = format!("{manifest_dir}/{file}");
             let content = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
-            for relative in extract_route_paths(&content) {
+            let scoped = match fn_name {
+                Some(name) => extract_fn_body(&content, name),
+                None => content.as_str(),
+            };
+            for relative in extract_route_paths(scoped) {
                 actual.insert(format!("{prefix}{relative}"));
             }
         }
@@ -464,15 +533,15 @@ mod tests {
         );
     }
 
-    /// `/pyroscope/**`, `/api/profiles/**` (trace-to-profile correlation, not
-    /// yet in the API contract — tracked separately), session login/logout,
-    /// OAuth 2.1 connector endpoints, `/health`, and `/api/v1/openapi.json`
-    /// itself are deliberately outside the OpenAPI document: they are either
-    /// not part of the tenant/admin HTTP contract (Pyroscope compat, health)
-    /// or are public infrastructure endpoints the SDK has no business calling
-    /// (session cookies, OAuth redirects, the spec document itself). Routes
-    /// in `ALLOWLISTED_ROUTES` are pre-existing gaps out of this change's
-    /// scope, not required to have an operation.
+    /// Session login/logout, OAuth 2.1 connector endpoints, `/health`, and
+    /// `/api/v1/openapi.json` itself are deliberately outside the OpenAPI
+    /// document: they are public infrastructure endpoints the SDK has no
+    /// business calling (session cookies, OAuth redirects, the spec document
+    /// itself). Routes in `ALLOWLISTED_ROUTES` are pre-existing gaps out of
+    /// this change's scope, not required to have an operation. The
+    /// Pyroscope-compatible routes (`/pyroscope/**`, `/api/profiles/**`) are
+    /// part of the tenant HTTP contract and are in `KNOWN_ROUTES`, so this
+    /// test does hold them to having an operation.
     #[test]
     fn every_known_route_has_an_openapi_operation() {
         let doc = openapi_document();
@@ -540,6 +609,12 @@ mod tests {
             ("/loki/api/v1/query_range", "get"),
             ("/loki/api/v1/labels", "get"),
             ("/loki/api/v1/label/{name}/values", "get"),
+            ("/pyroscope/render", "get"),
+            ("/pyroscope/render-diff", "get"),
+            ("/pyroscope/label-names", "get"),
+            ("/pyroscope/label-values", "get"),
+            ("/pyroscope/profile-types", "get"),
+            ("/api/profiles/trace/{trace_id}", "get"),
             ("/api/v1/query", "post"),
             ("/api/v1/whoami", "get"),
             ("/api/v1/admin/tenants/{tenant_id}/api-keys", "post"),

@@ -8,9 +8,10 @@
 //! septuples carrying baseline/comparison pairs (`format: "double"`).
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Flamegraph payload in flamebearer encoding.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Flamebearer {
     /// Function name table referenced by block name indices.
@@ -26,7 +27,7 @@ pub struct Flamebearer {
 }
 
 /// Metadata describing how to interpret flamebearer values.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FlamebearerMetadata {
     /// `"single"` for one profile set, `"double"` for a diff.
@@ -43,7 +44,7 @@ pub struct FlamebearerMetadata {
 }
 
 /// Optional per-interval sample counts for the render timeline.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Timeline {
     /// Start of the timeline, unix seconds.
@@ -55,7 +56,7 @@ pub struct Timeline {
 }
 
 /// Response body of `GET /pyroscope/render` (and the diff variant).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderResponse {
     pub flamebearer: Flamebearer,
@@ -71,7 +72,7 @@ pub struct RenderResponse {
 }
 
 /// One entry of `GET /pyroscope/profile-types`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileType {
     /// Canonical ID: `{name}:{sample_type}:{sample_unit}`.
@@ -103,7 +104,7 @@ impl ProfileType {
 }
 
 /// Response body of the label-names / label-values endpoints.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelsResponse {
     pub names: Vec<String>,
