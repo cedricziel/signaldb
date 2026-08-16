@@ -2587,6 +2587,236 @@
         ]
       }
     },
+    "/api/v1/schemas/available": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /schemas/available",
+        "description": "List all available table schema types",
+        "operationId": "list_available_schemas",
+        "responses": {
+          "200": {
+            "description": "All table schema types SignalDB knows how to provision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvailableSchemasResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /tenants",
+        "description": "List all configured tenants",
+        "operationId": "list_tenants_self",
+        "responses": {
+          "200": {
+            "description": "The caller's own tenant, as a single-entry list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantSelfListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /tenants/:tenant_id",
+        "description": "Get information about a specific tenant",
+        "operationId": "get_tenant_self",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier (must match the authenticated tenant)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requested tenant does not match the authenticated tenant"
+          },
+          "404": {
+            "description": "Tenant not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/schemas": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /tenants/:tenant_id/schemas",
+        "description": "List available table schemas for a tenant",
+        "operationId": "list_tenant_schemas",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier (must match the authenticated tenant)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tenant's configured table schemas",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListTablesResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requested tenant does not match the authenticated tenant"
+          },
+          "500": {
+            "description": "Failed to list schemas"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/tables": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /tenants/:tenant_id/tables",
+        "description": "List all tables for a specific tenant",
+        "operationId": "list_tenant_tables",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier (must match the authenticated tenant)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tenant's provisioned signal tables",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListTablesResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requested tenant does not match the authenticated tenant"
+          },
+          "500": {
+            "description": "Failed to list tables"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/tables/create": {
+      "post": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "POST /tenants/:tenant_id/tables/create",
+        "description": "Create default tables for a tenant",
+        "operationId": "create_tenant_tables",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier (must match the authenticated tenant)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "The tenant's enabled signal tables were created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateTenantTablesResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requested tenant mismatch, or tenant administrator privileges required"
+          },
+          "500": {
+            "description": "Failed to create tables"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/whoami": {
       "get": {
         "tags": [
@@ -3866,6 +4096,22 @@
           }
         }
       },
+      "AvailableSchemasResponse": {
+        "type": "object",
+        "description": "Response body for `GET /schemas/available`.",
+        "required": [
+          "schemas"
+        ],
+        "properties": {
+          "schemas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableInfo"
+            },
+            "description": "All table schema types SignalDB knows how to provision."
+          }
+        }
+      },
       "ConsentContextResponse": {
         "type": "object",
         "description": "Context the consent screen renders: the requesting client and the tenants\nthe signed-in user may grant.",
@@ -4090,6 +4336,24 @@
           "name": {
             "type": "string",
             "description": "Human-readable tenant name."
+          }
+        }
+      },
+      "CreateTenantTablesResponse": {
+        "type": "object",
+        "description": "Response body for `POST /tenants/{tenant_id}/tables/create`.",
+        "required": [
+          "message",
+          "tenant_id"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Human-readable confirmation message."
+          },
+          "tenant_id": {
+            "type": "string",
+            "description": "The tenant the tables were created for."
           }
         }
       },
@@ -4572,6 +4836,27 @@
               "$ref": "#/components/schemas/DatasetResponse"
             },
             "description": "List of dataset records."
+          }
+        }
+      },
+      "ListTablesResponse": {
+        "type": "object",
+        "description": "API response for listing tables",
+        "required": [
+          "tables",
+          "tenant_id"
+        ],
+        "properties": {
+          "tables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableInfo"
+            },
+            "description": "List of tables for the tenant"
+          },
+          "tenant_id": {
+            "type": "string",
+            "description": "Tenant ID"
           }
         }
       },
@@ -5627,6 +5912,29 @@
           }
         }
       },
+      "TableInfo": {
+        "type": "object",
+        "description": "API response for table information",
+        "required": [
+          "name",
+          "schema_type",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "Table description"
+          },
+          "name": {
+            "type": "string",
+            "description": "Table name"
+          },
+          "schema_type": {
+            "type": "string",
+            "description": "Table schema type"
+          }
+        }
+      },
       "TagScope": {
         "type": "string",
         "description": "GET /api/search/tags?scope=<resource|span|intrinsic>\n\n`rename_all = \"lowercase\"` matters here: the Tempo API (and Grafana's\nTempo datasource, which is what actually sends this) uses lowercase\nscope values. Without it, serde only accepts the Rust variant names\n(`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).",
@@ -5661,6 +5969,45 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "TenantInfo": {
+        "type": "object",
+        "description": "API response for tenant information",
+        "required": [
+          "tenant_id",
+          "schema",
+          "enabled"
+        ],
+        "properties": {
+          "custom_schemas": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Custom schema definitions",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether tenant is enabled"
+          },
+          "schema": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Tenant-specific schema configuration"
+          },
+          "tenant_id": {
+            "type": "string",
+            "description": "Tenant ID"
           }
         }
       },
@@ -5701,6 +6048,27 @@
           "updated_at": {
             "type": "string",
             "description": "ISO 8601 last-updated timestamp."
+          }
+        }
+      },
+      "TenantSelfListResponse": {
+        "type": "object",
+        "description": "API response for listing tenants\n\nRenamed in the OpenAPI document (`#[schema(as = ...)]`) to avoid\ncolliding with `signaldb_api::ListTenantsResponse` (the admin API's\ntenant list, a different shape) — both are plain Rust structs named\n`ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust\ntype name unless told otherwise.",
+        "required": [
+          "tenants",
+          "default_tenant"
+        ],
+        "properties": {
+          "default_tenant": {
+            "type": "string",
+            "description": "Default tenant ID"
+          },
+          "tenants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TenantInfo"
+            },
+            "description": "List of tenants"
           }
         }
       },

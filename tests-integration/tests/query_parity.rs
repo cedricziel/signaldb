@@ -98,6 +98,14 @@ const EXCLUDED: &[(&str, &str)] = &[
         "manage_get_schema",
         "human-session-only, and stricter still: requires ctx.is_instance_admin, not just a tenant-admin role; no CLI surface possible",
     ),
+    (
+        "search_tags_v2",
+        "Tempo v2 tag search, added to the OpenAPI document by a concurrent change (trace-tag-discovery, #1258) merged into main while this change was in flight; neither the CLI's `discover attributes` nor the MCP `discover_attributes` tool has been updated to the v2 endpoints yet (they still call v1 search_tags/search_tag_values) — out of this change's scope (tempo.rs tag handlers), tracked separately",
+    ),
+    (
+        "search_tag_values_v2",
+        "Tempo v2 tag value search — same rationale as search_tags_v2",
+    ),
 ];
 
 /// How an operation is reached through the CLI: either a subcommand path

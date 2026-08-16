@@ -300,6 +300,8 @@ mod tests {
         "/tempo/api/traces/{trace_id}",
         "/tempo/api/search/tags",
         "/tempo/api/search/tag/{tag_name}/values",
+        "/tempo/api/v2/search/tags",
+        "/tempo/api/v2/search/tag/{tag_name}/values",
         // endpoints/loki (logql.rs), mounted at /loki
         "/loki/api/v1/query",
         "/loki/api/v1/query_range",
@@ -365,8 +367,6 @@ mod tests {
     const ALLOWLISTED_ROUTES: &[&str] = &[
         "/tempo/api/echo",
         "/tempo/api/v2/traces/{trace_id}",
-        "/tempo/api/v2/search/tags",
-        "/tempo/api/v2/search/tag/{tag_name}/values",
         "/tempo/api/metrics/query",
         "/tempo/api/metrics/query_range",
         "/loki/api/v1/series",
