@@ -8,7 +8,7 @@
 ## 2. Parity manifest derived from the SDK
 
 - [x] 2.1 xtask emits `signaldb_sdk::OPERATIONS: &[&str]` (all operation ids) alongside `generated.rs`; test that it matches the OpenAPI document's operation ids
-- [ ] 2.2 Rewrite `tests-integration/tests/query_parity.rs`: iterate `OPERATIONS`, `EXCLUDED` (with reasons), `(operation → CLI path)` and `(operation → MCP tool)` maps; fail naming missing surface/operation; fail on stale exclusions/mappings; keep the language and SQL-CLI-only assertions. Run it — it must fail now, listing every gap this change fills
+- [x] 2.2 Rewrite `tests-integration/tests/query_parity.rs`: iterate `OPERATIONS`, `EXCLUDED` (with reasons), `(operation → CLI path)` and `(operation → MCP tool)` maps; fail naming missing surface/operation; fail on stale exclusions/mappings; keep the language and SQL-CLI-only assertions. Deviation: `EXCLUDED` has two entries beyond design's oauth/whoami list — `manage_create_tenant` (session-cookie-only, unreachable via API-key auth) and the rescoped `list_tenants_self`/`get_tenant_self` (redundant with whoami). Written incrementally alongside the MCP/CLI work in tasks 3-4 rather than run-to-fail-first as one step, since the manifest needed those surfaces to exist to even compile; verified against `main` before task 3/4 that the equivalent hand-written checks (`api_key_admin_tools_are_registered`, old `MANIFEST`) covered only the pre-existing 3 admin tools + languages, confirming the gap.
 
 ## 3. MCP tools
 
@@ -30,7 +30,7 @@
 
 ## 6. Parity green + closure
 
-- [ ] 6.1 Run the parity check from 2.2 — passes; the surface-parity assertion in `tests-integration` is green
+- [x] 6.1 Run the parity check from 2.2 — passes; the surface-parity assertion in `tests-integration` is green (`cargo test -p tests-integration --test integration query_parity`: 5/5 passed; full `integration` binary: 182 passed, 3 ignored — pre-existing testcontainer/Docker-dependent tests, 0 failed)
 - [ ] 6.2 Docs (route via the docs skill): `docs/users/mcp.md` tool catalogue (two families, confirmation, annotations), CLI reference (`tenant` group), table-provisioning ops doc (SDK/CLI/MCP/UI paths), admin API reference for the new tenant endpoints
 - [ ] 6.3 Update skills: `multi-tenancy` (management surface parity), `tempo-api` (admin API section), `dev-workflow` if it lists CLI groups
 - [ ] 6.4 `cargo fmt`, clippy, machete; `pnpm --filter signaldb-ui lint && test`; `openspec validate mcp-admin-tool-parity --type change --strict`; close #627 and #628 with the rescoping note
