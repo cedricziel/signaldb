@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateTenantTablesData, CreateTenantTablesErrors, CreateTenantTablesResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, GetTenantSelfData, GetTenantSelfErrors, GetTenantSelfResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListAvailableSchemasData, ListAvailableSchemasResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantSchemasData, ListTenantSchemasErrors, ListTenantSchemasResponses, ListTenantsData, ListTenantsResponses, ListTenantsSelfData, ListTenantsSelfResponses, ListTenantTablesData, ListTenantTablesErrors, ListTenantTablesResponses, LogqlLabelsData, LogqlLabelsErrors, LogqlLabelsResponses, LogqlLabelValuesData, LogqlLabelValuesErrors, LogqlLabelValuesResponses, LogqlQueryData, LogqlQueryErrors, LogqlQueryRangeData, LogqlQueryRangeErrors, LogqlQueryRangeResponses, LogqlQueryResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageGetSchemaData, ManageGetSchemaErrors, ManageGetSchemaResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpdateApiKeyData, ManageUpdateApiKeyErrors, ManageUpdateApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, PromqlLabelsData, PromqlLabelsErrors, PromqlLabelsResponses, PromqlLabelValuesData, PromqlLabelValuesErrors, PromqlLabelValuesResponses, PromqlQueryData, PromqlQueryErrors, PromqlQueryRangeData, PromqlQueryRangeErrors, PromqlQueryRangeResponses, PromqlQueryResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SchemaCreateRegistryData, SchemaCreateRegistryErrors, SchemaCreateRegistryResponses, SchemaDeleteRegistryData, SchemaDeleteRegistryErrors, SchemaDeleteRegistryResponses, SchemaGetRegistryData, SchemaGetRegistryErrors, SchemaGetRegistryResponses, SchemaListRegistriesData, SchemaListRegistriesErrors, SchemaListRegistriesResponses, SchemaReplaceRegistryData, SchemaReplaceRegistryErrors, SchemaReplaceRegistryResponses, SchemaResolveAttributeData, SchemaResolveAttributeErrors, SchemaResolveAttributeResponses, SchemaResolveEntityData, SchemaResolveEntityErrors, SchemaResolveEntityResponses, SchemaResolveMetricData, SchemaResolveMetricErrors, SchemaResolveMetricResponses, SchemaSearchAttributesData, SchemaSearchAttributesErrors, SchemaSearchAttributesResponses, SchemaSearchEntitiesData, SchemaSearchEntitiesErrors, SchemaSearchEntitiesResponses, SchemaSearchMetricsData, SchemaSearchMetricsErrors, SchemaSearchMetricsResponses, SchemaValidateRegistryData, SchemaValidateRegistryErrors, SchemaValidateRegistryResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsErrors, SearchTagsResponses, SearchTagsV2Data, SearchTagsV2Errors, SearchTagsV2Responses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, SearchTagValuesV2Data, SearchTagValuesV2Errors, SearchTagValuesV2Responses, UpdateApiKeyData, UpdateApiKeyErrors, UpdateApiKeyResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
+import type { CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateTenantTablesData, CreateTenantTablesErrors, CreateTenantTablesResponses, CreateUserData, CreateUserErrors, CreateUserResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, GetTenantSelfData, GetTenantSelfErrors, GetTenantSelfResponses, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListAvailableSchemasData, ListAvailableSchemasResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantSchemasData, ListTenantSchemasErrors, ListTenantSchemasResponses, ListTenantsData, ListTenantsResponses, ListTenantsSelfData, ListTenantsSelfResponses, ListTenantTablesData, ListTenantTablesErrors, ListTenantTablesResponses, LogqlLabelsData, LogqlLabelsErrors, LogqlLabelsResponses, LogqlLabelValuesData, LogqlLabelValuesErrors, LogqlLabelValuesResponses, LogqlQueryData, LogqlQueryErrors, LogqlQueryRangeData, LogqlQueryRangeErrors, LogqlQueryRangeResponses, LogqlQueryResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageGetSchemaData, ManageGetSchemaErrors, ManageGetSchemaResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageUpdateApiKeyData, ManageUpdateApiKeyErrors, ManageUpdateApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, ProfilesByTraceData, ProfilesByTraceErrors, ProfilesByTraceResponses, PromqlLabelsData, PromqlLabelsErrors, PromqlLabelsResponses, PromqlLabelValuesData, PromqlLabelValuesErrors, PromqlLabelValuesResponses, PromqlQueryData, PromqlQueryErrors, PromqlQueryRangeData, PromqlQueryRangeErrors, PromqlQueryRangeResponses, PromqlQueryResponses, PyroscopeLabelNamesData, PyroscopeLabelNamesErrors, PyroscopeLabelNamesResponses, PyroscopeLabelValuesData, PyroscopeLabelValuesErrors, PyroscopeLabelValuesResponses, PyroscopeProfileTypesData, PyroscopeProfileTypesErrors, PyroscopeProfileTypesResponses, PyroscopeRenderData, PyroscopeRenderDiffData, PyroscopeRenderDiffErrors, PyroscopeRenderDiffResponses, PyroscopeRenderErrors, PyroscopeRenderResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SchemaCreateRegistryData, SchemaCreateRegistryErrors, SchemaCreateRegistryResponses, SchemaDeleteRegistryData, SchemaDeleteRegistryErrors, SchemaDeleteRegistryResponses, SchemaGetRegistryData, SchemaGetRegistryErrors, SchemaGetRegistryResponses, SchemaListRegistriesData, SchemaListRegistriesErrors, SchemaListRegistriesResponses, SchemaReplaceRegistryData, SchemaReplaceRegistryErrors, SchemaReplaceRegistryResponses, SchemaResolveAttributeData, SchemaResolveAttributeErrors, SchemaResolveAttributeResponses, SchemaResolveEntityData, SchemaResolveEntityErrors, SchemaResolveEntityResponses, SchemaResolveMetricData, SchemaResolveMetricErrors, SchemaResolveMetricResponses, SchemaSearchAttributesData, SchemaSearchAttributesErrors, SchemaSearchAttributesResponses, SchemaSearchEntitiesData, SchemaSearchEntitiesErrors, SchemaSearchEntitiesResponses, SchemaSearchMetricsData, SchemaSearchMetricsErrors, SchemaSearchMetricsResponses, SchemaValidateRegistryData, SchemaValidateRegistryErrors, SchemaValidateRegistryResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsErrors, SearchTagsResponses, SearchTagsV2Data, SearchTagsV2Errors, SearchTagsV2Responses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, SearchTagValuesV2Data, SearchTagValuesV2Errors, SearchTagValuesV2Responses, UpdateApiKeyData, UpdateApiKeyErrors, UpdateApiKeyResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -17,6 +17,15 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
      */
     meta?: keyof ClientMeta extends never ? Record<string, unknown> : ClientMeta;
 };
+
+/**
+ * GET /api/profiles/trace/{trace_id} — profiles linked to a trace.
+ */
+export const profilesByTrace = <ThrowOnError extends boolean = false>(options: Options<ProfilesByTraceData, ThrowOnError>): RequestResult<ProfilesByTraceResponses, ProfilesByTraceErrors, ThrowOnError> => (options.client ?? client).get<ProfilesByTraceResponses, ProfilesByTraceErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/profiles/trace/{trace_id}',
+    ...options
+});
 
 /**
  * List all tenants
@@ -527,6 +536,51 @@ export const promqlQuery = <ThrowOnError extends boolean = false>(options: Optio
 export const promqlQueryRange = <ThrowOnError extends boolean = false>(options: Options<PromqlQueryRangeData, ThrowOnError>): RequestResult<PromqlQueryRangeResponses, PromqlQueryRangeErrors, ThrowOnError> => (options.client ?? client).get<PromqlQueryRangeResponses, PromqlQueryRangeErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/prometheus/api/v1/query_range',
+    ...options
+});
+
+/**
+ * GET /pyroscope/label-names
+ */
+export const pyroscopeLabelNames = <ThrowOnError extends boolean = false>(options?: Options<PyroscopeLabelNamesData, ThrowOnError>): RequestResult<PyroscopeLabelNamesResponses, PyroscopeLabelNamesErrors, ThrowOnError> => (options?.client ?? client).get<PyroscopeLabelNamesResponses, PyroscopeLabelNamesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/pyroscope/label-names',
+    ...options
+});
+
+/**
+ * GET /pyroscope/label-values?label=<name>
+ */
+export const pyroscopeLabelValues = <ThrowOnError extends boolean = false>(options?: Options<PyroscopeLabelValuesData, ThrowOnError>): RequestResult<PyroscopeLabelValuesResponses, PyroscopeLabelValuesErrors, ThrowOnError> => (options?.client ?? client).get<PyroscopeLabelValuesResponses, PyroscopeLabelValuesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/pyroscope/label-values',
+    ...options
+});
+
+/**
+ * GET /pyroscope/profile-types
+ */
+export const pyroscopeProfileTypes = <ThrowOnError extends boolean = false>(options?: Options<PyroscopeProfileTypesData, ThrowOnError>): RequestResult<PyroscopeProfileTypesResponses, PyroscopeProfileTypesErrors, ThrowOnError> => (options?.client ?? client).get<PyroscopeProfileTypesResponses, PyroscopeProfileTypesErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/pyroscope/profile-types',
+    ...options
+});
+
+/**
+ * GET /pyroscope/render — aggregate profiles into a flamegraph.
+ */
+export const pyroscopeRender = <ThrowOnError extends boolean = false>(options?: Options<PyroscopeRenderData, ThrowOnError>): RequestResult<PyroscopeRenderResponses, PyroscopeRenderErrors, ThrowOnError> => (options?.client ?? client).get<PyroscopeRenderResponses, PyroscopeRenderErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/pyroscope/render',
+    ...options
+});
+
+/**
+ * GET /pyroscope/render-diff — differential flamegraph between two ranges.
+ */
+export const pyroscopeRenderDiff = <ThrowOnError extends boolean = false>(options?: Options<PyroscopeRenderDiffData, ThrowOnError>): RequestResult<PyroscopeRenderDiffResponses, PyroscopeRenderDiffErrors, ThrowOnError> => (options?.client ?? client).get<PyroscopeRenderDiffResponses, PyroscopeRenderDiffErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/pyroscope/render-diff',
     ...options
 });
 
