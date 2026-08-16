@@ -11,9 +11,10 @@ HTTP. Provisioning through any surface SHALL behave identically: it creates the
 tenant's enabled signal tables for the named (or default) dataset before
 reporting success. The table listing SHALL report what actually exists in the
 tenant's catalog — every table in each of the tenant's datasets, each entry
-naming its dataset and its signal type — and SHALL NOT report tables that have
-not been created; a tenant whose datasets hold no tables yet lists nothing,
-without error.
+naming its dataset and its signal type, with every known dataset present even
+when it holds no tables yet — and SHALL NOT report tables that have not been
+created; a tenant whose datasets hold no tables yet lists its datasets with
+empty table lists, without error.
 
 #### Scenario: Tables are listed through the SDK
 
@@ -27,8 +28,8 @@ without error.
 - **WHEN** a tenant has two datasets, one provisioned and one not, and a caller
   lists its tables
 - **THEN** the provisioned dataset's signal tables are listed under that
-  dataset and the other dataset lists no tables; after provisioning the second
-  dataset, a new listing shows its tables too
+  dataset and the other dataset appears with an empty table list; after
+  provisioning the second dataset, a new listing shows its tables too
 
 #### Scenario: Provisioning through the UI
 
