@@ -189,6 +189,21 @@ Rejections increment `signaldb_rate_limit_rejections_total{surface,kind}`
 `retry_after_ms`. OTLP/gRPC keeps `RESOURCE_EXHAUSTED` unchanged (no
 `retry-after` gRPC trailer — not part of the OTLP contract).
 
+Client side, every SignalDB client honours that contract the same way
+(`docs/users/client-retry.md`, fixture `api/retry-cases.json`): the Rust SDK
+(`signaldb_sdk::retry`, an `impl ClientHooks for Client` overriding
+progenitor's `exec`, the policy carried as the generated client's inner
+value; consumers construct via `signaldb_sdk::ClientBuilder`) and the UI's `retryingFetch`
+(`src/ui/src/api/http.ts`) retry `429` on any method and `502/503/504`,
+connection failures, and timeouts on idempotent methods, waiting
+`Retry-After` (else jittered backoff), capped at 10 s per attempt / 30 s per
+call / 4 attempts, failing fast when the server asks for more. Exhaustion:
+CLI prints `rate limited; server asked to retry in Ns` and exits `4`
+(`--no-retry` / `SIGNALDB_NO_RETRY=1` for fail-fast); MCP returns a
+`throttled:`-prefixed error with `data.retryAfterMs`; UI panels show
+`Rate limited — server asked to retry in N s` and a shell banner while
+retries are pending.
+
 ## Admin API (Router)
 
 Mounted at `/api/v1/admin`, requires `admin_api_key` (`src/router/src/lib.rs`):

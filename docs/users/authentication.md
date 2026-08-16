@@ -101,7 +101,7 @@ operator via one of:
 | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                                     |
 | Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                          |
-| CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`) |
+| CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`; `--no-retry` / `SIGNALDB_NO_RETRY=1` to fail fast on throttling, exit code 4 — see [client retry](client-retry.md)) |
 
 Example (operator-side):
 

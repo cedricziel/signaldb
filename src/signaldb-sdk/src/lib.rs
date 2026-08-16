@@ -12,9 +12,9 @@
 //! - [`query`] is hand-written. SQL is served over Arrow Flight (gRPC), which
 //!   OpenAPI cannot describe, so [`query::QueryClient`] wraps that transport.
 //! - [`retry`] is hand-written: the shared retry-on-throttle policy every
-//!   generated operation runs through (`cargo xtask generate` installs it as
-//!   the progenitor `ClientHooks::exec` override; see the note at the top of
-//!   `generated.rs`).
+//!   generated operation runs through (its `impl ClientHooks for Client`
+//!   overrides progenitor's `exec`; `cargo xtask generate` carries the
+//!   policy as the client's inner value).
 //! - [`builder`] is hand-written: [`ClientBuilder`], the one way consumers
 //!   construct a [`Client`] (headers, timeouts, retry policy).
 

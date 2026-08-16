@@ -554,6 +554,18 @@ changed, and removed definitions against the stored document, and
 **Delete** with confirmation. Bundled registries never expose these
 actions.
 
+## Throttling and retries
+
+Every request the UI makes goes through one retrying `fetch` shared with the
+generated API client (see [client retry](client-retry.md)): a `429` from the
+tenant's query rate limit is retried after the server-stated `Retry-After`
+(idempotent transient failures too), so a brief burst never flashes an error.
+While a retry is pending the panel keeps loading and a thin banner under the
+top bar reads "Some requests are being retried after throttling…"; leaving the
+page or superseding the query cancels the wait. Once the retry budget is
+spent, the panel's error reads `Rate limited — server asked to retry in N s`
+rather than a generic failure.
+
 ## Availability
 
 Container images (router and monolithic) ship the UI preinstalled. For

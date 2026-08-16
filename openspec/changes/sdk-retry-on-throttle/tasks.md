@@ -9,7 +9,7 @@
 - [x] 2.3 xtask: `with_inner_type(crate::retry::RetryPolicy)` and the asserted rewrite of the generated `impl ClientHooks … for &Client {}` into an `exec` override; regenerate `src/signaldb-sdk/src/generated.rs`; add a test that the generated file contains the override (drift guard); document the shim at the top of `generated.rs` and in `xtask`
 - [x] 2.4 Failing tests then implement `signaldb_sdk::ClientBuilder` (base URL, bearer, tenant, dataset, timeouts, retry policy) → `Client`; existing `Client::new`/`new_with_client` keep working with the default policy
 - [x] 2.5 Failing test then implement W3C trace-context injection in the exec path: an outbound request made inside an OTel-backed span carries `traceparent`/`tracestate`; with no OTel layer no header is added (`signaldb-sdk/tracing` feature, default on; uses the workspace `opentelemetry` + `tracing-opentelemetry`)
-- [ ] 2.6 Open an upstream progenitor issue for a `with_client_hooks` setting; link it from the xtask comment
+- [x] 2.6 Open an upstream progenitor issue for a `with_client_hooks` setting; link it from the xtask comment — not needed: the override uses progenitor's documented auto-ref specialization (`impl ClientHooks<RetryPolicy> for Client` in `retry.rs`), so no xtask rewrite and no upstream setting are required (see design D1 implementation note)
 
 ## 3. CLI
 
@@ -37,6 +37,6 @@
 
 ## 7. Docs, skills, hygiene
 
-- [ ] 7.1 Docs (route via the docs skill): SDK README/`docs/users/` client section (retry semantics, policy knobs, `retry_after`), CLI reference (`--no-retry`, exit code 4), MCP user docs (throttled error shape), UI note in the explore docs if one exists
-- [ ] 7.2 Update skills that describe client behaviour (`tempo-api`, `dev-workflow` CLI section, `multi-tenancy` limits) for retry semantics
+- [x] 7.1 Docs (route via the docs skill): SDK README/`docs/users/` client section (retry semantics, policy knobs, `retry_after`), CLI reference (`--no-retry`, exit code 4), MCP user docs (throttled error shape), UI note in the explore docs if one exists
+- [x] 7.2 Update skills that describe client behaviour (`tempo-api`, `dev-workflow` CLI section, `multi-tenancy` limits) for retry semantics
 - [ ] 7.3 `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, `cargo machete --with-metadata`; `pnpm --filter signaldb-ui lint && test`; `openspec validate sdk-retry-on-throttle --type change --strict`

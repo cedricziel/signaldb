@@ -260,23 +260,28 @@ async fn connection_failure_on_get_is_retried_up_to_the_budget() {
     );
 }
 
-#[tokio::test]
-async fn generated_client_routes_operations_through_the_retry_hook() {
-    // Drift guard for the xtask shim: the generated file must contain the
-    // exec override, not progenitor's empty impl.
+#[test]
+fn generated_client_routes_operations_through_the_retry_hook() {
+    // Drift guard for the exec override: the generated client must carry the
+    // policy as its inner value and keep the empty `&Client` hooks impl
+    // (auto-ref specialization lets the hand-written `for Client` impl win);
+    // the hand-written impl must exist and call `execute`.
     let generated = include_str!("../src/generated.rs");
     assert!(
-        generated.contains("impl ClientHooks<crate::retry::RetryPolicy> for &Client {\n"),
-        "generated.rs lost the retry exec override — re-run `cargo xtask generate`"
+        generated.contains("impl ClientInfo<crate::retry::RetryPolicy> for Client"),
+        "generated.rs does not carry RetryPolicy as the inner type — re-run `cargo xtask generate`"
     );
     assert!(
-        generated.contains("crate::retry::execute(self.client(), self.inner(), request, info)"),
-        "generated.rs exec override does not call crate::retry::execute"
+        generated.contains("impl ClientHooks<crate::retry::RetryPolicy> for &Client {}"),
+        "generated.rs no longer emits the empty `&Client` hooks impl; the override mechanism changed"
     );
     assert!(
-        !generated.contains("\nimpl ClientHooks<crate::retry::RetryPolicy> for &Client {}"),
-        "progenitor's empty ClientHooks impl is present; the xtask rewrite did not run"
+        !generated.contains("for Client {\n    async fn exec("),
+        "generated.rs must not define exec itself"
     );
+    let retry = include_str!("../src/retry.rs");
+    assert!(retry.contains("impl progenitor_client::ClientHooks<RetryPolicy> for crate::Client"));
+    assert!(retry.contains("execute(self.client(), self.inner(), request, info)"));
 }
 
 #[test]

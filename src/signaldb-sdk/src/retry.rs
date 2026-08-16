@@ -1,10 +1,14 @@
 //! # Retry on throttle
 //!
 //! The shared retry policy every generated operation runs through (see the
-//! `client-retry-on-throttle` spec). `cargo xtask generate` installs
-//! [`execute`] as the progenitor `ClientHooks::exec` override of the generated
-//! [`Client`](crate::Client), and carries the [`RetryPolicy`] as the client's
-//! inner value, so no call site needs to know retry exists.
+//! `client-retry-on-throttle` spec). `cargo xtask generate` carries the
+//! [`RetryPolicy`] as the generated [`Client`](crate::Client)'s inner value
+//! (`with_inner_type`), and the `impl ClientHooks<RetryPolicy> for Client` at
+//! the bottom of this module overrides progenitor's `exec` — the single choke
+//! point every generated operation goes through — with [`execute`]. progenitor
+//! documents this "auto-ref specialization": the generated code implements
+//! the hooks for `&Client`, so an impl for `Client` (without the reference)
+//! wins method resolution. No call site needs to know retry exists.
 //!
 //! ## Contract (identical to the TypeScript client, `src/ui/src/api/http.ts`)
 //!
@@ -375,6 +379,21 @@ pub async fn execute(
                 request = next_request;
             }
         }
+    }
+}
+
+/// The `exec` override for the generated client (see the module docs): every
+/// generated operation calls `client.exec(request, &info)` on a `&Client`,
+/// which resolves here before the empty generated `impl ClientHooks<_> for
+/// &Client`. `signaldb-sdk/tests/retry.rs` guards both halves.
+impl progenitor_client::ClientHooks<RetryPolicy> for crate::Client {
+    async fn exec(
+        &self,
+        request: reqwest::Request,
+        info: &OperationInfo,
+    ) -> reqwest::Result<reqwest::Response> {
+        use progenitor_client::ClientInfo;
+        execute(self.client(), self.inner(), request, info).await
     }
 }
 

@@ -249,7 +249,6 @@ const SDK_GENERATED_HEADER: &str = "\
 // (`impl ClientHooks<RetryPolicy> for Client`), which takes precedence over
 // the empty `for &Client` impl below by auto-ref specialization.
 ";
-}
 
 /// Progenitor cannot express an operation whose non-2xx responses use more
 /// than one distinct body type (it asserts `response_types.len() <= 1` while
