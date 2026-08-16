@@ -1,0 +1,36 @@
+## 1. API contract: tenant tables/schemas into OpenAPI
+
+- [ ] 1.1 Failing router test: the OpenAPI document contains operations for `GET /api/v1/tenants`, `GET /api/v1/tenants/{tenant_id}`, `GET /api/v1/tenants/{tenant_id}/tables`, `POST /api/v1/tenants/{tenant_id}/tables/create`, `GET /api/v1/tenants/{tenant_id}/schemas`, `GET /api/v1/schemas/available` (`cargo test -p router`)
+- [ ] 1.2 Annotate the six handlers in `endpoints/tenant.rs` (`utoipa::path`, tag `tenants`, `ToSchema` on the DTOs), register in `openapi.rs`
+- [ ] 1.3 Failing test then implement the route-vs-OpenAPI drift guard (every `/api/v1/**`, `/tempo/**`, `/loki/**`, `/prometheus/**` route has an operation; explicit allowlist for `/pyroscope/**`, session/login, UI static)
+- [ ] 1.4 `cargo xtask generate` — regenerate `api/signaldb-api.json`, `src/signaldb-sdk/src/generated.rs`, `src/ui/src/api/gen`; commit
+
+## 2. Parity manifest derived from the SDK
+
+- [ ] 2.1 xtask emits `signaldb_sdk::OPERATIONS: &[&str]` (all operation ids) alongside `generated.rs`; test that it matches the OpenAPI document's operation ids
+- [ ] 2.2 Rewrite `tests-integration/tests/query_parity.rs`: iterate `OPERATIONS`, `EXCLUDED` (with reasons), `(operation → CLI path)` and `(operation → MCP tool)` maps; fail naming missing surface/operation; fail on stale exclusions/mappings; keep the language and SQL-CLI-only assertions. Run it — it must fail now, listing every gap this change fills
+
+## 3. MCP tools
+
+- [ ] 3.1 Failing tests (`cargo test -p mcp-server`, mock router): platform-admin tools `list_tenants`, `get_tenant`, `create_tenant`, `update_tenant`, `delete_tenant`, `create_user`, `list_datasets`, `create_dataset`, `delete_dataset`, `revoke_api_key` forward the caller's credential to the admin endpoints and return the SDK-shaped JSON; destructive ones refuse without `confirm == id`; annotations present in `tools/list`
+- [ ] 3.2 Implement the platform-admin tools (descriptions state "requires the administrative credential")
+- [ ] 3.3 Failing tests then implement `tenant_list_datasets`, `tenant_create_dataset`, `tenant_delete_dataset`, `tenant_list_api_keys`, `tenant_create_api_key`, `tenant_revoke_api_key`, `tenant_update_api_key`, `tenant_list_memberships`, `tenant_upsert_membership`, `tenant_remove_membership`, `tenant_get_schema`, `tenant_list_tables`, `tenant_create_tables` on the management API; key material once on create, never on list (asserted); `confirm` on delete/revoke; annotations
+- [ ] 3.4 Test: an unauthorized management call (router 403) yields the access-denied error and no change
+
+## 4. CLI `tenant` group
+
+- [ ] 4.1 Failing clap-tree test: `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`, `tenant membership {list,set,remove}`, `tenant schema get`, `tenant table {list,provision}` exist; `admin user create` exists; `whoami` decision per design (add or exclude)
+- [ ] 4.2 Implement the commands over the SDK (`manage_*`, tables/schemas ops), destructive verbs with `--yes`/TTY prompt; native output shapes consistent with `admin`
+- [ ] 4.3 CLI integration test against a running router: `tenant dataset list` and `tenant table provision` succeed with a tenant key that has the required scopes
+
+## 5. UI
+
+- [ ] 5.1 Failing component test: management area shows a "Tables" section per dataset from `listTenantTables` and a "Provision tables" action calling `createTenantTables`, visible only with management rights
+- [ ] 5.2 Implement using the generated client; refresh after provisioning; error state via `error.message`
+
+## 6. Parity green + closure
+
+- [ ] 6.1 Run the parity check from 2.2 — passes; the surface-parity assertion in `tests-integration` is green
+- [ ] 6.2 Docs (route via the docs skill): `docs/users/mcp.md` tool catalogue (two families, confirmation, annotations), CLI reference (`tenant` group), table-provisioning ops doc (SDK/CLI/MCP/UI paths), admin API reference for the new tenant endpoints
+- [ ] 6.3 Update skills: `multi-tenancy` (management surface parity), `tempo-api` (admin API section), `dev-workflow` if it lists CLI groups
+- [ ] 6.4 `cargo fmt`, clippy, machete; `pnpm --filter signaldb-ui lint && test`; `openspec validate mcp-admin-tool-parity --type change --strict`; close #627 and #628 with the rescoping note
