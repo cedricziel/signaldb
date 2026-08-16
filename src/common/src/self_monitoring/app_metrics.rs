@@ -107,6 +107,7 @@ impl AppMetrics {
             &[KeyValue::new(MCP_TOOL_ATTR, tool.to_owned())],
         );
     }
+}
 
 static APP_METRICS: OnceLock<AppMetrics> = OnceLock::new();
 
