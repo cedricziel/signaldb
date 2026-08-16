@@ -52,10 +52,18 @@ pub const READ_SCOPES: [&str; 5] = [
     SCHEMA_READ_SCOPE,
 ];
 
+/// Scope granting an API key self-management of the tenant it belongs to
+/// (datasets, API keys, memberships, schema view via the management API).
+/// Never OAuth-grantable, and — unlike every other scope — **explicit only**:
+/// a legacy key without scopes does NOT gain management (see
+/// [`TenantContext::can_manage_via_key`]).
+pub const TENANT_MANAGE_SCOPE: &str = "tenant:manage";
+
 /// The complete API-key scope vocabulary: `INGEST_SCOPES ∪ READ_SCOPES ∪
-/// SCHEMA_SCOPES`. Every key-management surface (admin API, management API,
-/// CLI, MCP, UI) accepts exactly these; see [`validate_scopes`].
-pub const API_KEY_SCOPES: [&str; 10] = [
+/// SCHEMA_SCOPES ∪ {TENANT_MANAGE_SCOPE}`. Every key-management surface
+/// (admin API, management API, CLI, MCP, UI) accepts exactly these; see
+/// [`validate_scopes`].
+pub const API_KEY_SCOPES: [&str; 11] = [
     "metrics:write",
     "logs:write",
     "traces:write",
@@ -66,6 +74,7 @@ pub const API_KEY_SCOPES: [&str; 10] = [
     "profiles:read",
     SCHEMA_READ_SCOPE,
     SCHEMA_WRITE_SCOPE,
+    TENANT_MANAGE_SCOPE,
 ];
 
 /// Human principal resolved from a server-side browser session.
@@ -168,6 +177,26 @@ impl TenantContext {
         self.is_instance_admin
             || self.role == Some(crate::catalog::MembershipRole::Admin)
             || self.user_id.is_none()
+    }
+
+    /// Whether this principal is an API key explicitly scoped with
+    /// [`TENANT_MANAGE_SCOPE`], allowing it to call the tenant management API
+    /// for its own tenant.
+    ///
+    /// This is deliberately NOT `has_scope_or_unrestricted`: a legacy key
+    /// without explicit scopes is unrestricted for ingest, read, and schema
+    /// access, but does **not** gain tenant management. Those keys were
+    /// minted before management existed for keys; widening them silently
+    /// would be a security surprise. Human sessions never qualify here — they
+    /// are authorized through membership roles ([`can_manage_tenant`]).
+    ///
+    /// [`can_manage_tenant`]: Self::can_manage_tenant
+    pub fn can_manage_via_key(&self) -> bool {
+        self.user_id.is_none()
+            && self
+                .api_key_scopes
+                .as_ref()
+                .is_some_and(|scopes| scopes.iter().any(|scope| scope == TENANT_MANAGE_SCOPE))
     }
 
     /// Whether the principal may write data in this tenant.
@@ -444,11 +473,48 @@ mod scoped_authorization_tests {
     }
 
     #[test]
+    fn tenant_manage_is_a_key_scope_but_never_oauth_grantable() {
+        assert!(API_KEY_SCOPES.contains(&TENANT_MANAGE_SCOPE));
+        assert!(!READ_SCOPES.contains(&TENANT_MANAGE_SCOPE));
+        assert!(!INGEST_SCOPES.contains(&TENANT_MANAGE_SCOPE));
+        assert!(!SCHEMA_SCOPES.contains(&TENANT_MANAGE_SCOPE));
+        assert_eq!(validate_scopes(&[TENANT_MANAGE_SCOPE.to_string()]), Ok(()));
+    }
+
+    #[test]
+    fn can_manage_via_key_requires_the_explicit_scope() {
+        use crate::catalog::MembershipRole;
+        let scoped = context(Some(vec![
+            "traces:write".into(),
+            TENANT_MANAGE_SCOPE.into(),
+        ]));
+        assert!(scoped.can_manage_via_key());
+
+        let ingest_only = context(Some(vec!["traces:write".into()]));
+        assert!(!ingest_only.can_manage_via_key());
+
+        // The one deliberate exception to "unscoped legacy keys are
+        // unrestricted": management is opt-in.
+        let legacy = context(None);
+        assert!(!legacy.can_manage_via_key());
+
+        let admin_session = context(None).with_user(
+            "user-1".into(),
+            MembershipRole::Admin,
+            true,
+            Some("session-1".into()),
+        );
+        assert!(admin_session.can_manage_tenant());
+        assert!(!admin_session.can_manage_via_key());
+    }
+
+    #[test]
     fn api_key_scopes_is_the_union_of_ingest_read_and_schema() {
         for scope in INGEST_SCOPES
             .iter()
             .chain(READ_SCOPES.iter())
             .chain(SCHEMA_SCOPES.iter())
+            .chain(std::iter::once(&TENANT_MANAGE_SCOPE))
         {
             assert!(API_KEY_SCOPES.contains(scope), "{scope} missing");
         }
@@ -456,7 +522,8 @@ mod scoped_authorization_tests {
             assert!(
                 INGEST_SCOPES.contains(&scope)
                     || READ_SCOPES.contains(&scope)
-                    || SCHEMA_SCOPES.contains(&scope),
+                    || SCHEMA_SCOPES.contains(&scope)
+                    || scope == TENANT_MANAGE_SCOPE,
                 "{scope} is not in any family"
             );
         }

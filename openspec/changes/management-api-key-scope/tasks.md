@@ -1,9 +1,9 @@
 ## 1. Scope + authorization (common, router)
 
-- [ ] 1.1 Failing tests in `common::auth`: `tenant:manage` validates; it is in `API_KEY_SCOPES` but not in the OAuth-grantable/read set; `can_manage_via_key()` is true only for a key whose explicit scopes contain it (false for unscoped legacy keys and for human sessions) (`cargo test -p common`)
-- [ ] 1.2 Implement the scope constant, validation, and `TenantContext::can_manage_via_key`
-- [ ] 1.3 Failing router tests (`cargo test -p router`): a `tenant:manage` key lists/creates a dataset, lists/creates/updates/revokes keys, lists/upserts/removes memberships, reads `manage_get_schema`; an ingest-only key gets 403 (keep `ingestion_api_key_cannot_use_human_management_endpoints`); an unscoped legacy key gets 403; a `tenant:manage` key for `acme` targeting `globex` gets 403; the OAuth consent context does not offer `tenant:manage`
-- [ ] 1.4 Implement `authorize_tenant` (tenant match; human admin OR key with `tenant:manage`) and switch `get_schema` to the same helper; update utoipa descriptions; `UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date` + `cargo xtask generate`
+- [x] 1.1 Failing tests in `common::auth`: `tenant:manage` validates; it is in `API_KEY_SCOPES` but not in the OAuth-grantable/read set; `can_manage_via_key()` is true only for a key whose explicit scopes contain it (false for unscoped legacy keys and for human sessions) (`cargo test -p common`)
+- [x] 1.2 Implement the scope constant, validation, and `TenantContext::can_manage_via_key`
+- [x] 1.3 Failing router tests (`cargo test -p router`): a `tenant:manage` key lists/creates a dataset, lists/creates/updates/revokes keys, lists/upserts/removes memberships, reads `manage_get_schema`; an ingest-only key gets 403 (keep `ingestion_api_key_cannot_use_human_management_endpoints`); an unscoped legacy key gets 403; a `tenant:manage` key for `acme` targeting `globex` gets 403; the OAuth consent context does not offer `tenant:manage`
+- [x] 1.4 Implement `authorize_tenant` (tenant match; human admin OR key with `tenant:manage`) and switch `get_schema` to the same helper; update utoipa descriptions; `UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date` + `cargo xtask generate`
 
 ## 2. CLI
 

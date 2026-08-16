@@ -805,7 +805,7 @@
           "schema"
         ],
         "summary": "GET /api/v1/manage/schema",
-        "description": "The registered logical (OTel-native, client-visible) schema and the\nresolved physical (storage) schema for every version of every signal\nsource — read-only, instance-admin-gated, and not tenant-scoped (the\nschema is global, not per-tenant).",
+        "description": "The registered logical (OTel-native, client-visible) schema and the\nresolved physical (storage) schema for every version of every signal\nsource — read-only and not tenant-scoped (the schema is global, not\nper-tenant). Readable by a tenant administrator, an instance\nadministrator, or an API key carrying `tenant:manage`.",
         "operationId": "manage_get_schema",
         "responses": {
           "200": {
@@ -819,7 +819,7 @@
             }
           },
           "403": {
-            "description": "Instance administrator required",
+            "description": "Tenant administrator role or tenant:manage scope required",
             "content": {
               "application/json": {
                 "schema": {
@@ -939,7 +939,7 @@
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
             "content": {
               "application/json": {
                 "schema": {
@@ -1011,7 +1011,7 @@
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
             "content": {
               "application/json": {
                 "schema": {
@@ -1087,7 +1087,7 @@
             "description": "API key revoked"
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
             "content": {
               "application/json": {
                 "schema": {
@@ -1178,7 +1178,7 @@
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
             "content": {
               "application/json": {
                 "schema": {
@@ -1265,7 +1265,7 @@
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
             "content": {
               "application/json": {
                 "schema": {
@@ -1337,7 +1337,7 @@
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
             "content": {
               "application/json": {
                 "schema": {
@@ -1393,7 +1393,7 @@
             "description": "Dataset deleted"
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
             "content": {
               "application/json": {
                 "schema": {
@@ -1470,7 +1470,7 @@
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
             "content": {
               "application/json": {
                 "schema": {
@@ -1532,7 +1532,7 @@
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
             "content": {
               "application/json": {
                 "schema": {
@@ -1618,7 +1618,7 @@
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
             "content": {
               "application/json": {
                 "schema": {

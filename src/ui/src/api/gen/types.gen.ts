@@ -1746,7 +1746,7 @@ export type ManageGetSchemaData = {
 
 export type ManageGetSchemaErrors = {
     /**
-     * Instance administrator required
+     * Tenant administrator role or tenant:manage scope required
      */
     403: ManageError;
     /**
@@ -1855,7 +1855,7 @@ export type ManageListApiKeysData = {
 
 export type ManageListApiKeysErrors = {
     /**
-     * Forbidden
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
      */
     403: ManageError;
     /**
@@ -1914,7 +1914,7 @@ export type ManageCreateApiKeyErrors = {
      */
     400: ManageError;
     /**
-     * Forbidden
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
      */
     403: ManageError;
     /**
@@ -1981,7 +1981,7 @@ export type ManageRevokeApiKeyData = {
 
 export type ManageRevokeApiKeyErrors = {
     /**
-     * Forbidden
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
      */
     403: ManageError;
     /**
@@ -2048,7 +2048,7 @@ export type ManageUpdateApiKeyErrors = {
      */
     400: ManageError;
     /**
-     * Forbidden
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
      */
     403: ManageError;
     /**
@@ -2115,7 +2115,7 @@ export type ManageListDatasetsData = {
 
 export type ManageListDatasetsErrors = {
     /**
-     * Forbidden
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
      */
     403: ManageError;
     /**
@@ -2174,7 +2174,7 @@ export type ManageCreateDatasetErrors = {
      */
     400: ManageError;
     /**
-     * Forbidden
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
      */
     403: ManageError;
     /**
@@ -2233,7 +2233,7 @@ export type ManageDeleteDatasetData = {
 
 export type ManageDeleteDatasetErrors = {
     /**
-     * Forbidden
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
      */
     403: ManageError;
     /**
@@ -2296,7 +2296,7 @@ export type ManageListMembershipsData = {
 
 export type ManageListMembershipsErrors = {
     /**
-     * Forbidden
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
      */
     403: ManageError;
     /**
@@ -2351,7 +2351,7 @@ export type ManageUpsertMembershipData = {
 
 export type ManageUpsertMembershipErrors = {
     /**
-     * Forbidden
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
      */
     403: ManageError;
     /**
@@ -2422,7 +2422,7 @@ export type ManageRemoveMembershipErrors = {
      */
     400: ManageError;
     /**
-     * Forbidden
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
      */
     403: ManageError;
     /**

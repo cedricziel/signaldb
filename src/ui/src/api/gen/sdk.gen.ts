@@ -164,8 +164,9 @@ export const createUser = <ThrowOnError extends boolean = false>(options: Option
  *
  * The registered logical (OTel-native, client-visible) schema and the
  * resolved physical (storage) schema for every version of every signal
- * source — read-only, instance-admin-gated, and not tenant-scoped (the
- * schema is global, not per-tenant).
+ * source — read-only and not tenant-scoped (the schema is global, not
+ * per-tenant). Readable by a tenant administrator, an instance
+ * administrator, or an API key carrying `tenant:manage`.
  */
 export const manageGetSchema = <ThrowOnError extends boolean = false>(options?: Options<ManageGetSchemaData, ThrowOnError>): RequestResult<ManageGetSchemaResponses, ManageGetSchemaErrors, ThrowOnError> => (options?.client ?? client).get<ManageGetSchemaResponses, ManageGetSchemaErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
