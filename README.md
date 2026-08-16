@@ -114,7 +114,12 @@ SignalDB is under active development.
 | Metrics  | OTLP, Prometheus `remote_write` | PromQL (growing function coverage), SQL                    | Usable; full PromQL parity is tracked in [#336](https://github.com/cedricziel/signaldb/issues/336) |
 | Profiles | OTLP (`v1development`)          | Pyroscope-compatible API, Grafana flame graphs             | Experimental                                                                                       |
 
-There are no published benchmarks yet. Remaining gaps are tracked in the
+Nightly micro-benchmark trends (OTLP decode, WAL, Iceberg append, querier
+read paths, compaction) are published at
+[cedricziel.github.io/signaldb/benchmarks](https://cedricziel.github.io/signaldb/benchmarks/)
+— see [Benchmarking](https://cedricziel.github.io/signaldb/contributing/benchmarking/)
+for what they do and do not measure. There are no published end-to-end load
+numbers yet. Remaining gaps are tracked in the
 [issue tracker](https://github.com/cedricziel/signaldb/issues).
 
 ## When you outgrow one box

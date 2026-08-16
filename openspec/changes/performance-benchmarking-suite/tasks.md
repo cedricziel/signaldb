@@ -46,9 +46,9 @@ Lives in `tests-integration` (needs compactor + writer + generators to seed). Co
 
 ## 8. Nightly run + trend tracking
 
-- [ ] 8.1 Add a nightly-scheduled workflow that runs the full Criterion suite across all bench crates in release mode and emits Criterion JSON output.
-- [ ] 8.2 Wire `benchmark-action/github-action-benchmark` to append results to a trend data branch (`GITHUB_TOKEN` with `contents: write` scoped to the job) and render the trend.
-- [ ] 8.3 Configure `alert-threshold` (start generous per design Open Question) with regression reporting; leave `fail-on-alert` behind a variance-observation period.
+- [x] 8.1 `.github/workflows/benchmarks.yml`: nightly (`17 3 * * *`) + `workflow_dispatch`, runs every `[[bench]]` target via `scripts/run-benches.sh -- --output-format bencher` (targets discovered through `cargo metadata`), uploads the raw output as an artifact.
+- [x] 8.2 `benchmark-action/github-action-benchmark` (`tool: cargo`) appends to the `benchmark-data` branch under `dev/bench/` (`contents: write`, auto-push; the branch is seeded on first run). `docs.yml` re-publishes on `workflow_run` of Benchmarks: copies `dev/bench` into the site at `/benchmarks/` and regenerates a "latest results" table into `docs/contributing/benchmarking.md` via `scripts/render-bench-summary.py`.
+- [x] 8.3 `alert-threshold: 150%`, `summary-always`, `fail-on-alert: false` / `comment-on-alert: false` until variance has been observed.
 
 ## 9. CI cleanup
 
@@ -56,8 +56,8 @@ Lives in `tests-integration` (needs compactor + writer + generators to seed). Co
 
 ## 10. Documentation
 
-- [ ] 10.1 Document the local baseline/compare workflow (`--save-baseline` / `--baseline`) and how to read the nightly trend, including the caveat that in-memory benches measure relative regression, not production latency.
+- [x] 10.1 `docs/contributing/benchmarking.md` (in the mkdocs nav under Contributing): what is benchmarked, `scripts/run-benches.sh`, `--save-baseline` / `--baseline` workflow, nightly trend + alert semantics, the in-memory/relative-only caveat, and how to add a bench. README's "no published benchmarks" line now links to it.
 
 ## 11. Validation
 
-- [ ] 11.1 Run `openspec validate performance-benchmarking-suite --strict` and resolve any findings.
+- [x] 11.1 `openspec validate performance-benchmarking-suite --strict` passes.

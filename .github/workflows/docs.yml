@@ -6,7 +6,13 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "scripts/render-bench-summary.py"
       - ".github/workflows/docs.yml"
+  # Re-publish after each nightly benchmark run so the "latest results"
+  # table and the trend charts under /benchmarks/ stay current.
+  workflow_run:
+    workflows: [Benchmarks]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -22,6 +28,8 @@ jobs:
   build:
     name: Build site
     runs-on: ubuntu-latest
+    # A failed benchmark run has nothing new to publish.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -32,8 +40,36 @@ jobs:
       - name: Install MkDocs
         run: pip install "mkdocs-material==9.*"
 
+      # Nightly Criterion results live on the machine-written benchmark-data
+      # branch (see benchmarks.yml). Pull them in so the benchmarking page
+      # shows the latest table and the trend charts ship with the site. Both
+      # steps are no-ops until the first nightly run has pushed data.
+      - name: Fetch benchmark trend data
+        run: |
+          if git fetch --depth=1 origin benchmark-data 2>/dev/null; then
+            mkdir -p bench-data
+            git archive FETCH_HEAD dev/bench | tar -x -C bench-data
+            echo "fetched $(ls bench-data/dev/bench | wc -l) file(s) of trend data"
+          else
+            echo "no benchmark-data branch yet; publishing without results"
+          fi
+
+      - name: Render latest benchmark results into the docs
+        run: |
+          if [ -f bench-data/dev/bench/data.js ]; then
+            python3 scripts/render-bench-summary.py \
+              bench-data/dev/bench/data.js docs/contributing/benchmarking.md
+          fi
+
       - name: Build
         run: mkdocs build --site-dir _site
+
+      - name: Add benchmark trend charts to the site
+        run: |
+          if [ -d bench-data/dev/bench ]; then
+            mkdir -p _site/benchmarks
+            cp -R bench-data/dev/bench/. _site/benchmarks/
+          fi
 
       - uses: actions/upload-pages-artifact@v5
 
