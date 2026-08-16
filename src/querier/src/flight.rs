@@ -36,6 +36,7 @@ use crate::query::trace::TraceService;
 use crate::query::{
     DetectedFieldsParams, FindTraceByIdParams, IrQueryParams, LogQueryParams, LogSeriesParams,
     MetricQueryParams, MetricSeriesParams, PromQlQueryParams, SearchQueryParams,
+    TraceTagValuesParams, TraceTagsParams,
 };
 
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
@@ -277,6 +278,20 @@ enum TicketRequest {
         tenant_slug: String,
         dataset_slug: String,
         params: MetricSeriesParams,
+    },
+    /// Trace tag-name discovery: `trace_tags:{tenant}:{dataset}:{json TraceTagsParams}`.
+    TraceTags {
+        tenant_slug: String,
+        dataset_slug: String,
+        params: TraceTagsParams,
+    },
+    /// Trace tag-value discovery:
+    /// `trace_tag_values:{tenant}:{dataset}:{tag}:{json TraceTagValuesParams}`.
+    TraceTagValues {
+        tenant_slug: String,
+        dataset_slug: String,
+        tag: String,
+        params: TraceTagValuesParams,
     },
 }
 
@@ -1071,6 +1086,43 @@ impl QuerierFlightService {
             ));
         }
 
+        // Trace tag names: trace_tags:{tenant}:{dataset}:{json TraceTagsParams}
+        if let Some(remainder) = ticket_content.strip_prefix("trace_tags:") {
+            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let params: TraceTagsParams = serde_json::from_str(parts[2]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid trace_tags parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::TraceTags {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid trace_tags ticket format. Expected: trace_tags:tenant:dataset:{json}",
+            ));
+        }
+
+        // Trace tag values: trace_tag_values:{tenant}:{dataset}:{tag}:{json TraceTagValuesParams}
+        if let Some(remainder) = ticket_content.strip_prefix("trace_tag_values:") {
+            let parts: Vec<&str> = remainder.splitn(4, ':').collect();
+            if parts.len() == 4 {
+                let params: TraceTagValuesParams = serde_json::from_str(parts[3]).map_err(|e| {
+                    Status::invalid_argument(format!("Invalid trace_tag_values parameters: {e}"))
+                })?;
+                return Ok(TicketRequest::TraceTagValues {
+                    tenant_slug: parts[0].to_string(),
+                    dataset_slug: parts[1].to_string(),
+                    tag: parts[2].to_string(),
+                    params,
+                });
+            }
+            return Err(Status::invalid_argument(
+                "Invalid trace_tag_values ticket format. Expected: trace_tag_values:tenant:dataset:tag:{json}",
+            ));
+        }
+
         // Fall back to raw SQL query
         Ok(TicketRequest::SqlQuery {
             sql: ticket_content.to_string(),
@@ -1485,7 +1537,9 @@ impl FlightService for QuerierFlightService {
                             | TicketRequest::QueryPromql { tenant_slug, .. }
                             | TicketRequest::QueryMetricLabels { tenant_slug, .. }
                             | TicketRequest::QueryMetricLabelValues { tenant_slug, .. }
-                            | TicketRequest::QueryMetricSeries { tenant_slug, .. } => {
+                            | TicketRequest::QueryMetricSeries { tenant_slug, .. }
+                            | TicketRequest::TraceTags { tenant_slug, .. }
+                            | TicketRequest::TraceTagValues { tenant_slug, .. } => {
                                 Some(tenant_slug.clone())
                             }
                             TicketRequest::SqlQuery { .. } => None,
@@ -1553,6 +1607,8 @@ impl FlightService for QuerierFlightService {
                                 "query_metric_label_values"
                             }
                             TicketRequest::QueryMetricSeries { .. } => "query_metric_series",
+                            TicketRequest::TraceTags { .. } => "trace_tags",
+                            TicketRequest::TraceTagValues { .. } => "trace_tag_values",
                             TicketRequest::SqlQuery { .. } => "sql",
                         };
 
@@ -1999,6 +2055,39 @@ impl FlightService for QuerierFlightService {
                                         .await
                                         .map_err(querier_error_to_status(SIGNAL_METRICS))?;
                                     vec![json_to_batch("series", &series)?]
+                                }
+                                TicketRequest::TraceTags {
+                                    tenant_slug,
+                                    dataset_slug,
+                                    params,
+                                } => {
+                                    let tags = self
+                                        .trace_service
+                                        .get_tags(&params, &tenant_slug, &dataset_slug)
+                                        .await
+                                        .map_err(trace_error_to_status("Trace tag discovery"))?;
+                                    vec![json_to_batch("tags", &tags)?]
+                                }
+                                TicketRequest::TraceTagValues {
+                                    tenant_slug,
+                                    dataset_slug,
+                                    tag,
+                                    params,
+                                } => {
+                                    let values = self
+                                        .trace_service
+                                        .get_tag_values(
+                                            &tag,
+                                            params.start,
+                                            params.end,
+                                            &tenant_slug,
+                                            &dataset_slug,
+                                        )
+                                        .await
+                                        .map_err(trace_error_to_status(
+                                            "Trace tag value discovery",
+                                        ))?;
+                                    vec![strings_to_batch("value", values)?]
                                 }
                                 TicketRequest::SqlProfiles {
                                     tenant_slug,
@@ -2815,6 +2904,64 @@ mod tests {
         assert!(
             service
                 .parse_ticket("query_promql:acme:prod:not-json")
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_trace_tags_ticket() {
+        let service = make_service().await;
+        let ticket = r#"trace_tags:acme:prod:{"start":10,"end":20,"scope":"span"}"#;
+        match service.parse_ticket(ticket).unwrap() {
+            TicketRequest::TraceTags {
+                tenant_slug,
+                dataset_slug,
+                params,
+            } => {
+                assert_eq!(tenant_slug, "acme");
+                assert_eq!(dataset_slug, "prod");
+                assert_eq!((params.start, params.end), (10, 20));
+                assert_eq!(params.scope, Some(tempo_api::TagScope::Span));
+            }
+            other => panic!("expected TraceTags, got {other:?}"),
+        }
+
+        // Scope is optional.
+        let ticket = r#"trace_tags:acme:prod:{"start":10,"end":20}"#;
+        match service.parse_ticket(ticket).unwrap() {
+            TicketRequest::TraceTags { params, .. } => assert_eq!(params.scope, None),
+            other => panic!("expected TraceTags, got {other:?}"),
+        }
+
+        assert!(
+            service
+                .parse_ticket("trace_tags:acme:prod:not-json")
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_trace_tag_values_ticket() {
+        let service = make_service().await;
+        let ticket = r#"trace_tag_values:acme:prod:http.route:{"start":10,"end":20}"#;
+        match service.parse_ticket(ticket).unwrap() {
+            TicketRequest::TraceTagValues {
+                tenant_slug,
+                dataset_slug,
+                tag,
+                params,
+            } => {
+                assert_eq!(tenant_slug, "acme");
+                assert_eq!(dataset_slug, "prod");
+                assert_eq!(tag, "http.route");
+                assert_eq!((params.start, params.end), (10, 20));
+            }
+            other => panic!("expected TraceTagValues, got {other:?}"),
+        }
+
+        assert!(
+            service
+                .parse_ticket("trace_tag_values:acme:prod:http.route:not-json")
                 .is_err()
         );
     }

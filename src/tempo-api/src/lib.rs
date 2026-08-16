@@ -263,7 +263,7 @@ pub enum Value {
 /// Tempo datasource, which is what actually sends this) uses lowercase
 /// scope values. Without it, serde only accepts the Rust variant names
 /// (`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TagScope {
     Resource,

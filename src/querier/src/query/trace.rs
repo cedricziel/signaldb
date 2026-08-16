@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt::Debug, str::FromStr, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt::Debug,
+    str::FromStr,
+    sync::Arc,
+};
 
 use common::model::{
     self,
@@ -15,9 +20,33 @@ use datafusion::{
 };
 
 use super::{
-    FindTraceByIdParams, SearchQueryParams, error::QuerierError, search_filter,
-    table_lookup::optional_table,
+    FindTraceByIdParams, SearchQueryParams, TraceTagNames, TraceTagsParams,
+    error::QuerierError,
+    search_filter,
+    table_lookup::{distinct_non_empty, optional_table, time_window},
 };
+
+/// Fixed intrinsic tag names: fields Tempo derives per-span/per-trace
+/// rather than reading from resource/span attributes.
+pub const INTRINSIC_TAGS: &[&str] = &[
+    "name",
+    "status",
+    "kind",
+    "duration",
+    "rootServiceName",
+    "rootName",
+];
+
+/// Static enumeration values for the `status` intrinsic tag.
+const STATUS_VALUES: &[&str] = &["ok", "error", "unset"];
+
+/// Static enumeration values for the `kind` intrinsic tag — the span kinds
+/// accepted by [`search_filter`]'s `kind` selector.
+const KIND_VALUES: &[&str] = &["internal", "server", "client", "producer", "consumer"];
+
+/// Upper bound on rows sampled for tag/tag-value discovery, mirroring
+/// `LogsService`'s `LABEL_SCAN_LIMIT`.
+const TAG_SCAN_LIMIT: usize = 1000;
 
 pub struct TraceService {
     // skip debug on session_context
@@ -550,6 +579,220 @@ impl TraceService {
 
         Ok(Some((df, limit)))
     }
+
+    /// Discover trace attribute tag names in a window, grouped by scope
+    /// (resource, span, intrinsic). Mirrors `LogsService::get_labels`: a
+    /// bounded sample of the window's `resource_attributes` /
+    /// `span_attributes` documents, unioned with the dedicated-column and
+    /// intrinsic tags that are always queryable. `params.scope` narrows the
+    /// scan to just the requested group; omitted, all three are populated.
+    ///
+    /// A dataset with no `traces` table returns only the intrinsics — there
+    /// is nothing to discover, not an error.
+    pub async fn get_tags(
+        &self,
+        params: &TraceTagsParams,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<TraceTagNames, QuerierError> {
+        let (want_resource, want_span, want_intrinsic) = match params.scope {
+            None => (true, true, true),
+            Some(tempo_api::TagScope::Resource) => (true, false, false),
+            Some(tempo_api::TagScope::Span) => (false, true, false),
+            Some(tempo_api::TagScope::Intrinsic) => (false, false, true),
+        };
+
+        let mut names = TraceTagNames::default();
+        if want_intrinsic {
+            names.intrinsic = INTRINSIC_TAGS.iter().map(|s| s.to_string()).collect();
+        }
+
+        let Some(df) =
+            optional_table(&self.session_context, tenant_slug, dataset_slug, "traces").await?
+        else {
+            return Ok(names);
+        };
+
+        if !(want_resource || want_span) {
+            return Ok(names);
+        }
+
+        let mut cols: Vec<&str> = Vec::new();
+        if want_resource {
+            cols.push("resource_attributes");
+        }
+        if want_span {
+            cols.push("span_attributes");
+        }
+
+        let scan = time_window(df, params.start, params.end)?
+            .select_columns(&cols)
+            .map_err(QuerierError::QueryFailed)?;
+        // Arrow's row format cannot sort Map columns, so the JSON-era
+        // `distinct()` dedup is skipped for map-typed attribute tables.
+        let map_typed = cols.iter().any(|c| is_map_column(&scan, c));
+        let scan = if map_typed {
+            scan
+        } else {
+            scan.distinct().map_err(QuerierError::QueryFailed)?
+        };
+        let batches = scan
+            .limit(0, Some(TAG_SCAN_LIMIT))
+            .map_err(QuerierError::QueryFailed)?
+            .collect()
+            .await
+            .map_err(QuerierError::QueryFailed)?;
+        let has_rows = batches.iter().any(|b| b.num_rows() > 0);
+
+        let mut resource_keys: BTreeSet<String> = BTreeSet::new();
+        let mut span_keys: BTreeSet<String> = BTreeSet::new();
+        if want_resource && has_rows {
+            // `service.name` is a dedicated column, but it is the OTel
+            // resource attribute of the same name, so it belongs in the
+            // resource scope alongside the ones read from the map.
+            resource_keys.insert("service.name".to_string());
+        }
+        for batch in &batches {
+            if want_resource {
+                for doc in super::logs::attr_documents(batch, "resource_attributes")?
+                    .into_iter()
+                    .flatten()
+                {
+                    resource_keys.extend(doc.into_keys());
+                }
+            }
+            if want_span {
+                for doc in super::logs::attr_documents(batch, "span_attributes")?
+                    .into_iter()
+                    .flatten()
+                {
+                    span_keys.extend(doc.into_keys());
+                }
+            }
+        }
+
+        if want_resource {
+            names.resource = resource_keys.into_iter().collect();
+        }
+        if want_span {
+            names.span = span_keys.into_iter().collect();
+        }
+
+        Ok(names)
+    }
+
+    /// List the distinct values of one trace tag in a window. `tag` is the
+    /// unscoped attribute name (callers strip any `resource.`/`span.`/`.`
+    /// scope prefix before calling, since the same key resolves the same
+    /// way regardless of scope). The intrinsics `status` and `kind` return
+    /// their fixed enumeration; `rootServiceName`/`rootName` resolve to the
+    /// dedicated column restricted to root spans; an unknown or unobserved
+    /// tag returns an empty list, never an error.
+    pub async fn get_tag_values(
+        &self,
+        tag: &str,
+        start: i64,
+        end: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Vec<String>, QuerierError> {
+        if tag.is_empty() {
+            return Err(QuerierError::InvalidInput(
+                "tag name must not be empty".to_string(),
+            ));
+        }
+
+        match tag {
+            "status" => return Ok(STATUS_VALUES.iter().map(|s| s.to_string()).collect()),
+            "kind" => return Ok(KIND_VALUES.iter().map(|s| s.to_string()).collect()),
+            _ => {}
+        }
+
+        let Some(df) =
+            optional_table(&self.session_context, tenant_slug, dataset_slug, "traces").await?
+        else {
+            return Ok(Vec::new());
+        };
+        let df = time_window(df, start, end)?;
+
+        if let Some((column, root_only)) = dedicated_tag_column(tag) {
+            let df = if root_only {
+                df.filter(col("is_root").eq(lit(true)))
+                    .map_err(QuerierError::QueryFailed)?
+            } else {
+                df
+            };
+            let batches = df
+                .select_columns(&[column])
+                .map_err(QuerierError::QueryFailed)?
+                .distinct()
+                .map_err(QuerierError::QueryFailed)?
+                .limit(0, Some(TAG_SCAN_LIMIT))
+                .map_err(QuerierError::QueryFailed)?
+                .collect()
+                .await
+                .map_err(QuerierError::QueryFailed)?;
+            return distinct_non_empty(&batches, column);
+        }
+
+        // Otherwise pull the value out of the resource/span attribute
+        // documents — covers map-stored attributes and unknown tags alike
+        // (an unknown key simply is never present, so the result is empty).
+        let cols = ["resource_attributes", "span_attributes"];
+        let scan = df
+            .select_columns(&cols)
+            .map_err(QuerierError::QueryFailed)?;
+        let map_typed = cols.iter().any(|c| is_map_column(&scan, c));
+        let scan = if map_typed {
+            scan
+        } else {
+            scan.distinct().map_err(QuerierError::QueryFailed)?
+        };
+        let batches = scan
+            .limit(0, Some(TAG_SCAN_LIMIT))
+            .map_err(QuerierError::QueryFailed)?
+            .collect()
+            .await
+            .map_err(QuerierError::QueryFailed)?;
+
+        let mut values = BTreeSet::new();
+        for batch in &batches {
+            for column in cols {
+                for mut doc in super::logs::attr_documents(batch, column)?
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(value) = doc.remove(tag) {
+                        values.insert(value);
+                    }
+                }
+            }
+        }
+        Ok(values.into_iter().collect())
+    }
+}
+
+/// Map an unscoped intrinsic/dedicated tag name to the traces column that
+/// backs it, and whether the scan must be restricted to root spans
+/// (`rootServiceName`/`rootName` describe the trace's root, not every span).
+fn dedicated_tag_column(tag: &str) -> Option<(&'static str, bool)> {
+    match tag {
+        "service.name" => Some(("service_name", false)),
+        "name" => Some(("span_name", false)),
+        "rootServiceName" => Some(("service_name", true)),
+        "rootName" => Some(("span_name", true)),
+        _ => None,
+    }
+}
+
+/// Whether `column` is a typed `Map` column in `df`'s schema — Arrow's row
+/// format cannot sort Map columns, so callers must skip `distinct()` on
+/// them (see [`TraceService::get_tags`]).
+fn is_map_column(df: &DataFrame, column: &str) -> bool {
+    df.schema()
+        .fields()
+        .iter()
+        .any(|f| f.name() == column && matches!(f.data_type(), DataType::Map(_, _)))
 }
 
 /// Columns required to reconstruct a trace in [`TraceService::find_by_id_with_tenant`].
@@ -1561,6 +1804,328 @@ mod tests {
                     "d",
                 )
                 .await,
+            Err(QuerierError::InvalidInput(_))
+        ));
+    }
+
+    // ---- Tag discovery (#1073) ----
+
+    /// Register a `t.d.traces` table with map-typed attribute columns and
+    /// three spans: one outside the `[1_000, 3_000]` test window carrying
+    /// attribute keys unique to it (to prove window exclusion), and two
+    /// inside it with distinct resource/span attribute keys and values, one
+    /// root and one not (to prove `is_root`-filtered intrinsics).
+    fn tags_session() -> SessionContext {
+        use datafusion::arrow::array::{
+            ArrayRef, BooleanArray, MapBuilder, MapFieldNames, StringBuilder,
+            TimestampNanosecondArray,
+        };
+        use datafusion::arrow::datatypes::{Field, Fields, Schema};
+        use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
+        use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
+
+        fn map_field(name: &str) -> Field {
+            let entries = Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("keys", DataType::Utf8, false),
+                    Field::new("values", DataType::Utf8, true),
+                ])),
+                false,
+            );
+            Field::new(name, DataType::Map(Arc::new(entries), false), true)
+        }
+
+        fn maps(rows: &[&[(&str, &str)]]) -> ArrayRef {
+            let names = MapFieldNames {
+                entry: "entries".to_string(),
+                key: "keys".to_string(),
+                value: "values".to_string(),
+            };
+            let mut b = MapBuilder::new(Some(names), StringBuilder::new(), StringBuilder::new());
+            for row in rows {
+                for (k, v) in *row {
+                    b.keys().append_value(k);
+                    b.values().append_value(v);
+                }
+                b.append(true).unwrap();
+            }
+            Arc::new(b.finish())
+        }
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("span_kind", DataType::Utf8, false),
+            Field::new("status_code", DataType::Utf8, true),
+            Field::new("is_root", DataType::Boolean, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            map_field("span_attributes"),
+            map_field("resource_attributes"),
+        ]));
+
+        let starts: Vec<i64> = vec![100, 1_000, 2_000];
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t-old", "t-mid", "t-new"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["s0", "s1", "s2"])),
+                Arc::new(StringArray::from(vec![Some(""), Some(""), Some("")])),
+                Arc::new(StringArray::from(vec![
+                    "LEGACY",
+                    "GET /orders",
+                    "ProcessQueue",
+                ])),
+                Arc::new(StringArray::from(vec![
+                    "legacy-svc",
+                    "checkout",
+                    "checkout-worker",
+                ])),
+                Arc::new(StringArray::from(vec!["Internal", "Server", "Internal"])),
+                Arc::new(StringArray::from(vec![
+                    Some("Ok"),
+                    Some("Ok"),
+                    Some("Error"),
+                ])),
+                Arc::new(BooleanArray::from(vec![true, true, false])),
+                Arc::new(Int64Array::from(starts.clone())),
+                Arc::new(Int64Array::from(vec![100_i64, 200, 300])),
+                Arc::new(TimestampNanosecondArray::from(starts)),
+                maps(&[
+                    &[("legacy.route", "/old")],
+                    &[("http.route", "/api/orders")],
+                    &[("http.route", "/api/users")],
+                ]),
+                maps(&[
+                    &[("legacy.only", "x")],
+                    &[("deployment.environment.name", "prod")],
+                    &[("deployment.environment.name", "staging")],
+                ]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    fn tags_service() -> TraceService {
+        TraceService::new(tags_session(), "traces".to_string())
+    }
+
+    fn empty_tags_service() -> TraceService {
+        // No `traces` table registered at all: `optional_table` sees `None`.
+        use datafusion::catalog::CatalogProvider;
+
+        let ctx = SessionContext::new();
+        let cat = Arc::new(datafusion::catalog::memory::MemoryCatalogProvider::new());
+        cat.register_schema(
+            "d",
+            Arc::new(datafusion::catalog::memory::MemorySchemaProvider::new()),
+        )
+        .unwrap();
+        ctx.register_catalog("t", cat);
+        TraceService::new(ctx, "traces".to_string())
+    }
+
+    fn tags_params(start: i64, end: i64, scope: Option<tempo_api::TagScope>) -> TraceTagsParams {
+        TraceTagsParams { start, end, scope }
+    }
+
+    #[tokio::test]
+    async fn get_tags_returns_resource_span_and_intrinsic_names() {
+        let service = tags_service();
+        let tags = service
+            .get_tags(&tags_params(0, 3_000, None), "t", "d")
+            .await
+            .unwrap();
+        assert!(tags.resource.contains(&"service.name".to_string()));
+        assert!(
+            tags.resource
+                .contains(&"deployment.environment.name".to_string())
+        );
+        assert!(tags.span.contains(&"http.route".to_string()));
+        assert_eq!(
+            tags.intrinsic,
+            INTRINSIC_TAGS
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn get_tags_window_excludes_older_spans() {
+        let service = tags_service();
+        let tags = service
+            .get_tags(&tags_params(1_000, 3_000, None), "t", "d")
+            .await
+            .unwrap();
+        assert!(!tags.resource.contains(&"legacy.only".to_string()));
+        assert!(!tags.span.contains(&"legacy.route".to_string()));
+        assert!(
+            tags.resource
+                .contains(&"deployment.environment.name".to_string())
+        );
+        assert!(tags.span.contains(&"http.route".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_tags_scope_filter_narrows_v2_response() {
+        let service = tags_service();
+        let tags = service
+            .get_tags(
+                &tags_params(0, 3_000, Some(tempo_api::TagScope::Span)),
+                "t",
+                "d",
+            )
+            .await
+            .unwrap();
+        assert!(tags.resource.is_empty());
+        assert!(tags.intrinsic.is_empty());
+        assert!(tags.span.contains(&"http.route".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_tags_on_absent_table_is_intrinsics_only() {
+        let service = empty_tags_service();
+        let tags = service
+            .get_tags(&tags_params(0, i64::MAX, None), "t", "d")
+            .await
+            .unwrap();
+        assert!(tags.resource.is_empty());
+        assert!(tags.span.is_empty());
+        assert_eq!(
+            tags.intrinsic,
+            INTRINSIC_TAGS
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn get_tag_values_for_a_map_attribute() {
+        let service = tags_service();
+        let values = service
+            .get_tag_values("http.route", 0, 3_000, "t", "d")
+            .await
+            .unwrap();
+        // Row 0 (t=100) carries `legacy.route`, not `http.route` — only the
+        // two in-window rows that actually have the key contribute a value.
+        assert_eq!(
+            values,
+            vec!["/api/orders".to_string(), "/api/users".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_tag_values_for_a_dedicated_column() {
+        let service = tags_service();
+        let values = service
+            .get_tag_values("service.name", 0, 3_000, "t", "d")
+            .await
+            .unwrap();
+        assert_eq!(
+            values,
+            vec![
+                "checkout".to_string(),
+                "checkout-worker".to_string(),
+                "legacy-svc".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_tag_values_root_intrinsics_are_filtered_by_is_root() {
+        let service = tags_service();
+        let root_services = service
+            .get_tag_values("rootServiceName", 0, 3_000, "t", "d")
+            .await
+            .unwrap();
+        // `checkout-worker` (span 2) is not a root span, so it is excluded
+        // even though it is a valid `service.name` value.
+        assert_eq!(
+            root_services,
+            vec!["checkout".to_string(), "legacy-svc".to_string()]
+        );
+
+        let root_names = service
+            .get_tag_values("rootName", 0, 3_000, "t", "d")
+            .await
+            .unwrap();
+        assert_eq!(
+            root_names,
+            vec!["GET /orders".to_string(), "LEGACY".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_tag_values_intrinsic_enums_are_static() {
+        let service = tags_service();
+        assert_eq!(
+            service
+                .get_tag_values("status", 0, 3_000, "t", "d")
+                .await
+                .unwrap(),
+            STATUS_VALUES
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            service
+                .get_tag_values("kind", 0, 3_000, "t", "d")
+                .await
+                .unwrap(),
+            KIND_VALUES
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn get_tag_values_unknown_tag_is_empty_not_an_error() {
+        let service = tags_service();
+        let values = service
+            .get_tag_values("no.such.attribute", 0, 3_000, "t", "d")
+            .await
+            .unwrap();
+        assert!(values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_tag_values_on_absent_table_is_empty() {
+        let service = empty_tags_service();
+        let values = service
+            .get_tag_values("http.route", 0, i64::MAX, "t", "d")
+            .await
+            .unwrap();
+        assert!(values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_tag_values_rejects_empty_tag_name() {
+        let service = tags_service();
+        assert!(matches!(
+            service.get_tag_values("", 0, 3_000, "t", "d").await,
             Err(QuerierError::InvalidInput(_))
         ));
     }
