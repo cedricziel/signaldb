@@ -786,12 +786,15 @@ async fn files_replaced_by_compaction_stay_protected_while_snapshots_retained() 
             // The manifests of the retained pre-compaction snapshots still
             // reference the 5 replaced input files.
             let files: std::collections::HashSet<String> = {
-                let manifests = compactor::iceberg::ManifestReader::new()
-                    .collect_retained_manifests(&t)
+                let reader = compactor::iceberg::ManifestReader::new();
+                let manifests = reader.collect_retained_manifests(&t).await?;
+                let mut files = std::collections::HashSet::new();
+                reader
+                    .for_each_live_file(&t, &manifests, |path| {
+                        files.insert(path.to_string());
+                    })
                     .await?;
-                compactor::iceberg::ManifestReader::new()
-                    .read_live_files(&t, &manifests)
-                    .await?
+                files
             };
             (t.object_store(), files, t)
         }
@@ -857,7 +860,8 @@ async fn files_replaced_by_compaction_stay_protected_while_snapshots_retained() 
         .live_file_set_for_table(tenant_id, dataset_id, table_name)
         .await?;
     let expected: std::collections::HashSet<String> = pre_compaction_files
-        .difference(&current_live)
+        .iter()
+        .filter(|path| !current_live.contains(path))
         .cloned()
         .collect();
     assert!(
@@ -1344,6 +1348,159 @@ async fn concurrent_commit_rescues_candidate_between_detection_and_deletion() ->
             .await
             .is_err(),
         "the genuine orphan must be deleted"
+    );
+
+    Ok(())
+}
+
+/// Scale regression for #475: a table with many data files spread over many
+/// commits (so its retained snapshots share manifests) must be detected with
+/// bounded work — every distinct manifest read once, one fingerprint per live
+/// file retained, and only orphans kept out of the listing — while still
+/// never flagging a live file.
+#[tokio::test]
+async fn large_table_detection_reads_each_manifest_once_and_flags_only_orphans() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+
+    let config = common::testing::TestConfigBuilder::new()
+        .in_memory()
+        .with_tenant("scale-tenant", "scale-dataset")
+        .build();
+    let catalog_manager = Arc::new(common::catalog_manager::CatalogManager::new(config).await?);
+    let object_store: Arc<dyn object_store::ObjectStore> =
+        Arc::new(object_store::memory::InMemory::new());
+
+    let tenant_id = "scale-tenant";
+    let dataset_id = "scale-dataset";
+    let table_name = "traces";
+    let mut writer = writer::IcebergTableWriter::new(
+        &catalog_manager,
+        object_store.clone(),
+        tenant_id.to_string(),
+        dataset_id.to_string(),
+        table_name.to_string(),
+    )
+    .await?;
+
+    // Every generated file is its own append, so this yields one snapshot
+    // per file: 4 partitions x 20 files = 80 snapshots whose manifest lists
+    // largely point at the same manifests.
+    let data_config = DataGeneratorConfig {
+        partition_count: 4,
+        files_per_partition: 20,
+        rows_per_file: 20,
+        base_timestamp: Utc::now().timestamp_millis() - (48 * 60 * 60 * 1000),
+        partition_granularity: PartitionGranularity::Hour,
+    };
+    let partitions = generators::generate_traces(&mut writer, &data_config).await?;
+    let appends: usize = partitions.iter().map(|p| p.file_count).sum();
+    assert_eq!(appends, 80);
+
+    let table_identifier =
+        catalog_manager.build_table_identifier(tenant_id, dataset_id, table_name);
+    let table = match catalog_manager
+        .catalog()
+        .load_tabular(&table_identifier)
+        .await?
+    {
+        Tabular::Table(t) => t,
+        _ => anyhow::bail!("expected a table"),
+    };
+    let table_store = table.object_store();
+
+    // Manifest reads are bounded by distinct manifests, not by
+    // snapshots x manifests-per-snapshot: the retained set is deduplicated
+    // by path before any manifest is fetched.
+    let reader = compactor::iceberg::ManifestReader::new();
+    let retained_snapshots = table.metadata().snapshots.len();
+    assert!(
+        retained_snapshots > 1,
+        "expected one snapshot per append, got {retained_snapshots}"
+    );
+    let mut per_snapshot_total = 0usize;
+    let mut distinct_paths = std::collections::HashSet::new();
+    for snapshot_id in table.metadata().snapshots.keys() {
+        let manifests = table.manifests(None, Some(*snapshot_id)).await?;
+        per_snapshot_total += manifests.len();
+        distinct_paths.extend(manifests.into_iter().map(|m| m.manifest_path));
+    }
+    let retained = reader.collect_retained_manifests(&table).await?;
+    assert_eq!(
+        retained.len(),
+        distinct_paths.len(),
+        "every distinct manifest must be scheduled for exactly one read"
+    );
+    assert!(
+        per_snapshot_total > retained.len(),
+        "the fixture must share manifests across snapshots \
+         (per-snapshot total {per_snapshot_total} vs distinct {})",
+        retained.len()
+    );
+
+    // Ground truth from the store the catalog wrote through: every data
+    // file on disk is live (nothing was expired or replaced). An append may
+    // roll more than one file, so the listing, not the append count, is
+    // the reference.
+    let data_prefix = ObjectPath::from(format!("{tenant_id}/{dataset_id}/{table_name}/data/"));
+    let on_disk: Vec<_> = table_store
+        .list(Some(&data_prefix))
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert!(
+        on_disk.len() >= appends,
+        "fixture must have written at least one file per append, found {}",
+        on_disk.len()
+    );
+
+    // The live set holds one fingerprint per live file: the memory proxy
+    // is the file count, independent of how many snapshots reference each.
+    let live = reader.read_live_files(&table, &retained).await?;
+    assert_eq!(live.len(), on_disk.len(), "one fingerprint per live file");
+    for meta in &on_disk {
+        assert!(
+            live.contains(meta.location.as_ref()),
+            "live file {} missing from the live set",
+            meta.location
+        );
+    }
+
+    // Drop three orphans among the live files.
+    let orphan_paths: Vec<String> = (0..3)
+        .map(|i| format!("{tenant_id}/{dataset_id}/{table_name}/data/orphan-{i}.parquet"))
+        .collect();
+    for path in &orphan_paths {
+        table_store
+            .put(
+                &ObjectPath::from(path.as_str()),
+                bytes::Bytes::from(vec![0u8; 64]).into(),
+            )
+            .await?;
+    }
+
+    let detector_config = OrphanCleanupConfig {
+        enabled: true,
+        grace_period_hours: 0,
+        batch_size: 100,
+        dry_run: false,
+        cleanup_interval_hours: 24,
+        max_live_files_threshold: 500_000,
+    };
+    let detector = OrphanDetector::new(detector_config, catalog_manager, table_store);
+    let candidates = detector
+        .identify_orphan_candidates(tenant_id, dataset_id, table_name)
+        .await?;
+
+    // Only the injected orphans survive the streamed scan; the live files
+    // cost a lookup each and nothing else.
+    let flagged: std::collections::HashSet<String> =
+        candidates.iter().map(|c| c.path.clone()).collect();
+    let expected: std::collections::HashSet<String> = orphan_paths.iter().cloned().collect();
+    assert_eq!(
+        flagged, expected,
+        "exactly the injected orphans must be flagged"
     );
 
     Ok(())

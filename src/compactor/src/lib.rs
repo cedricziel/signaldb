@@ -41,13 +41,13 @@ pub use executor::{
 };
 pub use http::ObservabilityState;
 pub use iceberg::{
-    ManifestFileInfo, ManifestReader, PartitionInfo, PartitionManager, SnapshotInfo,
+    LiveFileSet, ManifestFileInfo, ManifestReader, PartitionInfo, PartitionManager, SnapshotInfo,
     SnapshotManager,
 };
 pub use metrics::{CompactionMetrics, MetricsSummary};
 pub use orphan::{
-    DeletionResult, ObjectStoreFile, OrphanCandidate, OrphanCleaner, OrphanCleanupConfig,
-    OrphanDetector, OrphanMetrics, SkipReason,
+    DeletionResult, OrphanCandidate, OrphanCleaner, OrphanCleanupConfig, OrphanDetector,
+    OrphanMetrics, SkipReason,
 };
 pub use planner::{
     CompactionCandidate, CompactionPlanner, FileInfo, PartitionStats, PlannerConfig,

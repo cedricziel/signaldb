@@ -17,7 +17,7 @@
 //! proves both halves of the guarantee: the file is protected while inside
 //! the window, and the same file becomes reclaimable once it crosses the
 //! boundary. A test that only checked "nothing was deleted" would pass just
-//! as well with the whole cleanup path broken (see `identify_candidates`'s
+//! as well with the whole cleanup path broken (see `scan_candidates`'s
 //! grace-period and liveness checks in
 //! `src/compactor/src/orphan/detector.rs`), so proving the boundary is the
 //! point.
@@ -69,7 +69,7 @@ async fn load_table(
 /// Proves the default 24-hour orphan-cleanup grace period at
 /// `src/compactor/src/orphan/config.rs`'s `grace_period_hours` default.
 ///
-/// Grace period is evaluated in `OrphanDetector::identify_candidates`
+/// Grace period is evaluated in `OrphanDetector::scan_candidates`
 /// (`src/compactor/src/orphan/detector.rs`) purely from
 /// `object_store::ObjectMeta::last_modified`, which for `object_store`
 /// 0.13's `LocalFileSystem` is the real filesystem mtime

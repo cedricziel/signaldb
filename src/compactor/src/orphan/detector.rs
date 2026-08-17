@@ -9,33 +9,41 @@
 //!    snapshot and collect their non-deleted file paths. Liveness is never
 //!    derived from snapshot or manifest age (issue #925) — snapshot
 //!    expiration is what shrinks the retained set.
-//! 2. **Scan Object Store**: List all .parquet files in table location
-//! 3. **Identify Candidates**: Files not in reference set AND older than grace period
-//! 4. **Optional Revalidation**: Re-check orphan status before deletion
+//! 2. **Scan Object Store**: Stream the `.parquet` listing under the table's
+//!    data location.
+//! 3. **Identify Candidates**: Files not in reference set AND older than
+//!    grace period, decided per listing entry as it streams by.
+//! 4. **Revalidation**: Re-check orphan status against a fresh live set
+//!    before deletion (see [`crate::orphan::cleaner`]).
+//!
+//! ## Memory and I/O bounds (issue #475)
+//!
+//! Detection holds two things that grow with the table: the live set and
+//! the candidate list. Neither is proportional to the whole listing.
+//!
+//! - Manifests are deduplicated across retained snapshots before any
+//!   manifest is fetched, so a manifest shared by N snapshots is read once;
+//!   manifest-list reads are one per retained snapshot, which snapshot
+//!   expiration keeps small.
+//! - Manifest entries are streamed: only a 64-bit fingerprint per live
+//!   file is retained ([`LiveFileSet`]), never the entry or the path.
+//! - The object-store listing is streamed and filtered against the live set
+//!   as it arrives; only orphan candidates (path + size + mtime) are kept.
+//!   Live files, and files inside the grace period, cost nothing beyond the
+//!   lookup.
 
-use crate::iceberg::ManifestReader;
+use crate::iceberg::{LiveFileSet, ManifestReader};
 use crate::orphan::config::OrphanCleanupConfig;
 use crate::orphan::metrics::{OrphanMetrics, SkipReason};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use common::catalog_manager::CatalogManager;
 use common::iceberg::names::build_table_location;
+use futures::Stream;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, ObjectStoreExt};
-use std::collections::HashSet;
+use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt};
 use std::sync::Arc;
 use tokio_stream::StreamExt;
-
-/// Information about a file in object storage.
-#[derive(Debug, Clone)]
-pub struct ObjectStoreFile {
-    /// Full path to the file.
-    pub path: String,
-    /// File size in bytes.
-    pub size_bytes: usize,
-    /// Last modification timestamp.
-    pub last_modified: DateTime<Utc>,
-}
 
 /// Orphan candidate with metadata.
 #[derive(Debug, Clone)]
@@ -48,6 +56,15 @@ pub struct OrphanCandidate {
     pub last_modified: DateTime<Utc>,
     /// Table identifier (tenant/dataset/table).
     pub table_identifier: String,
+}
+
+/// Outcome of one streamed listing pass.
+#[derive(Debug, Default)]
+struct ScanOutcome {
+    /// Files that are neither live nor inside the grace period.
+    candidates: Vec<OrphanCandidate>,
+    /// Listing entries of the requested kind that were examined.
+    scanned: usize,
 }
 
 /// Orphan file detector.
@@ -88,8 +105,8 @@ impl OrphanDetector {
     ///
     /// This method implements the complete detection algorithm:
     /// 1. Build live file reference set from manifests
-    /// 2. Scan object store for all files
-    /// 3. Identify candidates (not in reference set + older than grace period)
+    /// 2. Stream the object store listing, retaining only candidates
+    ///    (not in reference set + older than grace period)
     ///
     /// # Arguments
     ///
@@ -138,34 +155,35 @@ impl OrphanDetector {
             "Built live file reference set"
         );
 
-        // Phase 2: Scan object store for actual files
-        let all_files = self
-            .scan_object_store_files(tenant_id, dataset_id, table_name)
+        // Phases 2+3: stream the data listing, keeping only candidates.
+        // Format: /{tenant_slug}/{dataset_slug}/{table_name}/data/
+        let table_location = build_table_location(tenant_id, dataset_id, table_name);
+        let data_path = format!("{table_location}/data/");
+        let listing = self
+            .object_store
+            .list(Some(&ObjectPath::from(data_path.as_str())));
+        let outcome = self
+            .scan_candidates(
+                listing,
+                |path| path.ends_with(".parquet"),
+                &live_files,
+                |_| {},
+                &table_location,
+            )
             .await
-            .context("Failed to scan object store")?;
+            .with_context(|| format!("Failed to scan object store at path: {data_path}"))?;
 
         tracing::info!(
             signaldb.tenant.id = %tenant_id,
             signaldb.dataset.id = %dataset_id,
             signaldb.table = %table_name,
-            signaldb.job.total_files = all_files.len() as i64,
-            "Scanned object store"
-        );
-
-        // Phase 3: Identify orphan candidates
-        let candidates =
-            self.identify_candidates(&live_files, &all_files, tenant_id, dataset_id, table_name)?;
-
-        tracing::info!(
-            signaldb.tenant.id = %tenant_id,
-            signaldb.dataset.id = %dataset_id,
-            signaldb.table = %table_name,
-            signaldb.job.candidates = candidates.len() as i64,
+            signaldb.job.total_files = outcome.scanned as i64,
+            signaldb.job.candidates = outcome.candidates.len() as i64,
             signaldb.job.grace_period_hours = self.config.grace_period_hours as i64,
             "Identified orphan candidates"
         );
 
-        Ok(candidates)
+        Ok(outcome.candidates)
     }
 
     /// Build live file reference set from table snapshots.
@@ -180,24 +198,8 @@ impl OrphanDetector {
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
-    ) -> Result<Option<HashSet<String>>> {
-        // Load table metadata using catalog manager
-        let table_identifier = self
-            .catalog_manager
-            .build_table_identifier(tenant_id, dataset_id, table_name);
-
-        let catalog = self.catalog_manager.catalog();
-        let tabular = catalog
-            .load_tabular(&table_identifier)
-            .await
-            .with_context(|| {
-                format!("Failed to load table {tenant_id}/{dataset_id}/{table_name}")
-            })?;
-
-        let table = match tabular {
-            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
-            _ => anyhow::bail!("Expected table but found different tabular type"),
-        };
+    ) -> Result<Option<LiveFileSet>> {
+        let table = self.load_table(tenant_id, dataset_id, table_name).await?;
 
         // The live set is the union of every retained snapshot's manifests:
         // Iceberg reuses manifests across snapshots, so a manifest's age says
@@ -258,61 +260,6 @@ impl OrphanDetector {
         Ok(Some(live_files))
     }
 
-    /// Scan object store for all Parquet files in table location.
-    ///
-    /// Lists all .parquet files under the table's data directory,
-    /// respecting tenant/dataset boundaries.
-    async fn scan_object_store_files(
-        &self,
-        tenant_id: &str,
-        dataset_id: &str,
-        table_name: &str,
-    ) -> Result<Vec<ObjectStoreFile>> {
-        // Build table location path
-        // Format: /{tenant_slug}/{dataset_slug}/{table_name}/data/
-        let table_location = build_table_location(tenant_id, dataset_id, table_name);
-        let data_path = format!("{}/data/", table_location);
-        let path = ObjectPath::from(data_path.as_str());
-
-        tracing::debug!(
-            path = %data_path,
-            signaldb.tenant.id = %tenant_id,
-            signaldb.dataset.id = %dataset_id,
-            signaldb.table = %table_name,
-            "Scanning object store"
-        );
-
-        let mut all_files = vec![];
-
-        // List all objects under data/ path
-        let mut list_stream = self.object_store.list(Some(&path));
-
-        while let Some(meta_result) = list_stream.next().await {
-            let meta = meta_result.with_context(|| {
-                format!("Failed to read object metadata at path: {}", data_path)
-            })?;
-
-            // Only include .parquet files
-            if meta.location.as_ref().ends_with(".parquet") {
-                all_files.push(ObjectStoreFile {
-                    path: meta.location.to_string(),
-                    size_bytes: meta.size as usize,
-                    last_modified: meta.last_modified,
-                });
-            }
-        }
-
-        tracing::debug!(
-            signaldb.tenant.id = %tenant_id,
-            signaldb.dataset.id = %dataset_id,
-            signaldb.table = %table_name,
-            parquet_files = all_files.len(),
-            "Found parquet files in object store"
-        );
-
-        Ok(all_files)
-    }
-
     /// Identify unreferenced metadata files for a specific table.
     ///
     /// Metadata orphans are files in the table's `metadata/` directory that
@@ -332,31 +279,15 @@ impl OrphanDetector {
         dataset_id: &str,
         table_name: &str,
     ) -> Result<Vec<OrphanCandidate>> {
-        let table_identifier = self
-            .catalog_manager
-            .build_table_identifier(tenant_id, dataset_id, table_name);
-        let tabular = self
-            .catalog_manager
-            .catalog()
-            .load_tabular(&table_identifier)
-            .await
-            .with_context(|| {
-                format!("Failed to load table {tenant_id}/{dataset_id}/{table_name}")
-            })?;
-        let table = match tabular {
-            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
-            _ => anyhow::bail!("Expected table but found different tabular type"),
-        };
+        let table = self.load_table(tenant_id, dataset_id, table_name).await?;
 
         let mut live = self
             .build_live_metadata_set(&table)
             .await
             .context("Failed to build live metadata set")?;
 
-        let metadata_dir = format!(
-            "{}/metadata",
-            build_table_location(tenant_id, dataset_id, table_name)
-        );
+        let table_location = build_table_location(tenant_id, dataset_id, table_name);
+        let metadata_dir = format!("{table_location}/metadata");
 
         // The current metadata.json is not part of the metadata-log; protect
         // the file the version hint points at.
@@ -371,55 +302,52 @@ impl OrphanDetector {
                 // when the table sets `write.metadata.compression-codec = gzip`.
                 // Protect both -- getting this wrong deletes the *live* metadata
                 // pointer, which is the one file that must never be reclaimed.
-                live.insert(format!("{metadata_dir}/{hint}.metadata.json"));
-                live.insert(format!("{metadata_dir}/{hint}.gz.metadata.json"));
+                live.insert(&format!("{metadata_dir}/{hint}.metadata.json"));
+                live.insert(&format!("{metadata_dir}/{hint}.gz.metadata.json"));
             }
         }
 
-        // Scan the metadata directory for reclaimable file types.
-        let mut all_files = vec![];
-        let path = ObjectPath::from(format!("{metadata_dir}/").as_str());
-        let mut list_stream = self.object_store.list(Some(&path));
-        while let Some(meta_result) = list_stream.next().await {
-            let meta = meta_result.with_context(|| {
-                format!("Failed to read object metadata at path: {metadata_dir}/")
-            })?;
-            let location = meta.location.as_ref();
-            if location.ends_with(".metadata.json") || location.ends_with(".avro") {
-                all_files.push(ObjectStoreFile {
-                    path: meta.location.to_string(),
-                    size_bytes: meta.size as usize,
-                    last_modified: meta.last_modified,
-                });
-            }
-        }
+        // Stream the metadata directory for reclaimable file types, tracking
+        // the newest metadata.json version seen (live or not) on the way.
+        // Version stems are zero-padded, so lexicographic max is the newest.
+        let mut newest_metadata_json: Option<String> = None;
+        let listing = self
+            .object_store
+            .list(Some(&ObjectPath::from(format!("{metadata_dir}/").as_str())));
+        let mut outcome = self
+            .scan_candidates(
+                listing,
+                |path| path.ends_with(".metadata.json") || path.ends_with(".avro"),
+                &live,
+                |path| {
+                    if path.ends_with(".metadata.json")
+                        && newest_metadata_json.as_deref().is_none_or(|n| path > n)
+                    {
+                        newest_metadata_json = Some(path.to_string());
+                    }
+                },
+                &table_location,
+            )
+            .await
+            .with_context(|| format!("Failed to scan object store at path: {metadata_dir}/"))?;
 
         // Belt and braces against a stale or missing version hint: never
-        // flag the newest metadata.json version we can see. Version stems
-        // are zero-padded, so lexicographic max is the newest.
-        if let Some(newest) = all_files
-            .iter()
-            .filter(|f| f.path.ends_with(".metadata.json"))
-            .map(|f| f.path.clone())
-            .max()
-        {
-            live.insert(newest);
+        // flag the newest metadata.json version we can see.
+        if let Some(newest) = newest_metadata_json {
+            outcome.candidates.retain(|c| c.path != newest);
         }
-
-        let candidates =
-            self.identify_candidates(&live, &all_files, tenant_id, dataset_id, table_name)?;
 
         tracing::info!(
             signaldb.tenant.id = %tenant_id,
             signaldb.dataset.id = %dataset_id,
             signaldb.table = %table_name,
-            signaldb.job.scanned_metadata_files = all_files.len() as i64,
-            signaldb.job.candidates = candidates.len() as i64,
+            signaldb.job.scanned_metadata_files = outcome.scanned as i64,
+            signaldb.job.candidates = outcome.candidates.len() as i64,
             signaldb.job.grace_period_hours = self.config.grace_period_hours as i64,
             "Identified orphan metadata candidates"
         );
 
-        Ok(candidates)
+        Ok(outcome.candidates)
     }
 
     /// Build the set of metadata files still referenced by the table:
@@ -428,60 +356,68 @@ impl OrphanDetector {
     async fn build_live_metadata_set(
         &self,
         table: &iceberg_rust::table::Table,
-    ) -> Result<HashSet<String>> {
+    ) -> Result<LiveFileSet> {
         let metadata = table.metadata();
-        let mut live = HashSet::new();
+        let mut live = LiveFileSet::new();
         for entry in &metadata.metadata_log {
-            live.insert(entry.metadata_file.clone());
+            live.insert(&entry.metadata_file);
         }
         for snapshot in metadata.snapshots.values() {
-            live.insert(snapshot.manifest_list().clone());
+            live.insert(snapshot.manifest_list());
         }
         for manifest in self
             .manifest_reader
             .collect_retained_manifests(table)
             .await?
         {
-            live.insert(manifest.manifest_path);
+            live.insert(&manifest.manifest_path);
         }
         Ok(live)
     }
 
-    /// Identify orphan candidates from file comparison.
+    /// Stream a listing and keep only orphan candidates.
     ///
-    /// Applies safety checks:
-    /// 1. File not in live reference set
-    /// 2. File older than grace period
-    fn identify_candidates(
+    /// Each entry passing `keep` is examined once: `observe` sees its path,
+    /// then the two safety checks decide whether it becomes a candidate:
+    /// 1. not in the live reference set
+    /// 2. older than the grace period
+    ///
+    /// Only candidates are retained; the listing itself is never
+    /// materialised, so memory is O(candidates) on top of the live set.
+    async fn scan_candidates(
         &self,
-        live_files: &HashSet<String>,
-        all_files: &[ObjectStoreFile],
-        tenant_id: &str,
-        dataset_id: &str,
-        table_name: &str,
-    ) -> Result<Vec<OrphanCandidate>> {
+        listing: impl Stream<Item = object_store::Result<ObjectMeta>>,
+        keep: impl Fn(&str) -> bool,
+        live_files: &LiveFileSet,
+        mut observe: impl FnMut(&str),
+        table_identifier: &str,
+    ) -> Result<ScanOutcome> {
         let grace_period = chrono::Duration::from_std(self.config.grace_period())
             .context("Failed to convert grace period duration")?;
         let cutoff_time = Utc::now() - grace_period;
-        let table_identifier = build_table_location(tenant_id, dataset_id, table_name);
 
-        let mut candidates = vec![];
+        let mut outcome = ScanOutcome::default();
+        let mut listing = std::pin::pin!(listing);
+        while let Some(meta_result) = listing.next().await {
+            let meta = meta_result.context("Failed to read object metadata")?;
+            let path = meta.location.as_ref();
+            if !keep(path) {
+                continue;
+            }
+            outcome.scanned += 1;
+            observe(path);
 
-        for file in all_files {
             // Safety check 1: Is file referenced by any snapshot?
-            if live_files.contains(&file.path) {
-                tracing::trace!(
-                    path = %file.path,
-                    "File is referenced by live snapshot, skipping"
-                );
+            if live_files.contains(path) {
+                tracing::trace!(path, "File is referenced by live snapshot, skipping");
                 continue;
             }
 
             // Safety check 2: Is file older than grace period?
-            if file.last_modified > cutoff_time {
+            if meta.last_modified > cutoff_time {
                 tracing::debug!(
-                    path = %file.path,
-                    last_modified = %file.last_modified,
+                    path,
+                    last_modified = %meta.last_modified,
                     cutoff_time = %cutoff_time,
                     signaldb.job.grace_period_hours = self.config.grace_period_hours as i64,
                     "Skipping recent file (within grace period)"
@@ -491,21 +427,45 @@ impl OrphanDetector {
 
             // File is an orphan candidate
             tracing::debug!(
-                path = %file.path,
-                size_bytes = file.size_bytes,
-                last_modified = %file.last_modified,
+                path,
+                size_bytes = meta.size,
+                last_modified = %meta.last_modified,
                 "Identified orphan candidate"
             );
 
-            candidates.push(OrphanCandidate {
-                path: file.path.clone(),
-                size_bytes: file.size_bytes,
-                last_modified: file.last_modified,
-                table_identifier: table_identifier.clone(),
+            outcome.candidates.push(OrphanCandidate {
+                path: path.to_string(),
+                size_bytes: meta.size as usize,
+                last_modified: meta.last_modified,
+                table_identifier: table_identifier.to_string(),
             });
         }
 
-        Ok(candidates)
+        Ok(outcome)
+    }
+
+    /// Load a table from the catalog with a fresh metadata read.
+    async fn load_table(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> Result<iceberg_rust::table::Table> {
+        let table_identifier = self
+            .catalog_manager
+            .build_table_identifier(tenant_id, dataset_id, table_name);
+        let tabular = self
+            .catalog_manager
+            .catalog()
+            .load_tabular(&table_identifier)
+            .await
+            .with_context(|| {
+                format!("Failed to load table {tenant_id}/{dataset_id}/{table_name}")
+            })?;
+        match tabular {
+            iceberg_rust::catalog::tabular::Tabular::Table(t) => Ok(t),
+            _ => anyhow::bail!("Expected table but found different tabular type"),
+        }
     }
 
     /// Build the current live data-file set for a table from a fresh
@@ -521,24 +481,11 @@ impl OrphanDetector {
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
-    ) -> Result<HashSet<String>> {
-        let table_identifier = self
-            .catalog_manager
-            .build_table_identifier(tenant_id, dataset_id, table_name);
-        let tabular = self
-            .catalog_manager
-            .catalog()
-            .load_tabular(&table_identifier)
+    ) -> Result<LiveFileSet> {
+        let table = self
+            .load_table(tenant_id, dataset_id, table_name)
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to load table for revalidation: {tenant_id}/{dataset_id}/{table_name}"
-                )
-            })?;
-        let table = match tabular {
-            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
-            _ => anyhow::bail!("Expected table but found different tabular type"),
-        };
+            .context("Failed to load table for revalidation")?;
         self.manifest_reader
             .build_live_file_set(&table)
             .await
@@ -557,24 +504,11 @@ impl OrphanDetector {
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
-    ) -> Result<HashSet<String>> {
-        let table_identifier = self
-            .catalog_manager
-            .build_table_identifier(tenant_id, dataset_id, table_name);
-        let tabular = self
-            .catalog_manager
-            .catalog()
-            .load_tabular(&table_identifier)
+    ) -> Result<LiveFileSet> {
+        let table = self
+            .load_table(tenant_id, dataset_id, table_name)
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to load table for revalidation: {tenant_id}/{dataset_id}/{table_name}"
-                )
-            })?;
-        let table = match tabular {
-            iceberg_rust::catalog::tabular::Tabular::Table(t) => t,
-            _ => anyhow::bail!("Expected table but found different tabular type"),
-        };
+            .context("Failed to load table for revalidation")?;
         self.build_live_metadata_set(&table)
             .await
             .context("Failed to build live metadata set for revalidation")
@@ -584,9 +518,10 @@ impl OrphanDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
 
     /// Builds a real `OrphanDetector` backed by an in-memory catalog and
-    /// object store, so tests drive `identify_candidates` itself rather than
+    /// object store, so tests drive `scan_candidates` itself rather than
     /// a duplicated copy of its filtering logic.
     async fn make_detector(config: OrphanCleanupConfig) -> OrphanDetector {
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -594,68 +529,178 @@ mod tests {
         OrphanDetector::new(config, catalog_manager, object_store)
     }
 
+    fn meta(path: &str, size: u64, age: chrono::Duration) -> object_store::Result<ObjectMeta> {
+        Ok(ObjectMeta {
+            location: ObjectPath::from(path),
+            last_modified: Utc::now() - age,
+            size,
+            e_tag: None,
+            version: None,
+        })
+    }
+
     #[tokio::test]
-    async fn identify_candidates_excludes_files_within_grace_period() {
+    async fn scan_excludes_files_within_grace_period() {
         // Arrange
         let config = OrphanCleanupConfig {
             grace_period_hours: 24,
             ..Default::default()
         };
         let detector = make_detector(config).await;
-
-        let live_files: HashSet<String> = HashSet::new();
-        let recent_file = ObjectStoreFile {
-            path: "recent.parquet".to_string(),
-            size_bytes: 100,
-            last_modified: Utc::now() - chrono::Duration::hours(1),
-        };
-        let old_file = ObjectStoreFile {
-            path: "old.parquet".to_string(),
-            size_bytes: 200,
-            last_modified: Utc::now() - chrono::Duration::hours(48),
-        };
-        let all_files = vec![recent_file, old_file];
+        let live_files = LiveFileSet::new();
+        let listing = stream::iter(vec![
+            meta("recent.parquet", 100, chrono::Duration::hours(1)),
+            meta("old.parquet", 200, chrono::Duration::hours(48)),
+        ]);
 
         // Act
-        let candidates = detector
-            .identify_candidates(&live_files, &all_files, "tenant", "dataset", "traces")
+        let outcome = detector
+            .scan_candidates(
+                listing,
+                |_| true,
+                &live_files,
+                |_| {},
+                "tenant/dataset/traces",
+            )
+            .await
             .unwrap();
 
         // Assert: only the file older than the 24h grace period is a candidate.
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].path, "old.parquet");
+        assert_eq!(outcome.scanned, 2);
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(outcome.candidates[0].path, "old.parquet");
+        assert_eq!(outcome.candidates[0].size_bytes, 200);
+        assert_eq!(
+            outcome.candidates[0].table_identifier,
+            "tenant/dataset/traces"
+        );
     }
 
     #[tokio::test]
-    async fn identify_candidates_excludes_files_still_referenced_by_a_live_snapshot() {
+    async fn scan_excludes_files_still_referenced_by_a_live_snapshot() {
         // Arrange
-        let config = OrphanCleanupConfig::default();
-        let detector = make_detector(config).await;
-
-        let mut live_files = HashSet::new();
-        live_files.insert("live.parquet".to_string());
+        let detector = make_detector(OrphanCleanupConfig::default()).await;
+        let mut live_files = LiveFileSet::new();
+        live_files.insert("live.parquet");
 
         // Both files are old enough to clear the grace period; only
         // liveness should distinguish them.
-        let live_file = ObjectStoreFile {
-            path: "live.parquet".to_string(),
-            size_bytes: 100,
-            last_modified: Utc::now() - chrono::Duration::hours(48),
-        };
-        let orphan_file = ObjectStoreFile {
-            path: "orphan.parquet".to_string(),
-            size_bytes: 200,
-            last_modified: Utc::now() - chrono::Duration::hours(48),
-        };
-        let all_files = vec![live_file, orphan_file];
+        let listing = stream::iter(vec![
+            meta("live.parquet", 100, chrono::Duration::hours(48)),
+            meta("orphan.parquet", 200, chrono::Duration::hours(48)),
+        ]);
 
         // Act
-        let candidates = detector
-            .identify_candidates(&live_files, &all_files, "tenant", "dataset", "traces")
+        let outcome = detector
+            .scan_candidates(
+                listing,
+                |_| true,
+                &live_files,
+                |_| {},
+                "tenant/dataset/traces",
+            )
+            .await
             .unwrap();
 
         // Assert: the file still referenced by a live snapshot is excluded.
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].path, "orphan.parquet");
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(outcome.candidates[0].path, "orphan.parquet");
+    }
+
+    #[tokio::test]
+    async fn scan_applies_kind_filter_before_observing_or_counting() {
+        let config = OrphanCleanupConfig {
+            grace_period_hours: 0,
+            ..Default::default()
+        };
+        let detector = make_detector(config).await;
+        let live_files = LiveFileSet::new();
+        let listing = stream::iter(vec![
+            meta("a.parquet", 1, chrono::Duration::hours(1)),
+            meta("notes.txt", 1, chrono::Duration::hours(1)),
+            meta("b.parquet", 1, chrono::Duration::hours(1)),
+        ]);
+        let mut observed = Vec::new();
+
+        let outcome = detector
+            .scan_candidates(
+                listing,
+                |p| p.ends_with(".parquet"),
+                &live_files,
+                |p| observed.push(p.to_string()),
+                "t/d/traces",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(observed, vec!["a.parquet", "b.parquet"]);
+        assert_eq!(outcome.scanned, 2);
+        assert_eq!(outcome.candidates.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn scan_retains_only_candidates_from_a_large_mostly_live_listing() {
+        // A listing of many files where almost all are live must leave the
+        // detector holding just the orphans: the memory proxy is the
+        // candidate count, not the listing length.
+        let config = OrphanCleanupConfig {
+            grace_period_hours: 0,
+            ..Default::default()
+        };
+        let detector = make_detector(config).await;
+        let total = 50_000usize;
+        let mut live_files = LiveFileSet::new();
+        let mut entries = Vec::with_capacity(total);
+        for i in 0..total {
+            let path = format!("t/d/traces/data/hour={}/{i:08}.parquet", i % 24);
+            if i % 1000 != 0 {
+                live_files.insert(&path);
+            }
+            entries.push(meta(&path, 1, chrono::Duration::hours(1)));
+        }
+
+        let outcome = detector
+            .scan_candidates(
+                stream::iter(entries),
+                |_| true,
+                &live_files,
+                |_| {},
+                "t/d/traces",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.scanned, total);
+        assert_eq!(outcome.candidates.len(), total / 1000);
+        assert!(
+            outcome
+                .candidates
+                .iter()
+                .all(|c| !live_files.contains(&c.path)),
+            "no live file may be a candidate"
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_propagates_listing_errors_instead_of_flagging_files() {
+        let config = OrphanCleanupConfig {
+            grace_period_hours: 0,
+            ..Default::default()
+        };
+        let detector = make_detector(config).await;
+        let live_files = LiveFileSet::new();
+        let listing = stream::iter(vec![
+            meta("a.parquet", 1, chrono::Duration::hours(1)),
+            Err(object_store::Error::Generic {
+                store: "test",
+                source: "listing failed".into(),
+            }),
+        ]);
+
+        let result = detector
+            .scan_candidates(listing, |_| true, &live_files, |_| {}, "t/d/traces")
+            .await;
+
+        assert!(result.is_err(), "a listing error must abort detection");
     }
 }

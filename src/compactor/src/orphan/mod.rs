@@ -55,5 +55,5 @@ pub mod metrics;
 // Re-export commonly used types
 pub use cleaner::{DeletionResult, OrphanCleaner};
 pub use config::OrphanCleanupConfig;
-pub use detector::{ObjectStoreFile, OrphanCandidate, OrphanDetector};
+pub use detector::{OrphanCandidate, OrphanDetector};
 pub use metrics::{OrphanMetrics, SkipReason};
