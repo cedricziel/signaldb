@@ -2,6 +2,7 @@ use crate::storage::IcebergTableWriter;
 use anyhow::{Context, Result};
 use common::CatalogManager;
 use common::config::WriterConfig;
+use common::wal::manager::WalManager;
 use common::wal::{Wal, WalEntry, bytes_to_record_batch};
 use datafusion::arrow::array::RecordBatch;
 use object_store::ObjectStore;
@@ -26,7 +27,15 @@ type EntryTraceContext = (Option<String>, Option<String>);
 
 /// Entries grouped for one table's batch write: the `(id, batch)` payloads to
 /// commit, paired with the trace context each entry arrived with.
-type TableBatch = (Vec<(Uuid, RecordBatch)>, Vec<EntryTraceContext>);
+type TableBatch = (Arc<Wal>, Vec<(Uuid, RecordBatch)>, Vec<EntryTraceContext>);
+
+/// Grouping key for one processing cycle: the WAL the entries live in (by
+/// `writer_id`), then tenant, dataset, and table. Including the WAL keeps
+/// every group single-sourced, so marking and the per-WAL idempotency marker
+/// stay exact even when two WALs feed the same table (a legacy root WAL
+/// being drained alongside the tenant's own, see
+/// [`WalManager::adopt_root_segments`]).
+type GroupKey = (String, String, String, String);
 
 /// Why a WAL entry's payload could not be turned into a batch. The two are
 /// retired differently: an unreadable payload (bounds/CRC failure) is
@@ -138,7 +147,9 @@ fn trace_context_from_metadata(metadata: &Option<String>) -> EntryTraceContext {
 /// WAL processor that reads entries and writes them to Iceberg tables
 /// Replaces the direct Parquet writing approach with transaction-based Iceberg writes
 pub struct WalProcessor {
-    wal: Arc<Wal>,
+    /// One WAL per tenant/dataset/signal (#932): a poisoned or slow WAL only
+    /// ever affects its own tenant, and each cycle drains every cached WAL.
+    wal_manager: Arc<WalManager>,
     catalog_manager: Arc<CatalogManager>,
     object_store: Arc<dyn ObjectStore>,
     // Cache of table writers per tenant/table combination
@@ -157,22 +168,27 @@ impl WalProcessor {
     /// Create a new WAL processor with shared CatalogManager and the default
     /// writer commit-coalescing policy.
     pub fn new(
-        wal: Arc<Wal>,
+        wal_manager: Arc<WalManager>,
         catalog_manager: Arc<CatalogManager>,
         object_store: Arc<dyn ObjectStore>,
     ) -> Self {
-        Self::with_config(wal, catalog_manager, object_store, &WriterConfig::default())
+        Self::with_config(
+            wal_manager,
+            catalog_manager,
+            object_store,
+            &WriterConfig::default(),
+        )
     }
 
     /// Create a new WAL processor with an explicit commit-coalescing policy.
     pub fn with_config(
-        wal: Arc<Wal>,
+        wal_manager: Arc<WalManager>,
         catalog_manager: Arc<CatalogManager>,
         object_store: Arc<dyn ObjectStore>,
         writer_config: &WriterConfig,
     ) -> Self {
         Self {
-            wal,
+            wal_manager,
             catalog_manager,
             object_store,
             table_writers: HashMap::new(),
@@ -219,7 +235,26 @@ impl WalProcessor {
     /// coalescing); `Flush` WAL markers contribute their own tenant/dataset
     /// scope.
     async fn drain_pending(&mut self, mut flush_scopes: Vec<FlushScope>) -> Result<()> {
-        let pending_entries = self.wal.get_unprocessed_entries().await?;
+        // Every cached WAL is drained each cycle. A WAL that cannot even list
+        // its entries is skipped for this cycle — never allowed to abort the
+        // drain of every other tenant's WAL (#932).
+        let mut pending_entries: Vec<(Arc<Wal>, WalEntry)> = Vec::new();
+        for ((tenant, dataset, signal), wal) in self.wal_manager.all_wals().await {
+            match wal.get_unprocessed_entries().await {
+                Ok(entries) => {
+                    pending_entries.extend(entries.into_iter().map(|e| (wal.clone(), e)));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        tenant_id = %tenant,
+                        dataset_id = %dataset,
+                        signal = %signal,
+                        error = %e,
+                        "Failed to list unprocessed WAL entries; skipping this WAL for the cycle"
+                    );
+                }
+            }
+        }
 
         if pending_entries.is_empty() {
             // Keep the backlog gauge honest on an idle WAL: without this it
@@ -246,17 +281,17 @@ impl WalProcessor {
         // default `commit_interval ≈ tick` this is ~1 redundant decode; if
         // `commit_interval` is configured much larger than the tick, gate the
         // floor on entry metadata (`data_size`) before deserializing instead.
-        let mut grouped_entries: HashMap<(String, String, String), TableBatch> = HashMap::new();
+        let mut grouped_entries: HashMap<GroupKey, TableBatch> = HashMap::new();
 
         // A `Flush` marker is a force-commit request scoped to its own
         // tenant/dataset: it carries no data, but force-commits that scope's
         // pending groups this cycle (bypassing the floor), and is marked
         // processed once drained.
-        let mut flush_marker_ids: Vec<Uuid> = Vec::new();
+        let mut flush_marker_ids: Vec<(Arc<Wal>, Uuid)> = Vec::new();
 
-        for entry in pending_entries {
+        for (wal, entry) in pending_entries {
             if matches!(entry.operation, common::wal::WalOperation::Flush) {
-                flush_marker_ids.push(entry.id);
+                flush_marker_ids.push((wal.clone(), entry.id));
                 flush_scopes.push(FlushScope {
                     tenant_id: entry.tenant_id.clone(),
                     dataset_id: Some(entry.dataset_id.clone()),
@@ -281,6 +316,7 @@ impl WalProcessor {
                         "Failed to route WAL entry"
                     );
                     self.record_entry_failure(
+                        &wal,
                         entry.id,
                         &entry.tenant_id,
                         &entry.dataset_id,
@@ -297,7 +333,7 @@ impl WalProcessor {
             let suppress = common::self_monitoring::is_self_monitoring_tenant(&tenant_id);
             let batch = match common::self_monitoring::maybe_suppress_self_telemetry(
                 suppress,
-                self.deserialize_entry_data(&entry),
+                Self::deserialize_entry_data(&wal, &entry),
             )
             .await
             {
@@ -316,11 +352,12 @@ impl WalProcessor {
                         );
                         match e {
                             EntryDecodeError::Unreadable(cause) => {
-                                self.record_unreadable_entry(&entry, &cause.to_string())
+                                self.record_unreadable_entry(&wal, &entry, &cause.to_string())
                                     .await;
                             }
                             EntryDecodeError::Undecodable(_) => {
                                 self.record_entry_failure(
+                                    &wal,
                                     entry.id,
                                     &entry.tenant_id,
                                     &entry.dataset_id,
@@ -337,10 +374,15 @@ impl WalProcessor {
 
             let trace_ctx = trace_context_from_metadata(&entry.metadata);
             let group = grouped_entries
-                .entry((tenant_id, dataset_id, table_name))
-                .or_default();
-            group.0.push((entry.id, batch));
-            group.1.push(trace_ctx);
+                .entry((
+                    wal.writer_id().to_string(),
+                    tenant_id,
+                    dataset_id,
+                    table_name,
+                ))
+                .or_insert_with(|| (wal.clone(), Vec::new(), Vec::new()));
+            group.1.push((entry.id, batch));
+            group.2.push(trace_ctx);
         }
 
         // Process each group using batch writes. Marking happens inside
@@ -357,7 +399,9 @@ impl WalProcessor {
         // a group that fails to commit must surface as an error so the caller
         // does not believe its read-your-writes drain succeeded.
         let mut forced_commit_failed = false;
-        for ((tenant_id, dataset_id, table_name), (entries, trace_contexts)) in grouped_entries {
+        for ((_, tenant_id, dataset_id, table_name), (wal, entries, trace_contexts)) in
+            grouped_entries
+        {
             let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 
             // A group is force-committed only when a flush scope (explicit
@@ -393,6 +437,7 @@ impl WalProcessor {
             let committed = common::self_monitoring::maybe_suppress_self_telemetry(suppress, async {
                 match self
                     .process_batch_for_table(
+                        &wal,
                         &tenant_id,
                         &dataset_id,
                         &table_name,
@@ -420,6 +465,7 @@ impl WalProcessor {
                         tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %e, "Failed to process batch for table");
                         for entry_id in group_ids {
                             self.record_entry_failure(
+                                &wal,
                                 entry_id,
                                 &tenant_id,
                                 &dataset_id,
@@ -443,8 +489,8 @@ impl WalProcessor {
         // succeeded — otherwise leave them so the next cycle retries the
         // force-drain rather than silently dropping the read-your-writes request.
         if !forced_commit_failed {
-            for flush_id in flush_marker_ids {
-                if let Err(e) = self.wal.mark_processed(flush_id).await {
+            for (wal, flush_id) in flush_marker_ids {
+                if let Err(e) = wal.mark_processed(flush_id).await {
                     tracing::warn!(entry_id = %flush_id, error = %e, "Failed to mark Flush marker processed");
                 }
             }
@@ -484,6 +530,7 @@ impl WalProcessor {
     )]
     async fn process_batch_for_table(
         &mut self,
+        wal: &Arc<Wal>,
         tenant_id: &str,
         dataset_id: &str,
         table_name: &str,
@@ -511,7 +558,6 @@ impl WalProcessor {
             self.table_writers.insert(writer_key.clone(), writer);
         }
 
-        let wal = self.wal.clone();
         let wal_writer_id = wal.writer_id().to_string();
         let writer = self
             .table_writers
@@ -590,6 +636,7 @@ impl WalProcessor {
     /// it exhausts its attempts.
     async fn record_entry_failure(
         &mut self,
+        wal: &Wal,
         entry_id: Uuid,
         tenant_id: &str,
         dataset_id: &str,
@@ -600,7 +647,7 @@ impl WalProcessor {
         if *failures < MAX_ENTRY_FAILURES {
             return;
         }
-        match self.wal.dead_letter(entry_id).await {
+        match wal.dead_letter(entry_id).await {
             Ok(path) => {
                 tracing::error!(
                     entry_id = %entry_id,
@@ -635,8 +682,8 @@ impl WalProcessor {
     /// WAL has already quarantined whatever bytes it could and logged the
     /// tenant/dataset/signal/offset; this records the marker and marks the
     /// entry processed so the neighbours keep flowing.
-    async fn record_unreadable_entry(&mut self, entry: &WalEntry, reason: &str) {
-        match self.wal.dead_letter_unreadable(entry.id, reason).await {
+    async fn record_unreadable_entry(&mut self, wal: &Wal, entry: &WalEntry, reason: &str) {
+        match wal.dead_letter_unreadable(entry.id, reason).await {
             Ok(path) => {
                 tracing::error!(
                     entry_id = %entry.id,
@@ -730,11 +777,10 @@ impl WalProcessor {
 
     /// Deserialize WAL entry data back to RecordBatch
     async fn deserialize_entry_data(
-        &self,
+        wal: &Wal,
         entry: &WalEntry,
     ) -> std::result::Result<RecordBatch, EntryDecodeError> {
-        let data = self
-            .wal
+        let data = wal
             .read_entry_data(entry)
             .await
             .map_err(EntryDecodeError::Unreadable)?;
@@ -798,6 +844,93 @@ mod tests {
     use common::wal::{Wal, WalConfig, WalOperation};
     use object_store::memory::InMemory;
     use tempfile::tempdir;
+
+    /// A manager holding exactly `wal`, so tests that drive one WAL by hand
+    /// can feed it to the processor.
+    async fn manager_for(wal: &Arc<Wal>) -> Arc<WalManager> {
+        let manager = WalManager::uniform(WalConfig::default());
+        manager
+            .register(
+                (
+                    "test-tenant".to_string(),
+                    "test-dataset".to_string(),
+                    "traces".to_string(),
+                ),
+                wal.clone(),
+            )
+            .await;
+        Arc::new(manager)
+    }
+
+    #[tokio::test]
+    async fn poisoned_tenant_wal_does_not_block_another_tenants_wal() {
+        // #932: with one WAL per tenant, a WAL that cannot even be listed (or
+        // whose every entry is poison) must not stall the drain of another
+        // tenant's WAL in the same cycle.
+        let temp_dir = tempdir().unwrap();
+        let mut base = WalConfig::with_defaults(temp_dir.path().to_path_buf());
+        base.max_buffer_entries = 1000;
+        base.flush_interval_secs = 60;
+        let manager = Arc::new(WalManager::uniform(base));
+
+        // Tenant A: a poison entry (undecodable payload) sits at the head of
+        // its WAL and stays pending for MAX_ENTRY_FAILURES cycles.
+        let acme = manager
+            .get_wal("acme", "production", "metrics")
+            .await
+            .unwrap();
+        acme.append(
+            WalOperation::WriteMetrics,
+            b"not arrow ipc".to_vec(),
+            Some(r#"{"tenant_id":"acme","dataset_id":"production"}"#.to_string()),
+        )
+        .await
+        .unwrap();
+        acme.flush().await.unwrap();
+
+        // Tenant B: a healthy entry.
+        let globex = manager
+            .get_wal("globex", "production", "metrics")
+            .await
+            .unwrap();
+        globex
+            .append(
+                WalOperation::WriteMetrics,
+                metrics_gauge_bytes(3),
+                Some(r#"{"tenant_id":"globex","dataset_id":"production"}"#.to_string()),
+            )
+            .await
+            .unwrap();
+        globex.flush().await.unwrap();
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let mut processor = WalProcessor::new(manager.clone(), catalog_manager, object_store);
+        processor
+            .process_pending_entries()
+            .await
+            .expect("one tenant's poison must not fail the cycle");
+
+        assert!(
+            globex.get_unprocessed_entries().await.unwrap().is_empty(),
+            "tenant B's entry must be committed in the same cycle tenant A is poisoned"
+        );
+        assert_eq!(
+            acme.get_unprocessed_entries().await.unwrap().len(),
+            1,
+            "tenant A's poison entry is still pending (retried, not yet dead-lettered)"
+        );
+
+        // A never wrote into B's directory and vice versa: the blast radius
+        // of a poisoned segment is one tenant/dataset/signal directory.
+        assert!(
+            !temp_dir
+                .path()
+                .join("globex/production/metrics/dead-letter")
+                .exists()
+        );
+        assert!(temp_dir.path().join("acme/production/metrics").is_dir());
+    }
 
     fn coalescer(interval_secs: u64, max_rows: usize) -> CommitCoalescer {
         CommitCoalescer::new(&WriterConfig {
@@ -918,7 +1051,7 @@ mod tests {
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
 
-        let processor = WalProcessor::new(wal, catalog_manager, object_store);
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
 
         let stats = processor.get_stats();
         assert_eq!(stats.active_writers, 0);
@@ -942,7 +1075,7 @@ mod tests {
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
 
-        let processor = WalProcessor::new(wal, catalog_manager, object_store);
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
 
         // Test different operation types
         let entry = WalEntry {
@@ -1013,7 +1146,8 @@ mod tests {
             .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
         for _ in 0..super::MAX_ENTRY_FAILURES {
             processor
                 .process_pending_entries()
@@ -1093,7 +1227,8 @@ mod tests {
         bytes[idx] ^= 0x01;
         tokio::fs::write(&data_path, &bytes).await.unwrap();
 
-        let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
         processor
             .process_pending_entries()
             .await
@@ -1150,7 +1285,8 @@ mod tests {
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
 
         // _system-tenant entry: nothing may pass the export filter.
         wal.append(
@@ -1212,7 +1348,8 @@ mod tests {
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
 
-        let mut processor = WalProcessor::new(wal, catalog_manager, object_store);
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
 
         // Should handle empty entries gracefully
         let result = processor.process_pending_entries().await;
@@ -1245,7 +1382,8 @@ mod tests {
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
 
         // No pending entries: force-commit must succeed and commit nothing.
         processor
@@ -1275,8 +1413,12 @@ mod tests {
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let mut processor =
-            WalProcessor::with_config(wal.clone(), catalog_manager, object_store, &config);
+        let mut processor = WalProcessor::with_config(
+            manager_for(&wal).await,
+            catalog_manager,
+            object_store,
+            &config,
+        );
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
 
@@ -1340,8 +1482,12 @@ mod tests {
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let mut processor =
-            WalProcessor::with_config(wal.clone(), catalog_manager, object_store, &config);
+        let mut processor = WalProcessor::with_config(
+            manager_for(&wal).await,
+            catalog_manager,
+            object_store,
+            &config,
+        );
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
 
@@ -1392,8 +1538,12 @@ mod tests {
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let mut processor =
-            WalProcessor::with_config(wal.clone(), catalog_manager, object_store, &config);
+        let mut processor = WalProcessor::with_config(
+            manager_for(&wal).await,
+            catalog_manager,
+            object_store,
+            &config,
+        );
 
         let meta_a = Some(
             r#"{"tenant_id":"acme","dataset_id":"production","target_table":"metrics_gauge"}"#
@@ -1478,7 +1628,8 @@ mod tests {
 
         // "Restart": a brand-new processor (fresh coalescer state, same catalog
         // + object store) over the same WAL commits the pending entry.
-        let mut restarted = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        let mut restarted =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
         restarted.process_pending_entries().await.unwrap();
         assert!(
             wal.get_unprocessed_entries().await.unwrap().is_empty(),
@@ -1498,7 +1649,8 @@ mod tests {
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
 
         // Routes to metrics_gauge but the batch schema does not match, so the
         // commit fails. A read-your-writes drain must not report success.
@@ -1538,7 +1690,8 @@ mod tests {
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
 
         wal.append(
             WalOperation::WriteMetrics,

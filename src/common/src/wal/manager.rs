@@ -2,8 +2,13 @@
 //!
 //! This module provides WalManager which creates and caches WAL instances
 //! per tenant/dataset/signal type combination, ensuring data isolation.
+//!
+//! Both the acceptor and the writer fan their WALs out through this type
+//! (issue #932): one WAL per `(tenant, dataset, signal)` means one tenant's
+//! poisoned segment, lock contention, or fsync latency cannot stall another
+//! tenant's ingest path.
 
-use common::wal::{Wal, WalConfig};
+use crate::wal::{Wal, WalConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -59,6 +64,79 @@ impl WalManager {
             metrics_config,
             profiles_config,
         }
+    }
+
+    /// Create a WalManager that uses the same base configuration for every
+    /// signal type. `base.wal_dir` is the directory under which the
+    /// `{tenant}/{dataset}/{signal}` tree is created.
+    pub fn uniform(base: WalConfig) -> Self {
+        Self::new(base.clone(), base.clone(), base.clone(), base)
+    }
+
+    /// Cache key under which [`Self::adopt_root_segments`] registers a
+    /// legacy single-directory WAL. It uses a signal name no `get_wal`
+    /// caller can produce, so it never collides with a real
+    /// tenant/dataset/signal WAL.
+    pub const LEGACY_ROOT_KEY: (&'static str, &'static str, &'static str) =
+        ("_legacy", "_legacy", "_root");
+
+    /// Register an already-open WAL under `key`, replacing any cached
+    /// instance. Used to adopt WALs the manager did not create itself (see
+    /// [`Self::adopt_root_segments`]) and by tests that build a WAL by hand.
+    pub async fn register(&self, key: WalKey, wal: Arc<Wal>) {
+        self.wals.lock().await.insert(key, wal);
+    }
+
+    /// Adopt segments left directly in the base directory by a pre-#932
+    /// writer, which kept one global WAL there instead of a per-tenant tree.
+    ///
+    /// The segments are opened as a single drain-only WAL registered under
+    /// [`Self::LEGACY_ROOT_KEY`] so a consumer iterating [`Self::all_wals`]
+    /// still processes their pending entries (each entry's metadata names its
+    /// real tenant/dataset, which is what routing uses). New writes never go
+    /// there: `get_wal` always resolves to the per-tenant tree. Once every
+    /// entry is processed the WAL's own cleanup deletes the segments.
+    ///
+    /// Returns whether a legacy root WAL was found and adopted.
+    pub async fn adopt_root_segments(&self) -> Result<bool, anyhow::Error> {
+        let base_dir = self.traces_config.wal_dir.clone();
+        if !base_dir.is_dir() {
+            return Ok(false);
+        }
+        let mut has_segments = false;
+        let mut files = tokio::fs::read_dir(&base_dir).await?;
+        while let Some(file) = files.next_entry().await? {
+            if let Some(name) = file.file_name().to_str()
+                && name.starts_with("wal-")
+                && name.ends_with(".log")
+            {
+                has_segments = true;
+                break;
+            }
+        }
+        if !has_segments {
+            return Ok(false);
+        }
+
+        let (tenant, dataset, signal) = Self::LEGACY_ROOT_KEY;
+        let key: WalKey = (tenant.to_string(), dataset.to_string(), signal.to_string());
+        if self.wals.lock().await.contains_key(&key) {
+            return Ok(true);
+        }
+
+        tracing::warn!(
+            wal_dir = %base_dir.display(),
+            "Adopting legacy single-directory WAL segments for draining; new writes use \
+             the per-tenant/dataset/signal tree"
+        );
+        // Tenant/dataset here only satisfy `Wal::new`'s non-empty check; the
+        // entries carry their real tenant/dataset in metadata.
+        let mut config = self.traces_config.clone();
+        config.tenant_id = tenant.to_string();
+        config.dataset_id = dataset.to_string();
+        let wal = Wal::new(config).await?;
+        self.register(key, Arc::new(wal)).await;
+        Ok(true)
     }
 
     /// Get or create a WAL for the given tenant, dataset, and signal type
@@ -175,6 +253,30 @@ impl WalManager {
         );
 
         Ok(wal)
+    }
+
+    /// Flush every cached WAL so buffered entries are durable before the
+    /// process exits. Errors are logged per WAL and the first is returned
+    /// after every WAL has been attempted — one tenant's failing flush must
+    /// not skip the others.
+    pub async fn flush_all(&self) -> Result<(), anyhow::Error> {
+        let mut first_err = None;
+        for ((tenant, dataset, signal), wal) in self.all_wals().await {
+            if let Err(e) = wal.flush().await {
+                tracing::error!(
+                    tenant_id = %tenant,
+                    dataset_id = %dataset,
+                    signal = %signal,
+                    error = %e,
+                    "Failed to flush WAL during shutdown"
+                );
+                first_err.get_or_insert(e);
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Get the number of cached WAL instances
@@ -308,7 +410,6 @@ impl WalManager {
     ///
     /// This will drop all WAL references. WALs will be recreated on next access.
     /// Note: This doesn't delete WAL files on disk, just clears the in-memory cache.
-    #[allow(dead_code)] // public cache-invalidation API, exercised only by tests today
     pub async fn clear_cache(&self) {
         let mut wals = self.wals.lock().await;
         wals.clear();
@@ -503,6 +604,58 @@ mod tests {
 
         let expected_path = base_path.join("acme").join("production").join("profiles");
         assert!(expected_path.exists());
+    }
+
+    #[tokio::test]
+    async fn adopt_root_segments_drains_a_legacy_global_wal_without_writing_to_it() {
+        use crate::wal::WalOperation;
+
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        // A pre-#932 writer left one global WAL directly in the base dir.
+        let legacy = Wal::new(create_test_config(&base_path)).await.unwrap();
+        let pending = legacy
+            .append(
+                WalOperation::WriteTraces,
+                b"legacy".to_vec(),
+                Some(r#"{"tenant_id":"acme","dataset_id":"production"}"#.to_string()),
+            )
+            .await
+            .unwrap();
+        legacy.flush().await.unwrap();
+        drop(legacy);
+
+        let manager = WalManager::uniform(create_test_config(&base_path));
+        assert!(manager.adopt_root_segments().await.unwrap());
+        // Idempotent.
+        assert!(manager.adopt_root_segments().await.unwrap());
+        assert_eq!(manager.wal_count().await, 1);
+
+        let (key, root_wal) = manager.all_wals().await.into_iter().next().unwrap();
+        assert_eq!(
+            (key.0.as_str(), key.1.as_str(), key.2.as_str()),
+            WalManager::LEGACY_ROOT_KEY
+        );
+        let entries = root_wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, pending);
+
+        // New traffic for the same tenant goes to the per-tenant tree.
+        let acme = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        assert!(!Arc::ptr_eq(&acme, &root_wal));
+        assert!(base_path.join("acme/production/traces").is_dir());
+    }
+
+    #[tokio::test]
+    async fn adopt_root_segments_is_a_noop_without_legacy_segments() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = WalManager::uniform(create_test_config(temp_dir.path()));
+        assert!(!manager.adopt_root_segments().await.unwrap());
+        assert_eq!(manager.wal_count().await, 0);
     }
 
     #[tokio::test]

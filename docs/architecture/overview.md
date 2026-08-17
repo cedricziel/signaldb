@@ -36,7 +36,7 @@ Write-Ahead Logging ensures data persistence and crash recovery:
 
 - **Before acknowledgment**: Data written to WAL before client response
 - **Automatic recovery**: Unprocessed entries replayed on restart
-- **Per-tenant/dataset isolation**: Separate WAL directories per tenant, dataset, and signal type
+- **Per-tenant/dataset isolation**: Both the acceptor and the writer hold a separate WAL instance — own segments, own flush mutex, own dead-letter directory — per tenant, dataset, and signal type, so one tenant's corruption or fsync latency cannot stall another's ingest path
 - **Record integrity**: Every WAL record is length-framed and CRC-32 checked, so corruption is attributed to one entry and skipped rather than poisoning a segment
 - **Segment management**: Automatic rotation, compaction, and cleanup of processed segments
 
@@ -183,7 +183,8 @@ flowchart LR
 
 - `IcebergWriterFlightService`: Flight server accepting `do_put` for trace/log/metric data
 - Transforms v1 Flight schema to v2 Iceberg schema before WAL write
-- `WalProcessor`: Background task (5s interval, exponential backoff on failure) that reads WAL entries and writes to Iceberg tables
+- `WalManager` (the same type the acceptor uses) gives the writer one WAL per tenant/dataset/signal, created on that combination's first write; existing directories are opened at startup so a previous run's entries drain
+- `WalProcessor`: Background task (5s interval, exponential backoff on failure) that reads every tenant WAL's entries and writes them to Iceberg tables; a WAL it cannot read is skipped for that cycle, never aborting the others
 - Caches `IcebergTableWriter` instances per `{tenant}:{dataset}:{table}` combination
 - Creates Iceberg tables with schema and partition spec from `iceberg_schemas` — on first write, and ahead of it via the table reconciler (`reconcile.rs`): a startup pass plus one every `[writer].table_reconcile_interval` over the tenant registry, so every registered tenant/dataset holds a table for each signal type enabled for it before any telemetry arrives. Both paths go through the same load-or-create `CatalogManager::ensure_table`, so a failing reconciler degrades to create-on-first-write. What actually landed in the catalog is visible through the router's tenant self-service `GET /api/v1/tenants/{id}/tables`, grouped by dataset. See [Signal table provisioning](../operations/table-provisioning.md)
 

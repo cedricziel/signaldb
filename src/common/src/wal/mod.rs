@@ -1,4 +1,5 @@
 pub mod framing;
+pub mod manager;
 
 use anyhow::{Context, Result};
 use datafusion::arrow::record_batch::RecordBatch;

@@ -183,10 +183,13 @@ spec:
 
 ### Directory Structure
 
-The acceptor keeps one WAL per tenant/dataset/signal combination; the writer keeps a single WAL directly in its WAL directory. Each WAL directory uses a segment-based structure:
+Both the acceptor and the writer keep one WAL per tenant/dataset/signal
+combination, so a poisoned segment, a slow fsync, or lock contention on one
+tenant's WAL cannot stall another tenant's ingest path. Each WAL directory
+uses a segment-based structure:
 
 ```
-/data/wal/                          # ACCEPTOR_WAL_DIR
+/data/wal/                          # ACCEPTOR_WAL_DIR or WRITER_WAL_DIR
 └── acme/                           # Tenant
     └── production/                 # Dataset
         └── traces/                 # Signal type
@@ -211,6 +214,27 @@ marker is the one exception: it exists precisely because the entry's id
 could not be recovered (the record that would have named it is what failed
 to deserialize), so it is keyed by `segment-<segment_id>-offset-<offset>` —
 its physical location in the `.log` file — instead.
+
+A writer WAL is opened lazily, on the first write for that
+tenant/dataset/signal. Directories left behind by a previous run are opened at
+startup as well, so entries pending from before a restart drain even if that
+tenant sends no new traffic.
+
+#### Upgrading a writer from the single-WAL layout
+
+Writers before this change kept one WAL for every tenant, with its segments
+lying directly in `{wal_dir}/writer` instead of in a
+`{tenant}/{dataset}/{signal}` tree. No operator step is needed: on startup the
+writer adopts any such segments as a drain-only WAL, logging
+
+```
+WARN Adopting legacy single-directory WAL segments for draining; new writes use the per-tenant/dataset/signal tree
+```
+
+Their pending entries are processed normally — each entry names its own tenant
+and dataset in its metadata, which is what routing uses — and the segments are
+deleted by the WAL's own cleanup once every entry is processed. New writes
+always go to the per-tenant tree, so the legacy directory only shrinks.
 
 ### Data Flow with WAL
 
@@ -291,7 +315,7 @@ differently:
   otherwise complete record. Because the framing is intact, the byte offset
   of the _next_ record is still known, so replay **skips the corrupt record
   and continues** rather than aborting: it logs a `WAL entry record corrupt
-  during replay` error naming the segment and offset, increments the
+during replay` error naming the segment and offset, increments the
   `signaldb.wal.corrupt_entries{record="log"}` counter, quarantines the raw
   record bytes to
   `<wal_dir>/dead-letter/segment-<segment_id>-offset-<offset>.corrupt.bin`,
@@ -351,10 +375,10 @@ the writer (and the acceptor's retry consumer) handle it in three steps:
    failures log `tenant_id`, `dataset_id`, `signal`, `data_offset`, and
    `data_size`, so a burst of failures is attributable to the affected tenant
    and signal instead of an anonymous flood.
-3. **Retire without blocking neighbours**: an *unreadable* entry (bounds or
+3. **Retire without blocking neighbours**: an _unreadable_ entry (bounds or
    integrity failure) is deterministic, so it is retired on first sight with
    a `<entry_id>.unreadable.json` marker and marked processed; an
-   *undecodable* entry is retried a bounded number of times and then moved to
+   _undecodable_ entry is retried a bounded number of times and then moved to
    `<wal_dir>/dead-letter/<entry_id>.bin` with its raw payload preserved.
    Either way the entries around it keep processing in the same cycle.
 

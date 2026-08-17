@@ -605,7 +605,14 @@ Extends Gauge with aggregation fields.
 
 ### Directory Structure
 
-The WAL is organized by tenant, dataset, and signal type under the configured base directory:
+The WAL is organized by tenant, dataset, and signal type under the configured
+base directory. Both WAL-owning services — the acceptor and the writer — hold
+one `Wal` instance per `(tenant, dataset, signal)` behind a shared
+`WalManager` (`src/common/src/wal/manager.rs`), created lazily on that
+combination's first write. Isolation is the point: each instance has its own
+segments, its own flush mutex, and its own dead-letter directory, so a
+poisoned segment or a slow disk on one tenant neither blocks nor contaminates
+another tenant's ingest path.
 
 ```
 {wal_dir}/
@@ -650,7 +657,7 @@ for the full recovery behavior and the other `dead-letter/` artifact kinds.
 
 ### Concrete Example
 
-The runtime `WalConfig` (`src/common/src/wal/mod.rs`) defaults to `wal_dir = ".wal"`, but the services derive their WAL directory from the `[wal].wal_dir` config value (default `.data/wal`) with a per-service suffix: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer`, overridable via `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR`. The tenant tree shown below sits under the acceptor's service directory; with the defaults that is `.data/wal/acceptor`:
+The runtime `WalConfig` (`src/common/src/wal/mod.rs`) defaults to `wal_dir = ".wal"`, but the services derive their WAL directory from the `[wal].wal_dir` config value (default `.data/wal`) with a per-service suffix: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer`, overridable via `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR`. Both services lay out the same tenant tree under their own service directory; the one shown below sits under the acceptor's, which with the defaults is `.data/wal/acceptor`:
 
 ```
 .data/wal/
@@ -699,18 +706,18 @@ The WAL enforces non-empty `tenant_id` and `dataset_id` at construction time.
 
 Each WAL segment consists of three files:
 
-| File     | Format                       | Content                                                                                    |
-| -------- | ---------------------------- | ------------------------------------------------------------------------------------------ |
-| `.log`   | Segment header + framed records | `SDBW` magic + u32 version, then `[u32 len][u32 crc32][bincode WalEntry]` per record     |
-| `.data`  | Framed records               | `[SDBR magic][u32 len][u32 crc32][Arrow IPC stream]` per entry; entries address the record header by offset |
-| `.index` | Binary                       | 8-byte count + 16-byte UUIDs of processed entries                                          |
+| File     | Format                          | Content                                                                                                     |
+| -------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `.log`   | Segment header + framed records | `SDBW` magic + u32 version, then `[u32 len][u32 crc32][bincode WalEntry]` per record                        |
+| `.data`  | Framed records                  | `[SDBR magic][u32 len][u32 crc32][Arrow IPC stream]` per entry; entries address the record header by offset |
+| `.index` | Binary                          | 8-byte count + 16-byte UUIDs of processed entries                                                           |
 
 #### Record Framing (format v1)
 
 Every record in both files is self-describing and checksummed
-(`src/common/src/wal/framing.rs`), so corruption at rest is *attributable*
+(`src/common/src/wal/framing.rs`), so corruption at rest is _attributable_
 (the read names the entry, tenant, dataset, signal, and offset) and
-*skippable* (the reader steps over the one bad record and keeps serving its
+_skippable_ (the reader steps over the one bad record and keeps serving its
 neighbours) instead of surfacing as an opaque Arrow parse error that poisons
 the whole segment.
 
@@ -722,7 +729,7 @@ the whole segment.
 ```
 
 All integers are little-endian; the checksum is CRC-32 (IEEE). A `WalEntry`'s
-`data_offset` points at the `.data` record *header* and its `data_size` is the
+`data_offset` points at the `.data` record _header_ and its `data_size` is the
 payload length (header excluded), so a read cross-checks the header's length
 against the entry before trusting the checksum. Any mismatch — wrong magic,
 length disagreement, or CRC failure — is reported as corruption of that one

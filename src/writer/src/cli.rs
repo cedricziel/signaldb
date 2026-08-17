@@ -5,7 +5,8 @@ use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
+use common::wal::manager::WalManager;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::signal;
@@ -150,17 +151,19 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let mut wal = Wal::new(wal_config)
-        .await
-        .context("Failed to initialize WAL")?;
-
-    // Start background WAL flush task
-    wal.start_background_flush();
-    let wal = Arc::new(wal);
+    // One WAL per tenant/dataset/signal (#932): WALs are created lazily on
+    // first write; ones left on disk by a previous run are opened now so their
+    // pending entries drain before that tenant sends new traffic.
+    let wal_manager = Arc::new(WalManager::uniform(wal_config));
+    open_existing_writer_wals(&wal_manager).await;
 
     // Create Iceberg-based Flight ingestion service with CatalogManager
-    let flight_service =
-        IcebergWriterFlightService::new(catalog_manager, object_store, wal.clone(), &config.writer);
+    let flight_service = IcebergWriterFlightService::new(
+        catalog_manager,
+        object_store,
+        wal_manager.clone(),
+        &config.writer,
+    );
 
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = flight_service.start_background_processing();
@@ -242,13 +245,30 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
         telemetry.shutdown();
     }
 
-    // Shutdown WAL and flush any remaining data
-    if let Ok(wal) = Arc::try_unwrap(wal) {
-        wal.shutdown().await.context("Failed to shutdown WAL")?;
-    } else {
-        tracing::warn!("Could not get exclusive access to WAL for shutdown - forcing flush");
-        // WAL will be dropped and cleaned up automatically
-    }
+    // Flush every tenant WAL so buffered entries are durable before exit.
+    wal_manager
+        .flush_all()
+        .await
+        .context("Failed to flush writer WALs during shutdown")?;
 
     Ok(())
+}
+
+/// Open the per-tenant WALs a previous writer run left on disk, and adopt any
+/// legacy single-directory segments, so their pending entries drain before
+/// the tenant sends new traffic. Failures are logged, never fatal: a WAL that
+/// cannot be opened now is retried on that tenant's next write.
+pub async fn open_existing_writer_wals(wal_manager: &WalManager) {
+    match wal_manager.discover_existing_wals().await {
+        Ok(opened) if opened > 0 => {
+            tracing::info!(opened, "Opened existing writer WALs from disk")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "Failed to discover existing writer WALs"),
+    }
+    match wal_manager.adopt_root_segments().await {
+        Ok(true) => tracing::info!("Adopted legacy single-directory writer WAL for draining"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!(error = %e, "Failed to adopt legacy writer WAL segments"),
+    }
 }

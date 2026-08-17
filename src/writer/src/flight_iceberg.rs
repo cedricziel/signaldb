@@ -26,7 +26,8 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::config::WriterConfig;
 use common::flight::decode::flight_data_vec_to_batches;
-use common::wal::{Wal, WalOperation, record_batch_to_bytes};
+use common::wal::manager::WalManager;
+use common::wal::{WalOperation, record_batch_to_bytes};
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
@@ -79,7 +80,10 @@ fn parse_flush_scope(metadata: &tonic::metadata::MetadataMap) -> Result<FlushSco
 /// This demonstrates the integration of the new Iceberg-based processor
 pub struct IcebergWriterFlightService {
     processor: Arc<Mutex<WalProcessor>>,
-    wal: Arc<Wal>,
+    /// One WAL per tenant/dataset/signal (#932). `do_put` appends to the WAL
+    /// of the batch's own tenant, so a poisoned or slow WAL only ever affects
+    /// that tenant's ingest path.
+    wal_manager: Arc<WalManager>,
     reconciler: Arc<crate::reconcile::TableReconciler>,
     table_reconcile_interval: std::time::Duration,
 }
@@ -92,11 +96,11 @@ impl IcebergWriterFlightService {
     pub fn new(
         catalog_manager: Arc<CatalogManager>,
         object_store: Arc<dyn ObjectStore>,
-        wal: Arc<Wal>,
+        wal_manager: Arc<WalManager>,
         writer_config: &WriterConfig,
     ) -> Self {
         let processor = WalProcessor::with_config(
-            wal.clone(),
+            wal_manager.clone(),
             catalog_manager.clone(),
             object_store,
             writer_config,
@@ -104,7 +108,7 @@ impl IcebergWriterFlightService {
 
         Self {
             processor: Arc::new(Mutex::new(processor)),
-            wal,
+            wal_manager,
             reconciler: Arc::new(crate::reconcile::TableReconciler::new(catalog_manager)),
             table_reconcile_interval: writer_config.table_reconcile_interval,
         }
@@ -422,7 +426,23 @@ impl FlightService for IcebergWriterFlightService {
             batches
         };
 
-        // Write all batches to WAL first for durability
+        // Write all batches to WAL first for durability — the WAL of this
+        // batch's own tenant/dataset/signal (#932), so one tenant's segment
+        // never carries, or blocks, another tenant's data.
+        let (wal_tenant, wal_dataset) = flight_metadata
+            .as_ref()
+            .map(|m| {
+                (
+                    m.tenant_id.clone().unwrap_or_else(|| "default".to_string()),
+                    m.dataset_id.clone().unwrap_or_else(|| "default".to_string()),
+                )
+            })
+            .unwrap_or_else(|| ("default".to_string(), "default".to_string()));
+        let wal = self
+            .wal_manager
+            .get_wal(&wal_tenant, &wal_dataset, wal_operation.signal())
+            .await
+            .map_err(|e| Status::internal(format!("Failed to open WAL: {e}")))?;
         let mut wal_entry_ids = Vec::new();
 
         // Persist the active (flight_do_put) trace context alongside the
@@ -457,8 +477,7 @@ impl FlightService for IcebergWriterFlightService {
 
             // Write to WAL with correct operation type determined from metadata
             // Pass metadata to enable proper table routing (e.g., metrics_exponential_histogram)
-            let entry_id = self
-                .wal
+            let entry_id = wal
                 .append(wal_operation.clone(), batch_bytes, metadata_json.clone())
                 .await
                 .map_err(|e| Status::internal(format!("Failed to write to WAL: {e}")))?;
@@ -473,8 +492,7 @@ impl FlightService for IcebergWriterFlightService {
         // floor cap the commit rate (#888). Ingested data becomes queryable
         // once the loop commits it (bounded by `commit_interval`); a client
         // needing read-your-writes can force a drain with `do_action("flush")`.
-        self.wal
-            .flush()
+        wal.flush()
             .await
             .map_err(|e| Status::internal(format!("Failed to flush WAL: {e}")))?;
         tracing::debug!(
@@ -671,28 +689,39 @@ mod tests {
         );
     }
 
+    /// A per-tenant WAL manager rooted at `dir`, plus the `acme/production`
+    /// metrics WAL the tests below write into directly.
+    async fn test_wal_manager(dir: &std::path::Path) -> (Arc<WalManager>, Arc<common::wal::Wal>) {
+        let base = WalConfig {
+            wal_dir: dir.to_path_buf(),
+            max_segment_size: 8 * 1024 * 1024,
+            max_buffer_entries: 1000,
+            flush_interval_secs: 5,
+            tenant_id: "default".to_string(),
+            dataset_id: "default".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let manager = Arc::new(WalManager::uniform(base));
+        let wal = manager
+            .get_wal("acme", "production", "metrics")
+            .await
+            .unwrap();
+        (manager, wal)
+    }
+
     #[tokio::test]
     async fn test_iceberg_flight_service_creation() {
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 1024 * 1024, // 1MB
-            max_buffer_entries: 1000,
-            flush_interval_secs: 5,
-            tenant_id: "test-tenant".to_string(),
-            dataset_id: "test-dataset".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
-        };
-        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let (manager, _wal) = test_wal_manager(temp_dir.path()).await;
 
         let service = IcebergWriterFlightService::new(
             catalog_manager,
             object_store,
-            wal,
+            manager,
             &WriterConfig::default(),
         );
 
@@ -705,18 +734,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 8 * 1024 * 1024,
-            max_buffer_entries: 1000,
-            flush_interval_secs: 5,
-            tenant_id: "acme".to_string(),
-            dataset_id: "production".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
-        };
-        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let (manager, wal) = test_wal_manager(temp_dir.path()).await;
         // A large interval means the background loop would defer this write; the
         // flush action must commit it regardless.
         let writer_config = WriterConfig {
@@ -724,12 +742,8 @@ mod tests {
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let service = IcebergWriterFlightService::new(
-            catalog_manager,
-            object_store,
-            wal.clone(),
-            &writer_config,
-        );
+        let service =
+            IcebergWriterFlightService::new(catalog_manager, object_store, manager, &writer_config);
 
         wal.append(
             WalOperation::WriteMetrics,
@@ -788,22 +802,11 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 8 * 1024 * 1024,
-            max_buffer_entries: 1000,
-            flush_interval_secs: 5,
-            tenant_id: "acme".to_string(),
-            dataset_id: "production".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
-        };
-        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let (manager, wal) = test_wal_manager(temp_dir.path()).await;
         let service = IcebergWriterFlightService::new(
             catalog_manager,
             object_store,
-            wal.clone(),
+            manager,
             &WriterConfig::default(),
         );
 

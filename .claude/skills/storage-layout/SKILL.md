@@ -74,6 +74,13 @@ Resolution chain in `Configuration::get_dataset_storage_config()`:
 
 Path: `{wal_dir}/{tenant_id}/{dataset_id}/{signal_type}/`
 
+One `Wal` per `(tenant, dataset, signal)`, in the acceptor and the writer alike
+(`common::wal::manager::WalManager`, #932): separate segments, flush mutex and
+dead-letter dir per tenant, created lazily on first write, plus
+`discover_existing_wals()` at startup so a previous run's pending entries drain
+without new traffic. A writer upgrading from the pre-#932 single WAL has its
+root segments adopted drain-only by `adopt_root_segments()`.
+
 ```
 .data/wal/
   acme/
