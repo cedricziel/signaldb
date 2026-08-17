@@ -467,6 +467,15 @@
 /* Span kind, same --svc-a..e palette FlameGraph uses. Rules stay before
    .span-bar.error below so error status always wins on a span that's both
    a known kind and erroring — same specificity, source order decides. */
+/* A parent with no recorded duration, drawn over its subtree (see
+   buildWaterfall's extentInferred): outlined, not filled, so it reads as
+   derived rather than measured. */
+.span-bar.inferred {
+  background: transparent !important;
+  border: 1px dashed var(--dim);
+  box-sizing: border-box;
+}
+
 .span-bar.kind-server {
   background: var(--svc-a-soft, var(--svc-a));
 }

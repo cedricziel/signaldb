@@ -11,6 +11,9 @@ export interface WaterfallRow {
   widthPct: number;
   startOffsetMs: number;
   durationMs: number;
+  /** The span recorded no duration but has children, so its bar was drawn
+   * over its subtree's extent rather than as a sliver. */
+  extentInferred: boolean;
 }
 
 export interface Waterfall {
@@ -61,13 +64,31 @@ export function buildWaterfall(spans: TempoSpan[]): Waterfall {
   }
   const total = end - start > 0n ? end - start : 1n;
 
+  // Latest end among a span's descendants — the extent a parent with no
+  // recorded duration is drawn over.
+  const subtreeEnd = (span: TempoSpan): bigint => {
+    let latest = BigInt(span.startNs) + BigInt(span.durNs);
+    for (const child of children.get(span.spanId) ?? []) {
+      const childEnd = subtreeEnd(child);
+      if (childEnd > latest) latest = childEnd;
+    }
+    return latest;
+  };
+
   const rows: WaterfallRow[] = [];
   const visit = (span: TempoSpan, depth: number) => {
-    const offset = BigInt(span.startNs) - start;
+    const spanStart = BigInt(span.startNs);
+    const offset = spanStart - start;
     const dur = BigInt(span.durNs);
+    // A parent with no recorded end (an un-ended root, a duration the
+    // producer never set) covers its children instead of drawing as a
+    // sliver; for the root that is the whole trace.
+    const extentInferred =
+      dur === 0n && (children.get(span.spanId)?.length ?? 0) > 0;
+    const drawn = extentInferred ? subtreeEnd(span) - spanStart : dur;
     // Per-mille precision is plenty for bar geometry.
     const leftPct = Number((offset * 1000n) / total) / 10;
-    const widthPct = Math.max(0.3, Number((dur * 1000n) / total) / 10);
+    const widthPct = Math.max(0.3, Number((drawn * 1000n) / total) / 10);
     rows.push({
       span,
       depth,
@@ -75,6 +96,7 @@ export function buildWaterfall(spans: TempoSpan[]): Waterfall {
       widthPct,
       startOffsetMs: Number(offset / 1000n) / 1000,
       durationMs: Number(dur / 1000n) / 1000,
+      extentInferred,
     });
     for (const child of (children.get(span.spanId) ?? []).sort(byStart)) {
       visit(child, depth + 1);
