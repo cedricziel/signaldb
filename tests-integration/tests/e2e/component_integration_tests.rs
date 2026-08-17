@@ -243,9 +243,12 @@ async fn test_acceptor_writer_flow() {
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
 
-    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
-        wal_config.clone(),
-    ));
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(WalConfig {
+        // The writer keeps its WALs under its own service directory, as it
+        // does in production, so it never drains the acceptor's entries.
+        wal_dir: wal_config.wal_dir.join("writer"),
+        ..wal_config.clone()
+    }));
     let writer_catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
@@ -409,9 +412,21 @@ async fn test_acceptor_writer_flow() {
         }
         sleep(Duration::from_millis(100)).await;
     };
+    // Name the key: a count alone would also be satisfied by a WAL opened for
+    // some other tenant, and the loop above would then pass vacuously.
+    let writer_wal_keys: Vec<_> = writer_wal
+        .all_wals()
+        .await
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
     assert!(
-        writer_wal.wal_count().await > 0,
-        "Expected the writer to have opened a per-tenant WAL for the ingested batch"
+        writer_wal_keys.contains(&(
+            "test-tenant".to_string(),
+            "test-dataset".to_string(),
+            "traces".to_string()
+        )),
+        "Expected the writer to have opened the ingesting tenant's own WAL, got {writer_wal_keys:?}"
     );
     assert_eq!(
         unprocessed.len(),
@@ -594,9 +609,12 @@ async fn test_direct_acceptor_writer_flight() {
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Start writer
-    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
-        wal_config.clone(),
-    ));
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(WalConfig {
+        // The writer keeps its WALs under its own service directory, as it
+        // does in production, so it never drains the acceptor's entries.
+        wal_dir: wal_config.wal_dir.join("writer"),
+        ..wal_config.clone()
+    }));
     let writer_catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
