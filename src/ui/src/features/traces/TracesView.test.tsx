@@ -210,7 +210,7 @@ function irSpansBody(trace: WireTraceFixture, kinds: Record<string, string>) {
       { name: "status_code", type: "string" },
       { name: "status_message", type: "string" },
       { name: "start_time_unix_nano", type: "timestamp_ns" },
-      { name: "duration", type: "duration_ns" },
+      { name: "duration_nanos", type: "duration_ns" },
       { name: "span_kind", type: "string" },
       { name: "span_attributes", type: "map<string,string>" },
       { name: "scope_attributes", type: "map<string,string>" },
