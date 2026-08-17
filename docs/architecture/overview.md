@@ -274,7 +274,14 @@ them to strings — the compatibility dialects lose the OTel resource/scope/reco
 distinction, the IR preserves it. `source_read_scope` gates a document's `from`
 against the caller's `{signal}:read` scopes (`logs`/`traces`/`profiles`/`metrics`,
 with `metrics_histogram` mapped to the same `metrics` scope) before the request
-ever reaches the querier. See [the Query IR reference](../users/querying-ir.md).
+ever reaches the querier. Any envelope may carry a `warnings` array — non-fatal
+diagnostics with a stable `code`; today `unknown_group_by_field`, raised when an
+`aggregate.by` field is neither a logical field of the source nor carried by any
+record in the window, so the grouping produced one `null` label. It is a warning
+rather than a rejection because unpromoted attributes cannot be enumerated while
+planning (#811/#813), which makes "absent from this window" indistinguishable
+from "not a field" until the attribute registry lands. See
+[the Query IR reference](../users/querying-ir.md).
 
 **Admin API Endpoints** (requires `admin_api_key`):
 

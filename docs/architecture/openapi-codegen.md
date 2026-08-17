@@ -45,7 +45,8 @@ flowchart LR
   (`/api/v1/manage/...`), `endpoints/tempo.rs` (the Tempo-compatible trace
   query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`),
   `endpoints/query.rs` (the native Query IR endpoint `POST /api/v1/query`, whose
-  request/response DTOs are defined in that module), the PromQL/LogQL
+  request/response DTOs — including the response envelope's `QueryWarning`
+  entries — are defined in that module), the PromQL/LogQL
   instant and range query endpoints plus their label-discovery endpoints in
   `endpoints/promql.rs` (`/prometheus/api/v1/query{,_range}`, `/labels`,
   `/label/{name}/values`) and `endpoints/logql.rs`

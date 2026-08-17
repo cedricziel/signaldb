@@ -926,6 +926,11 @@ export type QueryIrResponse = {
     series?: Array<ResultSeries>;
     step_ns?: number | null;
     /**
+     * Non-fatal diagnostics about this query. Empty (and omitted) when the
+     * server has nothing to report; a warning never suppresses the result.
+     */
+    warnings?: Array<QueryWarning>;
+    /**
      * The resolved absolute window the query ran over.
      */
     window: ResolvedWindow;
@@ -940,6 +945,31 @@ export type QueryIrResponse = {
 export type QueryRange = {
     from: string;
     to: string;
+};
+
+/**
+ * A non-fatal diagnostic about a query that still produced a result. A
+ * warning never changes the result: it explains something the caller
+ * probably did not intend, so a client can surface it next to the data.
+ */
+export type QueryWarning = {
+    /**
+     * Stable machine-readable identifier — clients branch on this, not on
+     * `message`. Currently only `unknown_group_by_field`.
+     */
+    code: string;
+    /**
+     * The document field the warning is about, when it names one.
+     */
+    field?: string | null;
+    /**
+     * Human-readable explanation, safe to show verbatim.
+     */
+    message: string;
+    /**
+     * Field names close to `field` that the source does declare, best first.
+     */
+    suggestions?: Array<string>;
 };
 
 export type RegistryListResponse = {

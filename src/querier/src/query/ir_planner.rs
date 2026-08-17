@@ -33,7 +33,7 @@ use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
     Aggregate, ComparisonOp, Document, Extract, FieldResolver, Heatmap, HistogramMode,
     HistogramQuantile, Leaf, Literal, Parser, Predicate, Resolved, ResultEnvelope, SourceRegistry,
-    Stage, TimestampLiteral, ValueType, coerce, validate,
+    Stage, TimestampLiteral, ValueType, coerce, safe_ident, validate,
 };
 use common::schema::logical::{Filterability, LogicalSchema, LogicalType};
 use datafusion::arrow::array::{
@@ -58,7 +58,7 @@ use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_expr::expressions::{CastExpr, Column as PhysicalColumn};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::projection::ProjectionExec;
-use datafusion::prelude::{DataFrame, SessionContext};
+use datafusion::prelude::{DataFrame, SessionContext, ident};
 use datafusion::scalar::ScalarValue;
 
 use super::IrQueryParams;
@@ -1139,7 +1139,7 @@ impl Lowering<'_> {
                     .iter()
                     .map(|k| {
                         let ascending = matches!(k.dir, common::query_ir::Direction::Asc);
-                        col(self.df_col(&k.of)).sort(ascending, true)
+                        ident(self.df_col(&k.of)).sort(ascending, true)
                     })
                     .collect();
                 df.sort(sort).map_err(QuerierError::QueryFailed)
@@ -1202,7 +1202,7 @@ impl Lowering<'_> {
         n: i64,
         ascending: bool,
     ) -> Result<DataFrame, QuerierError> {
-        df.sort(vec![col(self.df_col(of)).sort(ascending, false)])
+        df.sort(vec![ident(self.df_col(of)).sort(ascending, false)])
             .map_err(QuerierError::QueryFailed)?
             .limit(0, Some(n.max(0) as usize))
             .map_err(QuerierError::QueryFailed)
@@ -1255,7 +1255,7 @@ impl Lowering<'_> {
             // Deterministic order: bucket then labels.
             let mut sort = vec![col("bucket").sort(true, false)];
             for by in &agg.by {
-                sort.push(col(safe_ident(by)).sort(true, false));
+                sort.push(ident(safe_ident(by)).sort(true, false));
             }
             return df.sort(sort).map_err(QuerierError::QueryFailed);
         }
@@ -1566,7 +1566,7 @@ impl Lowering<'_> {
             col("metric_name").sort(true, false),
         ];
         for alias in &by_aliases {
-            sort.push(col(alias.clone()).sort(true, false));
+            sort.push(ident(alias.clone()).sort(true, false));
         }
         new_df.sort(sort).map_err(QuerierError::QueryFailed)
     }
@@ -1611,10 +1611,10 @@ impl Lowering<'_> {
     fn value_expr(&self, logical: &str) -> Result<Expr, QuerierError> {
         // Post-aggregate references address the current DataFrame column.
         if let Some(c) = self.col_of.get(logical) {
-            return Ok(col(c.clone()));
+            return Ok(ident(c.clone()));
         }
         match self.resolver.resolve("", logical) {
-            Some(Resolved::Column { name, .. }) => Ok(col(name)),
+            Some(Resolved::Column { name, .. }) => Ok(ident(name)),
             Some(Resolved::JsonPath { key, .. }) => Ok(self.attr_expr(&key)),
             Some(Resolved::EventAttribute {
                 events_column,
@@ -1714,7 +1714,7 @@ impl Lowering<'_> {
                 .get(&leaf.field)
                 .cloned()
                 .unwrap_or(ValueType::String);
-            (false, ty, col(alias.clone()))
+            (false, ty, ident(alias.clone()))
         } else {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
                 QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
@@ -1725,7 +1725,7 @@ impl Lowering<'_> {
             );
             let ty = resolved.value_type().clone();
             let expr = match &resolved {
-                Resolved::Column { name, .. } => col(name.clone()),
+                Resolved::Column { name, .. } => ident(name.clone()),
                 Resolved::JsonPath { key, .. } => self.attr_expr(key),
                 Resolved::EventAttribute {
                     events_column,
@@ -1875,10 +1875,10 @@ impl Lowering<'_> {
                 .map(|f| {
                     if self.aggregated || self.col_of.contains_key(f) {
                         // Aggregate output or extract-derived column.
-                        col(self.df_col(f))
+                        ident(self.df_col(f))
                     } else {
                         match self.resolver.resolve("", f) {
-                            Some(Resolved::Column { name, .. }) => col(name),
+                            Some(Resolved::Column { name, .. }) => ident(name),
                             Some(Resolved::JsonPath { key, .. }) => {
                                 self.attr_expr(&key).alias(safe_ident(f))
                             }
@@ -1893,7 +1893,7 @@ impl Lowering<'_> {
                             Some(Resolved::SpanEvents { events_column }) => {
                                 span_events_expr(&events_column).alias(safe_ident(f))
                             }
-                            None => col(safe_ident(f)),
+                            None => ident(safe_ident(f)),
                         }
                     }
                 })
@@ -2291,20 +2291,6 @@ fn downcast_string<'a>(
         .column_by_name(name)
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
         .ok_or_else(|| QuerierError::InvalidInput(format!("{name} column is not a string")))
-}
-
-/// Sanitize a logical name into a safe DataFrame column identifier (no dots,
-/// which DataFusion would read as a table qualifier).
-fn safe_ident(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 /// The string form of a coerced literal (for `Utf8` attribute comparison).
@@ -4421,6 +4407,77 @@ mod tests {
             .unwrap()
             .value(0);
         assert_eq!(count, 1);
+    }
+
+    /// A `by` field whose name carries uppercase letters used to fail with a
+    /// DataFusion `FieldNotFound { name: "statuscode" }` (HTTP 500): the
+    /// group column is aliased verbatim, but the follow-up references went
+    /// through `col()`, which parses its argument as a SQL identifier and
+    /// normalizes an unquoted one to lowercase. Reference the alias as a
+    /// literal identifier instead (#1070).
+    #[tokio::test]
+    async fn aggregate_by_a_mixed_case_field_keeps_its_alias() {
+        let svc = IrService::new(traces_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "aggregate": {
+                    "by": ["statusCode"],
+                    "aggs": [{ "fn": "count", "as": "n" }],
+                    "step": "1ms"
+                }}
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .expect("planning a mixed-case group key succeeds")
+            .expect("source table is registered");
+        let batches = df.collect().await.expect("the plan executes");
+        let batch = batches.iter().find(|b| b.num_rows() > 0).expect("a row");
+        assert!(
+            batch.column_by_name("statusCode").is_some(),
+            "the group column keeps the spelling the document used: {:?}",
+            batch.schema().fields().iter().collect::<Vec<_>>()
+        );
+    }
+
+    /// The same normalization broke ordering by a mixed-case aggregate
+    /// output as well — `order` resolves through the same alias table.
+    #[tokio::test]
+    async fn order_by_a_mixed_case_aggregate_output_executes() {
+        let svc = IrService::new(traces_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": {
+                    "by": ["service.name"],
+                    "aggs": [{ "fn": "count", "as": "spanCount" }]
+                }},
+                { "order": [{ "of": "spanCount", "dir": "desc" }] }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .expect("planning a mixed-case aggregate output succeeds")
+            .expect("source table is registered");
+        let batches = df.collect().await.expect("the plan executes");
+        let counts: Vec<i64> = batches
+            .iter()
+            .flat_map(|b| {
+                b.column_by_name("spanCount")
+                    .expect("the aggregate output keeps its spelling")
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Int64Array>()
+                    .expect("count is an i64")
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(counts, vec![2, 1], "descending by span count");
     }
 
     /// Like [`traces_ctx`], plus the `timestamp` partition column the real v2

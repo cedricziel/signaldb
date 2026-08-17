@@ -16,6 +16,7 @@
 //!
 //! See `openspec/changes/query-ir-core` for the full specification.
 
+pub mod alias;
 pub mod document;
 pub mod predicate;
 pub mod relation;
@@ -26,6 +27,7 @@ pub mod validate;
 pub mod value;
 pub mod version;
 
+pub use alias::safe_ident;
 pub use document::{Document, Range, ResultEnvelope};
 pub use predicate::{ComparisonOp, Leaf, Predicate, Record};
 pub use relation::{Column, Grain, Heatmap as HeatmapRelation, RelationType, RowSet, Series};

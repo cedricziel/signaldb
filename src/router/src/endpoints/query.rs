@@ -181,6 +181,25 @@ pub struct FlamegraphResult {
     pub truncated: bool,
 }
 
+/// A non-fatal diagnostic about a query that still produced a result. A
+/// warning never changes the result: it explains something the caller
+/// probably did not intend, so a client can surface it next to the data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QueryWarning {
+    /// Stable machine-readable identifier — clients branch on this, not on
+    /// `message`. Currently only `unknown_group_by_field`.
+    #[schema(example = "unknown_group_by_field")]
+    pub code: String,
+    /// Human-readable explanation, safe to show verbatim.
+    pub message: String,
+    /// The document field the warning is about, when it names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// Field names close to `field` that the source does declare, best first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<String>,
+}
+
 /// The single canonical response contract. `result` discriminates which fields
 /// are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
 /// `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
@@ -207,6 +226,10 @@ pub struct QueryIrResponse {
     /// response has no flamegraph at all" (i.e. a different envelope).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flamegraph: Option<FlamegraphResult>,
+    /// Non-fatal diagnostics about this query. Empty (and omitted) when the
+    /// server has nothing to report; a warning never suppresses the result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<QueryWarning>,
 }
 
 /// Submit a native Query IR document.
@@ -258,8 +281,140 @@ pub async fn query_ir<S: RouterState>(
     );
 
     let batches = execute_ticket(&state, ticket).await?;
-    let response = build_envelope(&req.result, window, &batches, &document)?;
+    let mut response = build_envelope(&req.result, window, &batches, &document)?;
+    response.warnings = unknown_group_by_warnings(&req.from, &document, &batches);
     Ok(axum::Json(response))
+}
+
+/// The `code` of the warning raised for a group key that labelled nothing.
+const UNKNOWN_GROUP_BY_FIELD: &str = "unknown_group_by_field";
+
+/// Warn about an `aggregate.by` field that put every row in one null group.
+///
+/// Field resolution is deliberately permissive: unpromoted attributes cannot
+/// be enumerated while planning — there is no attribute registry yet
+/// (#811/#813) — and bare Prometheus-style label names (`job`, `status`) are
+/// legitimate group keys, so a name the source does not declare resolves to
+/// an attribute lookup rather than a rejection. A name that is neither a
+/// logical field nor carried by any record in the window therefore yields a
+/// single null-labelled group instead of an error (#1070). Rejecting it while
+/// planning would break a legitimate query over an attribute that is merely
+/// absent from a short window (a quiet facet panel, a narrow dashboard
+/// refresh), so the result stands and the caller gets this warning next to it.
+fn unknown_group_by_warnings(
+    source: &str,
+    document: &serde_json::Value,
+    batches: &[RecordBatch],
+) -> Vec<QueryWarning> {
+    let Ok(doc) = serde_json::from_value::<common::query_ir::Document>(document.clone()) else {
+        return Vec::new();
+    };
+    // Query-local `extract` outputs are real columns of this document, not
+    // fields of the source — an all-null one means the parser matched
+    // nothing, which is a different (and expected) story.
+    let derived: std::collections::HashSet<&str> = doc
+        .pipeline
+        .iter()
+        .filter_map(|stage| match stage {
+            common::query_ir::Stage::Extract(extract) => Some(extract),
+            _ => None,
+        })
+        .flat_map(|extract| extract.as_fields.iter().map(|f| f.name.as_str()))
+        .collect();
+
+    let schema = common::schema::logical::LogicalSchema::core();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut warnings = Vec::new();
+    for by in doc
+        .pipeline
+        .iter()
+        .filter_map(|stage| match stage {
+            common::query_ir::Stage::Aggregate(agg) => Some(agg),
+            _ => None,
+        })
+        .flat_map(|agg| agg.by.iter())
+    {
+        if !seen.insert(by.as_str())
+            || derived.contains(by.as_str())
+            || schema.resolve(source, by).is_some()
+        {
+            continue;
+        }
+        if !column_is_all_null(batches, &common::query_ir::safe_ident(by)) {
+            continue;
+        }
+        warnings.push(QueryWarning {
+            code: UNKNOWN_GROUP_BY_FIELD.to_string(),
+            message: format!(
+                "'{by}' is not a logical field of '{source}' and no record in the queried \
+                 window carries an attribute named '{by}'; every row was grouped under a \
+                 null label"
+            ),
+            field: Some(by.clone()),
+            suggestions: closest_fields(&schema, source, by),
+        });
+    }
+    warnings
+}
+
+/// Whether `column` exists in every batch and is null on every row of a
+/// non-empty result. A result with no rows says nothing about the field.
+fn column_is_all_null(batches: &[RecordBatch], column: &str) -> bool {
+    let mut rows = 0usize;
+    let mut nulls = 0usize;
+    for batch in batches {
+        let Some(array) = batch.column_by_name(column) else {
+            return false;
+        };
+        rows += batch.num_rows();
+        nulls += array.null_count();
+    }
+    rows > 0 && rows == nulls
+}
+
+/// Up to three logical field names of `source` closest to `field`: an exact
+/// match once punctuation and case are ignored first (`statusCode` →
+/// `status.code`), then near-misses by edit distance.
+fn closest_fields(
+    schema: &common::schema::logical::LogicalSchema,
+    source: &str,
+    field: &str,
+) -> Vec<String> {
+    let normalize = |name: &str| -> String {
+        name.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    };
+    let target = normalize(field);
+    let mut scored: Vec<(usize, String)> = schema
+        .fields()
+        .filter(|f| f.id.source == source)
+        .map(|f| f.id.name.clone())
+        .map(|name| (edit_distance(&target, &normalize(&name)), name))
+        // A distance beyond a third of the name is a different word, not a
+        // typo — suggesting it would be noise.
+        .filter(|(distance, name)| *distance <= (name.len() / 3).max(2))
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    scored.dedup_by(|a, b| a.1 == b.1);
+    scored.into_iter().take(3).map(|(_, name)| name).collect()
+}
+
+/// Levenshtein distance, iterative with a single row of state.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0usize; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        current[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let substitution = prev[j] + usize::from(ca != *cb);
+            current[j + 1] = substitution.min(prev[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut current);
+    }
+    prev[b.len()]
 }
 
 /// Require the read scope associated with a registered Query IR source.
@@ -401,6 +556,7 @@ fn build_envelope(
                 step_ns,
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
+                warnings: Vec::new(),
             })
         }
         "rows" | "table" => {
@@ -414,6 +570,7 @@ fn build_envelope(
                 step_ns: None,
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
+                warnings: Vec::new(),
             })
         }
         "heatmap" => {
@@ -462,6 +619,7 @@ fn build_envelope(
                     cells: to_heatmap_cells(batches)?,
                 },
                 flamegraph: None,
+                warnings: Vec::new(),
             })
         }
         "flamegraph" => Ok(QueryIrResponse {
@@ -473,6 +631,7 @@ fn build_envelope(
             step_ns: None,
             heatmap: HeatmapResult::default(),
             flamegraph: Some(to_flamegraph_result(batches)?),
+            warnings: Vec::new(),
         }),
         other => Err(ApiError::bad_request(format!(
             "unsupported result envelope '{other}'"
@@ -860,6 +1019,116 @@ mod row_encoding {
         let meta = column_meta(field.field(0));
         assert_eq!(meta.name, "resource_attributes");
         assert_eq!(meta.value_type, "map<string,string>");
+    }
+}
+
+/// An `aggregate.by` field nothing in the window carries (#1070). The
+/// grouping stays as the query asked for it — one null-labelled group — and
+/// the envelope explains why, because a plan-time rejection would also
+/// reject the legitimate case of a real attribute absent from a short window.
+#[cfg(test)]
+mod group_by_warnings {
+    use super::{UNKNOWN_GROUP_BY_FIELD, unknown_group_by_warnings};
+    use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    /// A one-group aggregate result: the `by` column plus a count.
+    fn grouped(column: &str, labels: Vec<Option<&str>>) -> RecordBatch {
+        let rows = labels.len();
+        let label: ArrayRef = Arc::new(StringArray::from(labels));
+        let count: ArrayRef = Arc::new(Int64Array::from(vec![1_i64; rows]));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(column, DataType::Utf8, true),
+            Field::new("n", DataType::Int64, false),
+        ]));
+        RecordBatch::try_new(schema, vec![label, count]).unwrap()
+    }
+
+    fn document(by: &str) -> serde_json::Value {
+        serde_json::json!({
+            "irVersion": 1, "from": "traces",
+            "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [{ "aggregate": { "by": [by], "aggs": [{ "fn": "count", "as": "n" }] } }]
+        })
+    }
+
+    #[test]
+    fn an_all_null_group_key_warns_and_names_the_field() {
+        let batches = [grouped("bogus_field_xyz", vec![None, None])];
+        let warnings = unknown_group_by_warnings("traces", &document("bogus_field_xyz"), &batches);
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, UNKNOWN_GROUP_BY_FIELD);
+        assert_eq!(warnings[0].field.as_deref(), Some("bogus_field_xyz"));
+        assert!(
+            warnings[0].message.contains("bogus_field_xyz")
+                && warnings[0].message.contains("traces"),
+            "{}",
+            warnings[0].message
+        );
+    }
+
+    /// The camelCase spelling of a real field is the motivating typo: it must
+    /// point at the field the caller meant.
+    #[test]
+    fn a_near_miss_spelling_suggests_the_real_field() {
+        let batches = [grouped("statusCode", vec![None])];
+        let warnings = unknown_group_by_warnings("traces", &document("statusCode"), &batches);
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].suggestions.contains(&"status.code".to_string()),
+            "{:?}",
+            warnings[0].suggestions
+        );
+    }
+
+    #[test]
+    fn a_logical_field_never_warns_even_when_every_row_is_null() {
+        let batches = [grouped("service_name", vec![None, None])];
+        let warnings = unknown_group_by_warnings("traces", &document("service.name"), &batches);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// A real attribute that is simply absent from *this* window still
+    /// warns — but one the window does carry must not, even partially.
+    #[test]
+    fn a_group_key_with_any_value_never_warns() {
+        let batches = [grouped("job", vec![Some("api"), None])];
+        let warnings = unknown_group_by_warnings("traces", &document("job"), &batches);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// An empty result is not evidence: the window held no records at all.
+    #[test]
+    fn an_empty_result_never_warns() {
+        let batches = [grouped("bogus_field_xyz", vec![])];
+        let warnings = unknown_group_by_warnings("traces", &document("bogus_field_xyz"), &batches);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// An `extract`-derived column belongs to the document, not the source:
+    /// an all-null one means the parser matched nothing, a different story.
+    #[test]
+    fn an_extract_derived_group_key_never_warns() {
+        let batches = [grouped("level", vec![None])];
+        let doc = serde_json::json!({
+            "irVersion": 1, "from": "logs",
+            "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "extract": { "parser": "json", "as": [{ "name": "level", "type": "string" }] } },
+                { "aggregate": { "by": ["level"], "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]
+        });
+        let warnings = unknown_group_by_warnings("logs", &doc, &batches);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 }
 
