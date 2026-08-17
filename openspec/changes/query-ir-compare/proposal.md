@@ -34,9 +34,9 @@ range resolution, and absent-value semantics unchanged.
   contrast, and a time sub-window are all just predicates.
 - The stage compares the two cohorts across a field set — every registered
   logical field and attribute of the source by default (`"*"`), or an explicit
-  list — in **one scan**: attribute maps are unnested into `(key, value)` pairs
-  and grouped together with promoted columns, so cost is independent of the
-  number of attributes.
+  list — in **one physical scan**: attribute maps are walked as `(key, value)`
+  pairs alongside promoted columns, so cost is O(records × attribute entries)
+  with bounded memory, never one scan per field.
 - Per field the envelope reports its kind (`dimension` for categorical /
   low-cardinality values, `measure` for numeric/duration), a **participation**
   ratio per cohort (share of records carrying the field — polymorphic spans

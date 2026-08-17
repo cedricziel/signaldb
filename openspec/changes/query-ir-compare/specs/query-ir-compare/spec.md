@@ -45,19 +45,31 @@ between [t0, t1]`
 #### Scenario: An empty cohort is reported, not an error
 
 - **WHEN** the selection predicate matches no record, or matches every record
-- **THEN** the query succeeds, reports the zero-count cohort, and returns
-  fields with the empty cohort's shares reported as zero
+- **THEN** the query succeeds and reports the zero-count cohort
+- **AND** every derived quantity with a zero denominator is JSON-safe: the
+  empty cohort's participation, per-value shares, and per-bucket shares are
+  `0`, its measure `min`/`max`/`median` are `null`, every field's `score` is
+  `0`, and no `NaN` or `Infinity` appears anywhere in the payload
+- **AND** fields are still returned in the deterministic sort order, so a
+  client can render the non-empty cohort's distributions
 
 ### Requirement: Comparison across every field in one query
 
 The `compare` stage SHALL accept a `fields` list of logical names or the
 wildcard `"*"`. With `"*"` the comparison SHALL cover every logical field and
 every attribute key of the source that the registry can enumerate for the
-tenant/dataset, across all attribute scopes (resource, scope, record). Query
-cost SHALL NOT scale with the number of fields compared beyond a single scan of
-the matched records. Fields that are retrieval-only, unresolvable, or above the
-server's field-set cap SHALL be omitted from the comparison and named in a
-`skipped` list with a reason; they SHALL NOT fail the query.
+tenant/dataset, across all attribute scopes (resource, scope, record). The
+comparison SHALL read the matched records in **one physical scan** regardless
+of how many fields are compared — never one scan per field — and its
+processing cost SHALL be bounded by the number of matched records times the
+number of attribute entries per record, with the field-set, value, and bucket
+caps bounding memory. A logical field that is stored both as a promoted column
+and as an entry in an attribute map SHALL be counted **once** per record, read
+from the location the field resolver designates (the promoted column), so
+promotion never double-counts or changes a result. Fields that are
+retrieval-only, unresolvable, or above the server's field-set cap SHALL be
+omitted from the comparison and named in a `skipped` list with a reason; they
+SHALL NOT fail the query.
 
 #### Scenario: Wildcard covers promoted and unpromoted attributes alike
 
@@ -65,6 +77,15 @@ server's field-set cap SHALL be omitted from the comparison and named in a
   are promoted columns and others live only in attribute maps
 - **THEN** both kinds appear in the result with identical semantics, and the
   result does not depend on which are promoted
+
+#### Scenario: A promoted attribute is counted once
+
+- **WHEN** an attribute is promoted (its value is present both in the
+  `label_<key>` column and in the source attribute map) and the two agree
+- **THEN** the field's counts equal the number of records carrying it, not
+  twice that
+- **AND** if the two disagree on a record, the promoted column's value is the
+  one compared and the map entry for that key is ignored
 
 #### Scenario: Explicit field list is honoured
 
@@ -89,12 +110,22 @@ server's field-set cap SHALL be omitted from the comparison and named in a
 A field whose values are categorical, boolean, or low-cardinality integer SHALL
 be reported as a `dimension` carrying, per value, the share of each cohort's
 participating records holding that value, the absolute counts, the risk ratio
-(selection share ÷ baseline share), and the support (selection share). The
+(selection share ÷ baseline share), and the support (selection share). A
+value present in the selection but absent from the baseline SHALL carry
+`riskRatio: null` (the JSON payload never carries `Infinity`); a value absent
+from the selection carries `riskRatio: 0`. The
 value list SHALL be capped at the request's `maxValues` (server default and
 ceiling documented), and when trimmed SHALL keep the values most frequent in
 _either_ cohort and state that it was trimmed. Values SHALL be ordered by
 baseline frequency descending, so the same field renders stably across
 comparisons.
+
+#### Scenario: A selection-only value has a null risk ratio
+
+- **WHEN** a value occurs in the selection cohort and never in the baseline
+- **THEN** its entry reports the selection share, baseline share `0`, and
+  `riskRatio: null`, and the field's score still counts the value's full
+  divergence
 
 #### Scenario: Shares are proportions, not counts
 
@@ -162,14 +193,22 @@ visible.
 
 ### Requirement: Fields are ranked by a documented divergence score
 
-Each field SHALL carry a `score` in `[0, 1]`, and `fields` SHALL be ordered by
-score descending. The score SHALL combine the Jensen–Shannon divergence between
-the two cohorts' distributions over the field's values or buckets with the
-divergence of the cohorts' participation, weighted so a field the selection
-barely carries cannot outrank one it consistently carries. The statistic SHALL
-be named in the response metadata and in the public reference so clients can
-re-rank consistently. Ties SHALL break by field name to keep results
-deterministic.
+Each field SHALL carry a `score` in `[0, 1]`. The score SHALL combine the
+Jensen–Shannon divergence between the two cohorts' distributions over the
+field's values or buckets with the divergence of the cohorts' participation,
+weighted so a field the selection barely carries cannot outrank one it
+consistently carries. `fields` SHALL be ordered by exactly this sort key, in
+this precedence:
+
+1. fields with non-zero selection participation before fields with zero
+   selection participation;
+2. non-nominal fields before nominal fields;
+3. `score` descending;
+4. field name ascending.
+
+The statistic and the sort key SHALL be named in the response metadata
+(`statistic`) and in the public reference so clients can re-rank
+consistently; any change to either bumps the statistic name.
 
 #### Scenario: A perfectly separating field ranks first
 
@@ -192,25 +231,54 @@ deterministic.
 ### Requirement: Bounded and tenant-isolated execution
 
 The server SHALL enforce bounds on a `compare`: a maximum field-set size, a
-`maxValues` ceiling, a maximum bucket count for measures, an optional
-per-cohort `sample` reservoir the client may request, and the same
-window/step guards other terminal stages apply. A document exceeding a bound
-SHALL be rejected before execution, naming the bound. Sampling, when requested
-or applied, SHALL be stated in the response together with the sampled counts.
-The comparison SHALL see only records of the authenticated tenant and dataset.
+`maxValues` ceiling, a maximum bucket count for measures, a per-cohort
+`sample` size with both a floor and a ceiling (server defaults documented,
+the ceiling bounding reservoir memory), a hard cap on matched records, and
+the same window/step guards other terminal stages apply. A document exceeding
+a bound SHALL be rejected before execution, naming the bound.
+
+Sampling SHALL have a defined scope: `sample` bounds the per-cohort reservoir
+from which **measure** buckets and summaries are computed; **dimension**
+counts, participation, and cohort counts stay exact. When the matched-record
+count exceeds the hard cap, the server SHALL instead sample **records**
+uniformly and deterministically across both cohorts before the fold, and every
+quantity — dimensions included — is then computed over that record sample;
+the record cap takes precedence over `sample`, and the smaller of the two
+bounds a reservoir. Whenever any sampling applied, the response SHALL say
+which scope (`measures` or `records`) and report the sampled counts alongside
+the full cohort counts; per-field `sampled` marks a measure whose reservoir
+was exceeded. Sampling SHALL be deterministic for a fixed dataset regardless
+of scan or partition order. The comparison SHALL see only records of the
+authenticated tenant and dataset.
 
 #### Scenario: Oversized request is rejected pre-execution
 
-- **WHEN** a client requests `maxValues` above the ceiling or a field list
-  larger than the cap
+- **WHEN** a client requests `maxValues` above the ceiling, a field list larger
+  than the cap, or `sample` outside its floor/ceiling
 - **THEN** the document is rejected during validation with an error naming the
   limit, and no scan runs
 
-#### Scenario: Sampling is visible
+#### Scenario: Measure sampling is visible and leaves dimensions exact
 
-- **WHEN** a client sets `sample` and a cohort exceeds it
-- **THEN** shares are computed over the sample, and the response states the
-  sample sizes alongside the full cohort counts
+- **WHEN** a client sets `sample` and a cohort's count of some measure exceeds
+  it
+- **THEN** that measure's buckets and summaries are computed over the
+  reservoir and marked `sampled`, dimension counts and participation remain
+  exact, and the response states scope `measures` with the sample sizes
+  alongside the full cohort counts
+
+#### Scenario: Record cap samples both cohorts uniformly
+
+- **WHEN** the matched records exceed the hard cap
+- **THEN** records are sampled uniformly across both cohorts, every field is
+  computed over the sample, and the response states scope `records` with the
+  sampled and full counts
+
+#### Scenario: Sampling does not depend on scan order
+
+- **WHEN** the same comparison runs over the same data with a different
+  partitioning or batch order
+- **THEN** the sampled sets, and therefore the payload, are identical
 
 #### Scenario: Isolation holds
 
@@ -246,3 +314,19 @@ be rejected on a `comparison` result as it is on `series` and `heatmap`.
   `metrics` under IR v4
 - **THEN** it validates and executes with the same envelope shape; on `logs`,
   fields derived by a preceding `extract` are comparable like registry fields
+
+#### Scenario: Profiles compare over metadata rows
+
+- **WHEN** a `compare` runs on `profiles` with a selection over `duration`
+- **THEN** the cohorts are profile metadata rows, the compared fields are the
+  registered scalar profile fields plus profile/scope/resource attributes, and
+  the payload columns (`samples_json`, `stacktraces_json`) are `skipped` as
+  retrieval-only
+
+#### Scenario: Metrics compare over points
+
+- **WHEN** a `compare` runs on `metrics` with a selection over `metric.value`
+- **THEN** the cohorts are metric points across `metrics_gauge` and
+  `metrics_sum`, and `metric.name` and resource attributes are compared with
+  legacy JSON-string attribute containers reconciled the same way the
+  `metrics` source reconciles them for grouping

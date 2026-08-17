@@ -61,6 +61,17 @@ updates a per-field `FieldAcc { participation[2], values: HashMap<Value,
 [u64;2]> | reservoir[2] }`. After the stream ends it ranks, trims, buckets and
 serializes.
 
+**Promoted vs map-backed de-duplication.** Promotion adds a `label_<key>`
+column but leaves the key in the source attribute map (the compactor
+backfills the column from the map). The fold therefore consults the resolver
+once per field before the scan and builds a `promoted_keys: HashSet<(container,
+key)>`; while walking a map, entries whose `(container, key)` is in that set
+are skipped, and the field is read from the promoted column only. Precedence
+on disagreement is the promoted column — it is what `where`/`aggregate`
+already read, so `compare` cannot disagree with them. Fixtures: (a) equal
+values → counted once; (b) conflicting values → promoted value counted, map
+value ignored.
+
 **Why.** (a) `unnest(map_entries(...))` needs `nested_expressions`, which the
 workspace deliberately does not compile in; enabling it for one stage widens
 the binary and the surface for little gain. (b) Per-field caps (`maxValues`,
@@ -146,10 +157,21 @@ converge on for two-cohort field ranking.
 
 ### D6 — Measure bucketing and summaries from a deterministic reservoir
 
-Each measure keeps a per-cohort reservoir of `R` values (default 8 192, the
-`sample` knob if lower). Sampling is deterministic: keep the row iff
-`xxhash(row_ordinal, seed=const)` mod stride == 0, computed against the running
-count — no RNG, so re-execution is byte-identical. Bucket edges are the
+Each measure keeps a per-cohort reservoir of `R` values (default 8 192; the
+`sample` knob overrides within `[1 000, 65 536]`). Sampling is deterministic
+**and order-independent**: it is keyed on a stable per-record identity, not on
+scan position. Each source declares its identity columns (`traces`: `trace_id`
++ `span_id`; `logs`: `timestamp` + `trace_id`/`span_id` + a hash of `body`;
+`profiles`: `profile.id`; `metrics`: `metric.name` + resource-attribute hash +
+`timestamp`), and a record is admitted iff `xxhash64(identity, seed=const)`
+falls below a threshold `T` chosen for the target rate. The record cap (Risks)
+uses the same admission test over the whole fold; measure reservoirs apply a
+second, per-field threshold to bound `R`. Threshold sampling is a
+Bernoulli-style filter, so the admitted set is a pure function of the data —
+partition order, batch boundaries, and parallelism cannot change it — and the
+reservoir stays hard-bounded because a full reservoir raises its threshold to
+the current maximum admitted hash (the classic bottom-k sketch), which is also
+order-independent. Bucket edges are the
 combined reservoir's quantiles (up to 16, deduplicated, `duration_ns` snapped
 to 1-2-5 nanosecond boundaries for readability); shares are the reservoir's
 per-bucket fractions; `min`/`max`/`median` likewise. When a cohort's count
@@ -172,7 +194,11 @@ the threshold — beyond that only the flag and counts advance).
 `RelationType::Comparison` so legal-stage inference rejects anything after it.
 `MAX_IR_VERSION` becomes 4 and the v4 registry lists the stage. Validation
 enforces: terminal, envelope match, `fields` projection forbidden, bounds
-(`max_values ≤ 200`, explicit field list ≤ 500, `sample ≥ 1000`).
+(`max_values ≤ 200`, explicit field list ≤ 500, `1 000 ≤ sample ≤ 65 536`).
+Every emitted float is finite: zero-denominator shares/participation encode
+as `0`, `min`/`max`/`median` of an empty cohort as `null`, and `risk_ratio`
+with a zero baseline share as `null` — the serializer asserts no
+`NaN`/`Infinity` reaches `comparison_json`.
 
 The querier serializes the finished `Comparison` struct (defined in `common`,
 `utoipa::ToSchema`) with `serde` into a single-row batch `comparison_json:
@@ -197,8 +223,10 @@ group-by reducers.
 
 - [Rust fold is single-threaded per query and touches every attribute entry] →
   Bound the input with the existing window guards plus a hard row cap
-  (default 2 M matched records; beyond it, `sample` is applied to _both_
-  cohorts uniformly and the response says so). Fold cost is O(rows × entries)
+  (default 2 M matched records; beyond it, records are admitted by the
+  identity-hash threshold of D6 uniformly across _both_ cohorts, the response
+  states scope `records`, and the record cap takes precedence over the
+  measure `sample`). Fold cost is O(rows × entries)
   with hashing on `(key, value)`; measure with the querier `do_get` bench on
   hive-sized data before merging. If it is too slow, D1's SQL alternative is
   the escape hatch without changing the contract.

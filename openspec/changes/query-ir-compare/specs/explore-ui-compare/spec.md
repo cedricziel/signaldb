@@ -13,7 +13,11 @@ The traces tab SHALL let the user draw a box on the latency heatmap and compare
 the spans inside it to the rest of the current query; grouped tables on the
 traces and logs tabs SHALL offer "compare to the rest" on each group row. The
 comparison SHALL inherit the tab's active filters and time range as its scope,
-so the baseline is the currently displayed data minus the selection.
+so the baseline is the currently displayed data minus the selection. The
+scope SHALL be rebuilt from the tab's **record-level** state — active filters,
+range, and any `extract` — never from the presentation pipeline: grouping,
+`topk`, `order`, and `limit` stages of the grouped view SHALL NOT be part of
+the comparison document, so cohorts are records, not truncated aggregate rows.
 
 #### Scenario: Heatmap box opens a comparison
 
@@ -28,6 +32,15 @@ so the baseline is the currently displayed data minus the selection.
   `service.name = payments`
 - **THEN** a comparison panel opens whose selection is `service.name =
 payments` and whose baseline is every other record the table counts
+
+#### Scenario: Grouped-view presentation stages are not inherited
+
+- **WHEN** the grouped table is showing the top 20 groups ordered by p95 with
+  a row limit
+- **THEN** the comparison document built from it contains the tab's filters,
+  range, and extract stages plus the `compare` stage — no `aggregate`,
+  `topk`, `order`, or `limit` — and the baseline count equals the total record
+  count of the filtered window, not the count of the displayed groups
 
 ### Requirement: Fields render ranked, most distinguishing first
 
@@ -61,13 +74,23 @@ Every value bar SHALL offer "only this value", "exclude this value", and "group
 by this field"; every measure bucket SHALL offer "below this" and "above this".
 Choosing one SHALL apply the corresponding filter or grouping to the tab's
 active query, close or refresh the panel, and leave the new filter visible and
-removable like any other.
+removable like any other. "Exclude this value" SHALL keep records where the
+field is absent: it applies `or(not(field exists), field != v)`, not a bare
+`field != v` (which, under the IR's absent semantics, would also drop
+records lacking the field).
 
 #### Scenario: A value becomes a filter
 
 - **WHEN** the user picks "only this value" on `http.route = /api/checkout`
 - **THEN** the tab's query gains a removable `http.route = /api/checkout` filter
   and the list, chart, and facets update to it
+
+#### Scenario: Excluding a value keeps records without the field
+
+- **WHEN** the user picks "exclude this value" on `db.system = postgresql`
+- **THEN** the tab's query gains a removable filter that drops only records
+  whose `db.system` is `postgresql`, and records with no `db.system` remain
+  in the result
 
 #### Scenario: A field becomes a grouping
 
