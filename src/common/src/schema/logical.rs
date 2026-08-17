@@ -252,6 +252,7 @@ impl LogicalSchema {
             // below. `metric.value`'s type must be registered (not left to
             // the alias fallback's naive String default) or a `sum`/`avg`
             // aggregate over it is rejected as non-numeric.
+            LogicalField::record_metadata("metrics", "timestamp", LogicalType::TimestampNs),
             LogicalField::record_metadata("metrics", "metric.name", LogicalType::String),
             LogicalField::record_metadata("metrics", "metric.value", LogicalType::Float64),
             // metrics_histogram: a whole bucketed histogram per row, not a
@@ -260,7 +261,19 @@ impl LogicalSchema {
             // physical column name directly rather than through the
             // resolver. Only the fields a `where`/`by` clause can reference
             // need registering here.
+            LogicalField::record_metadata(
+                "metrics_histogram",
+                "timestamp",
+                LogicalType::TimestampNs,
+            ),
             LogicalField::record_metadata("metrics_histogram", "metric.name", LogicalType::String),
+            // Profiles: the summary row's own time column. Every scalar
+            // source registers its primary timestamp (logs `timestamp`,
+            // traces `start_time_unix_nano`) so a cross-signal "last seen"
+            // aggregate — `max(timestamp)` — has the same shape everywhere
+            // (#1205); the remaining profile scalars still resolve through
+            // the planner's alias table.
+            LogicalField::record_metadata("profiles", "timestamp", LogicalType::TimestampNs),
         ];
         fields.push(LogicalField::attribute(
             "metrics",
@@ -443,6 +456,27 @@ mod tests {
             schema.resolve("logs", "service.name").unwrap().value_type,
             LogicalType::String
         );
+    }
+
+    /// Every scalar source has a logical `timestamp` (#1205): metrics and
+    /// profiles used to leave theirs unregistered, so it was only reachable
+    /// as a (rejected) physical column name.
+    #[test]
+    fn core_schema_registers_timestamp_for_every_source() {
+        let schema = LogicalSchema::core();
+        for (source, name) in [
+            ("logs", "timestamp"),
+            ("traces", "start_time_unix_nano"),
+            ("metrics", "timestamp"),
+            ("metrics_histogram", "timestamp"),
+            ("profiles", "timestamp"),
+        ] {
+            let field = schema
+                .resolve(source, name)
+                .unwrap_or_else(|| panic!("{source}.{name} is registered"));
+            assert_eq!(field.value_type, LogicalType::TimestampNs, "{source}");
+            assert_eq!(field.kind, LogicalFieldKind::RecordMetadata, "{source}");
+        }
     }
 
     #[test]

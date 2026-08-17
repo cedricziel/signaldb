@@ -3059,6 +3059,97 @@ mod tests {
         );
     }
 
+    /// Every scalar source registers a logical `timestamp` (#1205): metrics
+    /// and profiles used to lack it, so `max(timestamp)` — the "last seen"
+    /// column entity discovery needs across signals — was rejected as
+    /// physical addressing on those two sources.
+    async fn max_timestamp_ns(ctx: SessionContext, source: &str) -> i64 {
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": source, "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["service.name"], "aggs": [
+                    { "fn": "count", "as": "n" },
+                    { "fn": "max", "of": "timestamp", "as": "last" }
+                ] } },
+                { "order": [{ "of": "last", "dir": "desc" }] },
+                { "limit": 10 }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap_or_else(|e| panic!("{source}: {e}"))
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let first = batches.iter().find(|b| b.num_rows() > 0).expect("a row");
+        let col = first
+            .column_by_name("last")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .expect("max(timestamp) keeps the timestamp type");
+        col.value(0)
+    }
+
+    #[tokio::test]
+    async fn metrics_max_timestamp_aggregate_executes() {
+        // gauge points at 10/20, sum point at 15 — the max spans the union.
+        assert_eq!(max_timestamp_ns(metrics_ctx(), "metrics").await, 20);
+    }
+
+    #[tokio::test]
+    async fn profiles_max_timestamp_aggregate_executes() {
+        assert_eq!(max_timestamp_ns(profiles_ctx(), "profiles").await, 30);
+    }
+
+    async fn ordered_by_timestamp(ctx: SessionContext, source: &str) -> Vec<i64> {
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": source, "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["timestamp", "service.name"],
+            "pipeline": [
+                { "where": { "field": "timestamp", "op": "gte", "value": 15 } },
+                { "order": [{ "of": "timestamp", "dir": "desc" }] }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap_or_else(|e| panic!("{source}: {e}"))
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        batches
+            .iter()
+            .flat_map(|b| {
+                let col = b
+                    .column_by_name("timestamp")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<TimestampNanosecondArray>()
+                    .unwrap();
+                col.values().iter().copied().collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn metrics_filter_and_order_by_timestamp_execute() {
+        assert_eq!(
+            ordered_by_timestamp(metrics_ctx(), "metrics").await,
+            vec![20, 15]
+        );
+    }
+
+    #[tokio::test]
+    async fn profiles_filter_and_order_by_timestamp_execute() {
+        assert_eq!(
+            ordered_by_timestamp(profiles_ctx(), "profiles").await,
+            vec![30, 20]
+        );
+    }
+
     /// A metrics document still executes when only one of the two tables
     /// exists — e.g. a dataset that has only ever received gauge metrics.
     #[tokio::test]

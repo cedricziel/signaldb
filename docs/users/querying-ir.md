@@ -406,11 +406,18 @@ reconciled before the union, so grouping by any resource attribute
 since its row shape — a whole bucketed histogram per point, not a scalar
 value — has no equivalent in the generic `where`/`aggregate` pipeline.
 
-The registered scalar fields are `metric.name`, `metric.value`, and
-`service.name`, plus resource attributes (`resource.*`). `metric.value` has
-its own logical name rather than reusing the physical `value` column
-directly — a document names a _logical_ field, never storage, even where
-the spellings would otherwise coincide.
+The registered scalar fields are `timestamp` (the data point's time),
+`metric.name`, `metric.value`, and `service.name`, plus resource attributes
+(`resource.*`). `metric.value` has its own logical name rather than reusing
+the physical `value` column directly — a document names a _logical_ field,
+never storage, even where the spellings would otherwise coincide.
+
+Every scalar source registers its primary time column as a logical field —
+`timestamp` on `logs`, `metrics`, `metrics_histogram`, and `profiles`,
+`start_time_unix_nano` on `traces` — so a cross-signal "last seen" aggregate
+such as `{"fn": "max", "of": "timestamp", "as": "last"}` has the same shape
+on every source, and `timestamp` can be filtered, ordered, and selected like
+any other field.
 
 ```json
 {
@@ -451,8 +458,8 @@ UI's Metrics tab keeps its PromQL escape hatch for those.
 The `metrics_histogram` source scans one row per OTLP histogram data point —
 `count`, `sum`, `min`, `max`, and the classic-histogram `bucket_counts`/
 `explicit_bounds` arrays — not a scalar value, so it's a separate source from
-`metrics`. It exposes `metric.name` and `service.name` (plus resource
-attributes) for filtering and grouping; the bucket columns themselves are not
+`metrics`. It exposes `timestamp`, `metric.name`, and `service.name` (plus
+resource attributes) for filtering and grouping; the bucket columns themselves are not
 addressable in a `where` or `by` — they only feed the `histogram_quantile`
 stage below.
 
