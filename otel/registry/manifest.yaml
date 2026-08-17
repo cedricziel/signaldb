@@ -15,7 +15,7 @@ description: SignalDB self-monitoring semantic conventions
 # hand — the common crate's version and this URL are asserted equal in
 # src/common/tests/registry_pins.rs.
 # x-release-please-start-version
-schema_url: https://cedricziel.github.io/signaldb/schemas/0.2.1
+schema_url: https://cedricziel.github.io/signaldb/schemas/0.3.0
 # x-release-please-end
 dependencies:
   - schema_url: https://opentelemetry.io/schemas/1.43.0

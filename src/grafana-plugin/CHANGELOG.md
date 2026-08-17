@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.3.0](https://github.com/cedricziel/signaldb/compare/grafana-plugin-v1.2.0...grafana-plugin-v1.3.0) (2026-08-17)
+
+
+### Features
+
+* **query-ir:** add v2 heatmaps ([#1102](https://github.com/cedricziel/signaldb/issues/1102)) ([96184cf](https://github.com/cedricziel/signaldb/commit/96184cf42809a4cbf0e4a15f592cb544dbb7a597))
+
+
+### Bug Fixes
+
+* **grafana-plugin:** wire provisioned routerUrl into the Flight client ([#1151](https://github.com/cedricziel/signaldb/issues/1151)) ([ff883e5](https://github.com/cedricziel/signaldb/commit/ff883e543f1b3831c282eadbcd5db97a857099bf)), closes [#977](https://github.com/cedricziel/signaldb/issues/977)
+
+
+### Performance Improvements
+
+* **flight,wal:** compress Flight IPC payloads and WAL entries ([#945](https://github.com/cedricziel/signaldb/issues/945)) ([#998](https://github.com/cedricziel/signaldb/issues/998)) ([efb5ef4](https://github.com/cedricziel/signaldb/commit/efb5ef4bc85e2e77483f4546255b50c564015827))
+
+
+### Code Refactoring
+
+* **grafana-plugin:** simplify pass ([#1191](https://github.com/cedricziel/signaldb/issues/1191)) ([38366c9](https://github.com/cedricziel/signaldb/commit/38366c9270b414763f2c9f883f89167909369691))
+* simplify backend workspace (dedup, dead code, redundant clones) ([#1168](https://github.com/cedricziel/signaldb/issues/1168)) ([409b778](https://github.com/cedricziel/signaldb/commit/409b778686a1cea5c54edfba7778c3e9ed3aa29c))
+* **ui:** simplify pass ([#1192](https://github.com/cedricziel/signaldb/issues/1192)) ([4c67615](https://github.com/cedricziel/signaldb/commit/4c67615500632225aeeaade5cf745dc8607c9c6d))
+
+
+### Tests
+
+* delete tautological tests and rewrite salvageable ones as contract tests ([#961](https://github.com/cedricziel/signaldb/issues/961)) ([b3e884a](https://github.com/cedricziel/signaldb/commit/b3e884ad59b4df853429133d5eef2724a8adcada))
+* polish medium/low audit findings across the workspace ([#969](https://github.com/cedricziel/signaldb/issues/969)) ([8962f6d](https://github.com/cedricziel/signaldb/commit/8962f6d1d22c8a176d4a1d99376d61b42b1da258))
+
 ## [1.2.0](https://github.com/cedricziel/signaldb/compare/grafana-plugin-v1.1.0...grafana-plugin-v1.2.0) (2026-07-30)
 
 

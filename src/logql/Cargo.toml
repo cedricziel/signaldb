@@ -1,6 +1,6 @@
 [package]
 name = "logql"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "LogQL lexer and parser for SignalDB's Loki-compatible query interface"
 license = "AGPL-3.0"

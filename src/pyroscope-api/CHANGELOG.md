@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2](https://github.com/cedricziel/signaldb/compare/pyroscope-api-v0.1.1...pyroscope-api-v0.1.2) (2026-08-17)
+
+
+### Features
+
+* **router:** Pyroscope OpenAPI parity (CLI/MCP/UI/SDK) ([#1268](https://github.com/cedricziel/signaldb/issues/1268)) ([2b54e2d](https://github.com/cedricziel/signaldb/commit/2b54e2d693801a0bfd9afdf4e982abfac6efc955))
+
+
+### Code Refactoring
+
+* **pyroscope-api:** clarify ProfileType::from_type_unit and add missing rename_all ([#1183](https://github.com/cedricziel/signaldb/issues/1183)) ([5fcd576](https://github.com/cedricziel/signaldb/commit/5fcd576ef7a44279c9d7be979ad2566de064817c))
+
 ## [0.1.1](https://github.com/cedricziel/signaldb/compare/pyroscope-api-v0.1.0...pyroscope-api-v0.1.1) (2026-07-30)
 
 

@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.3.0](https://github.com/cedricziel/signaldb/compare/acceptor-v0.2.1...acceptor-v0.3.0) (2026-08-17)
+
+
+### Features
+
+* one signaldb binary with the services as subcommands ([#1204](https://github.com/cedricziel/signaldb/issues/1204)) ([77f3278](https://github.com/cedricziel/signaldb/commit/77f3278ca445ac9b28bf955b0e482d4366a27c07))
+* **self-monitoring:** runtime-configurable browser telemetry export ([#842](https://github.com/cedricziel/signaldb/issues/842)) ([343b928](https://github.com/cedricziel/signaldb/commit/343b92877d1291406de25923e671ab2a54a98028))
+* semconv CLIENT spans on Flight call sites ([#905](https://github.com/cedricziel/signaldb/issues/905)) ([3047cbb](https://github.com/cedricziel/signaldb/commit/3047cbbc68f03e7d586d4a2caabaa2bd7c660ca1))
+* semconv self-tracing foundations (resource, span factories, acceptor boundary) ([#903](https://github.com/cedricziel/signaldb/issues/903)) ([dbe4ca2](https://github.com/cedricziel/signaldb/commit/dbe4ca2389ac8db0dba721f66d79db4d0475ed76))
+* signal rate-limit throttling with Retry-After and a generous default burst ([#1256](https://github.com/cedricziel/signaldb/issues/1256)) ([5584f3f](https://github.com/cedricziel/signaldb/commit/5584f3f1ef7461401a7f1bbbf24302308192b43d))
+* **tracing:** add server.address and network.peer to RPC spans ([#1111](https://github.com/cedricziel/signaldb/issues/1111)) ([4e64934](https://github.com/cedricziel/signaldb/commit/4e64934814762c25226a3a7529bc9d695035d578))
+
+
+### Bug Fixes
+
+* **acceptor:** accept empty AnyValue objects in OTLP/JSON requests ([#1135](https://github.com/cedricziel/signaldb/issues/1135)) ([6c3a701](https://github.com/cedricziel/signaldb/commit/6c3a701a8234768a9d0d34eceb329be6e149d75d)), closes [#1134](https://github.com/cedricziel/signaldb/issues/1134)
+* **acceptor:** accept gzip/zstd-compressed OTLP/gRPC requests ([#1133](https://github.com/cedricziel/signaldb/issues/1133)) ([081968d](https://github.com/cedricziel/signaldb/commit/081968d6eec8d3497c43893f6ec5d8aa7ebad1a3)), closes [#1131](https://github.com/cedricziel/signaldb/issues/1131)
+* **acceptor:** adopt upstream's AnyValue deserialize fix verbatim ([#1140](https://github.com/cedricziel/signaldb/issues/1140)) ([31e9fa8](https://github.com/cedricziel/signaldb/commit/31e9fa8f78aba4fe2142b165966acad45d9f45bc))
+* **acceptor:** dead-letter poison WAL entries in the retry consumer ([#1015](https://github.com/cedricziel/signaldb/issues/1015)) ([866821c](https://github.com/cedricziel/signaldb/commit/866821c68793361c26f4a313423d00457777b739))
+* **acceptor:** dead-letter poison WAL entries on first failure ([#1059](https://github.com/cedricziel/signaldb/issues/1059)) ([9d43c85](https://github.com/cedricziel/signaldb/commit/9d43c85445cb8c6d1bcb19279e29015680dc3fd4))
+* **acceptor:** dead-letter writer-rejected WAL entries instead of wedging the retry pass ([#1063](https://github.com/cedricziel/signaldb/issues/1063)) ([7fc6ada](https://github.com/cedricziel/signaldb/commit/7fc6ada1ea922784220789f304fb3f8448ff8ef1)), closes [#1060](https://github.com/cedricziel/signaldb/issues/1060)
+* **acceptor:** reject exports on OTLP conversion failure instead of ACKing empty batches ([#926](https://github.com/cedricziel/signaldb/issues/926)) ([#981](https://github.com/cedricziel/signaldb/issues/981)) ([02c0a3b](https://github.com/cedricziel/signaldb/commit/02c0a3b99fdc1327595ad8a0bf8434de1977615d))
+* **build:** stop jemalloc heap profiling from crashing musl images ([#1126](https://github.com/cedricziel/signaldb/issues/1126)) ([98b2996](https://github.com/cedricziel/signaldb/commit/98b299660ef31b56d73e079a2477166b415e736e))
+* **flight:** set explicit gRPC message-size limits and chunk oversized batches ([#990](https://github.com/cedricziel/signaldb/issues/990)) ([6499175](https://github.com/cedricziel/signaldb/commit/6499175d0e6402e1350ad28803d0b08954e43fe1))
+* metrics without service.name land as 'unknown'; boot log flood demoted to debug ([#1227](https://github.com/cedricziel/signaldb/issues/1227)) ([7b5ea34](https://github.com/cedricziel/signaldb/commit/7b5ea343096ea8a7c0f62575029ac1e838ec514c))
+* **model:** stop flattening trace hierarchies to root + direct children ([#1018](https://github.com/cedricziel/signaldb/issues/1018)) ([5fee337](https://github.com/cedricziel/signaldb/commit/5fee33711628bf3f041c436c34f363f114ed93fb))
+
+
+### Performance Improvements
+
+* CPU target features and jemalloc allocator for release builds ([#970](https://github.com/cedricziel/signaldb/issues/970)) ([766e2d1](https://github.com/cedricziel/signaldb/commit/766e2d1c82dad65a674184edaf2e8d67cb4083dd))
+* **flight,wal:** compress Flight IPC payloads and WAL entries ([#945](https://github.com/cedricziel/signaldb/issues/945)) ([#998](https://github.com/cedricziel/signaldb/issues/998)) ([efb5ef4](https://github.com/cedricziel/signaldb/commit/efb5ef4bc85e2e77483f4546255b50c564015827))
+
+
+### Documentation
+
+* flight-communication.md read path now describes the CLIENT hop. ([3047cbb](https://github.com/cedricziel/signaldb/commit/3047cbbc68f03e7d586d4a2caabaa2bd7c660ca1))
+* **openspec:** backfill OTLP ingest specs + profiles HTTP test coverage ([#852](https://github.com/cedricziel/signaldb/issues/852)) ([3382a3e](https://github.com/cedricziel/signaldb/commit/3382a3e939f21b11dfa550bd8d3b250251044d06))
+
+
+### Code Refactoring
+
+* **acceptor:** simplify pass ([#1170](https://github.com/cedricziel/signaldb/issues/1170)) ([3d7f263](https://github.com/cedricziel/signaldb/commit/3d7f263d200316cfa3d339496dedda5c9045bcc3))
+* **logging:** forbid log:: macros in favor of tracing:: ([#1006](https://github.com/cedricziel/signaldb/issues/1006)) ([071ebb4](https://github.com/cedricziel/signaldb/commit/071ebb47d02f2d6e43ccfb60380c00e3be929248))
+* simplify backend workspace (dedup, dead code, redundant clones) ([#1168](https://github.com/cedricziel/signaldb/issues/1168)) ([409b778](https://github.com/cedricziel/signaldb/commit/409b778686a1cea5c54edfba7778c3e9ed3aa29c))
+* span hygiene sweep and construction guard ([#907](https://github.com/cedricziel/signaldb/issues/907)) ([c1f7b81](https://github.com/cedricziel/signaldb/commit/c1f7b81fbc00ae5fd6c9b948f9fb35c9d5a27d26))
+
+
+### Tests
+
+* polish medium/low audit findings across the workspace ([#969](https://github.com/cedricziel/signaldb/issues/969)) ([8962f6d](https://github.com/cedricziel/signaldb/commit/8962f6d1d22c8a176d4a1d99376d61b42b1da258))
+
 ## [0.2.1](https://github.com/cedricziel/signaldb/compare/acceptor-v0.2.0...acceptor-v0.2.1) (2026-07-30)
 
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/acceptor-v0.1.0...acceptor-v0.2.0) (2026-07-30)
