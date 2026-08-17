@@ -36,6 +36,8 @@ pub struct AppMetrics {
     pub wal_entries_pending: UpDownCounter<i64>,
     pub wal_flush_duration: Histogram<f64>,
     pub wal_corrupt_entries: Counter<u64>,
+    pub wal_list_failures: Counter<u64>,
+    pub wal_instances: UpDownCounter<i64>,
 
     // Flight metrics
     pub flight_request_duration: Histogram<f64>,
@@ -186,6 +188,21 @@ impl AppMetrics {
                     "WAL entries discarded during replay because they could not be deserialized",
                 )
                 .with_unit("{entry}")
+                .build(),
+            wal_list_failures: meter
+                .u64_counter("signaldb.wal.list_failures")
+                .with_description(
+                    "Attempts to list a WAL's unprocessed entries that failed, so the WAL was \
+                     skipped for that processing cycle",
+                )
+                .with_unit("{failure}")
+                .build(),
+            wal_instances: meter
+                .i64_up_down_counter("signaldb.wal.instances")
+                .with_description(
+                    "Open WAL instances held by this service, one per tenant/dataset/signal",
+                )
+                .with_unit("{wal}")
                 .build(),
             flight_request_duration: meter
                 .f64_histogram("signaldb.flight.request.duration")

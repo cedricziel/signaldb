@@ -241,15 +241,20 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     reconciler_handle.abort();
     let _ = reconciler_handle.await;
 
+    // Flush every tenant WAL so buffered entries are durable before exit.
+    // This runs *before* telemetry shuts down: a failing flush is exactly the
+    // event whose logs and spans an operator needs, and they are lost if the
+    // exporter is already gone.
+    let flush_result = wal_manager
+        .flush_all()
+        .await
+        .context("Failed to flush writer WALs during shutdown");
+
     if let Some(telemetry) = _telemetry {
         telemetry.shutdown();
     }
 
-    // Flush every tenant WAL so buffered entries are durable before exit.
-    wal_manager
-        .flush_all()
-        .await
-        .context("Failed to flush writer WALs during shutdown")?;
+    flush_result?;
 
     Ok(())
 }

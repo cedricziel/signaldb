@@ -235,17 +235,34 @@ impl WalProcessor {
     /// coalescing); `Flush` WAL markers contribute their own tenant/dataset
     /// scope.
     async fn drain_pending(&mut self, mut flush_scopes: Vec<FlushScope>) -> Result<()> {
-        // Every cached WAL is drained each cycle. A WAL that cannot even list
-        // its entries is skipped for this cycle — never allowed to abort the
-        // drain of every other tenant's WAL (#932).
+        // Every cached WAL is drained each cycle. Listing a WAL's entries is
+        // an in-memory read that cannot fail today; the error arm is kept
+        // deliberately so that if it ever becomes fallible (a reload from
+        // disk, say) one tenant's failure skips only that tenant's WAL for
+        // the cycle instead of aborting every other tenant's drain (#932).
+        // It reports through a counter and one aggregate line, never a log
+        // line per WAL: at a few hundred tenants a failing disk would
+        // otherwise emit a log flood that self-monitoring re-ingests, which
+        // is the export-churn loop of the #865 incident.
         let mut pending_entries: Vec<(Arc<Wal>, WalEntry)> = Vec::new();
+        let mut list_failures = 0usize;
         for ((tenant, dataset, signal), wal) in self.wal_manager.all_wals().await {
             match wal.get_unprocessed_entries().await {
                 Ok(entries) => {
                     pending_entries.extend(entries.into_iter().map(|e| (wal.clone(), e)));
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    list_failures += 1;
+                    common::self_monitoring::app_metrics()
+                        .wal_list_failures
+                        .add(
+                            1,
+                            &[
+                                opentelemetry::KeyValue::new("tenant", tenant.clone()),
+                                opentelemetry::KeyValue::new("signal", signal.clone()),
+                            ],
+                        );
+                    tracing::debug!(
                         tenant_id = %tenant,
                         dataset_id = %dataset,
                         signal = %signal,
@@ -254,6 +271,12 @@ impl WalProcessor {
                     );
                 }
             }
+        }
+        if list_failures > 0 {
+            tracing::warn!(
+                list_failures,
+                "WALs skipped this cycle because their entries could not be listed"
+            );
         }
 
         if pending_entries.is_empty() {
@@ -849,7 +872,7 @@ mod tests {
     /// can feed it to the processor.
     async fn manager_for(wal: &Arc<Wal>) -> Arc<WalManager> {
         let manager = WalManager::uniform(WalConfig::default());
-        manager
+        let displaced = manager
             .register(
                 (
                     "test-tenant".to_string(),
@@ -859,6 +882,7 @@ mod tests {
                 wal.clone(),
             )
             .await;
+        assert!(displaced.is_none(), "fresh manager holds no WAL under key");
         Arc::new(manager)
     }
 
@@ -921,15 +945,99 @@ mod tests {
             "tenant A's poison entry is still pending (retried, not yet dead-lettered)"
         );
 
-        // A never wrote into B's directory and vice versa: the blast radius
-        // of a poisoned segment is one tenant/dataset/signal directory.
+        // Keep cycling until tenant A's poison is retired. The dead-letter
+        // marker must land in A's own directory and B's must never appear:
+        // the blast radius of a poisoned segment is one tenant/dataset/signal
+        // directory.
+        for _ in 1..super::MAX_ENTRY_FAILURES {
+            processor.process_pending_entries().await.unwrap();
+        }
+        assert!(
+            temp_dir
+                .path()
+                .join("acme/production/metrics/dead-letter")
+                .is_dir(),
+            "tenant A's poison must be quarantined under tenant A's own directory"
+        );
         assert!(
             !temp_dir
                 .path()
                 .join("globex/production/metrics/dead-letter")
                 .exists()
         );
-        assert!(temp_dir.path().join("acme/production/metrics").is_dir());
+    }
+
+    /// #932's other half: the writer used to hold one WAL for every tenant,
+    /// so every `do_put` serialized on that WAL's segment mutex. With a WAL
+    /// per tenant, a tenant hammering its own WAL must not delay another
+    /// tenant's append + flush. Needs a multi-threaded runtime: on the
+    /// default current-thread runtime the two tasks interleave at await
+    /// points and the contention this asserts on cannot be observed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn one_tenants_busy_wal_does_not_delay_another_tenants_append() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let temp_dir = tempdir().unwrap();
+        let mut base = WalConfig::with_defaults(temp_dir.path().to_path_buf());
+        // Every append hits the disk, so tenant A's loop holds its segment
+        // lock across real writes rather than buffering in memory.
+        base.max_buffer_entries = 1;
+        base.flush_interval_secs = 3600;
+        let manager = Arc::new(WalManager::uniform(base));
+
+        let acme = manager
+            .get_wal("acme", "production", "metrics")
+            .await
+            .unwrap();
+        let globex = manager
+            .get_wal("globex", "production", "metrics")
+            .await
+            .unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let (first_write_tx, first_write_rx) = tokio::sync::oneshot::channel();
+        let hammer = tokio::spawn({
+            let acme = acme.clone();
+            let stop = stop.clone();
+            async move {
+                let payload = vec![7u8; 1024 * 1024];
+                let mut first_write_tx = Some(first_write_tx);
+                while !stop.load(Ordering::Relaxed) {
+                    acme.append(WalOperation::WriteMetrics, payload.clone(), None)
+                        .await
+                        .unwrap();
+                    acme.flush().await.unwrap();
+                    if let Some(tx) = first_write_tx.take() {
+                        let _ = tx.send(());
+                    }
+                }
+            }
+        });
+
+        // Only start timing once tenant A is demonstrably mid-flight.
+        first_write_rx.await.unwrap();
+
+        let started = std::time::Instant::now();
+        globex
+            .append(WalOperation::WriteMetrics, metrics_gauge_bytes(1), None)
+            .await
+            .unwrap();
+        globex.flush().await.unwrap();
+        let elapsed = started.elapsed();
+
+        stop.store(true, Ordering::Relaxed);
+        hammer.await.unwrap();
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "tenant B's append+flush took {elapsed:?} while tenant A was hammering its own WAL; \
+             the two must not share a segment lock"
+        );
+        assert_eq!(
+            globex.get_unprocessed_entries().await.unwrap().len(),
+            1,
+            "tenant B's entry landed in tenant B's WAL"
+        );
     }
 
     fn coalescer(interval_secs: u64, max_rows: usize) -> CommitCoalescer {
