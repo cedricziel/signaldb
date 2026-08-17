@@ -1596,6 +1596,16 @@ pub struct AttributeStatsRecord {
     pub promote_streak: i64,
 }
 
+impl AttributeStatsRecord {
+    /// The fraction of scanned rows carrying this key, or `None` when the
+    /// analyzer has seen no rows — the one number every consumer of these
+    /// statistics derives, defined once here so they cannot disagree about
+    /// what a zero-row observation means.
+    pub fn coverage(&self) -> Option<f64> {
+        (self.total_rows > 0).then(|| self.present_rows as f64 / self.total_rows as f64)
+    }
+}
+
 /// Advisory attribute-statistics methods (epic #737, #733).
 impl Catalog {
     /// Upsert the scan-side statistics for one attribute key, replacing the

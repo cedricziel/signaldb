@@ -37,6 +37,17 @@ impl FromStr for SpanKind {
 }
 
 impl SpanKind {
+    /// Every kind, in OTel proto order. The single list of what ingest can
+    /// write, so a consumer enumerating kinds (query discovery, a facet)
+    /// cannot drift from the conversion above.
+    pub const ALL: [SpanKind; 5] = [
+        SpanKind::Internal,
+        SpanKind::Server,
+        SpanKind::Client,
+        SpanKind::Producer,
+        SpanKind::Consumer,
+    ];
+
     pub fn to_str(&self) -> &str {
         match self {
             SpanKind::Internal => "Internal",
@@ -69,6 +80,9 @@ impl FromStr for SpanStatus {
 }
 
 impl SpanStatus {
+    /// Every status, in OTel proto order. See [`SpanKind::ALL`].
+    pub const ALL: [SpanStatus; 3] = [SpanStatus::Unspecified, SpanStatus::Ok, SpanStatus::Error];
+
     pub fn to_str(&self) -> &str {
         match self {
             SpanStatus::Unspecified => "Unspecified",

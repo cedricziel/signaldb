@@ -30,14 +30,20 @@ pub mod version;
 pub use alias::safe_ident;
 pub use document::{Document, Range, ResultEnvelope};
 pub use predicate::{ComparisonOp, Leaf, Predicate, Record};
-pub use relation::{Column, Grain, Heatmap as HeatmapRelation, RelationType, RowSet, Series};
+pub use relation::{
+    Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,
+    Series,
+};
 pub use resolver::{FieldResolver, InMemoryResolver, Resolved};
 pub use source::{SourceDef, SourceRegistry};
 pub use stage::{
-    Agg, AggFn, Aggregate, DerivedField, Direction, Extract, Heatmap, HeatmapAxisX, HeatmapAxisY,
-    HeatmapValue, HistogramMode, HistogramQuantile, Order, Parser, Rank, Stage,
+    Agg, AggFn, Aggregate, DerivedField, Describe, DescribeTarget, Direction, Extract, Heatmap,
+    HeatmapAxisX, HeatmapAxisY, HeatmapValue, HistogramMode, HistogramQuantile, Order, Parser,
+    Rank, Stage,
 };
-pub use validate::{IrError, Validated, parse_document, validate};
+pub use validate::{
+    DESCRIBE_MIN_VERSION, IrError, Validated, parse_document, validate, validate_describe,
+};
 pub use value::{
     CoercionError, Literal, RelativeTime, TimestampLiteral, Truth, ValueType, coerce,
     parse_duration_ns, parse_relative_time, parse_timestamp_literal,

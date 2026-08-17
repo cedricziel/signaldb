@@ -304,11 +304,7 @@ async fn fetch_label_stats(
 
 /// Shape one catalog record into the API's `LabelStat`, deriving presence.
 fn label_stat_from_record(record: AttributeStatsRecord) -> LabelStat {
-    let presence = if record.total_rows > 0 {
-        record.present_rows as f64 / record.total_rows as f64
-    } else {
-        0.0
-    };
+    let presence = record.coverage().unwrap_or(0.0);
     LabelStat {
         name: record.attr_key,
         distinct_estimate: record.distinct_estimate,
