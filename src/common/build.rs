@@ -70,7 +70,7 @@ fn main() {
     .unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
 }
 
-/// The manifest's top-level `schema_url` (`https://signaldb.dev/schemas/X.Y.Z`);
+/// The manifest's top-level `schema_url` (`https://cedricziel.github.io/signaldb/schemas/X.Y.Z`);
 /// its last path segment is the registry version. Only the first
 /// `schema_url:` line counts — the dependency entries below it are indented.
 fn signaldb_schema_url(dir: &Path) -> String {

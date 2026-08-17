@@ -323,7 +323,10 @@ fn signaldb_schema_url_tracks_crate_version_and_manifest() {
     );
     assert_eq!(
         url,
-        format!("https://signaldb.dev/schemas/{}", env!("CARGO_PKG_VERSION")),
+        format!(
+            "https://cedricziel.github.io/signaldb/schemas/{}",
+            env!("CARGO_PKG_VERSION")
+        ),
         "registry schema_url must carry the common crate version (release-please extra-files)"
     );
     // The manifest line sits inside release-please generic-updater markers.

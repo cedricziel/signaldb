@@ -39,6 +39,16 @@ your custom registries (namespace A→Z, newest version first) → signaldb → 
 The first hit is the _primary_ definition; the rest are alternatives and are
 never hidden.
 
+The `signaldb` registry's source is
+[`otel/registry/`](https://github.com/cedricziel/signaldb/tree/main/otel/registry)
+in the repository, and its version is the SignalDB release. SignalDB's own
+telemetry declares it on every instrumentation scope as
+`schema_url: https://cedricziel.github.io/signaldb/schemas/<version>`; the
+[telemetry-schema files](https://cedricziel.github.io/signaldb/schemas/) at
+those URLs are published with this site, one per release. See
+[Self-Monitoring Trace Model](../operations/self-monitoring-traces.md) for
+what that telemetry contains.
+
 ## Prerequisites
 
 - An API key (or a signed-in session). Reading the registry needs the

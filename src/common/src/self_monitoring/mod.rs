@@ -142,7 +142,7 @@ pub(crate) fn build_metadata(config: &Configuration) -> MetadataMap {
 pub const SEMCONV_SCHEMA_URL: &str = "https://opentelemetry.io/schemas/1.43.0";
 
 /// SignalDB's own semantic-convention registry version
-/// (`https://signaldb.dev/schemas/<version>`), read from
+/// (`https://cedricziel.github.io/signaldb/schemas/<version>`), read from
 /// `otel/registry/manifest.yaml` by the build script. Every instrumentation
 /// scope SignalDB emits carries it, since the `signaldb.*` attributes are
 /// defined there (layered on [`SEMCONV_SCHEMA_URL`]). The version tracks the
