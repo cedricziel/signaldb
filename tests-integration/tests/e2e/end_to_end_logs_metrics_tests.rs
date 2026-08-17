@@ -6,7 +6,7 @@ use common::auth::{TenantContext, TenantSource};
 use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
 use futures::TryStreamExt;
 use object_store::{ObjectStore, local::LocalFileSystem};
 use opentelemetry_proto::tonic::{
@@ -134,7 +134,9 @@ async fn setup_logs_metrics_services() -> TestServices {
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
 
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        wal_config.clone(),
+    ));
     let writer_catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await

@@ -26,7 +26,7 @@ use common::config::{Configuration, QuerierConfig, WriterConfig};
 use common::flight::decode::flight_data_vec_to_batches;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
 use futures::StreamExt;
 use object_store::ObjectStore;
 use opentelemetry_proto::tonic::{
@@ -137,7 +137,9 @@ async fn setup_services() -> TestServices {
 
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        wal_config.clone(),
+    ));
     let writer_service = IcebergWriterFlightService::new(
         catalog_manager.clone(),
         object_store.clone(),

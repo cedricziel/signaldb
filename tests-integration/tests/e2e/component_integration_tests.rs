@@ -243,7 +243,9 @@ async fn test_acceptor_writer_flow() {
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
 
-    let writer_wal = Arc::new(common::wal::Wal::new(wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        wal_config.clone(),
+    ));
     let writer_catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
@@ -394,14 +396,23 @@ async fn test_acceptor_writer_flow() {
     // Verify WAL entries get marked processed on the writer side too. The
     // mark happens asynchronously after the Iceberg commit (object-store
     // visibility precedes it), so poll rather than assert instantly.
+    // The writer holds one WAL per tenant/dataset/signal, so scan every WAL
+    // it opened rather than a single global one.
     let deadline = Instant::now() + Duration::from_secs(15);
     let unprocessed = loop {
-        let unprocessed = writer_wal.get_unprocessed_entries().await.unwrap();
+        let mut unprocessed = Vec::new();
+        for (_key, wal) in writer_wal.all_wals().await {
+            unprocessed.extend(wal.get_unprocessed_entries().await.unwrap());
+        }
         if unprocessed.is_empty() || Instant::now() >= deadline {
             break unprocessed;
         }
         sleep(Duration::from_millis(100)).await;
     };
+    assert!(
+        writer_wal.wal_count().await > 0,
+        "Expected the writer to have opened a per-tenant WAL for the ingested batch"
+    );
     assert_eq!(
         unprocessed.len(),
         0,
@@ -583,7 +594,9 @@ async fn test_direct_acceptor_writer_flight() {
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Start writer
-    let writer_wal = Arc::new(common::wal::Wal::new(wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        wal_config.clone(),
+    ));
     let writer_catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
