@@ -31,6 +31,10 @@ export interface TempoSpan {
   serviceName: string;
   /** "ok" | "error" | "unset" */
   status: string;
+  /** Status description, when the span set one (IR path only). */
+  statusMessage?: string;
+  /** OTel span kind, when known (IR path only; the Tempo wire lacks it). */
+  kind?: string;
   startNs: string;
   durNs: string;
   attributes: Record<string, AttrValue>;
@@ -96,16 +100,6 @@ interface WireSpan {
   events?: WireSpanEvent[];
 }
 
-interface WireProfileSummary {
-  profileID: string;
-  timeUnixNano: string;
-  durationNano: string;
-  sampleType: string;
-  sampleUnit: string;
-  serviceName: string;
-  spanID?: string;
-}
-
 interface WireTrace {
   traceID: string;
   rootServiceName: string;
@@ -113,19 +107,6 @@ interface WireTrace {
   startTimeUnixNano: string;
   durationMs: number;
   spanSets?: { spans: WireSpan[]; matched: number }[];
-  profiles?: WireProfileSummary[];
-}
-
-function toProfileSummary(w: WireProfileSummary): ProfileSummaryView {
-  return {
-    profileId: w.profileID,
-    timeUnixNano: w.timeUnixNano,
-    durationNano: w.durationNano,
-    sampleType: w.sampleType,
-    sampleUnit: w.sampleUnit,
-    serviceName: w.serviceName,
-    spanId: w.spanID ?? null,
-  };
 }
 
 export function flattenAttrValue(v: WireValue): AttrValue {
@@ -193,34 +174,6 @@ async function tempoFetch<T>(
     );
   }
   return (await res.json()) as T;
-}
-
-export async function tempoGetTrace(
-  traceId: string,
-  range?: ResolvedRange,
-): Promise<TempoTrace> {
-  const params = new URLSearchParams({ include_profiles: "true" });
-  if (range) {
-    params.set("start", String(Math.floor(range.fromMs / 1000)));
-    params.set("end", String(Math.ceil(range.toMs / 1000)));
-  }
-  const wire = await tempoFetch<WireTrace>(
-    `traces/${encodeURIComponent(traceId)}`,
-    params,
-  );
-  const spans = (wire.spanSets ?? []).flatMap((s) => s.spans.map(toSpan));
-  const root = rootSpan(spans);
-  return {
-    traceId: wire.traceID,
-    rootServiceName: wire.rootServiceName,
-    rootTraceName: wire.rootTraceName,
-    startNs: wire.startTimeUnixNano,
-    profiles: (wire.profiles ?? []).map(toProfileSummary),
-    durationMs: wire.durationMs,
-    rootAttributes: root?.attributes ?? {},
-    rootError: root?.status === "error",
-    spans,
-  };
 }
 
 export async function tempoSearch(

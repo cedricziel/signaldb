@@ -30,6 +30,9 @@ type JsonRoute = {
   status?: number;
   /** When set, only match requests with this HTTP method. */
   method?: string;
+  /** When set, only match requests whose parsed JSON body satisfies it —
+   * for endpoints like the Query IR where the URL alone is ambiguous. */
+  bodyMatch?: (body: unknown) => boolean;
 };
 
 /**
@@ -49,34 +52,52 @@ type JsonRoute = {
 export function stubFetchRoutes(routes: JsonRoute[]) {
   const fn = vi
     .fn()
-    .mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input instanceof Request ? input.url : input);
-      const method = (
-        input instanceof Request ? input.method : (init?.method ?? "GET")
-      ).toUpperCase();
-      const route = [...routes].reverse().find((r) => {
-        const urlMatch =
-          typeof r.match === "string"
-            ? url.includes(r.match)
-            : r.match.test(url);
-        if (!urlMatch) return false;
-        if (r.method && r.method.toUpperCase() !== method) return false;
-        return true;
-      });
-      if (!route) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ error: `no stub for ${url}` }), {
+    .mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        const method = (
+          input instanceof Request ? input.method : (init?.method ?? "GET")
+        ).toUpperCase();
+        let parsedBody: unknown;
+        let bodyParsed = false;
+        const requestBody = async (): Promise<unknown> => {
+          if (bodyParsed) return parsedBody;
+          bodyParsed = true;
+          try {
+            parsedBody =
+              input instanceof Request
+                ? await input.clone().json()
+                : typeof init?.body === "string"
+                  ? JSON.parse(init.body)
+                  : undefined;
+          } catch {
+            parsedBody = undefined;
+          }
+          return parsedBody;
+        };
+        let route: JsonRoute | undefined;
+        for (const r of [...routes].reverse()) {
+          const urlMatch =
+            typeof r.match === "string"
+              ? url.includes(r.match)
+              : r.match.test(url);
+          if (!urlMatch) continue;
+          if (r.method && r.method.toUpperCase() !== method) continue;
+          if (r.bodyMatch && !r.bodyMatch(await requestBody())) continue;
+          route = r;
+          break;
+        }
+        if (!route) {
+          return new Response(JSON.stringify({ error: `no stub for ${url}` }), {
             status: 404,
-          }),
-        );
-      }
-      return Promise.resolve(
-        new Response(JSON.stringify(route.body), {
+          });
+        }
+        return new Response(JSON.stringify(route.body), {
           status: route.status ?? 200,
           headers: { "Content-Type": "application/json" },
-        }),
-      );
-    });
+        });
+      },
+    );
   vi.stubGlobal("fetch", fn);
   generatedClient.setConfig({ baseUrl: "http://localhost", fetch: fn });
   return fn;
