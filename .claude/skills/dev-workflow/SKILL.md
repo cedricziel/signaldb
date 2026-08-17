@@ -9,6 +9,11 @@ Read `CLAUDE.md` for build/test/run commands, storage locations, Docker
 compose, and configuration — all standard `cargo`/`pnpm` invocations. Use
 `commit-discipline` for semantic-commit format.
 
+Read `docs/contributing/benchmarking.md` for the Criterion micro-benchmark
+suite: `scripts/run-benches.sh` (all targets, `-p <crate>`, or `-- --baseline
+main` to compare against a saved baseline), what each bench target measures,
+and the nightly trend/regression workflow.
+
 ## Gotchas not in CLAUDE.md
 
 - **Pre-commit hook is staged-file gated, not "run manually."**

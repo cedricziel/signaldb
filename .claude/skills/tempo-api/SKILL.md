@@ -22,11 +22,3 @@ is documented in `docs/architecture/flight-communication.md`.
 SignalDB's native, non-dialect query surface is the Query IR
 (`POST /api/v1/query`, `docs/users/querying-ir.md`) — Tempo/LogQL/Prometheus
 are compatibility dialects that sit alongside it, not superseded by it.
-
-## Gotcha not in the docs above
-
-Tag-value lookups (`distinct_values_sql` in `endpoints/tempo.rs`) apply the
-`start`/`end` window twice: once as a precise `start_time_unix_nano` row
-bound, and again as an `Hour(timestamp)` bound on the partition column —
-mirroring the querier's trace-lookup path so Iceberg partitions actually
-prune instead of every Parquet file being scanned per tag dropdown.

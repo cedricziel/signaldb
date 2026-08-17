@@ -7,12 +7,16 @@ user-invocable: false
 # SignalDB Multi-Tenancy & Authentication
 
 Read `docs/users/authentication.md` for the credential model (API keys,
-session cookies, OAuth tokens), headers, error codes, rate limits/quotas, and
-the admin/self-service HTTP APIs. Read `docs/operations/table-provisioning.md`
-for how a tenant's Iceberg tables come into existence. Read
-`docs/architecture/decisions/users-tenant-membership.md` for the phased
-human-user/role model (Argon2id passwords, `tenant_memberships`, sessions) —
-implementation is foundation-only today, no role enforcement yet.
+session cookies, OAuth tokens), headers, error codes, rate limits/quotas
+(incl. the `tenant:manage` scope and the tenant management API at
+`/api/v1/manage`), and the admin/self-service HTTP APIs. Read
+`docs/operations/table-provisioning.md` for how a tenant's Iceberg tables come
+into existence. Read `docs/architecture/decisions/users-tenant-membership.md`
+for the phased human-user/role model (Argon2id passwords,
+`tenant_memberships`, sessions) — implementation is foundation-only today, no
+role enforcement yet. Read `docs/users/client-retry.md` for the 429
+retry-after contract (headers, body shape, `signaldb_rate_limit_rejections_total`
+metric) and how the SDK/CLI/MCP/UI clients retry it.
 
 Isolation-layer paths (WAL, Iceberg namespace, object store) and slug
 resolution (`get_tenant_slug`/`get_dataset_slug`) are the `storage-layout`

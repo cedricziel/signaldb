@@ -12,14 +12,14 @@ update.
 
 Docs are organized by audience:
 
-| Location | Audience | Contents |
-|----------|----------|----------|
-| `docs/users/` | Sends data / runs queries | OTLP setup, Tempo API usage, Grafana plugin, API keys from the client side |
-| `docs/operations/` | Runs SignalDB | Deployment, configuration, WAL persistence, compactor runbooks, troubleshooting |
-| `docs/architecture/` | Changes SignalDB | Architecture overview, storage layout, service discovery, Flight communication |
-| `docs/architecture/decisions/` | Changes SignalDB | Point-in-time design records (ADR-like) |
-| `docs/contributing/` | Changes SignalDB | Prescriptive standards (Rust coding rules); `@`-included from CLAUDE.md |
-| `.claude/skills/` | Agents | Thin routers into docs/ and code plus agent-facing gotchas; never a second copy of a doc |
+| Location                       | Audience                  | Contents                                                                                 |
+| ------------------------------ | ------------------------- | ---------------------------------------------------------------------------------------- |
+| `docs/users/`                  | Sends data / runs queries | OTLP setup, Tempo API usage, Grafana plugin, API keys from the client side               |
+| `docs/operations/`             | Runs SignalDB             | Deployment, configuration, WAL persistence, compactor runbooks, troubleshooting          |
+| `docs/architecture/`           | Changes SignalDB          | Architecture overview, storage layout, service discovery, Flight communication           |
+| `docs/architecture/decisions/` | Changes SignalDB          | Point-in-time design records (ADR-like)                                                  |
+| `docs/contributing/`           | Changes SignalDB          | Prescriptive standards (Rust coding rules); `@`-included from CLAUDE.md                  |
+| `.claude/skills/`              | Agents                    | Thin routers into docs/ and code plus agent-facing gotchas; never a second copy of a doc |
 
 `docs/users/` covers OTLP ingestion, Prometheus remote_write, SQL querying,
 the Tempo API reference, the Grafana datasource, and client authentication.
@@ -45,7 +45,7 @@ one) rather than bolting user guidance onto README.md.
 audience: user | operator | contributor
 type: tutorial | how-to | reference | explanation | decision-record
 status: living | record
-sources:            # code paths this doc describes; globs allowed
+sources: # code paths this doc describes; globs allowed
   - src/common/src/wal/**
 ---
 ```
@@ -55,7 +55,7 @@ sources:            # code paths this doc describes; globs allowed
   off this field.
 - `status: record` — point-in-time document; exempt from freshness checks.
 - `sources` — how tooling maps a code diff to the docs it may invalidate. Name
-  the files whose *stated contract* the doc describes (a CLI, a config struct,
+  the files whose _stated contract_ the doc describes (a CLI, a config struct,
   an endpoint router, a schema) — never a whole crate. Broad globs cause false
   nags, and false nags get ignored or padded away.
 
@@ -110,7 +110,7 @@ Before wrapping up a change, check what it invalidated:
 
 The `TaskCompleted` hook and CI (`scripts/check-doc-freshness.sh`) enforce
 this: a living doc whose `sources` changed without the doc changing blocks
-once. The right response is to *read the doc against the diff and edit only
-what is now wrong* — deleting a stale sentence counts; adding a paragraph to
+once. The right response is to _read the doc against the diff and edit only
+what is now wrong_ — deleting a stale sentence counts; adding a paragraph to
 satisfy the check does not. If the doc is still accurate, say so (locally: one
 line; on the PR: the `docs-not-needed` label).
