@@ -8,7 +8,13 @@ jobs:
   check:
     name: Docs updated with their sources
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'docs-not-needed') }}
+    # Release PRs are excluded: release-please only bumps versions in manifests
+    # that living docs declare as sources (otel/registry/manifest.yaml, the
+    # Cargo.toml files), which trips the gate on every release without any
+    # documentation actually going stale.
+    if: >-
+      ${{ !contains(github.event.pull_request.labels.*.name, 'docs-not-needed')
+      && !startsWith(github.head_ref, 'release-please--') }}
     steps:
       - uses: actions/checkout@v7
         with:
