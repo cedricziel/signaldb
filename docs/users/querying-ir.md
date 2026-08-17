@@ -115,8 +115,14 @@ Operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `between`, `contains`,
 
 Some logical fields are **retrieval-only**: they can appear in `fields`
 projections but are rejected in predicates, `aggregate.by`, `topk.of`,
-`bottomk.of`, and `order` keys. The log `body` is retrieval-only today. A
-retrieval-only field used in a predicate raises an `UnfilterableField` error.
+`bottomk.of`, and `order` keys. The log `body` and the trace `span_events`
+are retrieval-only today. A retrieval-only field used in a predicate raises an
+`UnfilterableField` error.
+
+`span_events` on `traces` is the span's whole events list as a JSON string:
+`[{"name", "timestamp_unix_nano", "attributes": {...}}, ...]`, `null` for a
+span that recorded none. To filter on an exception, use the `exception.*`
+fields below instead of the list.
 
 ### Addressing an attribute scope
 
