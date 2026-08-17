@@ -95,7 +95,10 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
   structured, versioned IR document (no dialect string) via the generated API
-  client, rendering the declared `rows`/`series`/`table` result.
+  client, rendering the declared `rows`/`series`/`table` result. Any warnings
+  the response carries are shown above the result — a group-by field nothing in
+  the window carries names itself there, with the closest real field as a
+  suggestion, instead of silently rendering one `null`-labelled group.
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace, and, for a span
   with a linked profile, offers a "Profile: `<sample type>` →" button that
