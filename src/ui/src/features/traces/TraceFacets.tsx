@@ -18,6 +18,9 @@ const NUM = new Intl.NumberFormat();
  * nothing and simply carry no info glyph). */
 const FACET_KEYS = FACET_FIELDS.map((f) => f.field);
 
+/** The filter the errors-only toggle adds: the root span's OTel status. */
+const ERRORS_ONLY: TraceFilter = { field: "status", value: "Error" };
+
 interface Props {
   range: ResolvedRange;
   /** Cache scope: window plus tenant context. */
@@ -43,11 +46,27 @@ export function TraceFacets({
 }: Props) {
   const [open, setOpen] = useState<string | null>(null);
   const semantics = useSemantics(FACET_KEYS);
+  // "Errors only" is the status facet's Error value as a one-click toggle;
+  // going through the same filter keeps groups, list, volume, and facet
+  // counts in step.
+  const errorsOnly = filters.some(
+    (f) => f.field === ERRORS_ONLY.field && f.value === ERRORS_ONLY.value,
+  );
 
   return (
     <aside className="sidebar" aria-label="Facets">
       <SidebarResizer />
       <div className="sidebar-head">Facets</div>
+      <label className="sidebar-toggle">
+        <input
+          type="checkbox"
+          checked={errorsOnly}
+          onChange={() =>
+            errorsOnly ? onRemoveFilter(ERRORS_ONLY) : onAddFilter(ERRORS_ONLY)
+          }
+        />
+        Errors only
+      </label>
       <div className="fieldlist">
         {FACET_FIELDS.map((facet) => {
           const active = filters.filter((f) => f.field === facet.field);
