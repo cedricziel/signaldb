@@ -35,6 +35,13 @@ pub struct ManifestFileInfo {
     /// left untouched rather than silently swept into another partition's
     /// rewrite.
     pub partition_hours: Option<i64>,
+    /// The sort order id this file attests, if any.
+    ///
+    /// `None` means the file claims no ordering — written before the table
+    /// declared one, or by a producer that could not guarantee it. Readers
+    /// treat such a file as unsorted, so this is where the ordering contract's
+    /// honesty is observable per file.
+    pub sort_order_id: Option<i32>,
 }
 
 /// Reads manifest files to extract data file information
@@ -195,6 +202,7 @@ impl ManifestReader {
                     partition_hours: crate::iceberg::partition::data_file_partition_hours(
                         data_file,
                     ),
+                    sort_order_id: *data_file.sort_order_id(),
                 });
             }
         }

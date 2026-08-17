@@ -172,6 +172,17 @@ Any other `do_get` ticket (including `find_trace:...`, `search_traces:...`, and 
 | `query_ir:{tenant_slug}:{dataset_slug}:{params_json}`                        | Native Query IR (`IrQueryParams` as JSON: a versioned IR `document` plus the server-stamped `now_ns` for deterministic relative-time resolution). The querier validates and lowers the single-signal IR to a DataFusion plan; returns the declared `rows`/`series`/`table` envelope           |
 | anything else                                                                | Treated as a raw SQL query executed via DataFusion                                                                                                                                                                                                                                            |
 
+Whichever ticket a query arrives on, it executes in a session built by
+`querier::session_config_from` from `[querier.datafusion]`. Those options are
+not merely a tuning surface: `split_file_groups_by_statistics` is what allows an
+ordered scan over files that attest the table's
+[declared sort order](storage-layout.md#declared-sort-order) to skip a sort it
+would otherwise have to perform. Whether that ordering survives from the scan to
+the physical plan depends on the options and optimizer rules actually in force,
+so the function is public and the ordering tests plan against it rather than
+against a session of their own — a rule that quietly dropped the ordering would
+break no result, it would only make queries slow again.
+
 The standalone querier binary additionally serves Tempo's `tempopb.Querier`
 gRPC protocol on the same port as Flight (see the
 [Tempo API reference](../users/tempo-api-reference.md#tempo-grpc-querier-protocol));

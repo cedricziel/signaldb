@@ -255,7 +255,8 @@ async fn test_logs_table_compaction() -> Result<()> {
 
 /// Test that logs compaction produces data sorted by
 /// (timestamp ASC, service_name ASC, severity_text ASC) for query
-/// performance, per `ParquetRewriter::get_sort_columns`. Batches are
+/// performance, per the logs table's declared sort order
+/// (`common::iceberg::schemas::TableSchema::sort_key_columns`). Batches are
 /// written deliberately out of timestamp order so that observing sorted
 /// output afterward can only be explained by the compactor's sort step,
 /// not by insertion order happening to already be sorted.
@@ -344,7 +345,7 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
 
     // Verify the compacted table's rows are actually sorted by
     // (timestamp ASC, service_name ASC, severity_text ASC), per
-    // `ParquetRewriter::get_sort_columns` for the "logs" table. The SELECT
+    // the logs table's declared sort key. The SELECT
     // below has no ORDER BY, so this reflects the physical row order the
     // compactor wrote to Parquet, not an order DataFusion imposed for us.
     let identifier = catalog_manager.build_table_identifier(tenant_id, dataset_id, table_name);

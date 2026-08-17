@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 use common::CatalogManager;
+use common::iceberg::sort::{DeclaredSortColumn, UndeclaredFallback, WriteSortKey, write_sort_key};
 use common::schema::materialized_column_name;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::ScalarValue;
@@ -42,9 +43,11 @@ const MIN_PER_SORTER_MB: u64 = 64;
 
 /// Whether a partition read should be sorted for output, or is only being
 /// scanned for statistics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SortRows {
-    Yes,
+    /// Sort by these columns, in this key order.
+    By(Vec<DeclaredSortColumn>),
+    /// Read in whatever order the scan produces.
     No,
 }
 
@@ -256,8 +259,16 @@ impl ParquetRewriter {
         // only the *write* uses the evolved schema. Batches read under the
         // old schema are reconciled to it by `dropped_columns` and
         // `backfill`, exactly as they were before the rewrite streamed.
+        //
+        // The sort key comes from `write_table`: it is the table the output
+        // files will be attested against, so its declaration is the one they
+        // must honor.
+        let WriteSortKey {
+            columns: sort_columns,
+            attest,
+        } = Self::rewrite_sort_key(&write_table);
         let stream = self
-            .partition_stream(table, partition_hours, SortRows::Yes)
+            .partition_stream(table, partition_hours, SortRows::By(sort_columns))
             .await
             .context("Failed to read and merge partition data")?;
 
@@ -268,10 +279,17 @@ impl ParquetRewriter {
             target_file_size_bytes,
         );
 
-        let new_files =
-            iceberg_rust::arrow::write::write_parquet_partitioned(&write_table, output, None)
+        // Attest the order only when the table declares one and the rows were
+        // actually sorted by it. The rewrite's transforms and chunking
+        // preserve row order, so what the sorted scan produced is what the
+        // files contain.
+        let new_files = if attest {
+            iceberg_rust::arrow::write::write_sorted_parquet_partitioned(&write_table, output, None)
                 .await
-                .context("Failed to write compacted Parquet files")?;
+        } else {
+            iceberg_rust::arrow::write::write_parquet_partitioned(&write_table, output, None).await
+        }
+        .context("Failed to write compacted Parquet files")?;
 
         let output_size_bytes: u64 = new_files
             .iter()
@@ -671,40 +689,34 @@ impl ParquetRewriter {
         }
     }
 
-    /// Get sort columns for a given table type
+    /// The key this rewrite sorts by, taken from the table's own declaration.
     ///
-    /// Returns a list of (column_name, ascending, nulls_first) tuples
-    /// for sorting compacted data. Returns empty vector for unknown tables.
-    fn get_sort_columns(table_name: &str) -> Vec<(&'static str, bool, bool)> {
-        // Classified through the crate's single table->signal predicate
-        // (see SignalType::from_table_name) rather than a second hand-rolled
-        // match, so a table this crate doesn't yet know about warns instead
-        // of silently compacting unsorted (issue #1014's failure mode).
-        match crate::retention::SignalType::from_table_name(table_name) {
-            Ok(crate::retention::SignalType::Traces) => {
-                vec![("timestamp", true, true), ("trace_id", true, true)]
-            }
-            Ok(crate::retention::SignalType::Logs) => vec![
-                ("timestamp", true, true),
-                ("service_name", true, true),
-                ("severity_text", true, true),
-            ],
-            // All 5 metrics types use the same sort pattern
-            Ok(crate::retention::SignalType::Metrics) => vec![
-                ("timestamp", true, true),
-                ("metric_name", true, true),
-                ("service_name", true, true),
-            ],
-            Ok(crate::retention::SignalType::Profiles) => {
-                vec![("timestamp", true, true), ("service_name", true, true)]
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "No sort configuration for table {table_name}, data will not be sorted"
-                );
-                vec![]
-            }
+    /// The declared sort order is the single source of truth for the ordering
+    /// contract (`common::iceberg::schemas::TableSchema::sort_key_columns`),
+    /// so the compactor reads it rather than keeping a second copy that could
+    /// drift from what the tables say and what the query engine is told.
+    ///
+    /// A table with no declaration — created by an older build and not yet
+    /// reconciled by an `ensure_table` load — still gets sorted output, by the
+    /// canonical key resolved by column name, but its files are written
+    /// unattested: there is no declared order for them to attest. A table this
+    /// crate does not recognize at all is compacted unsorted, and says so.
+    fn rewrite_sort_key(table: &Table) -> WriteSortKey {
+        let table_name = table.identifier().name();
+        let key = write_sort_key(
+            table.metadata(),
+            table_name,
+            UndeclaredFallback::CanonicalKey,
+        );
+        if key.columns.is_empty() {
+            tracing::warn!("No sort configuration for table {table_name}, data will not be sorted");
+        } else if !key.attest {
+            tracing::debug!(
+                table = %table_name,
+                "Table declares no sort order; sorting by the canonical key and writing unattested"
+            );
         }
+        key
     }
 
     /// Warn about `[compactor]` memory settings that cannot work together.
@@ -880,7 +892,7 @@ impl ParquetRewriter {
             })?;
 
         let sort_cols = match sort {
-            SortRows::Yes => Self::get_sort_columns(&table_name),
+            SortRows::By(columns) => columns,
             // The statistics pass is order-independent, so it plans no
             // sort — which is what keeps the extra scan cheap.
             SortRows::No => vec![],
@@ -888,7 +900,7 @@ impl ParquetRewriter {
         let sorted_df = if !sort_cols.is_empty() {
             let sort_exprs: Vec<_> = sort_cols
                 .into_iter()
-                .map(|(col_name, asc, nulls_first)| col(col_name).sort(asc, nulls_first))
+                .map(|column| col(column.name).sort(!column.descending, column.nulls_first))
                 .collect();
 
             df.sort(sort_exprs)
@@ -1265,11 +1277,13 @@ mod tests {
         );
     }
 
-    /// Every signal table classified by `SignalType::from_table_name` must
-    /// get a non-empty sort order — a table silently falling through to the
-    /// `_` arm compacts unsorted forever (issue #1014's failure mode).
+    /// Every signal table this crate can classify must get a non-empty sort
+    /// key — a table silently falling through to the empty case compacts
+    /// unsorted forever (issue #1014's failure mode). The key now comes from
+    /// the shared declaration in `common`, so this also guards against the
+    /// compactor and the table metadata drifting apart.
     #[test]
-    fn get_sort_columns_covers_every_known_signal_table() {
+    fn the_canonical_sort_key_covers_every_known_signal_table() {
         for table in [
             "traces",
             "logs",
@@ -1281,7 +1295,11 @@ mod tests {
             "profiles",
         ] {
             assert!(
-                !ParquetRewriter::get_sort_columns(table).is_empty(),
+                crate::retention::SignalType::from_table_name(table).is_ok(),
+                "table '{table}' is not classified by this crate"
+            );
+            assert!(
+                !common::iceberg::sort::canonical_sort_columns(table).is_empty(),
                 "table '{table}' has no sort columns"
             );
         }

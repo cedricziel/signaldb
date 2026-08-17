@@ -1112,6 +1112,34 @@ in a single pass — at `INFO` that flooded the log at startup. The per-batch
 
 **Removing a promoted column:** demotion is acted on at rewrite: unpinned promoted columns with no recorded query demand are dropped from the schema at the next compaction cycle (the data remains queryable through the attributes map). To force-keep a column, pin it in `[schema.materialized_labels]`.
 
+## Sort Order and Ordering Attestation
+
+**Warning `No sort configuration for table <name>, data will not be sorted`:**
+the compactor does not recognize the table as one of SignalDB's signal tables,
+so it has neither a declared sort order to read nor a canonical key to fall
+back on. Its data is compacted unsorted. Expect this only for a custom table;
+seeing it for `traces`, `logs`, `metrics_*` or `profiles` means the table name
+in the catalog is not what the compactor expects.
+
+**Debug `Table declares no sort order; sorting by the canonical key and writing
+unattested`:** the table predates the
+[declared sort order](../../architecture/storage-layout.md#declared-sort-order)
+and no writer has reconciled it yet. Compaction still sorts its output, but the
+files carry no ordering claim, so ordered queries over them keep an explicit
+sort. It resolves itself the next time a writer loads the table (which declares
+the order) and compacts it again — no action needed.
+
+**Warning `Cannot read the declared sort order; writing files unattested`:** the
+table's metadata could not be resolved far enough to read its schema or default
+sort order. Output is still written and still correct, just unattested. This is
+a metadata problem rather than a compaction one: check the catalog is reachable
+and the table's current schema resolves.
+
+**Ordered queries got slower after a compaction:** check whether the partition's
+files are attested. A partition holding even one unattested file cannot have its
+sort elided, so `ORDER BY timestamp … LIMIT n` falls back to sorting the range.
+Compacting the partition again once the table declares an order converges it.
+
 ## Additional Resources
 
 - [Operations Guide](operations.md)

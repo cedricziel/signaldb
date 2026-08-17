@@ -13,4 +13,5 @@ mod partition_scoped_compaction;
 mod retention_cutoff;
 mod retention_failure_scenarios;
 mod snapshot_expiration;
+mod sort_attestation;
 mod target_encoded_file_size;

@@ -34,6 +34,13 @@ A data file SHALL only be attributed the declared sort order (in file metadata a
 - **WHEN** a code path writes rows whose order it cannot guarantee (e.g. a recovery/backfill path without a sort step)
 - **THEN** the resulting file carries no ordering attribution, and queries over it remain correct (it is treated as unsorted)
 
+#### Scenario: Sorted output without a declaration stays unattributed
+
+- **WHEN** a producer sorts its rows by the canonical key for a table whose metadata does not (yet) declare that sort order
+- **THEN** the resulting file carries no ordering attribution, even though its rows are in key order
+
+Attribution is a claim about the table's _declared_ order, so there is nothing for such a file to attest. Sorting without claiming is the conservative direction and MUST NOT be "optimized" into attribution later: the physical layout is whatever the producer already produced, and no reader can be misled into eliding a sort it needed.
+
 ### Requirement: Queries are correct over mixed sorted and unsorted files
 
 Query results SHALL be identical (up to result-set ordering guarantees actually requested by the query) regardless of whether the files scanned are ordering-attributed, unattributed, or a mixture. Sort elimination or ordered-scan optimizations MUST only be applied when every file relied upon carries an honest ordering attribution; otherwise the engine SHALL retain explicit sorts.
