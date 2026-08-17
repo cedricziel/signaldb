@@ -295,6 +295,7 @@ mod tests {
             capped: false,
             query_hits: hits,
             promote_streak: streak,
+            updated_at: "2026-08-17 09:00:00".into(),
         }
     }
 
