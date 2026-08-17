@@ -1,5 +1,16 @@
 # SignalDB Distribution Configuration
 # Copy to signaldb.toml and adjust for your environment
+#
+# Environment variable overrides: every field below can be set via
+# SIGNALDB_<SECTION>_<FIELD> for single-word fields (e.g. SIGNALDB_DATABASE_DSN),
+# but a field whose TOML key itself contains an underscore (e.g.
+# discovery.heartbeat_interval, wal.max_segment_size, any [compactor.*] field)
+# needs the double-underscore form instead: SIGNALDB__DISCOVERY__HEARTBEAT_INTERVAL,
+# SIGNALDB__WAL__MAX_SEGMENT_SIZE, SIGNALDB__COMPACTOR__TICK_INTERVAL. The
+# single-underscore parser splits on every underscore, so applying it to a
+# multi-word field produces the wrong path (e.g. discovery.heartbeat.interval)
+# and silently does nothing -- no error, the value is just never read. When in
+# doubt, use the double-underscore form.
 
 [database]
 # Database for internal metadata storage
@@ -134,15 +145,17 @@ dsn = "file:///.data/storage"
 [schema]
 # Iceberg catalog configuration for table metadata
 #
-# IMPORTANT: the in-memory default only works in monolithic mode (the
-# single `signaldb` binary). Standalone services REFUSE to start with an
-# in-memory catalog — every process would get its own private catalog.
-# Distributed deployments must point catalog_uri at a shared database:
-# PostgreSQL for production, a shared sqlite:// file for single-host dev.
+# IMPORTANT: only SQLite is supported here (in-memory or file-backed) — this
+# is the Iceberg metadata catalog, a different database from [database]/
+# [discovery] above, and unlike those it REJECTS a postgres:// catalog_uri
+# outright at startup. The in-memory default only works in monolithic mode
+# (the single `signaldb` binary); standalone services REFUSE to start with
+# an in-memory catalog, since every process would get its own private one.
+# Distributed deployments must point catalog_uri at a shared, file-backed
+# sqlite:// database reachable from every service (e.g. a shared volume).
 catalog_type = "sql"                   # sql (recommended) or memory
 catalog_uri = "sqlite::memory:"        # In-memory SQLite catalog (monolithic only)
-# catalog_uri = "sqlite://.data/catalog.db"  # Persistent SQLite catalog
-# catalog_uri = "postgres://user:password@localhost:5432/iceberg"  # Production PostgreSQL
+# catalog_uri = "sqlite://.data/catalog.db"  # Persistent SQLite catalog (shared-volume for distributed deployments)
 
 # Default schemas to create for new tenants
 [schema.default_schemas]
@@ -585,12 +598,12 @@ default_tenant = "default"
 # SIGNALDB__MCP__ROUTER_URL=http://localhost:3000
 # SIGNALDB_DATABASE_DSN=postgres://user:pass@localhost/signaldb
 # SIGNALDB_STORAGE_DSN=file:///data/signaldb
-# SIGNALDB_SCHEMA_CATALOG_TYPE=sql
-# SIGNALDB_SCHEMA_CATALOG_URI=postgres://user:pass@localhost:5432/iceberg
-# SIGNALDB_TENANTS_DEFAULT_TENANT=my_tenant
+# SIGNALDB__SCHEMA__CATALOG_TYPE=sql
+# SIGNALDB__SCHEMA__CATALOG_URI=postgres://user:pass@localhost:5432/iceberg
+# SIGNALDB__TENANTS__DEFAULT_TENANT=my_tenant
 
 # Production environment example with Iceberg:
 # SIGNALDB_DATABASE_DSN=postgres://signaldb:password@postgres:5432/signaldb_metadata
 # SIGNALDB_STORAGE_DSN=s3://my-data-bucket/iceberg-tables/
-# SIGNALDB_SCHEMA_CATALOG_TYPE=sql  
-# SIGNALDB_SCHEMA_CATALOG_URI=postgres://iceberg:password@postgres:5432/iceberg_catalog
+# SIGNALDB__SCHEMA__CATALOG_TYPE=sql
+# SIGNALDB__SCHEMA__CATALOG_URI=postgres://iceberg:password@postgres:5432/iceberg_catalog

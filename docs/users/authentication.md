@@ -69,6 +69,16 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
   selected tenant's datasets. API-key requests remain supported and omit
   the human identity.
 
+## OAuth access tokens (MCP connectors)
+
+A third credential type, alongside API keys and session cookies, for
+Claude.ai / ChatGPT MCP connectors (see [MCP server](mcp.md#claude-ai-and-chatgpt-oauth-connector)).
+An `Authorization: Bearer` value starting with `sdb_at_` is an opaque OAuth
+access token: the tenant is resolved **from the token record itself**, not
+from `X-Tenant-ID` — that header is ignored for this credential, because an
+OAuth session is bound to the single tenant it was granted at consent and
+cannot be redirected to another one.
+
 ## Error codes
 
 | HTTP | gRPC                | Meaning                                                                                       |
@@ -104,6 +114,20 @@ operator via one of:
 | Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                                                                                                                                                         |
 | Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                                                                                                                                              |
 | CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`; `--no-retry` / `SIGNALDB_NO_RETRY=1` to fail fast on throttling, exit code 4 — see [client retry](client-retry.md)) |
+
+### Admin API endpoints
+
+All mounted at `/api/v1/admin`, requiring `Authorization: Bearer <admin-api-key>`:
+
+| Endpoint                                           | Methods          | Description                                                                  |
+| -------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------- |
+| `/api/v1/admin/tenants`                            | GET, POST        | List/create tenants                                                          |
+| `/api/v1/admin/tenants/{id}`                       | GET, PUT, DELETE | Manage a tenant                                                              |
+| `/api/v1/admin/tenants/{id}/api-keys`              | GET, POST        | List/create API keys                                                         |
+| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE, PATCH    | Revoke a key / update its scopes and dataset restriction                     |
+| `/api/v1/admin/tenants/{id}/datasets`              | GET, POST        | List/create datasets                                                         |
+| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE           | Delete a dataset                                                             |
+| `/api/v1/admin/users`                              | POST             | Create a human user + initial tenant membership (`signaldb-cli user create`) |
 
 Example (operator-side):
 
@@ -176,6 +200,28 @@ The `signaldb-sdk` Rust crate is the single client for the whole HTTP API —
 admin, management, tenant self-service, and the PromQL/LogQL/TraceQL/Query-IR
 query-compat endpoints (SQL is separate, served over Arrow Flight). The CLI
 and MCP server are both built on it and expose no capability it doesn't.
+
+## Rate limits and quotas
+
+Configured under `[auth.default_limits]` (overridable per tenant via
+`[[auth.tenants]].limits`); see the `configuration` reference for the TOML
+keys. Unset fields mean unlimited, and tenants provisioned through the Admin
+API get the defaults.
+
+| Limit                                                      | Enforced at                                                           | On exceed                                   |
+| ---------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------- |
+| `max_ingest_requests_per_sec` / `max_ingest_bytes_per_sec` | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / `RESOURCE_EXHAUSTED`                  |
+| `max_query_requests_per_sec`                               | Router HTTP query API (`/tempo`, `/api/v1`)                           | 429                                         |
+| `max_api_keys` (active keys only)                          | Admin API key creation                                                | 429 `quota_exceeded`                        |
+| `max_datasets`                                             | Admin API dataset creation                                            | 429 `quota_exceeded`                        |
+| `max_storage_bytes`                                        | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / `RESOURCE_EXHAUSTED` `quota_exceeded` |
+| `[querier].max_concurrent_queries_per_tenant`              | Querier                                                               | query rejected                              |
+
+Ingest and query rate limits are independent token buckets per tenant.
+Storage quotas compare cached per-tenant usage — refreshed from Iceberg
+manifests every `[auth].storage_usage_refresh_interval` (default 60s) —
+against `max_storage_bytes`, so enforcement is eventually consistent by
+design; usage is exported as the `signaldb.tenant.storage_usage` gauge.
 
 ## Tenant self-service API
 
