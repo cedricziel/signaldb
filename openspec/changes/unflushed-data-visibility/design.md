@@ -76,7 +76,13 @@ bounded and multi-writer composes.
 
 `writer_id` here is the WAL-persisted identity
 (`Wal::load_or_create_writer_id`), stable across restarts — not the
-per-incarnation ServiceBootstrap UUID. **Sequences stay strictly
+per-incarnation ServiceBootstrap UUID. Note that this identity is per **WAL
+directory**, which since #1299 means per `(tenant, dataset, signal)`, not
+per writer process: `signaldb.hot.<writer_id>.seq` is therefore one key per
+WAL feeding the table (still bounded — a tenant's own WAL plus, at most,
+the adopted legacy root one), and a querier fanning out to a single writer
+node will see several `writer_id`s from it. Stage 2 must size
+its fan-out and its watermark handling for that, not for one id per node. **Sequences stay strictly
 increasing across restarts via an epoch**: a counter persisted in
 the WAL directory alongside `writer_id` is incremented once per writer
 start, and sequences are `(epoch << 32) | counter`. Replay reassigns

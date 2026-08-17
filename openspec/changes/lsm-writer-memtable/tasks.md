@@ -6,16 +6,23 @@
       `(tenant, dataset, table)` from batch metadata, used by both the
       `do_put` path and WAL replay (covers the metadata tenant override and
       `metrics_gauge` fallback from `determine_target_table`); unit tests
-      pinning ingest/replay agreement, including the `Flush`-marker scope
-      fix (marker scopes from metadata-derived routing, not WAL defaults)
+      pinning ingest/replay agreement. The `Flush`-marker scope fix this
+      task originally carried is dropped as a dead bug: #1299 stamps every
+      live WAL's entries with that WAL's own tenant, and no production code
+      has ever appended a `Flush` marker to the writer WAL (evidence in
+      design.md D8). Also add a comment at `drain_pending`'s `GroupKey`
+      recording why its
+      `Arc::as_ptr` identity is sound for a value confined to one cycle and
+      would not be for one that outlives it
 - [ ] 1.2 Move `coerce_batch_to_schema` and `json_strings_to_map_array`
       from the writer into `common` (no behavior change); writer commit
       path consumes them from there
-- [ ] 1.3 Add `memtable` module: per-`(tenant, dataset, table)` groups with
-      active/flushing double buffering behind their own lock, byte
-      accounting via `get_array_memory_size`, per-entry bookkeeping (WAL
-      entry ids, trace links); unit tests for insert/swap/restore-on-
-      failure/evict accounting
+- [ ] 1.3 Add `memtable` module: per-`(wal writer_id, tenant, dataset,
+      table)` groups with active/flushing double buffering behind their own
+      lock, byte accounting via `get_array_memory_size`, per-entry
+      bookkeeping (WAL entry ids, trace links); unit tests for insert/swap/
+      restore-on-failure/evict accounting, plus one pinning that two WALs
+      feeding the same table stay in separate groups
 
 ## 2. Ingest and drain paths
 
@@ -34,12 +41,14 @@
       failure-injection tests for commit failure, partial mark failure,
       and concurrent insert during flush; adapt processor tests, keeping
       the WAL-append-then-drain tests green via 2.3
-- [ ] 2.3 Per-tick WAL reconciliation: diff unprocessed entry ids
-      (metadata only) against resident ids, lazily load payloads for the
-      difference; dead-letter evicts the resident copy and releases bytes;
-      tests: failed-commit retry without restart, poison entry reaches
-      dead-letter after the existing failure budget, direct-WAL-append
-      entries get drained
+- [ ] 2.3 Per-tick WAL reconciliation, per WAL: diff that WAL's unprocessed
+      entry ids (metadata only) against resident ids, lazily load payloads
+      for the difference; dead-letter evicts the resident copy and releases
+      bytes; tests: failed-commit retry without restart, poison entry
+      reaches dead-letter after the existing failure budget,
+      direct-WAL-append entries get drained. The listing itself stays
+      linear in the total entries ever written until #1305 gives segment
+      cleanup a caller; claim no better, in docs or in metric descriptions
 - [ ] 2.4 Bounded incremental startup replay: alternate load-and-commit at
       the soft budget, sequential segment iteration instead of per-entry
       `read_entry_data`; integration tests — restart with un-committed
@@ -54,9 +63,11 @@
       `memtable_hard_bytes`, per-group `max_uncommitted_bytes`; defaults +
       signaldb.dist.toml documentation
 - [ ] 3.2 Soft-budget pressure signal to the commit loop
-      (largest-group-first, never inline in `do_put`) and per-group byte
-      ceiling as a commit trigger; tests for budget breach, byte-ceiling
-      commit, and noisy-tenant scenarios
+      (largest-group-first, never inline in `do_put`, bounded work per tick
+      — never "loop until under budget", since nothing in the loop backs
+      off) and per-group byte ceiling as a commit trigger; tests for budget
+      breach, byte-ceiling commit, noisy-tenant scenarios, and one pinning
+      that a tick's pressure work stays bounded when every commit fails
 - [ ] 3.3 Hard-ceiling backpressure: `do_put` returns retryable
       `RESOURCE_EXHAUSTED` at the ceiling; integration test — sustained
       commit failure (catalog down) bounds resident memory, acceptor WAL

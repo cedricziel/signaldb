@@ -21,6 +21,15 @@ operators.
 - **THEN** the commit loop commits the largest group immediately and the
   remaining groups keep their normal coalescing schedule
 
+#### Scenario: Pressure work per cycle is bounded
+
+- **WHEN** memtable memory is over the soft budget and Iceberg commits keep
+  failing
+- **THEN** the commit loop does a bounded amount of pressure work per cycle
+  rather than flushing until it is under budget, so a failing catalog is not
+  retried at an unbounded rate, and resident memory is bounded by the hard
+  ceiling rather than by the pressure loop
+
 #### Scenario: Group hitting its byte ceiling commits early
 
 - **WHEN** a single group's resident bytes reach the per-group byte ceiling
@@ -33,13 +42,21 @@ operators.
 ### Requirement: Commit coalescing per tenant, dataset, and table
 
 The writer SHALL coalesce pending entries for each `(tenant, dataset, table)` into
-a single Iceberg commit, and SHALL commit a group when either a configured commit
+a single Iceberg commit per WAL those entries came from, and SHALL commit a group
+when either a configured commit
 interval has elapsed since that group's last commit OR the group's pending row
 count reaches a configured ceiling OR the group's pending bytes reach a configured
 byte ceiling OR a memory-pressure flush selects the group — whichever occurs
 first. The row and byte ceilings are upper bounds that trigger an earlier commit
 for bursts; they SHALL NOT be treated as minimums that delay commits of
 low-volume groups.
+
+A coalescing group is single-WAL by construction: entries are grouped by
+`(WAL identity, tenant, dataset, table)`, because the per-WAL idempotency marker
+a commit writes covers exactly the entries of the WAL it names. In the ordinary
+case one WAL feeds a table, and this is one commit per `(tenant, dataset, table)`
+per interval; while a second WAL is being drained (an adopted legacy root WAL) it
+is one commit per feeding WAL per interval.
 
 #### Scenario: Low-volume group commits on the interval
 
@@ -59,9 +76,9 @@ low-volume groups.
 - **WHEN** a producer sends many small batches to the same table within one commit
   interval, without reaching a row or byte ceiling or triggering memory
   pressure
-- **THEN** the writer produces at most one Iceberg commit for that table per commit
-  interval (plus at most one additional commit per ceiling-sized burst or
-  pressure flush)
+- **THEN** the writer produces at most one Iceberg commit for that table per
+  feeding WAL per commit interval (plus at most one additional commit per
+  ceiling-sized burst or pressure flush)
 
 ### Requirement: Asynchronous commit acknowledgement
 
