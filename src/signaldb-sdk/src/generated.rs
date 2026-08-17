@@ -424,6 +424,84 @@ pub mod types {
             Default::default()
         }
     }
+    ///The level at which an attribute is attached to an OTel record.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The level at which an attribute is attached to an OTel record.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "resource",
+    ///    "scope",
+    ///    "record"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum AttributeLevel {
+        #[serde(rename = "resource")]
+        Resource,
+        #[serde(rename = "scope")]
+        Scope,
+        #[serde(rename = "record")]
+        Record,
+    }
+    impl ::std::fmt::Display for AttributeLevel {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Resource => f.write_str("resource"),
+                Self::Scope => f.write_str("scope"),
+                Self::Record => f.write_str("record"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for AttributeLevel {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "resource" => Ok(Self::Resource),
+                "scope" => Ok(Self::Scope),
+                "record" => Ok(Self::Record),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for AttributeLevel {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for AttributeLevel {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for AttributeLevel {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
     /**Every definition of one attribute key across the visible registries, in
     precedence order; `primary` is the first.*/
     ///
@@ -536,6 +614,45 @@ pub mod types {
     }
     impl AvailableSchemasResponse {
         pub fn builder() -> builder::AvailableSchemasResponse {
+            Default::default()
+        }
+    }
+    ///An approximate distinct-value count.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "An approximate distinct-value count.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "at_least",
+    ///    "estimate"
+    ///  ],
+    ///  "properties": {
+    ///    "at_least": {
+    ///      "description": "When true the collector hit its cap: the true count is at least\n`estimate`, not equal to it.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "estimate": {
+    ///      "description": "The estimated number of distinct values.",
+    ///      "type": "integer",
+    ///      "format": "int64"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct CardinalityEstimate {
+        /**When true the collector hit its cap: the true count is at least
+        `estimate`, not equal to it.*/
+        pub at_least: bool,
+        ///The estimated number of distinct values.
+        pub estimate: i64,
+    }
+    impl CardinalityEstimate {
+        pub fn builder() -> builder::CardinalityEstimate {
             Default::default()
         }
     }
@@ -745,6 +862,84 @@ pub mod types {
     impl ConsentTenant {
         pub fn builder() -> builder::ConsentTenant {
             Default::default()
+        }
+    }
+    ///Which tier answered a discovery request, and therefore what it cost.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Which tier answered a discovery request, and therefore what it cost.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "metadata",
+    ///    "sampled_scan",
+    ///    "none"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum CostMode {
+        #[serde(rename = "metadata")]
+        Metadata,
+        #[serde(rename = "sampled_scan")]
+        SampledScan,
+        #[serde(rename = "none")]
+        None,
+    }
+    impl ::std::fmt::Display for CostMode {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Metadata => f.write_str("metadata"),
+                Self::SampledScan => f.write_str("sampled_scan"),
+                Self::None => f.write_str("none"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for CostMode {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "metadata" => Ok(Self::Metadata),
+                "sampled_scan" => Ok(Self::SampledScan),
+                "none" => Ok(Self::None),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for CostMode {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for CostMode {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for CostMode {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
         }
     }
     /**Request body for creating a new API key.
@@ -1207,6 +1402,232 @@ pub mod types {
             Default::default()
         }
     }
+    ///One queryable field.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One queryable field.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "filterable",
+    ///    "name",
+    ///    "origin",
+    ///    "type"
+    ///  ],
+    ///  "properties": {
+    ///    "brief": {
+    ///      "description": "The registry's one-line description, when a registry defines it.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "cardinality": {
+    ///      "$ref": "#/components/schemas/CardinalityEstimate"
+    ///    },
+    ///    "coverage": {
+    ///      "description": "The fraction of the tenant's records carrying it, when statistics\nexist. Absent means unknown — never defaulted to a number that could be\nmistaken for a measurement.",
+    ///      "type": [
+    ///        "number",
+    ///        "null"
+    ///      ],
+    ///      "format": "double"
+    ///    },
+    ///    "deprecated": {
+    ///      "description": "Whether a registry marks it deprecated.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "filterable": {
+    ///      "description": "Whether a predicate may address it (retrieval-only fields are listed,\nnot hidden).",
+    ///      "type": "boolean"
+    ///    },
+    ///    "level": {
+    ///      "$ref": "#/components/schemas/AttributeLevel"
+    ///    },
+    ///    "name": {
+    ///      "description": "The logical, dotted OTel-native name — directly usable in a predicate.",
+    ///      "type": "string"
+    ///    },
+    ///    "origin": {
+    ///      "$ref": "#/components/schemas/FieldOrigin"
+    ///    },
+    ///    "type": {
+    ///      "$ref": "#/components/schemas/LogicalType"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct DiscoveredField {
+        ///The registry's one-line description, when a registry defines it.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub brief: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub cardinality: ::std::option::Option<CardinalityEstimate>,
+        /**The fraction of the tenant's records carrying it, when statistics
+        exist. Absent means unknown — never defaulted to a number that could be
+        mistaken for a measurement.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub coverage: ::std::option::Option<f64>,
+        ///Whether a registry marks it deprecated.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub deprecated: ::std::option::Option<bool>,
+        /**Whether a predicate may address it (retrieval-only fields are listed,
+        not hidden).*/
+        pub filterable: bool,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub level: ::std::option::Option<AttributeLevel>,
+        ///The logical, dotted OTel-native name — directly usable in a predicate.
+        pub name: ::std::string::String,
+        pub origin: FieldOrigin,
+        #[serde(rename = "type")]
+        pub type_: LogicalType,
+    }
+    impl DiscoveredField {
+        pub fn builder() -> builder::DiscoveredField {
+            Default::default()
+        }
+    }
+    ///One signal source available to the tenant.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One signal source available to the tenant.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "available",
+    ///    "name"
+    ///  ],
+    ///  "properties": {
+    ///    "available": {
+    ///      "description": "Whether the tenant can query it. A registered signal with no data is\navailable and empty, never omitted.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "name": {
+    ///      "description": "The name an IR document's `from` names.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct DiscoveredSource {
+        /**Whether the tenant can query it. A registered signal with no data is
+        available and empty, never omitted.*/
+        pub available: bool,
+        ///The name an IR document's `from` names.
+        pub name: ::std::string::String,
+    }
+    impl DiscoveredSource {
+        pub fn builder() -> builder::DiscoveredSource {
+            Default::default()
+        }
+    }
+    ///One suggested value.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One suggested value.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "origin",
+    ///    "value"
+    ///  ],
+    ///  "properties": {
+    ///    "count": {
+    ///      "description": "How often it was observed, when the tier that produced it counts.",
+    ///      "type": [
+    ///        "integer",
+    ///        "null"
+    ///      ],
+    ///      "format": "int64"
+    ///    },
+    ///    "origin": {
+    ///      "$ref": "#/components/schemas/ValueOrigin"
+    ///    },
+    ///    "value": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct DiscoveredValue {
+        ///How often it was observed, when the tier that produced it counts.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub count: ::std::option::Option<i64>,
+        pub origin: ValueOrigin,
+        pub value: ::std::string::String,
+    }
+    impl DiscoveredValue {
+        pub fn builder() -> builder::DiscoveredValue {
+            Default::default()
+        }
+    }
+    ///What a discovery answer cost and how far it can be trusted.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a discovery answer cost and how far it can be trusted.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "mode",
+    ///    "sampled",
+    ///    "window_scoped"
+    ///  ],
+    ///  "properties": {
+    ///    "as_of": {
+    ///      "description": "How recent the statistics behind the answer are (as the catalog stores\nit). `null` means no statistics exist yet.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "mode": {
+    ///      "$ref": "#/components/schemas/CostMode"
+    ///    },
+    ///    "sampled": {
+    ///      "description": "Whether the answer is sampled, and therefore possibly incomplete.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "window_scoped": {
+    ///      "description": "Whether the answer is scoped to the requested time window. Maintained\nstatistics carry no time dimension, so a metadata answer says `false`\nrather than implying the range narrowed it.",
+    ///      "type": "boolean"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct DiscoveryCost {
+        /**How recent the statistics behind the answer are (as the catalog stores
+        it). `null` means no statistics exist yet.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub as_of: ::std::option::Option<::std::string::String>,
+        pub mode: CostMode,
+        ///Whether the answer is sampled, and therefore possibly incomplete.
+        pub sampled: bool,
+        /**Whether the answer is scoped to the requested time window. Maintained
+        statistics carry no time dimension, so a metadata answer says `false`
+        rather than implying the range narrowed it.*/
+        pub window_scoped: bool,
+    }
+    impl DiscoveryCost {
+        pub fn builder() -> builder::DiscoveryCost {
+            Default::default()
+        }
+    }
     ///An attribute referenced by an entity, with its role.
     ///
     /// <details><summary>JSON schema</summary>
@@ -1554,6 +1975,84 @@ pub mod types {
     impl EnumMember {
         pub fn builder() -> builder::EnumMember {
             Default::default()
+        }
+    }
+    ///Which metadata tier a discovered item came from.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Which metadata tier a discovered item came from.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "declared",
+    ///    "registry",
+    ///    "observed"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum FieldOrigin {
+        #[serde(rename = "declared")]
+        Declared,
+        #[serde(rename = "registry")]
+        Registry,
+        #[serde(rename = "observed")]
+        Observed,
+    }
+    impl ::std::fmt::Display for FieldOrigin {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Declared => f.write_str("declared"),
+                Self::Registry => f.write_str("registry"),
+                Self::Observed => f.write_str("observed"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for FieldOrigin {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "declared" => Ok(Self::Declared),
+                "registry" => Ok(Self::Registry),
+                "observed" => Ok(Self::Observed),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for FieldOrigin {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for FieldOrigin {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for FieldOrigin {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
         }
     }
     ///Whether predicates may address a field.
@@ -3095,6 +3594,159 @@ pub mod types {
             value.parse()
         }
     }
+    ///What a discovery answer is about.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "What a discovery answer is about.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "sources",
+    ///    "fields",
+    ///    "values"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum MetadataKind {
+        #[serde(rename = "sources")]
+        Sources,
+        #[serde(rename = "fields")]
+        Fields,
+        #[serde(rename = "values")]
+        Values,
+    }
+    impl ::std::fmt::Display for MetadataKind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Sources => f.write_str("sources"),
+                Self::Fields => f.write_str("fields"),
+                Self::Values => f.write_str("values"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for MetadataKind {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "sources" => Ok(Self::Sources),
+                "fields" => Ok(Self::Fields),
+                "values" => Ok(Self::Values),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for MetadataKind {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for MetadataKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for MetadataKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///The payload of a `metadata` result envelope.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The payload of a `metadata` result envelope.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "cost",
+    ///    "kind",
+    ///    "truncated"
+    ///  ],
+    ///  "properties": {
+    ///    "cost": {
+    ///      "$ref": "#/components/schemas/DiscoveryCost"
+    ///    },
+    ///    "fields": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/DiscoveredField"
+    ///      }
+    ///    },
+    ///    "hint": {
+    ///      "description": "The Query IR request that produced this answer by reading data, or —\nwhen nothing covers the request — the one that would compute it.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "kind": {
+    ///      "$ref": "#/components/schemas/MetadataKind"
+    ///    },
+    ///    "sources": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/DiscoveredSource"
+    ///      }
+    ///    },
+    ///    "truncated": {
+    ///      "description": "Whether a documented limit cut the list short.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "values": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/DiscoveredValue"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct MetadataResult {
+        pub cost: DiscoveryCost,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub fields: ::std::vec::Vec<DiscoveredField>,
+        /**The Query IR request that produced this answer by reading data, or —
+        when nothing covers the request — the one that would compute it.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub hint: ::std::option::Option<::std::string::String>,
+        pub kind: MetadataKind,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub sources: ::std::vec::Vec<DiscoveredSource>,
+        ///Whether a documented limit cut the list short.
+        pub truncated: bool,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub values: ::std::vec::Vec<DiscoveredValue>,
+    }
+    impl MetadataResult {
+        pub fn builder() -> builder::MetadataResult {
+            Default::default()
+        }
+    }
     ///An attribute declared on a metric.
     ///
     /// <details><summary>JSON schema</summary>
@@ -3637,6 +4289,9 @@ pub mod types {
     ///    "heatmap": {
     ///      "$ref": "#/components/schemas/HeatmapResult"
     ///    },
+    ///    "metadata": {
+    ///      "$ref": "#/components/schemas/MetadataResult"
+    ///    },
     ///    "result": {
     ///      "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.",
     ///      "type": "string"
@@ -3683,6 +4338,8 @@ pub mod types {
         pub flamegraph: ::std::option::Option<FlamegraphResult>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub heatmap: ::std::option::Option<HeatmapResult>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub metadata: ::std::option::Option<MetadataResult>,
         ///The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
         pub result: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -5536,6 +6193,84 @@ pub mod types {
             Default::default()
         }
     }
+    ///Where a suggested value came from.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Where a suggested value came from.",
+    ///  "type": "string",
+    ///  "enum": [
+    ///    "registry",
+    ///    "statistics",
+    ///    "sampled"
+    ///  ]
+    ///}
+    /// ```
+    /// </details>
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum ValueOrigin {
+        #[serde(rename = "registry")]
+        Registry,
+        #[serde(rename = "statistics")]
+        Statistics,
+        #[serde(rename = "sampled")]
+        Sampled,
+    }
+    impl ::std::fmt::Display for ValueOrigin {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Registry => f.write_str("registry"),
+                Self::Statistics => f.write_str("statistics"),
+                Self::Sampled => f.write_str("sampled"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for ValueOrigin {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "registry" => Ok(Self::Registry),
+                "statistics" => Ok(Self::Statistics),
+                "sampled" => Ok(Self::Sampled),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for ValueOrigin {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<&::std::string::String> for ValueOrigin {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: &::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for ValueOrigin {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
     ///The non-null identity contract shared by generated clients.
     ///
     /// <details><summary>JSON schema</summary>
@@ -6555,6 +7290,60 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct CardinalityEstimate {
+            at_least: ::std::result::Result<bool, ::std::string::String>,
+            estimate: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for CardinalityEstimate {
+            fn default() -> Self {
+                Self {
+                    at_least: Err("no value supplied for at_least".to_string()),
+                    estimate: Err("no value supplied for estimate".to_string()),
+                }
+            }
+        }
+        impl CardinalityEstimate {
+            pub fn at_least<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.at_least = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for at_least: {e}"));
+                self
+            }
+            pub fn estimate<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.estimate = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for estimate: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<CardinalityEstimate> for super::CardinalityEstimate {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: CardinalityEstimate,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    at_least: value.at_least?,
+                    estimate: value.estimate?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::CardinalityEstimate> for CardinalityEstimate {
+            fn from(value: super::CardinalityEstimate) -> Self {
+                Self {
+                    at_least: Ok(value.at_least),
+                    estimate: Ok(value.estimate),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ConsentContextResponse {
             client_name: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -7556,6 +8345,374 @@ pub mod types {
                     note: Ok(value.note),
                     reason: Ok(value.reason),
                     renamed_to: Ok(value.renamed_to),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct DiscoveredField {
+            brief: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            cardinality: ::std::result::Result<
+                ::std::option::Option<super::CardinalityEstimate>,
+                ::std::string::String,
+            >,
+            coverage: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            deprecated: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            filterable: ::std::result::Result<bool, ::std::string::String>,
+            level: ::std::result::Result<
+                ::std::option::Option<super::AttributeLevel>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            origin: ::std::result::Result<super::FieldOrigin, ::std::string::String>,
+            type_: ::std::result::Result<super::LogicalType, ::std::string::String>,
+        }
+        impl ::std::default::Default for DiscoveredField {
+            fn default() -> Self {
+                Self {
+                    brief: Ok(Default::default()),
+                    cardinality: Ok(Default::default()),
+                    coverage: Ok(Default::default()),
+                    deprecated: Ok(Default::default()),
+                    filterable: Err("no value supplied for filterable".to_string()),
+                    level: Ok(Default::default()),
+                    name: Err("no value supplied for name".to_string()),
+                    origin: Err("no value supplied for origin".to_string()),
+                    type_: Err("no value supplied for type_".to_string()),
+                }
+            }
+        }
+        impl DiscoveredField {
+            pub fn brief<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.brief = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for brief: {e}"));
+                self
+            }
+            pub fn cardinality<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::CardinalityEstimate>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cardinality = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cardinality: {e}"));
+                self
+            }
+            pub fn coverage<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.coverage = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for coverage: {e}"));
+                self
+            }
+            pub fn deprecated<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.deprecated = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for deprecated: {e}"));
+                self
+            }
+            pub fn filterable<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.filterable = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for filterable: {e}"));
+                self
+            }
+            pub fn level<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::AttributeLevel>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.level = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for level: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn origin<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::FieldOrigin>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.origin = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for origin: {e}"));
+                self
+            }
+            pub fn type_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::LogicalType>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.type_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for type_: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<DiscoveredField> for super::DiscoveredField {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: DiscoveredField,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    brief: value.brief?,
+                    cardinality: value.cardinality?,
+                    coverage: value.coverage?,
+                    deprecated: value.deprecated?,
+                    filterable: value.filterable?,
+                    level: value.level?,
+                    name: value.name?,
+                    origin: value.origin?,
+                    type_: value.type_?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::DiscoveredField> for DiscoveredField {
+            fn from(value: super::DiscoveredField) -> Self {
+                Self {
+                    brief: Ok(value.brief),
+                    cardinality: Ok(value.cardinality),
+                    coverage: Ok(value.coverage),
+                    deprecated: Ok(value.deprecated),
+                    filterable: Ok(value.filterable),
+                    level: Ok(value.level),
+                    name: Ok(value.name),
+                    origin: Ok(value.origin),
+                    type_: Ok(value.type_),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct DiscoveredSource {
+            available: ::std::result::Result<bool, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for DiscoveredSource {
+            fn default() -> Self {
+                Self {
+                    available: Err("no value supplied for available".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl DiscoveredSource {
+            pub fn available<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.available = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for available: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<DiscoveredSource> for super::DiscoveredSource {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: DiscoveredSource,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    available: value.available?,
+                    name: value.name?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::DiscoveredSource> for DiscoveredSource {
+            fn from(value: super::DiscoveredSource) -> Self {
+                Self {
+                    available: Ok(value.available),
+                    name: Ok(value.name),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct DiscoveredValue {
+            count: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            origin: ::std::result::Result<super::ValueOrigin, ::std::string::String>,
+            value: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for DiscoveredValue {
+            fn default() -> Self {
+                Self {
+                    count: Ok(Default::default()),
+                    origin: Err("no value supplied for origin".to_string()),
+                    value: Err("no value supplied for value".to_string()),
+                }
+            }
+        }
+        impl DiscoveredValue {
+            pub fn count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for count: {e}"));
+                self
+            }
+            pub fn origin<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ValueOrigin>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.origin = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for origin: {e}"));
+                self
+            }
+            pub fn value<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.value = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for value: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<DiscoveredValue> for super::DiscoveredValue {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: DiscoveredValue,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    count: value.count?,
+                    origin: value.origin?,
+                    value: value.value?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::DiscoveredValue> for DiscoveredValue {
+            fn from(value: super::DiscoveredValue) -> Self {
+                Self {
+                    count: Ok(value.count),
+                    origin: Ok(value.origin),
+                    value: Ok(value.value),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct DiscoveryCost {
+            as_of: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            mode: ::std::result::Result<super::CostMode, ::std::string::String>,
+            sampled: ::std::result::Result<bool, ::std::string::String>,
+            window_scoped: ::std::result::Result<bool, ::std::string::String>,
+        }
+        impl ::std::default::Default for DiscoveryCost {
+            fn default() -> Self {
+                Self {
+                    as_of: Ok(Default::default()),
+                    mode: Err("no value supplied for mode".to_string()),
+                    sampled: Err("no value supplied for sampled".to_string()),
+                    window_scoped: Err("no value supplied for window_scoped".to_string()),
+                }
+            }
+        }
+        impl DiscoveryCost {
+            pub fn as_of<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.as_of = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for as_of: {e}"));
+                self
+            }
+            pub fn mode<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::CostMode>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.mode = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for mode: {e}"));
+                self
+            }
+            pub fn sampled<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sampled = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sampled: {e}"));
+                self
+            }
+            pub fn window_scoped<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.window_scoped = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for window_scoped: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<DiscoveryCost> for super::DiscoveryCost {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: DiscoveryCost,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    as_of: value.as_of?,
+                    mode: value.mode?,
+                    sampled: value.sampled?,
+                    window_scoped: value.window_scoped?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::DiscoveryCost> for DiscoveryCost {
+            fn from(value: super::DiscoveryCost) -> Self {
+                Self {
+                    as_of: Ok(value.as_of),
+                    mode: Ok(value.mode),
+                    sampled: Ok(value.sampled),
+                    window_scoped: Ok(value.window_scoped),
                 }
             }
         }
@@ -10188,6 +11345,142 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct MetadataResult {
+            cost: ::std::result::Result<super::DiscoveryCost, ::std::string::String>,
+            fields: ::std::result::Result<
+                ::std::vec::Vec<super::DiscoveredField>,
+                ::std::string::String,
+            >,
+            hint: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            kind: ::std::result::Result<super::MetadataKind, ::std::string::String>,
+            sources: ::std::result::Result<
+                ::std::vec::Vec<super::DiscoveredSource>,
+                ::std::string::String,
+            >,
+            truncated: ::std::result::Result<bool, ::std::string::String>,
+            values: ::std::result::Result<
+                ::std::vec::Vec<super::DiscoveredValue>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for MetadataResult {
+            fn default() -> Self {
+                Self {
+                    cost: Err("no value supplied for cost".to_string()),
+                    fields: Ok(Default::default()),
+                    hint: Ok(Default::default()),
+                    kind: Err("no value supplied for kind".to_string()),
+                    sources: Ok(Default::default()),
+                    truncated: Err("no value supplied for truncated".to_string()),
+                    values: Ok(Default::default()),
+                }
+            }
+        }
+        impl MetadataResult {
+            pub fn cost<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::DiscoveryCost>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cost = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cost: {e}"));
+                self
+            }
+            pub fn fields<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::DiscoveredField>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fields = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fields: {e}"));
+                self
+            }
+            pub fn hint<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.hint = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for hint: {e}"));
+                self
+            }
+            pub fn kind<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::MetadataKind>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.kind = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for kind: {e}"));
+                self
+            }
+            pub fn sources<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::DiscoveredSource>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sources = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sources: {e}"));
+                self
+            }
+            pub fn truncated<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.truncated = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for truncated: {e}"));
+                self
+            }
+            pub fn values<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::DiscoveredValue>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.values = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for values: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<MetadataResult> for super::MetadataResult {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: MetadataResult,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    cost: value.cost?,
+                    fields: value.fields?,
+                    hint: value.hint?,
+                    kind: value.kind?,
+                    sources: value.sources?,
+                    truncated: value.truncated?,
+                    values: value.values?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::MetadataResult> for MetadataResult {
+            fn from(value: super::MetadataResult) -> Self {
+                Self {
+                    cost: Ok(value.cost),
+                    fields: Ok(value.fields),
+                    hint: Ok(value.hint),
+                    kind: Ok(value.kind),
+                    sources: Ok(value.sources),
+                    truncated: Ok(value.truncated),
+                    values: Ok(value.values),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct MetricAttribute {
             key: ::std::result::Result<::std::string::String, ::std::string::String>,
             requirement_level: ::std::result::Result<
@@ -11206,6 +12499,10 @@ pub mod types {
                 ::std::option::Option<super::HeatmapResult>,
                 ::std::string::String,
             >,
+            metadata: ::std::result::Result<
+                ::std::option::Option<super::MetadataResult>,
+                ::std::string::String,
+            >,
             result: ::std::result::Result<::std::string::String, ::std::string::String>,
             rows: ::std::result::Result<
                 ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
@@ -11224,6 +12521,7 @@ pub mod types {
                     columns: Ok(Default::default()),
                     flamegraph: Ok(Default::default()),
                     heatmap: Ok(Default::default()),
+                    metadata: Ok(Default::default()),
                     result: Err("no value supplied for result".to_string()),
                     rows: Ok(Default::default()),
                     series: Ok(Default::default()),
@@ -11262,6 +12560,16 @@ pub mod types {
                 self.heatmap = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for heatmap: {e}"));
+                self
+            }
+            pub fn metadata<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::MetadataResult>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.metadata = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for metadata: {e}"));
                 self
             }
             pub fn result<T>(mut self, value: T) -> Self
@@ -11334,6 +12642,7 @@ pub mod types {
                     columns: value.columns?,
                     flamegraph: value.flamegraph?,
                     heatmap: value.heatmap?,
+                    metadata: value.metadata?,
                     result: value.result?,
                     rows: value.rows?,
                     series: value.series?,
@@ -11349,6 +12658,7 @@ pub mod types {
                     columns: Ok(value.columns),
                     flamegraph: Ok(value.flamegraph),
                     heatmap: Ok(value.heatmap),
+                    metadata: Ok(value.metadata),
                     result: Ok(value.result),
                     rows: Ok(value.rows),
                     series: Ok(value.series),
@@ -14518,6 +15828,22 @@ impl Client {
     ```*/
     pub fn query_ir(&self) -> builder::QueryIr<'_> {
         builder::QueryIr::new(self)
+    }
+    /**`GET /api/v1/query/sources` — the signal sources this tenant can query
+
+    A deliberate exception to "a first-party read is a `POST /api/v1/query`
+    document": an IR document must name a `from`, and this is the one question
+    that has no source to name.
+
+    Sends a `GET` request to `/api/v1/query/sources`
+
+    ```ignore
+    let response = client.query_sources()
+        .send()
+        .await;
+    ```*/
+    pub fn query_sources(&self) -> builder::QuerySources<'_> {
+        builder::QuerySources::new(self)
     }
     /**Sends a `GET` request to `/api/v1/schema/attributes`
 
@@ -17696,6 +19022,51 @@ pub mod builder {
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::query_sources`]
+
+    [`Client::query_sources`]: super::Client::query_sources*/
+    #[derive(Debug, Clone)]
+    pub struct QuerySources<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> QuerySources<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/query/sources`
+        pub async fn send(self) -> Result<ResponseValue<types::QueryIrResponse>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/query/sources", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "query_sources",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
@@ -21273,6 +22644,7 @@ pub const OPERATIONS: &[&str] = &[
     "pyroscope_render_diff",
     "query_ir",
     "query_single_trace",
+    "query_sources",
     "revoke_api_key",
     "schema_create_registry",
     "schema_delete_registry",

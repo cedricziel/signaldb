@@ -113,6 +113,11 @@ export type AttributeHit = AttributeDef & {
 };
 
 /**
+ * The level at which an attribute is attached to an OTel record.
+ */
+export type AttributeLevel = 'resource' | 'scope' | 'record';
+
+/**
  * Every definition of one attribute key across the visible registries, in
  * precedence order; `primary` is the first.
  */
@@ -138,6 +143,21 @@ export type AvailableSchemasResponse = {
      * All table schema types SignalDB knows how to provision.
      */
     schemas: Array<TableInfo>;
+};
+
+/**
+ * An approximate distinct-value count.
+ */
+export type CardinalityEstimate = {
+    /**
+     * When true the collector hit its cap: the true count is at least
+     * `estimate`, not equal to it.
+     */
+    at_least: boolean;
+    /**
+     * The estimated number of distinct values.
+     */
+    estimate: number;
 };
 
 /**
@@ -220,6 +240,11 @@ export type ConsentTenant = {
      */
     role: MembershipRole;
 };
+
+/**
+ * Which tier answered a discovery request, and therefore what it cost.
+ */
+export type CostMode = 'metadata' | 'sampled_scan' | 'none';
 
 /**
  * Request body for creating a new API key.
@@ -393,6 +418,94 @@ export type DeprecatedInfo = {
 };
 
 /**
+ * One queryable field.
+ */
+export type DiscoveredField = {
+    /**
+     * The registry's one-line description, when a registry defines it.
+     */
+    brief?: string | null;
+    cardinality?: null | CardinalityEstimate;
+    /**
+     * The fraction of the tenant's records carrying it, when statistics
+     * exist. Absent means unknown — never defaulted to a number that could be
+     * mistaken for a measurement.
+     */
+    coverage?: number | null;
+    /**
+     * Whether a registry marks it deprecated.
+     */
+    deprecated?: boolean;
+    /**
+     * Whether a predicate may address it (retrieval-only fields are listed,
+     * not hidden).
+     */
+    filterable: boolean;
+    level?: null | AttributeLevel;
+    /**
+     * The logical, dotted OTel-native name — directly usable in a predicate.
+     */
+    name: string;
+    /**
+     * The tier this item came from.
+     */
+    origin: FieldOrigin;
+    /**
+     * The canonical value type a literal is coerced to.
+     */
+    type: LogicalType;
+};
+
+/**
+ * One signal source available to the tenant.
+ */
+export type DiscoveredSource = {
+    /**
+     * Whether the tenant can query it. A registered signal with no data is
+     * available and empty, never omitted.
+     */
+    available: boolean;
+    /**
+     * The name an IR document's `from` names.
+     */
+    name: string;
+};
+
+/**
+ * One suggested value.
+ */
+export type DiscoveredValue = {
+    /**
+     * How often it was observed, when the tier that produced it counts.
+     */
+    count?: number | null;
+    origin: ValueOrigin;
+    value: string;
+};
+
+/**
+ * What a discovery answer cost and how far it can be trusted.
+ */
+export type DiscoveryCost = {
+    /**
+     * How recent the statistics behind the answer are (as the catalog stores
+     * it). `null` means no statistics exist yet.
+     */
+    as_of?: string | null;
+    mode: CostMode;
+    /**
+     * Whether the answer is sampled, and therefore possibly incomplete.
+     */
+    sampled: boolean;
+    /**
+     * Whether the answer is scoped to the requested time window. Maintained
+     * statistics carry no time dimension, so a metadata answer says `false`
+     * rather than implying the range narrowed it.
+     */
+    window_scoped: boolean;
+};
+
+/**
  * An attribute referenced by an entity, with its role.
  */
 export type EntityAttribute = {
@@ -464,6 +577,11 @@ export type EnumMember = {
     stability?: string | null;
     value: unknown;
 };
+
+/**
+ * Which metadata tier a discovered item came from.
+ */
+export type FieldOrigin = 'declared' | 'registry' | 'observed';
 
 /**
  * Whether predicates may address a field.
@@ -791,6 +909,34 @@ export type MembershipResponse = {
 export type MembershipRole = 'admin' | 'member' | 'viewer';
 
 /**
+ * What a discovery answer is about.
+ */
+export type MetadataKind = 'sources' | 'fields' | 'values';
+
+/**
+ * The payload of a `metadata` result envelope.
+ */
+export type MetadataResult = {
+    /**
+     * Which tier answered, and how far the answer can be trusted.
+     */
+    cost: DiscoveryCost;
+    fields?: Array<DiscoveredField>;
+    /**
+     * The Query IR request that produced this answer by reading data, or —
+     * when nothing covers the request — the one that would compute it.
+     */
+    hint?: string | null;
+    kind: MetadataKind;
+    sources?: Array<DiscoveredSource>;
+    /**
+     * Whether a documented limit cut the list short.
+     */
+    truncated: boolean;
+    values?: Array<DiscoveredValue>;
+};
+
+/**
  * An attribute declared on a metric.
  */
 export type MetricAttribute = {
@@ -918,6 +1064,7 @@ export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
     flamegraph?: null | FlamegraphResult;
     heatmap?: HeatmapResult;
+    metadata?: null | MetadataResult;
     /**
      * The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
      */
@@ -1400,6 +1547,11 @@ export type ValidationReport = {
     namespace: string;
     version: string;
 };
+
+/**
+ * Where a suggested value came from.
+ */
+export type ValueOrigin = 'registry' | 'statistics' | 'sampled';
 
 /**
  * The non-null identity contract shared by generated clients.
@@ -2791,6 +2943,33 @@ export type QueryIrResponses = {
 };
 
 export type QueryIrResponse2 = QueryIrResponses[keyof QueryIrResponses];
+
+export type QuerySourcesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/query/sources';
+};
+
+export type QuerySourcesErrors = {
+    /**
+     * Unauthorized
+     */
+    401: unknown;
+    /**
+     * Catalog unavailable
+     */
+    503: unknown;
+};
+
+export type QuerySourcesResponses = {
+    /**
+     * Available signal sources
+     */
+    200: QueryIrResponse;
+};
+
+export type QuerySourcesResponse = QuerySourcesResponses[keyof QuerySourcesResponses];
 
 export type SchemaSearchAttributesData = {
     body?: never;
