@@ -33,7 +33,10 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   two dimensions combined via "Then by"), with per-group trace count,
   request rate, error rate, p50/p95 latency, and last-seen columns —
   all sortable. Selecting a group lists just its traces; selecting a trace
-  opens a waterfall with span details and error highlighting. Hovering a
+  opens a waterfall with span details and error highlighting. A parent span
+  that recorded no duration (an un-ended root, for instance) is drawn as a
+  dashed outline over its child spans instead of a sliver; its own duration
+  still reads as recorded. Hovering a
   span in the waterfall shows a tooltip with the span name, its service,
   namespace, and version, its kind (coloured like the bar), duration, and
   status, without changing the selection. The span
