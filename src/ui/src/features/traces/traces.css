@@ -196,6 +196,32 @@
   font-weight: 600;
 }
 
+/* Trace-level status in the list: the OTel status word, coloured. */
+.status-chip {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  text-transform: lowercase;
+}
+
+.status-chip.status-error {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 14%, transparent);
+}
+
+.status-chip.status-ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+}
+
+.status-chip.status-unset {
+  color: var(--dim);
+  background: var(--surface2);
+}
+
 .group-by select {
   border: 1px solid var(--border);
   background: var(--surface2);

@@ -80,6 +80,70 @@ describe("MemberTable", () => {
     expect(screen.getByText("gateway")).toBeInTheDocument();
   });
 
+  it("shows each trace's status as a coloured chip: error, ok, unset", () => {
+    render(
+      <MemberTable
+        members={[
+          {
+            ...member("t1", "s1", "GET /pay", "gateway", "3000", 12),
+            statusCode: "Error",
+          },
+          {
+            ...member("t2", "s2", "GET /ok", "gateway", "2000", 12),
+            statusCode: "Ok",
+          },
+          {
+            ...member("t3", "s3", "GET /meh", "gateway", "1000", 12),
+            statusCode: "Unset",
+          },
+        ]}
+        isError={false}
+        identityLabel="Span"
+        emptyMessage="No spans."
+        onOpenTrace={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("columnheader", { name: /Status/ }),
+    ).toBeInTheDocument();
+    const chip = (text: string) =>
+      screen.getByText(text, { selector: ".status-chip" });
+    expect(chip("error")).toHaveClass("status-error");
+    expect(chip("ok")).toHaveClass("status-ok");
+    expect(chip("unset")).toHaveClass("status-unset");
+  });
+
+  it("sorts by status with errors first", () => {
+    render(
+      <MemberTable
+        members={[
+          {
+            ...member("t2", "s2", "GET /ok", "gateway", "2000", 12),
+            statusCode: "Ok",
+          },
+          {
+            ...member("t3", "s3", "GET /meh", "gateway", "1000", 12),
+            statusCode: "Unset",
+          },
+          {
+            ...member("t1", "s1", "GET /pay", "gateway", "3000", 12),
+            statusCode: "Error",
+          },
+        ]}
+        isError={false}
+        identityLabel="Span"
+        emptyMessage="No spans."
+        onOpenTrace={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Status" }));
+    const names = screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.querySelector(".trace-open")?.textContent);
+    expect(names).toEqual(["GET /pay", "GET /ok", "GET /meh"]);
+  });
+
   it("renders the footnote only when supplied", () => {
     const { rerender } = render(
       <MemberTable
