@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -526,16 +526,40 @@ describe("ProfilesView", () => {
       expect(bar).toHaveTextContent("RandomState::hash_one");
       expect(bar).not.toHaveTextContent(LONG_NAME);
 
-      // The hover tooltip (always in the DOM, CSS-shown, not depending on
-      // an actual pointer hover in jsdom) carries the full name plus
-      // self/total — unsimplified, unlike the bar's own label. There are
-      // two tooltips (root + this frame); find this one by content.
-      const tooltip = screen
-        .getAllByRole("tooltip")
-        .find((t) => t.textContent?.includes("RandomState"));
-      expect(tooltip).toBeDefined();
-      expect(tooltip).toHaveTextContent(LONG_NAME);
-      expect(tooltip).toHaveTextContent(/self.*100\.0%/);
+      // The hover tooltip is the shared VizTooltip: it follows the pointer
+      // (not the frame), and carries the full name plus self/total —
+      // unsimplified, unlike the bar's own label.
+      expect(screen.queryByRole("tooltip")).toBeNull();
+      fireEvent.pointerMove(bar, { clientX: 120, clientY: 30 });
+      const tooltip = screen.getByRole("tooltip");
+      expect(within(tooltip).getByText(LONG_NAME)).toBeInTheDocument();
+      const rows = within(tooltip).getAllByTestId("viz-tip-row");
+      expect(rows.map((r) => r.textContent)).toEqual([
+        "self100ns (100.0%)",
+        "total100ns (100.0%)",
+      ]);
+      expect(bar).toHaveAttribute("aria-describedby", tooltip.id);
+      // Anchored at the pointer, offset from it, not at the frame's edge.
+      expect(tooltip.style.left).toBe("120px");
+      expect(tooltip.style.top).toBe("30px");
+
+      fireEvent.pointerLeave(bar.closest(".flame-rows")!);
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    });
+
+    it("shows the same tooltip on the top-functions rows", async () => {
+      stubFetchRoutes([
+        ...DISCOVERY_ROUTES,
+        { match: "/api/v1/query", body: LONG_NAME_PROFILE },
+      ]);
+      renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
+      await screen.findByRole("button", { name: LONG_NAME });
+      await userEvent.click(screen.getByRole("tab", { name: "Top functions" }));
+      const cell = screen.getByRole("button", { name: LONG_NAME });
+      fireEvent.pointerMove(cell, { clientX: 50, clientY: 50 });
+      const tooltip = screen.getByRole("tooltip");
+      expect(within(tooltip).getByText(LONG_NAME)).toBeInTheDocument();
+      expect(within(tooltip).getAllByTestId("viz-tip-row")).toHaveLength(2);
     });
   });
 });

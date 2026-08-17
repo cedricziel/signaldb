@@ -256,61 +256,6 @@
   color: var(--dim);
 }
 
-/* Rich hover tooltip: pure CSS show/hide off the wrapper, positioned above
-   the frame. A short transition-delay avoids flashing one in on every
-   quick mouse pass across a dense row. */
-.flame-tooltip {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 4px;
-  padding: 6px 8px;
-  min-width: 160px;
-  max-width: 420px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface2);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--dim);
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 0.15s ease 0.4s,
-    visibility 0.15s ease 0.4s;
-  visibility: hidden;
-  white-space: normal;
-  word-break: break-word;
-}
-
-.flame-frame-wrap:hover .flame-tooltip,
-.flame-frame-wrap:focus-within .flame-tooltip,
-.flame-top-name-wrap:hover .flame-tooltip,
-.flame-top-name-wrap:focus-within .flame-tooltip {
-  opacity: 1;
-  visibility: visible;
-}
-
-.flame-tooltip-name {
-  color: var(--text);
-  font-family: var(--mono);
-  font-weight: 600;
-}
-
-.flame-tooltip-row {
-  font-variant-numeric: tabular-nums;
-}
-
-.flame-top-name-wrap {
-  position: relative;
-  display: inline-block;
-}
-
 .flame-label {
   display: block;
   overflow: hidden;
