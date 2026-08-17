@@ -95,6 +95,32 @@ describe("QueryView", () => {
     expect(aggregateStage?.by).toEqual(["service.name"]);
   });
 
+  // #1070 — a group-by field nothing carries returns a real (null-labelled)
+  // result, so the envelope's warning is the only thing telling the user the
+  // grouping meant nothing. It must reach the screen.
+  it("renders the envelope warnings with their suggestions", async () => {
+    stubApiFetch({
+      result: "table",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "statusCode", type: "string" }],
+      rows: [[null]],
+      warnings: [
+        {
+          code: "unknown_group_by_field",
+          message: "'statusCode' is not a logical field of 'traces'.",
+          field: "statusCode",
+          suggestions: ["status.code"],
+        },
+      ],
+    });
+    renderWithClient(<QueryView />);
+
+    fireEvent.click(screen.getByText("Run"));
+
+    await screen.findByText(/statusCode' is not a logical field/);
+    await screen.findByText(/Did you mean status\.code\?/);
+  });
+
   it("selects profile summaries and renders their generic rows envelope", async () => {
     const calls = stubApiFetch({
       result: "rows",

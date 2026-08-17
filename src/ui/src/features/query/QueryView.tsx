@@ -139,8 +139,31 @@ export function QueryView({ range }: { range?: TimeRange } = {}) {
       <div className="query-ir-result" data-testid={`ir-view-${view}`}>
         {query.isError && <div role="alert">Query failed</div>}
         {query.isLoading && submitted && <div>Running…</div>}
+        {query.data && <QueryWarnings data={query.data} />}
         {query.data && <EnvelopeResult view={view} data={query.data} />}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Non-fatal diagnostics the server attached to a result — today, a group-by
+ * field nothing in the window carries, which would otherwise render as a
+ * single convincing series labelled `null`.
+ */
+function QueryWarnings({ data }: { data: QueryIrResponse }) {
+  const warnings = data.warnings ?? [];
+  if (warnings.length === 0) return null;
+  return (
+    <div className="query-ir-warnings" role="status">
+      {warnings.map((w, i) => (
+        <p key={i}>
+          {w.message}
+          {w.suggestions && w.suggestions.length > 0
+            ? ` Did you mean ${w.suggestions.join(", ")}?`
+            : ""}
+        </p>
+      ))}
     </div>
   );
 }

@@ -6123,6 +6123,13 @@
             ],
             "format": "int64"
           },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryWarning"
+            },
+            "description": "Non-fatal diagnostics about this query. Empty (and omitted) when the\nserver has nothing to report; a warning never suppresses the result."
+          },
           "window": {
             "$ref": "#/components/schemas/ResolvedWindow",
             "description": "The resolved absolute window the query ran over."
@@ -6144,6 +6151,39 @@
           "to": {
             "type": "string",
             "example": "now"
+          }
+        }
+      },
+      "QueryWarning": {
+        "type": "object",
+        "description": "A non-fatal diagnostic about a query that still produced a result. A\nwarning never changes the result: it explains something the caller\nprobably did not intend, so a client can surface it next to the data.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Currently only `unknown_group_by_field`.",
+            "example": "unknown_group_by_field"
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The document field the warning is about, when it names one."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation, safe to show verbatim."
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Field names close to `field` that the source does declare, best first."
           }
         }
       },

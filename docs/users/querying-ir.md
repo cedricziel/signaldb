@@ -315,6 +315,29 @@ object, so you index a key rather than parse a rendering. A `null` cell means
 the row carried no such container; `{}` means it carried one holding no
 attributes.
 
+### Warnings
+
+Any envelope may carry a `warnings` array. A warning never changes the
+result — it reports something the server suspects you did not intend:
+
+```jsonc
+{ "result": "series", "window": {...}, "series": [...],
+  "warnings": [ { "code": "unknown_group_by_field",
+                  "message": "'statusCode' is not a logical field of 'traces' and no record in the queried window carries an attribute named 'statusCode'; every row was grouped under a null label",
+                  "field": "statusCode",
+                  "suggestions": ["status.code"] } ] }
+```
+
+Branch on `code`, not on `message`. The field is omitted entirely when there
+is nothing to report.
+
+`unknown_group_by_field` is raised when an `aggregate.by` field is neither a
+logical field of the source nor carried by any record in the window, so every
+row landed in one group labelled `null`. It is a warning rather than a
+rejection because an unpromoted attribute cannot be enumerated while planning:
+grouping by a real attribute that is simply absent from a short window is a
+legitimate query, and would otherwise fail a quiet dashboard panel.
+
 ## Profile summaries
 
 `profiles` reads one metadata row per stored profile. It supports the same

@@ -3661,6 +3661,13 @@ pub mod types {
     ///      ],
     ///      "format": "int64"
     ///    },
+    ///    "warnings": {
+    ///      "description": "Non-fatal diagnostics about this query. Empty (and omitted) when the\nserver has nothing to report; a warning never suppresses the result.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/QueryWarning"
+    ///      }
+    ///    },
     ///    "window": {
     ///      "$ref": "#/components/schemas/ResolvedWindow"
     ///    }
@@ -3684,6 +3691,10 @@ pub mod types {
         pub series: ::std::vec::Vec<ResultSeries>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub step_ns: ::std::option::Option<i64>,
+        /**Non-fatal diagnostics about this query. Empty (and omitted) when the
+        server has nothing to report; a warning never suppresses the result.*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub warnings: ::std::vec::Vec<QueryWarning>,
         pub window: ResolvedWindow,
     }
     impl QueryIrResponse {
@@ -3730,6 +3741,69 @@ pub mod types {
     }
     impl QueryRange {
         pub fn builder() -> builder::QueryRange {
+            Default::default()
+        }
+    }
+    /**A non-fatal diagnostic about a query that still produced a result. A
+    warning never changes the result: it explains something the caller
+    probably did not intend, so a client can surface it next to the data.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "A non-fatal diagnostic about a query that still produced a result. A\nwarning never changes the result: it explains something the caller\nprobably did not intend, so a client can surface it next to the data.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "code",
+    ///    "message"
+    ///  ],
+    ///  "properties": {
+    ///    "code": {
+    ///      "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Currently only `unknown_group_by_field`.",
+    ///      "examples": [
+    ///        "unknown_group_by_field"
+    ///      ],
+    ///      "type": "string"
+    ///    },
+    ///    "field": {
+    ///      "description": "The document field the warning is about, when it names one.",
+    ///      "type": [
+    ///        "string",
+    ///        "null"
+    ///      ]
+    ///    },
+    ///    "message": {
+    ///      "description": "Human-readable explanation, safe to show verbatim.",
+    ///      "type": "string"
+    ///    },
+    ///    "suggestions": {
+    ///      "description": "Field names close to `field` that the source does declare, best first.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct QueryWarning {
+        /**Stable machine-readable identifier — clients branch on this, not on
+        `message`. Currently only `unknown_group_by_field`.*/
+        pub code: ::std::string::String,
+        ///The document field the warning is about, when it names one.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub field: ::std::option::Option<::std::string::String>,
+        ///Human-readable explanation, safe to show verbatim.
+        pub message: ::std::string::String,
+        ///Field names close to `field` that the source does declare, best first.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub suggestions: ::std::vec::Vec<::std::string::String>,
+    }
+    impl QueryWarning {
+        pub fn builder() -> builder::QueryWarning {
             Default::default()
         }
     }
@@ -11140,6 +11214,8 @@ pub mod types {
             series:
                 ::std::result::Result<::std::vec::Vec<super::ResultSeries>, ::std::string::String>,
             step_ns: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            warnings:
+                ::std::result::Result<::std::vec::Vec<super::QueryWarning>, ::std::string::String>,
             window: ::std::result::Result<super::ResolvedWindow, ::std::string::String>,
         }
         impl ::std::default::Default for QueryIrResponse {
@@ -11152,6 +11228,7 @@ pub mod types {
                     rows: Ok(Default::default()),
                     series: Ok(Default::default()),
                     step_ns: Ok(Default::default()),
+                    warnings: Ok(Default::default()),
                     window: Err("no value supplied for window".to_string()),
                 }
             }
@@ -11227,6 +11304,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for step_ns: {e}"));
                 self
             }
+            pub fn warnings<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::QueryWarning>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.warnings = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for warnings: {e}"));
+                self
+            }
             pub fn window<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<super::ResolvedWindow>,
@@ -11251,6 +11338,7 @@ pub mod types {
                     rows: value.rows?,
                     series: value.series?,
                     step_ns: value.step_ns?,
+                    warnings: value.warnings?,
                     window: value.window?,
                 })
             }
@@ -11265,6 +11353,7 @@ pub mod types {
                     rows: Ok(value.rows),
                     series: Ok(value.series),
                     step_ns: Ok(value.step_ns),
+                    warnings: Ok(value.warnings),
                     window: Ok(value.window),
                 }
             }
@@ -11320,6 +11409,94 @@ pub mod types {
                 Self {
                     from: Ok(value.from),
                     to: Ok(value.to),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct QueryWarning {
+            code: ::std::result::Result<::std::string::String, ::std::string::String>,
+            field: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            message: ::std::result::Result<::std::string::String, ::std::string::String>,
+            suggestions: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for QueryWarning {
+            fn default() -> Self {
+                Self {
+                    code: Err("no value supplied for code".to_string()),
+                    field: Ok(Default::default()),
+                    message: Err("no value supplied for message".to_string()),
+                    suggestions: Ok(Default::default()),
+                }
+            }
+        }
+        impl QueryWarning {
+            pub fn code<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.code = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for code: {e}"));
+                self
+            }
+            pub fn field<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.field = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for field: {e}"));
+                self
+            }
+            pub fn message<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.message = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for message: {e}"));
+                self
+            }
+            pub fn suggestions<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.suggestions = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for suggestions: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<QueryWarning> for super::QueryWarning {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: QueryWarning,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    code: value.code?,
+                    field: value.field?,
+                    message: value.message?,
+                    suggestions: value.suggestions?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::QueryWarning> for QueryWarning {
+            fn from(value: super::QueryWarning) -> Self {
+                Self {
+                    code: Ok(value.code),
+                    field: Ok(value.field),
+                    message: Ok(value.message),
+                    suggestions: Ok(value.suggestions),
                 }
             }
         }
