@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-doc-freshness.sh — map a code diff to the docs that claim to describe it.
 #
-# Scans docs/**/*.md and .claude/skills/*/SKILL.md for frontmatter with a
+# Scans docs/**/*.md for frontmatter with a
 # `sources:` list. If a changed file matches one of a doc's source globs and the
 # doc itself was not touched in the same diff, the doc is reported as possibly
 # stale. Docs with `status: record` (decision records) are exempt.
@@ -81,7 +81,7 @@ while IFS= read -r doc; do
 done < <(find docs -name '*.md' -type f 2>/dev/null | sort)
 
 # --- Sources validation ------------------------------------------------------
-# Every `sources:` glob in every doc/skill frontmatter must match at least one
+# Every `sources:` glob in every doc frontmatter must match at least one
 # existing file; a dead glob silently opts the doc out of freshness tracking.
 while IFS= read -r doc; do
     fm=$(awk 'NR==1 && $0!="---"{exit} /^---$/{n++; next} n==1{print} n>=2{exit}' "$doc")
@@ -100,7 +100,7 @@ while IFS= read -r doc; do
             errors=1
         fi
     done <<<"$globs"
-done < <(find docs .claude/skills -name '*.md' -type f 2>/dev/null | sort)
+done < <(find docs -name '*.md' -type f 2>/dev/null | sort)
 
 # --- Freshness: changed sources without a doc update ------------------------
 stale=0
@@ -137,7 +137,7 @@ while IFS= read -r doc; do
         echo "$doc — sources changed: $hits"
         stale=1
     fi
-done < <(find docs .claude/skills -name '*.md' -type f 2>/dev/null | sort)
+done < <(find docs -name '*.md' -type f 2>/dev/null | sort)
 
 [[ $stale -eq 1 || $errors -eq 1 ]] && exit 1
 exit 0

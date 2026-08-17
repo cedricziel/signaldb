@@ -6,8 +6,7 @@ description: SignalDB documentation routing - where docs live, the audience taxo
 # SignalDB Documentation Guide
 
 How documentation is organized in this repo and when a code change owes a doc
-update. For writing craft (style, structure, doc modes), also load the
-`technical-writing` skill.
+update.
 
 ## Taxonomy
 
@@ -20,7 +19,7 @@ Docs are organized by audience:
 | `docs/architecture/` | Changes SignalDB | Architecture overview, storage layout, service discovery, Flight communication |
 | `docs/architecture/decisions/` | Changes SignalDB | Point-in-time design records (ADR-like) |
 | `docs/contributing/` | Changes SignalDB | Prescriptive standards (Rust coding rules); `@`-included from CLAUDE.md |
-| `.claude/skills/` | Agents | Condensed, derived views of docs + code; refreshed via `/refresh-skills` |
+| `.claude/skills/` | Agents | Thin routers into docs/ and code plus agent-facing gotchas; never a second copy of a doc |
 
 `docs/users/` covers OTLP ingestion, Prometheus remote_write, SQL querying,
 the Tempo API reference, the Grafana datasource, and client authentication.
@@ -55,21 +54,43 @@ sources:            # code paths this doc describes; globs allowed
   (or consciously waved off) when its `sources` change. Freshness tooling keys
   off this field.
 - `status: record` — point-in-time document; exempt from freshness checks.
-- `sources` — how tooling maps a code diff to the docs it may invalidate. Keep
-  globs tight: overly broad sources cause false nags, which get ignored.
-- Knowledge skills in `.claude/skills/` carry the same `sources` field in their
-  frontmatter and are held to the same freshness expectation.
+- `sources` — how tooling maps a code diff to the docs it may invalidate. Name
+  the files whose *stated contract* the doc describes (a CLI, a config struct,
+  an endpoint router, a schema) — never a whole crate. Broad globs cause false
+  nags, and false nags get ignored or padded away.
+
+## Writing rules
+
+Diátaxis, applied strictly — one mode per page, never mixed:
+
+- **How-to** (`type: how-to`): use-case driven. Title is the job ("Send OTLP
+  from the Collector", "Rotate an API key"); goal → prerequisites → steps →
+  verify → troubleshooting. Minimal explanation inline; link to the concept
+  page for the why. This is the default type for `users/` and `operations/`.
+- **Reference** (`type: reference`): the manual. Exhaustive, ordered by
+  structure (config section, endpoint, flag), no narrative, no steps. One
+  page per surface (config, HTTP API, CLI, schema); prefer generating it from
+  code (`signaldb.dist.toml`, OpenAPI) over hand-maintained tables. Never
+  fold a parameter table into a how-to — link to it.
+- **Explanation** (`type: explanation`): why it is built this way. Lives in
+  `architecture/`; keep it short and rare.
+- **Tutorial**: only for first-contact "get it running" flows; one or two.
+
+Every page is page one: readers land from search, so each page states its
+job in the first line, stands alone, and links out instead of recapping.
+
+Concision: second person, active voice, present tense, one idea per sentence,
+no marketing, no "simply/just", no preamble or "Overview" sections. Prefer a
+runnable example to a paragraph. Cut before you add; a fact that already has
+a home gets a link, not a second copy. Never restate what the code says
+line-by-line — document intent, contracts, and gotchas.
 
 ## Diagrams and structure
 
 - Docs use Mermaid for diagrams (renders on GitHub, shows in diffs, covered by
   the freshness check). Architecture docs that describe a flow or topology
-  lead with a diagram of it; the `technical-writing` skill has the craft rules
-  (diagram-type mapping, size limits).
-- Each doc follows the skeleton for its `type` from the `technical-writing`
-  skill (how-to: goal → prerequisites → steps → verify → troubleshooting;
-  decision record: date → context → decision → consequences; etc.). Skeletons
-  are review guidance, not lint — collapse what a short doc doesn't need.
+  lead with a diagram of it.
+- Decision records: date → context → decision → consequences.
 
 ## One home per fact
 
@@ -82,11 +103,14 @@ of writing a second copy. Duplicated facts are how docs go stale.
 Before wrapping up a change, check what it invalidated:
 
 1. Did it change user-visible behavior, config options, ports, endpoints, CLI
-   flags, or metrics? → update the matching `users/` or `operations/` doc.
-2. Did it change internals that `docs/architecture/` or a knowledge skill
-   describes? Check `sources` frontmatter against your diff.
+   flags, or metrics? → fix the matching `users/` or `operations/` doc.
+2. Did it change internals that `docs/architecture/` describes? Check
+   `sources` frontmatter against your diff.
 3. No doc affected? Fine — but decide that consciously, don't default to it.
 
-A Stop hook enforces this mechanically: if your diff touches files matched by a
-living doc's `sources` and that doc wasn't updated, you'll be asked once to
-either update it or state why no update is needed.
+The `TaskCompleted` hook and CI (`scripts/check-doc-freshness.sh`) enforce
+this: a living doc whose `sources` changed without the doc changing blocks
+once. The right response is to *read the doc against the diff and edit only
+what is now wrong* — deleting a stale sentence counts; adding a paragraph to
+satisfy the check does not. If the doc is still accurate, say so (locally: one
+line; on the PR: the `docs-not-needed` label).

@@ -20,7 +20,7 @@ reason="Doc-freshness check: this branch's changes touch files that the followin
 
 $DF_REPORT
 
-Invoke the 'docs' skill for routing guidance, then either update the affected docs (and .claude/skills entries) or state explicitly why no documentation change is needed before completing this task. This check will not repeat for the same set of findings."
+Read each listed doc against the diff. Edit it only where a stated fact is now wrong or a new user-visible behavior has no home yet — deleting a stale sentence counts; do not add text to satisfy this check. If the doc is still accurate, say so in one line and complete the task. The 'docs' skill has the routing rules. This check will not repeat for the same set of findings."
 
 python3 -c 'import json,sys; print(json.dumps({"decision":"block","reason":sys.argv[1]}))' "$reason"
 exit 0

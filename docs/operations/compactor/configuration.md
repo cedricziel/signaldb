@@ -3,7 +3,7 @@ audience: operator
 type: reference
 status: living
 sources:
-  - src/compactor/src/**
+  - src/compactor/src/cli.rs
   - src/common/src/config/mod.rs
 ---
 
