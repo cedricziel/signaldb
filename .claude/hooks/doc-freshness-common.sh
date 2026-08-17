@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Shared logic for the doc-freshness hooks, sourced by both wrappers:
-#   doc-freshness-taskcompleted.sh — hard gate at milestone (task) completion
-#   doc-freshness-stop.sh          — soft reminder at turn end, for debt that
-#                                    never passed through a task completion
+# Shared logic for the doc-freshness hook (doc-freshness-taskcompleted.sh),
+# the milestone gate. There is deliberately no per-turn Stop hook: CI runs the
+# same checker on every PR, so a turn-end reminder only added noise.
 #
 # Reads the hook JSON from stdin, locates the repo the session is working in,
 # runs the freshness checker, and populates:
@@ -45,9 +44,8 @@ df_collect() {
     return 0
 }
 
-# Marker path for a given kind (block | soft) and the current debt digest.
-# The block hook owns the "block" marker; the soft hook checks it too, so a debt
-# set already hard-blocked at a milestone is not softly re-reported at turn end.
+# Marker path for a given kind and the current debt digest, so one debt set
+# blocks at most once per session.
 df_marker() {
     printf '%s/claude-doc-freshness-%s-%s-%s' "${TMPDIR:-/tmp}" "$1" "$DF_SESSION_ID" "$DF_DIGEST"
 }

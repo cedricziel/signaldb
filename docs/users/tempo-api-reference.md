@@ -137,12 +137,13 @@ can use SignalDB as a querier backend:
 
 - `FindTraceByID` and `SearchRecent` are fully implemented (including
   `spans_per_span_set`).
-- The tenant is taken from Tempo's `X-Scope-OrgID` header (dataset
-  `default`), or from the authenticated tenant context when
-  `[auth].internal_service_key` is configured. Note that with an internal
-  service key set, the port requires SignalDB's internal auth headers,
-  which a stock Tempo query-frontend cannot send — run without the key on
-  a trusted network for Tempo interop.
+- Tenant resolution: an authenticated `TenantContext` (present only when
+  `[auth].internal_service_key` is configured and the caller sent it) always
+  wins when present; otherwise the tenant comes from Tempo's `X-Scope-OrgID`
+  header (dataset `default`); otherwise tenant `default` / dataset `default`.
+  With an internal service key set, the port requires SignalDB's internal
+  auth headers, which a stock Tempo query-frontend cannot send — run without
+  the key on a trusted network for Tempo interop.
 - `SearchBlock` returns `Unimplemented` (SignalDB stores data in Iceberg
   tables, not Tempo blocks). Tag endpoints still advertise the old static
   three-name set (`service.name`, `name`, `status`) rather than the

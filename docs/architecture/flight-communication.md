@@ -6,6 +6,7 @@ sources:
   - src/common/src/flight/**
   - src/router/src/endpoints/flight.rs
   - src/querier/src/flight.rs
+  - src/querier/src/query/ir_planner.rs
   - src/writer/src/flight_iceberg.rs
   - src/compactor/src/flight.rs
 ---
@@ -178,6 +179,15 @@ gRPC protocol on the same port as Flight (see the
 that protocol does not use tickets.
 
 There is no `trace_by_id?id=...` ticket form at the Querier; that command exists only in the Router's metadata path. The Tempo HTTP endpoints bypass the Router's Flight commands entirely and send `find_trace:`/`search_traces:`/SQL tickets straight to the Querier.
+
+#### Query IR Execution Notes (`ir_planner.rs`)
+
+The `query_ir` ticket is lowered by `src/querier/src/query/ir_planner.rs` into a DataFusion `DataFrame`; see [the Query IR reference](../users/querying-ir.md) for the document shape. A few lowering details are worth knowing before touching that planner:
+
+- **Multi-table sources union via a provider, not a projection.** `SourcePlan` scans a list of physical tables (`tables`, not a single `table`) — e.g. `metrics` unions `metrics_gauge` + `metrics_sum` — and unions them onto `row_defaults` when there is more than one. When the tables disagree on a column's physical type (legacy JSON-string attribute container vs. typed `Map`), the mismatching table's scan is wrapped in a `CoercedTableProvider` (JSON→Map via the `ir_json_to_map` UDF, or a cast) _before_ the union, rather than as a projection expression: DataFusion 54's `optimize_projections` mis-orders pushed-down projections under a `UNION` whose inputs mix columns and expressions (upstream issue, tracked as #1206).
+- **`metrics_histogram` breaks the lazy `DataFrame` chain.** Its terminal `histogram_quantile` stage merges bucket-array columns element-wise, which isn't expressible as a DataFusion aggregate, so it `.collect()`s the filtered/bucketed rows, reuses the bucket-merge/interpolation functions the PromQL `histogram_quantile()` path calls (`querier::query::histogram`, shared so both surfaces return identical percentiles), and reinjects the small aggregated result as a fresh in-memory `DataFrame` shaped like `aggregate`'s `step` output — so every downstream stage and the response builder need no histogram-specific handling.
+- **Exception attributes on traces resolve via a dedicated UDF, not a span attribute.** Per the exceptions-on-spans convention, `exception.type`/`.message`/`.stacktrace`/`.escaped` on the `traces` source resolve through a new `Resolved::EventAttribute` variant: the `ir_event_attr` DataFusion UDF parses the span's stored `events` JSON array (`common::model::span::parse_span_events`), finds the first event named `exception`, and extracts the key from its own attributes. A span with no such event resolves the field absent, even when `status.code = Error`. Logs need no equivalent — per exceptions-on-logs semconv, the same four names are ordinary LogRecord attributes there.
+- **Physical column names stay unaddressable.** The resolver's `is_physical_name` check (backed by the logical schema's physical-name set, which replaced an earlier static `STORAGE_DENYLIST`) rejects any field name that would address Iceberg storage directly, in predicates, grouping, ordering, and projections alike.
 
 #### Self-Monitoring Anti-Loop Guard
 
@@ -369,6 +379,21 @@ ahead of each data batch. Decoding on the receiving side goes through
 is always empty and so cannot decode a stream containing dictionary batches.
 No column in SignalDB's own schemas is dictionary-encoded yet; this only
 removes the transport-level blocker for adopting one in the future.
+
+#### Field-Coverage Check (table-schema-consistency)
+
+`writer::schema_transform::schema_consistency` (a test, not a runtime check)
+asserts, per table, that `schemas.toml`'s current non-computed field names
+exactly match a hand-maintained "fields this transform touches" set. It
+exists to catch a field declared physical but never actually read or
+written — the failure mode `dropped_*_count` fell into silently before
+issue #1208. `transform_trace_v1_to_v2`, `transform_logs_v1_to_iceberg`, and
+`transform_profiles_v1_to_iceberg` additionally self-check this at runtime,
+each iterating its own resolved schema's field list with an exhaustive
+match that errors on an unhandled name. The five metrics transforms build
+columns positionally against their own hand-written
+`create_metrics_*_arrow_schema()` functions with no such runtime check, so
+the test-level check is these five tables' only guard.
 
 ### 5.3 Service Discovery Integration ✅ **Implemented**
 

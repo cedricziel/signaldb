@@ -24,7 +24,8 @@ jobs:
             echo "Lines marked INVALID are frontmatter problems - fix the doc's" >&2
             echo "audience/type/status frontmatter (see .claude/skills/docs/SKILL.md)." >&2
             echo "Other lines are living docs whose declared sources changed in this PR" >&2
-            echo "without a doc update - update them, or add the 'docs-not-needed' label" >&2
-            echo "if no documentation change is genuinely required." >&2
+            echo "without a doc update. Read each against the diff and fix only what is" >&2
+            echo "now wrong (deleting stale text counts); if the doc is still accurate," >&2
+            echo "add the 'docs-not-needed' label instead of padding it." >&2
             exit 1
           fi

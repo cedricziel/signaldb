@@ -69,6 +69,16 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
   selected tenant's datasets. API-key requests remain supported and omit
   the human identity.
 
+## OAuth access tokens (MCP connectors)
+
+A third credential type, alongside API keys and session cookies, for
+Claude.ai / ChatGPT MCP connectors (see [MCP server](mcp.md#claude-ai-and-chatgpt-oauth-connector)).
+An `Authorization: Bearer` value starting with `sdb_at_` is an opaque OAuth
+access token: the tenant is resolved **from the token record itself**, not
+from `X-Tenant-ID` — that header is ignored for this credential, because an
+OAuth session is bound to the single tenant it was granted at consent and
+cannot be redirected to another one.
+
 ## Error codes
 
 | HTTP | gRPC                | Meaning                                                                                       |
@@ -105,6 +115,20 @@ operator via one of:
 | Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                                                                                                                                              |
 | CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`; `--no-retry` / `SIGNALDB_NO_RETRY=1` to fail fast on throttling, exit code 4 — see [client retry](client-retry.md)) |
 
+### Admin API endpoints
+
+All mounted at `/api/v1/admin`, requiring `Authorization: Bearer <admin-api-key>`:
+
+| Endpoint                                           | Methods          | Description                                                                  |
+| -------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------- |
+| `/api/v1/admin/tenants`                            | GET, POST        | List/create tenants                                                          |
+| `/api/v1/admin/tenants/{id}`                       | GET, PUT, DELETE | Manage a tenant                                                              |
+| `/api/v1/admin/tenants/{id}/api-keys`              | GET, POST        | List/create API keys                                                         |
+| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE, PATCH    | Revoke a key / update its scopes and dataset restriction                     |
+| `/api/v1/admin/tenants/{id}/datasets`              | GET, POST        | List/create datasets                                                         |
+| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE           | Delete a dataset                                                             |
+| `/api/v1/admin/users`                              | POST             | Create a human user + initial tenant membership (`signaldb-cli user create`) |
+
 Example (operator-side):
 
 ```bash
@@ -119,12 +143,12 @@ creation time; a request that names no scopes or an unknown scope is
 rejected on every surface (UI, admin/management HTTP API, SDK, CLI, MCP).
 The vocabulary is shared:
 
-| Scope                                                           | Grants                                                                    |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `metrics:write`, `logs:write`, `traces:write`, `profiles:write` | OTLP ingestion of that signal                                             |
-| `traces:read`, `logs:read`, `metrics:read`, `profiles:read`     | Query access to that signal (Tempo/Loki/Prometheus/Pyroscope APIs, MCP)   |
-| `schema:read`                                                   | Reading the schema registry (registries, attribute/entity/metric lookups) |
-| `schema:write`                                                  | Creating, replacing, validating, and deleting custom schema registries    |
+| Scope                                                           | Grants                                                                                                                     |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `metrics:write`, `logs:write`, `traces:write`, `profiles:write` | OTLP ingestion of that signal                                                                                              |
+| `traces:read`, `logs:read`, `metrics:read`, `profiles:read`     | Query access to that signal (Tempo/Loki/Prometheus/Pyroscope APIs, MCP)                                                    |
+| `schema:read`                                                   | Reading the schema registry (registries, attribute/entity/metric lookups)                                                  |
+| `schema:write`                                                  | Creating, replacing, validating, and deleting custom schema registries                                                     |
 | `tenant:manage`                                                 | The [tenant management API](#tenant-management-api) for the key's own tenant: datasets, API keys, memberships, schema view |
 
 Keys may additionally be restricted to one dataset (`--dataset` / `dataset_id`).
@@ -177,6 +201,35 @@ admin, management, tenant self-service, and the PromQL/LogQL/TraceQL/Query-IR
 query-compat endpoints (SQL is separate, served over Arrow Flight). The CLI
 and MCP server are both built on it and expose no capability it doesn't.
 
+## Rate limits and quotas
+
+Configured under `[auth.default_limits]` (overridable per tenant via
+`[[auth.tenants]].limits`); see the `configuration` reference for the TOML
+keys. Unset fields mean unlimited, and tenants provisioned through the Admin
+API get the defaults.
+
+| Limit                                                      | Enforced at                                                           | On exceed                                   |
+| ---------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------- |
+| `max_ingest_requests_per_sec` / `max_ingest_bytes_per_sec` | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / `RESOURCE_EXHAUSTED`                  |
+| `max_query_requests_per_sec`                               | Router HTTP query API (`/tempo`, `/api/v1`)                           | 429                                         |
+| `max_api_keys` (active keys only)                          | Admin API key creation                                                | 429 `quota_exceeded`                        |
+| `max_datasets`                                             | Admin API dataset creation                                            | 429 `quota_exceeded`                        |
+| `max_storage_bytes`                                        | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / `RESOURCE_EXHAUSTED` `quota_exceeded` |
+| `[querier].max_concurrent_queries_per_tenant`              | Querier                                                               | query rejected                              |
+
+Ingest and query rate limits are independent token buckets per tenant.
+Storage quotas compare cached per-tenant usage — refreshed from Iceberg
+manifests every `[auth].storage_usage_refresh_interval` (default 60s) —
+against `max_storage_bytes`, so enforcement is eventually consistent by
+design; usage is exported as the `signaldb.tenant.storage_usage` gauge.
+
+Every token-bucket rejection increments
+`signaldb_rate_limit_rejections_total{surface,kind}` (`surface` ∈
+`query | admin | otlp_http | otlp_grpc | prometheus`; `kind` ∈
+`query_requests | requests | bytes | quota`) and logs one `warn` with
+`retry_after_ms`. Storage-quota rejections on the Prometheus remote-write
+surface return `429` without incrementing the counter.
+
 ## Tenant self-service API
 
 With a regular tenant API key (the three headers above), the router
@@ -184,15 +237,15 @@ exposes tenant-scoped endpoints under `/api/v1` (read-only, plus one
 table-creation endpoint). Every row below is in the OpenAPI document, so
 each is reachable through `signaldb-sdk`, not only raw HTTP:
 
-| Method | Path                                        | Returns                                                                          | SDK operation            | CLI / MCP                                                                      |
-| ------ | ------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------ |
-| GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset | `whoami`                 | `signaldb-cli whoami` / `server_info`                                          |
+| Method | Path                                        | Returns                                                                          | SDK operation            | CLI / MCP                                                                        |
+| ------ | ------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------------- |
+| GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset | `whoami`                 | `signaldb-cli whoami` / `server_info`                                            |
 | GET    | `/api/v1/tenants`                           | All configured tenants, filtered to the caller's own                             | `list_tenants_self`      | `signaldb-cli tenant show` / `tenant_info` (single-item view of the same tenant) |
-| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   | `get_tenant_self`        | `signaldb-cli tenant show` / `tenant_info`                                     |
-| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's provisioned tables, grouped by dataset                              | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                        |
-| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                   | `create_tenant_tables`   | `signaldb-cli tenant table provision` / `tenant_create_tables`                 |
-| GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's configured table schema types                                       | `list_tenant_schemas`    | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`              |
-| GET    | `/api/v1/schemas/available`                 | Every table schema type SignalDB can provision                                   | `list_available_schemas` | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas` |
+| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   | `get_tenant_self`        | `signaldb-cli tenant show` / `tenant_info`                                       |
+| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's provisioned tables, grouped by dataset                              | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                          |
+| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                   | `create_tenant_tables`   | `signaldb-cli tenant table provision` / `tenant_create_tables`                   |
+| GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's configured table schema types                                       | `list_tenant_schemas`    | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`                |
+| GET    | `/api/v1/schemas/available`                 | Every table schema type SignalDB can provision                                   | `list_available_schemas` | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas`   |
 
 `GET /tenants` and `GET /tenants/{tenant_id}` return only the caller's own
 tenant — a single-entry view — so both map to `signaldb-cli tenant show` and
@@ -216,23 +269,23 @@ never reach another tenant. It accepts either of two credentials:
   read-only keys, and legacy unscoped keys are refused with `403` and the
   message `Tenant administrator role or tenant:manage scope required`.
 
-Tenant *creation* (`POST /api/v1/manage/tenants`) stays instance-admin-only;
+Tenant _creation_ (`POST /api/v1/manage/tenants`) stays instance-admin-only;
 API-key automation creates tenants through the admin API
 (`signaldb-cli admin tenant create`).
 
-| Method | Path                                                     | SDK operation              | CLI / MCP                                                                    |
-| ------ | -------------------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------- |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/datasets`            | `manage_list_datasets`     | `signaldb-cli tenant dataset list` / `tenant_list_datasets`                  |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/datasets`            | `manage_create_dataset`    | `signaldb-cli tenant dataset create <name>` / `tenant_create_dataset`        |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/datasets/{name}`     | `manage_delete_dataset`    | `signaldb-cli tenant dataset delete <name>` / `tenant_delete_dataset`        |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/api-keys`            | `manage_list_api_keys`     | `signaldb-cli tenant api-key list` / `tenant_list_api_keys`                  |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/api-keys`            | `manage_create_api_key`    | `signaldb-cli tenant api-key create --scope ...` / `tenant_create_api_key`   |
-| PATCH  | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`   | `manage_update_api_key`    | `signaldb-cli tenant api-key update <key-id>` / `tenant_update_api_key`      |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`   | `manage_revoke_api_key`    | `signaldb-cli tenant api-key revoke <key-id>` / `tenant_revoke_api_key`      |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/memberships`         | `manage_list_memberships`  | `signaldb-cli tenant membership list` / `tenant_list_memberships`            |
-| PUT    | `/api/v1/manage/tenants/{tenant_id}/memberships`         | `manage_upsert_membership` | `signaldb-cli tenant membership set <email> --role ...` / `tenant_upsert_membership` |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/memberships/{user}`  | `manage_remove_membership` | `signaldb-cli tenant membership remove <user-id>` / `tenant_remove_membership` |
-| GET    | `/api/v1/manage/schema`                                  | `manage_get_schema`        | `signaldb-cli tenant schema get` / `tenant_get_schema`                       |
+| Method | Path                                                    | SDK operation              | CLI / MCP                                                                            |
+| ------ | ------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------ |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/datasets`           | `manage_list_datasets`     | `signaldb-cli tenant dataset list` / `tenant_list_datasets`                          |
+| POST   | `/api/v1/manage/tenants/{tenant_id}/datasets`           | `manage_create_dataset`    | `signaldb-cli tenant dataset create <name>` / `tenant_create_dataset`                |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/datasets/{name}`    | `manage_delete_dataset`    | `signaldb-cli tenant dataset delete <name>` / `tenant_delete_dataset`                |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/api-keys`           | `manage_list_api_keys`     | `signaldb-cli tenant api-key list` / `tenant_list_api_keys`                          |
+| POST   | `/api/v1/manage/tenants/{tenant_id}/api-keys`           | `manage_create_api_key`    | `signaldb-cli tenant api-key create --scope ...` / `tenant_create_api_key`           |
+| PATCH  | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`  | `manage_update_api_key`    | `signaldb-cli tenant api-key update <key-id>` / `tenant_update_api_key`              |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`  | `manage_revoke_api_key`    | `signaldb-cli tenant api-key revoke <key-id>` / `tenant_revoke_api_key`              |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/memberships`        | `manage_list_memberships`  | `signaldb-cli tenant membership list` / `tenant_list_memberships`                    |
+| PUT    | `/api/v1/manage/tenants/{tenant_id}/memberships`        | `manage_upsert_membership` | `signaldb-cli tenant membership set <email> --role ...` / `tenant_upsert_membership` |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/memberships/{user}` | `manage_remove_membership` | `signaldb-cli tenant membership remove <user-id>` / `tenant_remove_membership`       |
+| GET    | `/api/v1/manage/schema`                                 | `manage_get_schema`        | `signaldb-cli tenant schema get` / `tenant_get_schema`                               |
 
 Example — CI provisioning a dataset and an ingest key with a `tenant:manage`
 key (`--api-key`/`SIGNALDB_API_KEY`, `--tenant-id`/`SIGNALDB_TENANT_ID`):

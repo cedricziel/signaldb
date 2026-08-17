@@ -326,37 +326,39 @@ lists — metrics/profiles only gained this in the same change that added
 their `schemas.toml` sections; before that, only traces/logs resolved from
 TOML and metrics/profiles were hand-written Rust.
 
-#### Traces Table (v2 -- current)
+#### Traces Table (physical-v3 -- current)
 
-Defined in `schemas.toml` via v1 base + v2 inheritance with renames and additions.
+Defined in `schemas.toml` via physical-v1 base, physical-v2 (renames plus partitioning fields), and physical-v3 (numeric OTel source-of-truth columns and dropped-count preservation, issue #1208) inheritance.
 
-| #   | Field                  | Iceberg Type | Required | Notes                                                |
-| --- | ---------------------- | ------------ | -------- | ---------------------------------------------------- |
-| 1   | `trace_id`             | String       | Yes      |                                                      |
-| 2   | `span_id`              | String       | Yes      |                                                      |
-| 3   | `parent_span_id`       | String       | No       |                                                      |
-| 4   | `span_name`            | String       | Yes      | Renamed from `name` in v2                            |
-| 5   | `service_name`         | String       | Yes      |                                                      |
-| 6   | `start_time_unix_nano` | Long         | Yes      | Nanoseconds since epoch                              |
-| 7   | `end_time_unix_nano`   | Long         | Yes      | Nanoseconds since epoch                              |
-| 8   | `duration_nanos`       | Long         | Yes      | Renamed from `duration_nano` in v2                   |
-| 9   | `span_kind`            | String       | Yes      |                                                      |
-| 10  | `status_code`          | String       | Yes      |                                                      |
-| 11  | `status_message`       | String       | No       |                                                      |
-| 12  | `is_root`              | Boolean      | Yes      |                                                      |
-| 13  | `span_attributes`      | String       | No       | JSON. Renamed from `attributes_json` in v2           |
-| 14  | `resource_attributes`  | String       | No       | JSON. Renamed from `resource_json` in v2             |
-| 15  | `events`               | String       | No       | JSON serialized (nested List<Struct> in Flight)      |
-| 16  | `links`                | String       | No       | JSON serialized (nested List<Struct> in Flight)      |
-| 17  | `trace_state`          | String       | No       |                                                      |
-| 18  | `resource_schema_url`  | String       | No       |                                                      |
-| 19  | `scope_name`           | String       | No       |                                                      |
-| 20  | `scope_version`        | String       | No       |                                                      |
-| 21  | `scope_schema_url`     | String       | No       |                                                      |
-| 22  | `scope_attributes`     | String       | No       |                                                      |
-| 23  | `timestamp`            | Timestamp    | Yes      | Computed from `start_time_unix_nano`. Partition key. |
-| 24  | `date_day`             | Date         | Yes      | Computed from timestamp                              |
-| 25  | `hour`                 | Int          | Yes      | Computed from timestamp                              |
+| #     | Field                                     | Iceberg Type | Required | Notes                                                                                                    |
+| ----- | ----------------------------------------- | ------------ | -------- | -------------------------------------------------------------------------------------------------------- |
+| 1     | `trace_id`                                | String       | Yes      |                                                                                                          |
+| 2     | `span_id`                                 | String       | Yes      |                                                                                                          |
+| 3     | `parent_span_id`                          | String       | No       |                                                                                                          |
+| 4     | `span_name`                               | String       | Yes      | Renamed from `name` at physical-v2                                                                       |
+| 5     | `service_name`                            | String       | Yes      |                                                                                                          |
+| 6     | `start_time_unix_nano`                    | Long         | Yes      | Nanoseconds since epoch                                                                                  |
+| 7     | `end_time_unix_nano`                      | Long         | Yes      | Nanoseconds since epoch                                                                                  |
+| 8     | `duration_nanos`                          | Long         | Yes      | Renamed from `duration_nano` at physical-v2                                                              |
+| 9     | `span_kind`                               | String       | Yes      | Derived display string; never the reverse of `span_kind_number` below                                    |
+| 10    | `status_code`                             | String       | Yes      | Derived display string; never the reverse of `status_code_number` below                                  |
+| 11    | `status_message`                          | String       | No       |                                                                                                          |
+| 12    | `is_root`                                 | Boolean      | Yes      |                                                                                                          |
+| 13    | `span_attributes`                         | String       | No       | JSON on legacy tables, `Map<String,String>` on new tables. Renamed from `attributes_json` at physical-v2 |
+| 14    | `resource_attributes`                     | String       | No       | JSON on legacy tables, `Map<String,String>` on new tables. Renamed from `resource_json` at physical-v2   |
+| 15    | `events`                                  | String       | No       | JSON serialized (nested `List<Struct>` in Flight)                                                        |
+| 16    | `links`                                   | String       | No       | JSON serialized (nested `List<Struct>` in Flight)                                                        |
+| 17-22 | trace_state, resource_schema_url, scope_* | String       | No       |                                                                                                          |
+| 23    | `timestamp`                               | Timestamp    | Yes      | Computed from `start_time_unix_nano`. Partition key.                                                     |
+| 24    | `date_day`                                | Date         | Yes      | Computed from timestamp                                                                                  |
+| 25    | `hour`                                    | Int          | Yes      | Computed from timestamp                                                                                  |
+| 26    | `span_kind_number`                        | Int          | No       | physical-v3: numeric OTel source of truth for `span_kind`, written verbatim from `Span.kind`             |
+| 27    | `status_code_number`                      | Int          | No       | physical-v3: numeric OTel source of truth for `status_code`, written verbatim from `Status.code`         |
+| 28    | `dropped_attributes_count`                | Long         | No       | physical-v3: preserved verbatim from the OTel span (previously discarded despite being query-registered) |
+| 29    | `dropped_events_count`                    | Long         | No       | physical-v3: as above                                                                                    |
+| 30    | `dropped_links_count`                     | Long         | No       | physical-v3: as above                                                                                    |
+
+The five physical-v3 columns are nullable, so rows written before this version have no value for them: `arrow_to_otlp_traces` falls back to deriving `span_kind`/`status_code`'s numeric form from the string columns, and defaults the dropped counts to 0, only when the physical-v3 column is absent or null.
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
@@ -386,6 +388,19 @@ Defined in `schemas.toml`.
 | 18  | `hour`                | Int                | Yes      | Computed from timestamp                |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
+
+### Typed attribute maps
+
+New tables across all four signals store their `attributes`,
+`resource_attributes`, and `scope_attributes` columns as Iceberg
+`Map<String,String>` rather than a JSON string (see `schemas.toml`): any attribute matches
+exactly (including regex and ordered comparisons) via `get_field`
+extraction, instead of the JSON substring approximation legacy tables are
+stuck with. The querier detects which form a table uses per column
+(`attr_context_of`), and labels/values/detected-fields discovery
+(`attr_documents`) reads either form -- but `distinct()` is skipped for the
+map form, since Arrow's row format cannot sort a `Map` column. Epic #737 L1
+(#730); logs were converted first.
 
 ### Materialized labels
 
@@ -508,6 +523,12 @@ DataFusion's physical filter-pushdown injects the query predicate into the
 defaulting on, a bloom-filtered file skips row groups that cannot contain the
 target. See `tests-integration/tests/querier/trace_bloom_pruning.rs`.
 
+**Compactor gap**: bloom-filter properties are set only at table creation.
+A label column promoted onto an _existing_ table by
+[schema evolution](#label-columns-can-be-added-to-existing-tables) does not
+retroactively gain a bloom filter, and compaction does not set one on
+rewrite either -- `TODO(#731)`.
+
 #### Metrics Gauge Table (v1 -- current)
 
 Defined in `src/common/src/iceberg/schemas.rs`.
@@ -523,11 +544,11 @@ Defined in `src/common/src/iceberg/schemas.rs`.
 | 7   | `value`                    | Double             | Yes      |                                 |
 | 8   | `flags`                    | Int                | No       |                                 |
 | 9   | `resource_schema_url`      | String             | No       |                                 |
-| 10  | `resource_attributes`      | String             | No       | JSON                            |
+| 10  | `resource_attributes`      | Map<String,String> | No       | typed map (legacy: JSON string) |
 | 11  | `scope_name`               | String             | No       |                                 |
 | 12  | `scope_version`            | String             | No       |                                 |
 | 13  | `scope_schema_url`         | String             | No       |                                 |
-| 14  | `scope_attributes`         | String             | No       | JSON                            |
+| 14  | `scope_attributes`         | Map<String,String> | No       | typed map (legacy: JSON string) |
 | 15  | `scope_dropped_attr_count` | Int                | No       |                                 |
 | 16  | `attributes`               | Map<String,String> | No       | typed map (legacy: JSON string) |
 | 17  | `exemplars`                | String             | No       | JSON                            |
@@ -757,13 +778,15 @@ let batch = reader.into_iter().next().unwrap()?;
 
 Schemas are defined in `schemas.toml` at the repository root and compiled into the binary via `include_str!`. The system supports:
 
-| Feature             | Description                                                                                        |
-| ------------------- | -------------------------------------------------------------------------------------------------- |
-| **Versioning**      | Each signal type tracks a current version (e.g., `current_trace_version = "v2"`)                   |
-| **Inheritance**     | A version can inherit all fields from a parent: `inherits = "v1"`                                  |
-| **Field renames**   | Rename fields across versions: `{ from = "name", to = "span_name" }`                               |
-| **Field additions** | Add new fields: `{ name = "timestamp", type = "timestamp_ns", computed = "start_time_unix_nano" }` |
-| **Computed fields** | Fields derived from other fields at write time                                                     |
+| Feature                  | Description                                                                                                                                                                                                                                                     |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Versioning**           | Each signal type tracks a current physical version (e.g., `current_trace_version = "physical-v3"`); a separate `logical_schema_version` (e.g. `"otel-2026-08"`) tracks the client-visible OTel logical schema independently of the physical Iceberg realization |
+| **Inheritance**          | A version can inherit all fields from a parent: `inherits = "physical-v1"`                                                                                                                                                                                      |
+| **Field renames**        | Rename fields across versions: `{ from = "name", to = "span_name" }`                                                                                                                                                                                            |
+| **Field additions**      | Add new fields: `{ name = "timestamp", type = "timestamp_ns", computed = "start_time_unix_nano" }`                                                                                                                                                              |
+| **Field removals**       | `{ name = "deprecated_field" }` drops a field inherited from a parent version, going forward only -- no historical Parquet data is deleted                                                                                                                      |
+| **Computed fields**      | Fields derived from other fields at write time                                                                                                                                                                                                                  |
+| **Physical-only fields** | `{ physical_only = true }` marks a field present in the Iceberg table but not in the client-visible logical schema; computed and partition-by fields are marked `physical_only` automatically during resolution                                                 |
 
 ### Schema Resolution
 
@@ -773,12 +796,15 @@ The `SchemaDefinitions` struct (`src/common/src/schema/schema_parser.rs`) resolv
 2. If `inherits` is specified, recursively resolving the parent and starting with its fields
 3. Applying `field_renames` to inherited fields
 4. Appending `field_additions`
+5. Applying `field_removals`
+
+`SchemaDefinitions::version_chain` is a separate function that computes the forward hop order between two named versions by walking `inherits` backward from the target and reversing it -- version _names_ carry no ordering of their own, only `inherits` pointers do. This is what drives the live-table schema evolution described [below](#an-existing-tables-schema-tracks-and-catches-up-to-schemastomls-version); the resolution steps above are for resolving one version's field set, not for sequencing versions.
 
 ### Flight Schema vs Iceberg Schema
 
-The Flight wire format (v1) and Iceberg storage format (v2) are intentionally different:
+The Flight wire format (v1) and the current Iceberg storage format (physical-v3, which inherits the field renames introduced at physical-v2) are intentionally different:
 
-| Aspect           | Flight Schema (v1)            | Iceberg Schema (v2)             |
+| Aspect           | Flight Schema (v1)            | Iceberg Schema (physical-v3)    |
 | ---------------- | ----------------------------- | ------------------------------- |
 | Span name field  | `name`                        | `span_name`                     |
 | Duration field   | `duration_nano` (UInt64)      | `duration_nanos` (Long/Int64)   |
