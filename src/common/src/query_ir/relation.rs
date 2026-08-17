@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::stage::DescribeTarget;
 use super::value::ValueType;
 
 /// What one row of a [`RowSet`] denotes.
@@ -83,12 +84,24 @@ pub struct Heatmap {
     pub value: String,
 }
 
+/// An introspection relation: what a terminal `describe` stage produces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Metadata {
+    /// What the stage introspects.
+    pub target: DescribeTarget,
+}
+
 /// The type of a relation flowing between stages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationType {
     RowSet(RowSet),
     Series(Series),
     Heatmap(Heatmap),
+    /// Introspection about a source rather than its records: the relation a
+    /// terminal `describe` stage produces. It carries no columns — the answer
+    /// is assembled from declared schema, schema registries and maintained
+    /// statistics, not from a scan.
+    Metadata(Metadata),
 }
 
 impl RelationType {
@@ -99,6 +112,7 @@ impl RelationType {
             RelationType::RowSet(_) => "rows (row-set)".to_string(),
             RelationType::Series(_) => "series".to_string(),
             RelationType::Heatmap(_) => "heatmap".to_string(),
+            RelationType::Metadata(m) => format!("metadata ({})", m.target.as_str()),
         }
     }
 
@@ -108,6 +122,7 @@ impl RelationType {
             RelationType::RowSet(rs) => rs.columns.iter().find(|c| c.name == name),
             RelationType::Series(_) => None,
             RelationType::Heatmap(_) => None,
+            RelationType::Metadata(_) => None,
         }
     }
 }

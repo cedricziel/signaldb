@@ -14,8 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::stage::Stage;
 
 /// The declared result envelope. Validated against the inferred terminal
-/// relation type. (`trace`/`scalar`/`metadata` arrive with their owning sibling
-/// changes.)
+/// relation type. (`trace`/`scalar` arrive with their owning sibling changes.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultEnvelope {
@@ -26,6 +25,9 @@ pub enum ResultEnvelope {
     /// A bounded, aggregated flamegraph over matched `profiles` rows. Legal
     /// only for the `profiles` source; see `query_ir::validate`.
     Flamegraph,
+    /// Introspection about the source rather than its records. Legal only for
+    /// a pipeline whose terminal stage is `describe`; see `query_ir::validate`.
+    Metadata,
 }
 
 impl ResultEnvelope {
@@ -36,6 +38,7 @@ impl ResultEnvelope {
             ResultEnvelope::Table => "table",
             ResultEnvelope::Heatmap => "heatmap",
             ResultEnvelope::Flamegraph => "flamegraph",
+            ResultEnvelope::Metadata => "metadata",
         }
     }
 }

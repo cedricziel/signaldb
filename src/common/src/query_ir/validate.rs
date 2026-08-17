@@ -16,12 +16,15 @@
 
 use super::document::{Document, Range, ResultEnvelope};
 use super::predicate::{ComparisonOp, Leaf, Predicate};
-use super::relation::{Column, Grain, Heatmap as HeatmapRelation, RelationType, RowSet, Series};
+use super::relation::{
+    Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,
+    Series,
+};
 use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry};
 use super::stage::{
-    Agg, AggFn, Aggregate, Extract, Heatmap, HistogramQuantile, Order, Rank, Stage,
-    is_expression_string,
+    Agg, AggFn, Aggregate, Describe, DescribeTarget, Extract, Heatmap, HistogramQuantile, Order,
+    Rank, Stage, is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 
@@ -75,7 +78,7 @@ pub enum IrError {
     InvalidRankSize { n: i64 },
 
     #[error(
-        "`fields` projection is only valid for rows/table results, not series, heatmap, or flamegraph"
+        "`fields` projection is only valid for rows/table results, not series, heatmap, flamegraph, or metadata"
     )]
     FieldsOnSeries,
 
@@ -104,13 +107,7 @@ pub fn validate(
     resolver: &dyn FieldResolver,
 ) -> Result<Validated, IrError> {
     // 1. Version range.
-    if !super::version::is_supported(doc.ir_version) {
-        return Err(IrError::UnsupportedVersion {
-            found: doc.ir_version,
-            min: super::version::MIN_IR_VERSION,
-            max: super::version::MAX_IR_VERSION,
-        });
-    }
+    check_version(doc.ir_version)?;
     if doc.ir_version < 2
         && (doc.result == ResultEnvelope::Heatmap
             || doc
@@ -132,14 +129,14 @@ pub fn validate(
             "histogram_quantile stage requires irVersion 3".to_string(),
         ));
     }
+    // 1b. Introspection documents (`describe` + `metadata`) never reach a plan:
+    // they are answered from declared schema, the schema registries and
+    // maintained statistics. Legality is checked here so this validator and the
+    // router's schema-free path (`validate_describe`) share one rule set.
+    let describe = check_describe(doc)?;
 
     // 2. Source resolution — unknown source is a clear error, not a parse fail.
-    let source_def = sources
-        .resolve(&doc.from)
-        .ok_or_else(|| IrError::UnknownSource {
-            name: doc.from.clone(),
-            available: sources.names().join(", "),
-        })?;
+    let source_def = resolve_source(doc, sources)?;
 
     // Range literals must be coercible to timestamps (relative anchors stay
     // symbolic; only well-formedness is checked here).
@@ -160,8 +157,21 @@ pub fn validate(
         names: Vec::new(),
         declared_result: doc.result,
     };
-    for stage in &doc.pipeline {
-        ctx.apply_stage(stage)?;
+    match describe {
+        // Introspection: no records flow through the pipeline, so there is
+        // nothing to infer — the terminal relation *is* the metadata relation.
+        // It still goes through the envelope and projection checks below, the
+        // same as any other terminal.
+        Some(describe) => {
+            ctx.relation = RelationType::Metadata(MetadataRelation {
+                target: describe.target,
+            })
+        }
+        None => {
+            for stage in &doc.pipeline {
+                ctx.apply_stage(stage)?;
+            }
+        }
     }
 
     // 4. Envelope + fields validation against the terminal relation.
@@ -205,6 +215,15 @@ impl InferCtx<'_> {
             Stage::Limit(_) => Ok(()),
             Stage::Heatmap(heatmap) => self.apply_heatmap(heatmap),
             Stage::HistogramQuantile(hq) => self.apply_histogram_quantile(hq),
+            // Unreachable in practice: an introspection document returns before
+            // stage inference. Kept explicit so a future caller that skips
+            // `check_describe` fails loudly instead of inferring nonsense.
+            Stage::Describe(_) => Err(IrError::IllegalStage {
+                stage: "describe".to_string(),
+                reason: "`describe` introspects a source and cannot appear in an executable \
+                         pipeline"
+                    .to_string(),
+            }),
         }
     }
 
@@ -214,6 +233,11 @@ impl InferCtx<'_> {
             RelationType::Series(_) | RelationType::Heatmap(_) => Err(IrError::IllegalStage {
                 stage: stage.to_string(),
                 reason: "expects a row-set input but the pipeline is a series".to_string(),
+            }),
+            RelationType::Metadata(_) => Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: "expects a row-set input but the pipeline introspects the source"
+                    .to_string(),
             }),
         }
     }
@@ -228,9 +252,11 @@ impl InferCtx<'_> {
         }
         self.guard_logical_name(name)?;
         match &self.relation {
-            RelationType::Series(_) | RelationType::Heatmap(_) => Err(IrError::UnknownReference {
-                name: name.to_string(),
-            }),
+            RelationType::Series(_) | RelationType::Heatmap(_) | RelationType::Metadata(_) => {
+                Err(IrError::UnknownReference {
+                    name: name.to_string(),
+                })
+            }
             RelationType::RowSet(rs) => {
                 if let Some(col) = rs.columns.iter().find(|c| c.name == name) {
                     return Ok(col.value_type.clone());
@@ -754,6 +780,158 @@ fn is_numeric(t: &ValueType) -> bool {
     )
 }
 
+/// The first IR version carrying the `describe` stage and the `metadata`
+/// result envelope.
+pub const DESCRIBE_MIN_VERSION: i64 = 4;
+
+/// What a client runs instead when it wants a predicate-scoped answer.
+const SCOPED_ANSWER_HINT: &str = "discovery is not predicate-scoped: it is answered from \
+     unconditional statistics, which cannot be filtered. For the scoped answer run a query: \
+     `where` your predicate, `aggregate` with `by` the field and a `count`, then `topk`";
+
+/// Validate an introspection document (`describe` + `metadata`) without a field
+/// resolver, returning its stage.
+///
+/// The router answers these documents itself, from the catalog and the
+/// in-process registries, so it has no table schema to build a resolver from.
+/// [`validate`] applies exactly the same checks.
+///
+/// # Errors
+///
+/// Returns an error when the document's version, source, range, envelope
+/// pairing or stage placement is invalid, or when it is not an introspection
+/// document at all.
+pub fn validate_describe<'a>(
+    doc: &'a Document,
+    sources: &SourceRegistry,
+) -> Result<&'a Describe, IrError> {
+    check_version(doc.ir_version)?;
+    let describe = check_describe(doc)?.ok_or(IrError::EnvelopeMismatch {
+        declared: doc.result.as_str(),
+        terminal: "a pipeline with no terminal `describe` stage".to_string(),
+    })?;
+    let terminal = RelationType::Metadata(MetadataRelation {
+        target: describe.target,
+    });
+    validate_envelope(doc.result, &doc.from, &terminal)?;
+    if doc.fields.is_some() && envelope_rejects_projection(doc.result) {
+        return Err(IrError::FieldsOnSeries);
+    }
+    resolve_source(doc, sources)?;
+    check_range(&doc.range)?;
+    Ok(describe)
+}
+
+/// Reject a document whose version this server does not understand.
+fn check_version(version: i64) -> Result<(), IrError> {
+    if super::version::is_supported(version) {
+        return Ok(());
+    }
+    Err(IrError::UnsupportedVersion {
+        found: version,
+        min: super::version::MIN_IR_VERSION,
+        max: super::version::MAX_IR_VERSION,
+    })
+}
+
+/// Resolve the document's source against the registry.
+fn resolve_source<'a>(
+    doc: &Document,
+    sources: &'a SourceRegistry,
+) -> Result<&'a SourceDef, IrError> {
+    sources
+        .resolve(&doc.from)
+        .ok_or_else(|| IrError::UnknownSource {
+            name: doc.from.clone(),
+            available: sources.names().join(", "),
+        })
+}
+
+/// Envelopes whose shape carries no client-chosen column projection.
+fn envelope_rejects_projection(result: ResultEnvelope) -> bool {
+    matches!(
+        result,
+        ResultEnvelope::Series
+            | ResultEnvelope::Heatmap
+            | ResultEnvelope::Flamegraph
+            | ResultEnvelope::Metadata
+    )
+}
+
+/// The document's `describe` stage, having checked the rules the relation
+/// model cannot express: the version that carries it, its terminality, that it
+/// composes with no record stage, and its own operands. Envelope pairing and
+/// the projection rule are left to [`validate_envelope`]/[`validate_fields`],
+/// which own them for every envelope. `Ok(None)` means an ordinary executable
+/// document.
+fn check_describe(doc: &Document) -> Result<Option<&Describe>, IrError> {
+    let found = doc
+        .pipeline
+        .iter()
+        .enumerate()
+        .find_map(|(index, stage)| match stage {
+            Stage::Describe(describe) => Some((index, describe)),
+            _ => None,
+        });
+    if found.is_none() && doc.result != ResultEnvelope::Metadata {
+        return Ok(None);
+    }
+    if doc.ir_version < DESCRIBE_MIN_VERSION {
+        return Err(IrError::Invalid(format!(
+            "describe stage and metadata result envelope require irVersion {DESCRIBE_MIN_VERSION}"
+        )));
+    }
+    // A `metadata` envelope with no `describe` terminal is an envelope
+    // mismatch against the relation the pipeline really produces, which the
+    // ordinary envelope check reports with that relation named.
+    let Some((index, describe)) = found else {
+        return Ok(None);
+    };
+    if let Some(following) = doc.pipeline.get(index + 1) {
+        return Err(IrError::IllegalStage {
+            stage: following.name().to_string(),
+            reason: "`describe` is terminal; no stage may follow it".to_string(),
+        });
+    }
+    if let Some(preceding) = doc.pipeline.first()
+        && doc.pipeline.len() > 1
+    {
+        let reason = if matches!(preceding, Stage::Where(_)) {
+            SCOPED_ANSWER_HINT.to_string()
+        } else {
+            "`describe` introspects the source and composes with no record stage".to_string()
+        };
+        return Err(IrError::IllegalStage {
+            stage: preceding.name().to_string(),
+            reason,
+        });
+    }
+    match describe.target {
+        DescribeTarget::Fields if describe.field.is_some() => {
+            return Err(IrError::Invalid(
+                "describe target `fields` takes no `field`".to_string(),
+            ));
+        }
+        DescribeTarget::Values
+            if describe
+                .field
+                .as_deref()
+                .is_none_or(|field| field.trim().is_empty()) =>
+        {
+            return Err(IrError::Invalid(
+                "describe target `values` requires a `field`".to_string(),
+            ));
+        }
+        _ => {}
+    }
+    if describe.limit == Some(0) {
+        return Err(IrError::Invalid(
+            "describe `limit` must be greater than 0".to_string(),
+        ));
+    }
+    Ok(Some(describe))
+}
+
 fn validate_envelope(
     declared: ResultEnvelope,
     source: &str,
@@ -767,6 +945,7 @@ fn validate_envelope(
         (ResultEnvelope::Flamegraph, RelationType::RowSet(rs)) => {
             source == "profiles" && !rs.aggregated
         }
+        (ResultEnvelope::Metadata, RelationType::Metadata(_)) => true,
         _ => false,
     };
     if ok {
@@ -788,10 +967,7 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
     let Some(fields) = &doc.fields else {
         return Ok(());
     };
-    if matches!(
-        doc.result,
-        ResultEnvelope::Series | ResultEnvelope::Heatmap | ResultEnvelope::Flamegraph
-    ) {
+    if envelope_rejects_projection(doc.result) {
         return Err(IrError::FieldsOnSeries);
     }
     for field in fields {
@@ -997,8 +1173,8 @@ mod tests {
             err,
             IrError::UnsupportedVersion {
                 found: 99,
-                min: 1,
-                max: 3
+                min: super::super::version::MIN_IR_VERSION,
+                max: super::super::version::MAX_IR_VERSION
             }
         );
     }
@@ -1702,5 +1878,236 @@ mod tests {
             ] } } ]
         }))
         .expect("a scoped non-count aggregate validates");
+    }
+
+    // --- Introspection documents (`describe` + `metadata`), change
+    // `query-field-discovery`. Discovery is answered from declared schema,
+    // schema registries and maintained statistics, never by a plan.
+
+    fn describe_doc(version: i64, describe: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": version, "from": "logs",
+            "range": { "from": "now-1h", "to": "now" },
+            "result": "metadata",
+            "pipeline": [ { "describe": describe } ]
+        })
+    }
+
+    #[test]
+    fn describe_fields_validates_and_infers_a_metadata_relation() {
+        let validated = validate_json(describe_doc(4, json!({ "target": "fields" })))
+            .expect("a describe document validates");
+        assert!(
+            matches!(
+                validated.terminal,
+                RelationType::Metadata(MetadataRelation {
+                    target: DescribeTarget::Fields
+                })
+            ),
+            "got {:?}",
+            validated.terminal
+        );
+    }
+
+    #[test]
+    fn describe_values_validates_with_a_field() {
+        validate_json(describe_doc(
+            4,
+            json!({ "target": "values", "field": "http.route", "limit": 50 }),
+        ))
+        .expect("a values describe with a field validates");
+    }
+
+    #[test]
+    fn describe_needs_no_resolver_and_names_an_unregistered_field_freely() {
+        // A key the resolver has never seen is exactly what discovery is asked
+        // about; it must not be rejected the way a predicate reference is.
+        let doc = doc(describe_doc(
+            4,
+            json!({ "target": "values", "field": "never.seen.anywhere" }),
+        ));
+        let describe = validate_describe(&doc, &SourceRegistry::core())
+            .expect("describe validates without a field resolver");
+        assert_eq!(describe.field.as_deref(), Some("never.seen.anywhere"));
+    }
+
+    #[test]
+    fn describe_under_an_earlier_version_is_rejected_naming_the_version() {
+        for version in [1, 2, 3] {
+            let err =
+                validate_json(describe_doc(version, json!({ "target": "fields" }))).unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 4")),
+                "irVersion {version} must be rejected naming the version, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_envelope_under_an_earlier_version_is_rejected() {
+        let err = validate_json(json!({
+            "irVersion": 3, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "metadata", "pipeline": []
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 4")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_document_still_validates_under_every_earlier_version() {
+        // The version bump is additive: nothing already accepted changes meaning.
+        for version in [1, 2, 3, 4] {
+            validate_json(json!({
+                "irVersion": version, "from": "logs",
+                "range": { "from": "now-1h", "to": "now" }, "result": "rows",
+                "pipeline": [ { "where": { "field": "service.name", "op": "eq", "value": "a" } } ]
+            }))
+            .unwrap_or_else(|e| panic!("irVersion {version} must still validate: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn an_unsupported_version_still_reports_the_range() {
+        let err = validate_json(describe_doc(5, json!({ "target": "fields" }))).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                IrError::UnsupportedVersion {
+                    found: 5,
+                    max: 4,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn describe_with_another_envelope_is_rejected() {
+        let err = validate_json(json!({
+            "irVersion": 4, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": [ { "describe": { "target": "fields" } } ]
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::EnvelopeMismatch { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn metadata_without_a_describe_terminal_is_rejected() {
+        let err = validate_json(json!({
+            "irVersion": 4, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "metadata",
+            "pipeline": [ { "limit": 10 } ]
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::EnvelopeMismatch { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_predicate_before_describe_is_rejected_naming_the_query_that_answers_it() {
+        let err = validate_json(json!({
+            "irVersion": 4, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "metadata",
+            "pipeline": [
+                { "where": { "field": "service.name", "op": "eq", "value": "checkout" } },
+                { "describe": { "target": "values", "field": "http.route" } }
+            ]
+        }))
+        .unwrap_err();
+        match err {
+            IrError::IllegalStage {
+                ref stage,
+                ref reason,
+            } => {
+                assert_eq!(stage, "where");
+                assert!(
+                    reason.contains("aggregate") && reason.contains("topk"),
+                    "the error must name the query that computes the scoped answer: {reason}"
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stage_after_describe_is_rejected() {
+        let err = validate_json(json!({
+            "irVersion": 4, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "metadata",
+            "pipeline": [ { "describe": { "target": "fields" } }, { "limit": 10 } ]
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "limit"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn fields_projection_on_a_metadata_document_is_rejected() {
+        let mut v = describe_doc(4, json!({ "target": "fields" }));
+        v["fields"] = json!(["service.name"]);
+        let err = validate_json(v).unwrap_err();
+        assert!(matches!(err, IrError::FieldsOnSeries), "got {err:?}");
+    }
+
+    #[test]
+    fn describe_operands_are_checked() {
+        let cases = [
+            (json!({ "target": "values" }), "requires a `field`"),
+            (
+                json!({ "target": "values", "field": "  " }),
+                "requires a `field`",
+            ),
+            (
+                json!({ "target": "fields", "field": "http.route" }),
+                "takes no `field`",
+            ),
+            (json!({ "target": "fields", "limit": 0 }), "greater than 0"),
+        ];
+        for (describe, expected) in cases {
+            let err = validate_json(describe_doc(4, describe.clone())).unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains(expected)),
+                "{describe} should be rejected with {expected:?}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn describe_rejects_an_unknown_source_and_a_bad_range() {
+        let mut v = describe_doc(4, json!({ "target": "fields" }));
+        v["from"] = json!("nope");
+        let doc_unknown = doc(v);
+        assert!(matches!(
+            validate_describe(&doc_unknown, &SourceRegistry::core()).unwrap_err(),
+            IrError::UnknownSource { .. }
+        ));
+
+        let mut v = describe_doc(4, json!({ "target": "fields" }));
+        v["range"] = json!({ "from": "not-a-time", "to": "now" });
+        let doc_range = doc(v);
+        assert!(validate_describe(&doc_range, &SourceRegistry::core()).is_err());
+    }
+
+    #[test]
+    fn validate_describe_refuses_an_executable_document() {
+        let doc = doc(json!({
+            "irVersion": 4, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": []
+        }));
+        assert!(
+            validate_describe(&doc, &SourceRegistry::core()).is_err(),
+            "only introspection documents take the discovery path"
+        );
     }
 }

@@ -1154,6 +1154,13 @@ impl Lowering<'_> {
             Stage::HistogramQuantile(_) => Err(QuerierError::InvalidInput(
                 "histogram_quantile requires async lowering".into(),
             )),
+            // Discovery is answered from the registry and maintained
+            // statistics in the router; a `describe` document never becomes a
+            // plan, so reaching here means one was routed to a querier by
+            // mistake. Fail loudly rather than lowering something.
+            Stage::Describe(_) => Err(QuerierError::InvalidInput(
+                "describe introspects a source and is not executable as a query".into(),
+            )),
         }
     }
 

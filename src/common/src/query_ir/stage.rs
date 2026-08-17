@@ -209,6 +209,50 @@ pub struct HistogramQuantile {
     pub as_name: String,
 }
 
+/// What a `describe` stage introspects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DescribeTarget {
+    /// The queryable fields of the source.
+    Fields,
+    /// The values one named field takes.
+    Values,
+}
+
+impl DescribeTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DescribeTarget::Fields => "fields",
+            DescribeTarget::Values => "values",
+        }
+    }
+}
+
+/// The `describe` stage: introspect the source instead of reading its records.
+///
+/// Terminal, and legal only with the `metadata` result envelope. It is answered
+/// from declared schema, the tenant's schema registries and maintained
+/// statistics — not by lowering to a query plan — so it carries no predicate:
+/// see `openspec/changes/query-field-discovery` (design D6) for why a
+/// predicate-scoped answer is refused rather than approximated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Describe {
+    pub target: DescribeTarget,
+    /// The logical field whose values to suggest. Required by `values`,
+    /// rejected by `fields`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// Maximum items to return. Bounded by the server's own cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    /// Opt in to reading signal data when no metadata covers the request.
+    /// Without it, an uncovered request is answered with an explanation
+    /// rather than a scan.
+    #[serde(default)]
+    pub sample: bool,
+}
+
 /// A transform stage in the pipeline. Externally tagged: a single-key object
 /// whose key names the stage. An unknown key is an unsupported stage and is
 /// rejected by name.
@@ -224,6 +268,7 @@ pub enum Stage {
     Limit(u64),
     Heatmap(Heatmap),
     HistogramQuantile(HistogramQuantile),
+    Describe(Describe),
 }
 
 impl Stage {
@@ -239,6 +284,7 @@ impl Stage {
             Stage::Limit(_) => "limit",
             Stage::Heatmap(_) => "heatmap",
             Stage::HistogramQuantile(_) => "histogram_quantile",
+            Stage::Describe(_) => "describe",
         }
     }
 }
