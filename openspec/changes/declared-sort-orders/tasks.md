@@ -33,7 +33,7 @@ Fork work first (everything downstream pins it), then declaration, producers, en
 - [x] 6.1 Integration test: `ORDER BY timestamp DESC LIMIT n` over a deliberately mixed (attested + legacy) table equals optimization-disabled results exactly — permanent regression test
 - [x] 6.2 Plan-shape test: fully attested range elides the redundant sort; mixed range retains it
 - [x] 6.3 Enable `split_file_groups_by_statistics` in the querier session config (already on: `[querier.datafusion]` defaults it to `true`, applied in `flight.rs::session_config_from`; verified rather than changed, and covered by 6.1's both-ways assertions)
-- [ ] 6.4 Benchmark gates: `querier_read_paths.rs` + `trace_read_analysis.rs` before/after, including a recent-first TopK scenario showing files/row-groups skipped — NOT DONE: scenarios unwired, no numbers claimed (build host under disk pressure); numbers pending a nightly run
+- [ ] 6.4 Benchmark gates: `querier_read_paths.rs` + `trace_read_analysis.rs` before/after, including a recent-first TopK scenario showing files/row-groups skipped — NOT DONE, tracked as #1317: scenarios unwired, no numbers claimed (build host under disk pressure); numbers pending a nightly run. Blocks archiving this change
 
 ## 7. Close-out
 
