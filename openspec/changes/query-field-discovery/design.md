@@ -79,15 +79,17 @@ beyond "revert the endpoint".
 terminal `describe` stage, at `irVersion` 4, on the existing
 `POST /api/v1/query`.**
 
+Stages are externally tagged (a single-key object naming the stage), so:
+
 ```jsonc
 { "irVersion": 4, "from": "logs", "range": {"from":"now-1h","to":"now"},
   "result": "metadata",
-  "pipeline": [ { "stage": "describe", "target": "fields" } ] }
+  "pipeline": [ { "describe": { "target": "fields" } } ] }
 
 { "irVersion": 4, "from": "traces", "range": {"from":"now-6h","to":"now"},
   "result": "metadata",
-  "pipeline": [ { "stage": "describe", "target": "values",
-                  "field": "http.route", "limit": 100 } ] }
+  "pipeline": [ { "describe": { "target": "values", "field": "http.route",
+                                "limit": 100 } } ] }
 ```
 
 Rationale: `query-ir-core` deferred the `metadata` envelope _to this change_, so
@@ -105,11 +107,15 @@ duplicates version/range/source/auth handling and orphans the deferred envelope;
 consumers and lossy by construction.
 
 **D2 — `irVersion` 4, not a v3 addition.** `MAX_IR_VERSION` 3 → 4, and
-`describe`/`metadata` under `irVersion < 4` are rejected with a message naming
-the required version, following the `heatmap`→v2 / `histogram_quantile`→v3
-checks in `validate()`. Stage sets are versioned capability sets in this IR
+`describe`/`metadata` under `irVersion < 4` are rejected with a typed error
+naming the required version — never coerced, never executed with the stage
+dropped — following the `heatmap`→v2 / `histogram_quantile`→v3 checks in
+`validate()`. Stage sets are versioned capability sets in this IR
 (`version.rs` says so); a client negotiating v3 must not have to guess whether
-this server's v3 includes `describe`.
+this server's v3 includes `describe`. The bump is labelled BREAKING as a
+surface-version change (see proposal) even though every existing document keeps
+its meaning; the v3-rejection behaviour is pinned by a test rather than left to
+prose.
 
 **D3 — The router answers `describe` locally; the document never reaches a
 querier.** `query_ir` parses the document (it already does, to re-serialize it),
@@ -188,11 +194,11 @@ change), or reject with a pointer. We reject, with an error naming the exact
 equivalent the IR already expresses:
 
 ```jsonc
-{ "irVersion": 4, "from": "traces", "range": {...}, "result": "rows",
-  "pipeline": [ { "stage": "where", ... },
-                { "stage": "aggregate", "by": ["http.route"],
-                  "aggs": [{"fn":"count","as":"n"}] },
-                { "stage": "topk", "by": "n", "size": 100 } ] }
+{ "irVersion": 4, "from": "traces", "range": {...}, "result": "table",
+  "pipeline": [ { "where": ... },
+                { "aggregate": { "by": ["http.route"],
+                                 "aggs": [{"fn":"count","as":"n"}] } },
+                { "topk": { "of": "n", "n": 100 } } ] }
 ```
 
 That is a scan, it is bounded by the same limits as any query, and the client

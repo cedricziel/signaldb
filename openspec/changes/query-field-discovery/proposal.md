@@ -68,9 +68,12 @@ what it says.
   and names what would answer it, rather than quietly scanning. A client that
   wants the data-derived answer must ask for it explicitly (`sample: true`),
   and then gets a bounded, sampled answer with its cost stated in the response.
-- **`GET /api/v1/query/sources`** — the tenant's available signal sources (a
-  property of the tenant, not of a query, so it is a GET rather than a document),
-  returning the same `metadata` envelope shape.
+- **`GET /api/v1/query/sources`** — the tenant's available signal sources,
+  returning the same `metadata` envelope shape. This is a **bounded, deliberate
+  exception** to "first-party reads go through `POST /api/v1/query`": an IR
+  document requires a `from`, and "which sources exist" is the one question that
+  has no source to name. It is not licence to add further side endpoints —
+  anything that _can_ be phrased as a document about a source stays a document.
 - **Cost is part of the contract.** Every discovery response carries a `cost`
   object: which tier answered (`metadata` or `sampled_scan`), whether the answer
   is time-window-scoped, whether it is sampled/approximate, and how stale the
@@ -84,6 +87,23 @@ what it says.
 sources` re-pointed at the native surface), MCP (`discover_fields`,
   `discover_field_values`, `discover_sources` — the existing
   `discover_attributes` tool keeps working, unchanged, for compat callers).
+
+### BREAKING: the IR surface version moves to 4
+
+`irVersion` 4 is a version bump on our own query surface, so it is labelled
+**BREAKING** even though it is additive in effect. Precisely what it does and
+does not change:
+
+- Every existing `irVersion` 1/2/3 document keeps its exact meaning and keeps
+  executing. Nothing is re-interpreted, and no alias or shim is introduced
+  (post-1.0 the project does not ship them).
+- A document declaring `irVersion` 3 (or lower) that carries a `describe` stage
+  or the `metadata` envelope is **rejected with a typed error naming the version
+  the stage requires** — never silently coerced to 4, never executed with the
+  stage dropped. This follows the existing `heatmap`→v2 and
+  `histogram_quantile`→v3 gates, and is pinned by a test.
+- A document declaring an unsupported version (`5`, say) keeps the existing
+  behaviour: rejected with the supported range reported.
 
 **Explicitly scoped out, in writing:**
 

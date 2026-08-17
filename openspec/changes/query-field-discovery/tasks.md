@@ -6,15 +6,17 @@ suggestions statistics-served; the surface degrades honestly without it.
 
 ## 1. IR: `metadata` envelope, `describe` stage, discovery merge (crate `common`)
 
-- [ ] 1.1 Tests (`cargo test -p common query_ir`): `describe`/`metadata` under
-      `irVersion < 4` are rejected naming the required version; `describe` with a
+- [ ] 1.1 Tests (`cargo test -p common query_ir`): a `describe` stage or
+      `metadata` envelope declared under `irVersion` 1/2/3 is rejected with a
+      typed error naming the required version (not coerced, not dropped), and an
+      existing v1/v2/v3 document without them keeps validating unchanged; `describe` with a
       non-`metadata` envelope is rejected; `metadata` without a terminal
       `describe` is rejected; a `where` (or any record stage) before `describe`
       is rejected with an error naming the `aggregate`+`topk` equivalent; a
       stage after `describe` is rejected; `fields` on a `metadata` document is
       rejected
 - [ ] 1.2 Add `ResultEnvelope::Metadata` and `Stage::Describe(Describe { target,
-    field, limit, sample })`; bump `MAX_IR_VERSION` to 4; extend the
+  field, limit, sample })`; bump `MAX_IR_VERSION` to 4; extend the
       version-gating and envelope/terminal checks in `validate()` following the
       `heatmap`/`flamegraph` precedents
 - [ ] 1.3 Expose `validate_describe(&Document) -> Result<&Describe, IrError>`
@@ -62,7 +64,7 @@ suggestions statistics-served; the surface degrades honestly without it.
       response is capped independently of query limits
 - [ ] 2.7 OpenAPI: `#[utoipa::path]` for the new route and schemas for the
       metadata envelope; `UPDATE_OPENAPI=1 cargo test -p router
-    openapi_spec_is_up_to_date`; `cargo xtask generate` for the Rust SDK and
+  openapi_spec_is_up_to_date`; `cargo xtask generate` for the Rust SDK and
       the TypeScript client
 - [ ] 2.8 Instrumentation: discovery reads carry a boundary span through
       `common::self_monitoring::spans` so the metadata path's cost is visible in
@@ -99,7 +101,7 @@ suggestions statistics-served; the surface degrades honestly without it.
 - [ ] 5.2 Extend `AttrStatsAccumulator` from a distinct-value set to counted
       values; emit a bounded top-N per key at flush
 - [ ] 5.3 Catalog: `attribute_value_stats (tenant, dataset, signal, attr_key,
-    value, count, updated_at)` on SQLite and PostgreSQL, with accessors and
+  value, count, updated_at)` on SQLite and PostgreSQL, with accessors and
       bounded per-key row replacement; tests on both backends
 - [ ] 5.4 Router: values discovery prefers the sketch over the "unavailable"
       answer, reporting `origin: statistics`, approximate, with `asOf`
@@ -109,7 +111,7 @@ suggestions statistics-served; the surface degrades honestly without it.
 ## 6. Close-out
 
 - [ ] 6.1 `cargo fmt`; targeted clippy per touched crate; `cargo machete
-    --with-metadata`
+  --with-metadata`
 - [ ] 6.2 Integration coverage in `tests-integration` for the end-to-end
       discovery path (declare the new test file in `tests/main.rs`)
 - [ ] 6.3 Close #820; comment the handover on #437 (live tail) and cross-link
