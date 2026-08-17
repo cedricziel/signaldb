@@ -483,6 +483,14 @@ If cleanup is being skipped because the estimated live file count exceeds
 `max_live_files_threshold`, run snapshot expiration and compaction first to
 reduce file counts before raising the threshold.
 
+**What memory should look like:** a detection pass holds one 64-bit
+fingerprint per live file plus one entry per orphan candidate. It does not
+hold the object-store listing, the manifest entries, or a copy of the live
+set per snapshot, and a manifest shared by several retained snapshots is
+fetched once. If resident memory grows with the _listing_ rather than with
+the live-file and candidate counts, that is a regression, not a tuning
+problem — see [How detection scales](operations.md#how-detection-scales).
+
 ## Performance Issues
 
 ### Issue 8: High CPU Usage During Retention
