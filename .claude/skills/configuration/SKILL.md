@@ -235,6 +235,7 @@ Env: `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__ENABLED`, `SIGNALDB__COMPACTOR__ORPHA
 [querier]
 memory_limit_mb = 4096                # Unset = unbounded (startup warning)
 memory_pool_fraction = 0.8            # Fraction usable before spill/fail (0.0-1.0)
+parquet_metadata_cache_mb = 128       # Parquet footer cache budget; 0 disables. Separate from memory_limit_mb
 query_timeout = "60s"                 # Wall-clock timeout per Flight query
 max_sql_rows = 1000000                # Row cap for raw SQL over Flight
 max_search_limit = 1000               # Upper bound for client `limit` on /api/search

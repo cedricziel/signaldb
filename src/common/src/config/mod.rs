@@ -1334,6 +1334,14 @@ pub struct QuerierConfig {
     /// Fraction of `memory_limit_mb` usable by query operators before
     /// they spill or fail (0.0–1.0).
     pub memory_pool_fraction: f64,
+    /// Memory budget for the Parquet file-metadata (footer) cache, in MiB.
+    ///
+    /// A point lookup is dominated by opening candidate Parquet files, not by
+    /// scanning them; the footers are immutable, so caching them makes a
+    /// repeated lookup skip the reads entirely. `0` disables footer caching.
+    /// This budget is separate from `memory_limit_mb`, which bounds query
+    /// operators.
+    pub parquet_metadata_cache_mb: u64,
     /// Wall-clock timeout applied to each Flight query.
     #[serde(with = "humantime_serde")]
     pub query_timeout: Duration,
@@ -1355,6 +1363,7 @@ impl Default for QuerierConfig {
         Self {
             memory_limit_mb: None,
             memory_pool_fraction: 0.8,
+            parquet_metadata_cache_mb: 128,
             query_timeout: Duration::from_secs(60),
             max_sql_rows: 1_000_000,
             max_search_limit: 1_000,

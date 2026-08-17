@@ -10,10 +10,12 @@ use common::config::QuerierConfig;
 use common::flight::batches_to_compressed_flight_data;
 use common::flight::schema::create_span_batch_schema;
 use common::flight::transport::InMemoryFlightTransport;
+use common::parquet_metadata_cache::CacheParquetMetadata;
 use common::storage::create_object_store_from_dsn;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::{CatalogProvider, SchemaProvider};
 use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::cache::cache_manager::CacheManagerConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::SessionConfig;
@@ -353,9 +355,16 @@ fn session_config_from(limits: &QuerierConfig) -> SessionConfig {
 /// The pool is the shared [`common::datafusion_runtime::bounded_memory_pool`]
 /// — a `FairSpillPool`, so one tenant's heavy sort cannot take the whole
 /// pool first-come and starve the rest (#941).
-fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
+///
+/// The same RuntimeEnv carries the Parquet footer cache, wired into scans by
+/// [`CacheParquetMetadata`]. Both are shared by every per-request context
+/// derived from this one, so the cache is process-wide (#880).
+pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
     let session_config = session_config_from(limits);
-    let mut builder = RuntimeEnvBuilder::new();
+    let mut builder = RuntimeEnvBuilder::new().with_cache_manager(
+        CacheManagerConfig::default()
+            .with_metadata_cache_limit((limits.parquet_metadata_cache_mb as usize) * 1024 * 1024),
+    );
     match limits.memory_limit_mb {
         Some(mb) => {
             builder = builder.with_memory_pool(common::datafusion_runtime::bounded_memory_pool(
@@ -377,7 +386,22 @@ fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
     }
     match builder.build() {
         Ok(runtime_env) => {
-            SessionContext::new_with_config_rt(session_config, Arc::new(runtime_env))
+            let runtime_env = Arc::new(runtime_env);
+            let ctx = SessionContext::new_with_config_rt(session_config, Arc::clone(&runtime_env));
+            if limits.parquet_metadata_cache_mb == 0 {
+                tracing::warn!(
+                    "Parquet footer caching is disabled ([querier].parquet_metadata_cache_mb = 0); \
+                     every query re-reads every candidate file's footer"
+                );
+                return ctx;
+            }
+            // Appending the rule leaves it last in the chain, so it sees the
+            // scan after projection/limit/filter pushdown.
+            let state = ctx
+                .into_state_builder()
+                .with_physical_optimizer_rule(Arc::new(CacheParquetMetadata::new(runtime_env)))
+                .build();
+            SessionContext::new_with_state(state)
         }
         Err(e) => {
             tracing::error!(
@@ -2631,6 +2655,25 @@ mod tests {
         assert!(
             options.execution.parquet.reorder_filters,
             "Parquet filter reordering must be on by default"
+        );
+    }
+
+    #[test]
+    fn session_sizes_the_parquet_footer_cache_from_config() {
+        let ctx = session_context_with_limits(&QuerierConfig::default());
+        assert_eq!(
+            ctx.runtime_env().cache_manager.get_metadata_cache_limit(),
+            128 * 1024 * 1024,
+            "the footer cache must be sized from [querier].parquet_metadata_cache_mb"
+        );
+
+        let ctx = session_context_with_limits(&QuerierConfig {
+            parquet_metadata_cache_mb: 8,
+            ..QuerierConfig::default()
+        });
+        assert_eq!(
+            ctx.runtime_env().cache_manager.get_metadata_cache_limit(),
+            8 * 1024 * 1024
         );
     }
 
