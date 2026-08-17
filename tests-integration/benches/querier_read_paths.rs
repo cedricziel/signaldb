@@ -291,7 +291,10 @@ fn bench_read_paths(c: &mut Criterion) {
         querier::flight::session_context_with_limits(&QuerierConfig::default()),
         &catalog_manager,
     ));
-    let uncached_cache = uncached.runtime_env().cache_manager.get_file_metadata_cache();
+    let uncached_cache = uncached
+        .runtime_env()
+        .cache_manager
+        .get_file_metadata_cache();
     let cached_cache = cached.runtime_env().cache_manager.get_file_metadata_cache();
 
     group.bench_function("trace_lookup_by_id_cold_without_cache", |b| {
