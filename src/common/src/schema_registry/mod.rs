@@ -509,6 +509,36 @@ impl SchemaResolver {
         Ok(Resolution::new(key, hits))
     }
 
+    /// Resolve many attribute keys against one snapshot of the tenant's
+    /// visible registries, for callers enriching a whole field list. Only
+    /// keys a registry defines appear in the result.
+    pub async fn resolve_attributes(
+        &self,
+        tenant_id: &str,
+        keys: impl IntoIterator<Item = String>,
+    ) -> Result<BTreeMap<String, AttributeHit>, StoreError> {
+        let visible = self.visible(tenant_id).await?;
+        let mut out = BTreeMap::new();
+        for key in keys {
+            if out.contains_key(&key) {
+                continue;
+            }
+            let roles = entity_roles(&visible, &key);
+            if let Some(hit) = visible.iter().find_map(|v| {
+                v.resolved.attributes.get(&key).map(|def| AttributeHit {
+                    namespace: v.resolved.namespace.clone(),
+                    version: v.resolved.version.clone(),
+                    source: v.source,
+                    def: def.clone(),
+                    entity_roles: roles.clone(),
+                })
+            }) {
+                out.insert(key, hit);
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn resolve_entity(
         &self,
         tenant_id: &str,

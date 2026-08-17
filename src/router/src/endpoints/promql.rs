@@ -673,6 +673,7 @@ mod tests {
             capped: false,
             query_hits: 0,
             promote_streak: 0,
+            updated_at: "2026-08-17 09:00:00".into(),
         });
         assert_eq!(stat.name, "http.route");
         assert_eq!(stat.distinct_estimate, 86);
@@ -693,6 +694,7 @@ mod tests {
             capped: false,
             query_hits: 0,
             promote_streak: 0,
+            updated_at: "2026-08-17 09:00:00".into(),
         });
         assert_eq!(stat.presence, 0.0);
     }

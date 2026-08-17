@@ -81,8 +81,8 @@ what it says.
   full scan.
 - **Answered in the router**, from the catalog and the in-process registries. A
   `describe` document does not reach a querier and never becomes a DataFusion
-  plan — except on the explicitly opted-in sampled-values path, which reuses the
-  existing bounded label/tag-value tickets.
+  plan — except on the explicitly opted-in sampled-values path, which runs the
+  ordinary IR aggregation the response's `hint` names.
 - **Surface parity**: HTTP (above), CLI (`signaldb discover fields|values|
 sources` re-pointed at the native surface), MCP (`discover_fields`,
   `discover_field_values`, `discover_sources` — the existing
@@ -183,5 +183,5 @@ contract change.
 - **API surfaces**: additive. `POST /api/v1/query` gains a document shape it
   previously rejected; `GET /api/v1/query/sources` is new. No ingest, Flight
   wire schema, or on-disk Iceberg/WAL change. Compat dialects unchanged.
-- **Config**: bounds for discovery (`max_fields`, `max_values`, sampled-scan row
-  cap) under the existing querier/router limits; no new required keys.
+- **Config**: bounds for discovery (field and value caps) alongside the existing
+  querier/router limits; no new required keys.

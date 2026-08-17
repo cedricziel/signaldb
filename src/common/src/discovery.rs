@@ -140,13 +140,10 @@ pub struct DiscoveryCost {
     pub window_scoped: bool,
     /// Whether the answer is sampled, and therefore possibly incomplete.
     pub sampled: bool,
-    /// How recent the statistics behind the answer are (RFC3339-ish, as the
-    /// catalog stores it). `null` means no statistics exist yet.
+    /// How recent the statistics behind the answer are (as the catalog stores
+    /// it). `null` means no statistics exist yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub as_of: Option<String>,
-    /// Rows read, on the sampled path only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rows_scanned: Option<i64>,
 }
 
 impl DiscoveryCost {
@@ -157,7 +154,6 @@ impl DiscoveryCost {
             window_scoped: false,
             sampled: false,
             as_of,
-            rows_scanned: None,
         }
     }
 
@@ -168,20 +164,76 @@ impl DiscoveryCost {
             window_scoped: false,
             sampled: false,
             as_of: None,
-            rows_scanned: None,
         }
     }
 
-    /// A bounded read of signal data, explicitly requested.
-    pub fn sampled_scan(rows_scanned: Option<i64>) -> Self {
+    /// A bounded read of signal data, explicitly requested. The query that
+    /// read it is named in the result's `hint`.
+    pub fn sampled_scan() -> Self {
         DiscoveryCost {
             mode: CostMode::SampledScan,
             window_scoped: true,
             sampled: true,
             as_of: None,
-            rows_scanned,
         }
     }
+}
+
+/// What a discovery answer is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataKind {
+    Sources,
+    Fields,
+    Values,
+}
+
+/// The payload of a `metadata` result envelope.
+#[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
+pub struct MetadataResult {
+    pub kind: MetadataKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<DiscoveredSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<DiscoveredField>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<DiscoveredValue>,
+    /// Whether a documented limit cut the list short.
+    pub truncated: bool,
+    /// Which tier answered, and how far the answer can be trusted.
+    pub cost: DiscoveryCost,
+    /// The Query IR request that produced this answer by reading data, or —
+    /// when nothing covers the request — the one that would compute it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+/// The default cap on fields in one discovery answer.
+pub const DEFAULT_FIELD_LIMIT: usize = 1_000;
+/// The default cap on suggested values in one discovery answer.
+pub const DEFAULT_VALUE_LIMIT: usize = 200;
+
+/// The signal a source's statistics are recorded under. `metrics_histogram`
+/// is a distinct IR source but the same signal, exactly as it is for read
+/// authorization.
+pub fn signal_for_source(source: &str) -> Option<&'static str> {
+    match source {
+        "logs" => Some("logs"),
+        "traces" => Some("traces"),
+        "profiles" => Some("profiles"),
+        "metrics" | "metrics_histogram" => Some("metrics"),
+        _ => None,
+    }
+}
+
+/// The most recent observation time across a set of statistics rows — how
+/// stale the answer built from them is.
+pub fn latest_observation(stats: &[AttributeStatsRecord]) -> Option<String> {
+    stats
+        .iter()
+        .map(|record| record.updated_at.as_str())
+        .max()
+        .map(str::to_string)
 }
 
 /// The declared value set for a field, if SignalDB itself determines it.
@@ -394,6 +446,7 @@ mod tests {
             capped,
             query_hits: 0,
             promote_streak: 0,
+            updated_at: "2026-08-17 09:00:00".to_string(),
         }
     }
 
@@ -533,6 +586,27 @@ mod tests {
         // Free-form: an SDK writes whatever it likes, so it is not a declared set.
         assert!(intrinsic_values("logs", "severity_text").is_none());
         assert!(intrinsic_values("logs", "http.route").is_none());
+    }
+
+    #[test]
+    fn the_answers_age_is_the_newest_observation() {
+        let mut older = stat("a", 1, 10, 1, false);
+        older.updated_at = "2026-08-01 00:00:00".to_string();
+        let newer = stat("b", 1, 10, 1, false);
+        assert_eq!(
+            latest_observation(&[older, newer]).as_deref(),
+            Some("2026-08-17 09:00:00")
+        );
+        assert_eq!(latest_observation(&[]), None);
+    }
+
+    #[test]
+    fn every_ir_source_maps_to_a_statistics_signal() {
+        for source in ["logs", "traces", "profiles", "metrics", "metrics_histogram"] {
+            assert!(signal_for_source(source).is_some(), "{source}");
+        }
+        assert_eq!(signal_for_source("metrics_histogram"), Some("metrics"));
+        assert_eq!(signal_for_source("nope"), None);
     }
 
     #[test]

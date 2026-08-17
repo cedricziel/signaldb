@@ -306,6 +306,8 @@ The declared `result` selects one canonical response shape:
 Two more envelopes are source-scoped rather than available everywhere:
 `heatmap` (traces only, see [below](#heatmap-envelope-ir-v2)) and
 `flamegraph` (profiles only, see [below](#flamegraph-envelope-profiles-only)).
+A fifth, `metadata`, answers a question about the source instead of returning
+its records — see [Discovery](#discovery-what-can-i-query).
 
 Values follow the value type: timestamps/durations are integer nanoseconds,
 bytes are base64, everything else its JSON-native form.
@@ -583,6 +585,141 @@ bucket. Missing cells inside the declared window are zero. The server accepts
 at most 32 y-axis bounds and rejects non-positive steps or non-increasing
 bounds before execution.
 
+## Discovery — what can I query?
+
+A structured query builder needs to know what it can build on. The `describe`
+stage answers that, and it is deliberately cheap: the answer comes from the
+canonical field catalog, your tenant's schema registries, and the statistics
+the compactor maintains — **not** from reading your signal data. A `describe`
+document never reaches a querier, so a field picker keeps working while query
+execution is busy.
+
+`describe` is terminal, pairs with the `metadata` result envelope, and requires
+`irVersion` 4.
+
+### Which fields can I filter on?
+
+```jsonc
+POST /api/v1/query
+{ "irVersion": 4, "from": "logs",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "metadata",
+  "pipeline": [ { "describe": { "target": "fields" } } ] }
+```
+
+```jsonc
+{ "result": "metadata", "window": {...},
+  "metadata": {
+    "kind": "fields",
+    "fields": [
+      { "name": "service.name", "type": "string", "level": "resource",
+        "filterable": true, "origin": "declared" },
+      { "name": "body", "type": "any_value", "filterable": false,
+        "origin": "declared" },
+      { "name": "http.route", "type": "string", "filterable": true,
+        "origin": "registry", "coverage": 0.82,
+        "cardinality": { "estimate": 42, "at_least": false },
+        "brief": "The matched route template." }
+    ],
+    "truncated": false,
+    "cost": { "mode": "metadata", "window_scoped": false, "sampled": false,
+              "as_of": "2026-08-17 09:31:00" } } }
+```
+
+Every field is a logical name you can put straight into a predicate. Physical
+column names and promotion state never appear — promotion changes performance,
+never which names are valid.
+
+`origin` says which tier the item came from:
+
+| `origin` | meaning |
+|---|---|
+| `declared` | the canonical logical schema declares it (always valid) |
+| `registry` | statistics observed it and a schema registry defines it, so it carries a type and a description |
+| `observed` | statistics observed it and nothing defines it — treated as a string |
+
+`coverage` (the fraction of records carrying the field) and `cardinality` (an
+approximate distinct-value count; `at_least` means the collector hit its cap)
+appear only where statistics exist. Absent means unknown — never a zero that
+could be mistaken for a measurement. Fields come back declared-first, then by
+coverage descending, so the first screen is the fields most records carry.
+
+### What values does a field take?
+
+```jsonc
+{ "irVersion": 4, "from": "traces",
+  "range": { "from": "now-6h", "to": "now" },
+  "result": "metadata",
+  "pipeline": [ { "describe": { "target": "values", "field": "span.kind",
+                                "limit": 50 } } ] }
+```
+
+Values are answered in tiers:
+
+1. **A declared value set** — a registry enumeration, or one SignalDB itself
+   writes (`span.kind`, `status.code`). Exact, and free.
+2. **Nothing covers it.** The response returns no values, `cost.mode: "none"`,
+   and a `hint` naming the query that *would* compute the answer by reading
+   data. It does not scan behind your back.
+3. **You asked for the data-derived answer** with `"sample": true`. SignalDB
+   then runs exactly the aggregation the hint names — bounded by your window
+   and `limit` — and reports `cost.mode: "sampled_scan"` with
+   `window_scoped: true` and `sampled: true`. Values come back with counts and
+   `origin: "sampled"`.
+
+### Reading the cost
+
+Every discovery response carries a `cost` object, because an answer's price and
+its trustworthiness are part of the answer:
+
+| field | meaning |
+|---|---|
+| `mode` | `metadata` (no data read), `sampled_scan` (data read, on request), `none` (not answered) |
+| `window_scoped` | whether your `range` narrowed the answer. The maintained statistics carry no time dimension, so a metadata-tier answer says `false` rather than pretending it did |
+| `sampled` | whether the answer is sampled and therefore possibly incomplete |
+| `as_of` | how recent the statistics behind it are. `null` means none exist yet — on a tenant whose compactor has not run, `describe: fields` returns the declared fields only |
+
+### What discovery deliberately does not do
+
+**It is not predicate-scoped.** A `where` stage before `describe` is rejected,
+with an error naming the query that computes the scoped answer instead —
+because unconditional statistics cannot be filtered, and quietly ignoring your
+predicate (or quietly scanning) would both be worse than saying so:
+
+```jsonc
+{ "irVersion": 4, "from": "traces", "range": {...}, "result": "table",
+  "pipeline": [
+    { "where": { "field": "service.name", "op": "eq", "value": "checkout" } },
+    { "aggregate": { "by": ["http.route"], "aggs": [{ "fn": "count", "as": "n" }] } },
+    { "topk": { "of": "n", "n": 100 } } ] }
+```
+
+That reads data, is bounded like any query, and you asked for it.
+
+### Which sources can I query?
+
+"Which sources exist" is the one question with no source to name, so it is a
+`GET` rather than a document:
+
+```
+GET /api/v1/query/sources
+```
+
+```jsonc
+{ "result": "metadata", "window": {...},
+  "metadata": { "kind": "sources",
+                "sources": [ { "name": "logs", "available": true },
+                             { "name": "traces", "available": true },
+                             { "name": "profiles", "available": false } ],
+                "truncated": false,
+                "cost": { "mode": "metadata", "window_scoped": false,
+                          "sampled": false } } }
+```
+
+A registered signal with a table but no data is `available` and simply returns
+nothing — consistent with every other query surface, where a signal with no
+data is an empty result, never an error.
+
 ## Worked example — error-log volume by service (logs → series)
 
 Count error logs per minute, per service, in `prod` over the last hour:
@@ -644,8 +781,10 @@ generated clients (the TypeScript client and Rust SDK), never hand-written HTTP.
 The IR is the base of a dependent stack; each sibling is a separate capability
 so it is designed and reviewed on its own risk profile:
 
-- **field discovery** — introspection (signals/fields/values) the builder needs,
-  plus live tail + pagination for results.
+- **live tail** — streaming new matching records over the same document
+  (part of the streaming epic), and **pagination** for walking a large result.
+  Field discovery itself has landed: see
+  [Discovery](#discovery-what-can-i-query).
 - **cross-signal correlate** — a `correlate` join stage (the IR becomes a DAG).
 - **structural traces** — a `match` stage + a `trace` result envelope.
 - **metrics: counters and rates** — a `rate`/`irate`/`increase` stage

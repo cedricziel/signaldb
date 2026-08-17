@@ -176,11 +176,21 @@ signal, key)` maintained by the compactor analyzer. The analyzer already
    the field, the response returns zero values, `origin: "unavailable"`,
    `cost.mode: "none"`, and a `hint` naming the IR query that would compute the
    answer by scanning. Silence with a reason, never a silent scan.
-4. **Explicit sampled scan** — only when the request says `"sample": true`. The
-   router then issues the existing bounded label/tag-value ticket for the source
-   and returns `origin: "sampled"`, `cost { mode: "sampled_scan", sampled: true,
-windowScoped: true, rowsScanned }`. The cost of a scan is thus a client
+4. **Explicit read of the data** — only when the request says
+   `"sample": true`. The router then runs **the very query the hint in (3)
+   names**: an ordinary IR `aggregate by [field] count` + `topk`, bounded by
+   the requested window and limit, through the same path as any other query.
+   It returns `origin: "sampled"` with counts, and
+   `cost { mode: "sampled_scan", sampled: true, windowScoped: true }` beside
+   the hint that says what was run. The cost of reading data is thus a client
    decision recorded in the request and reported in the response.
+
+   Running the IR query rather than the compat label/tag-value tickets (the
+   first sketch of this decision) keeps one execution path for anything that
+   touches data, gives the answer value *counts* for free, inherits the
+   query surface's own limits and authorization, and means the fallback is
+   literally the query we tell the client to run — no second mechanism whose
+   bounds could drift from the documented one.
 
 Alternative rejected: defaulting to the sampled scan and merely _labelling_ it.
 That reproduces exactly the property #820 exists to remove — a UI keystroke
@@ -218,10 +228,13 @@ table returns an empty result, never an error" rule).
 
 ```jsonc
 "cost": { "mode": "metadata" | "sampled_scan" | "none",
-          "windowScoped": false, "sampled": false,
-          "asOf": "2026-08-17T09:31:00Z" | null,
-          "rowsScanned": null }
+          "window_scoped": false, "sampled": false,
+          "as_of": "2026-08-17 09:31:00" | null }
 ```
+
+The result's `hint` carries the query that produced the answer (on the sampled
+path) or the one that would compute it (when nothing covers the field), so
+"what did this cost" and "what exactly ran" are answered by the same object.
 
 `windowScoped` is the honest half: the `range` is carried, echoed, and applied
 on the sampled path, but `attribute_stats` is a whole-table snapshot with no
@@ -231,8 +244,8 @@ compactor has never run gets `asOf: null` plus a warning on the envelope, not an
 empty result presented as fact.
 
 **D9 — Bounds everywhere, with `truncated`.** Fields and values responses are
-capped (defaults: 1 000 fields, 200 values, sampled-scan row cap inherited from
-the existing tag-value tickets) and set `truncated: true` when the cap bites.
+capped (defaults: 1 000 fields, 200 values; the sampled path inherits the query
+surface's own bounds) and set `truncated: true` when the cap bites.
 Fields are ordered declared-first then by coverage descending — a field picker's
 first screen should be the fields most rows actually carry.
 

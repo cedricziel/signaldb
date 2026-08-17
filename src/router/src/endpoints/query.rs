@@ -17,7 +17,12 @@ use std::collections::BTreeMap;
 use tracing::Instrument;
 
 use arrow_flight::Ticket;
-use axum::{Router, extract::State, http::StatusCode, routing::post};
+use axum::{
+    Router,
+    extract::State,
+    http::StatusCode,
+    routing::{get, post},
+};
 use common::auth::{TenantContext, TenantContextExtractor};
 use common::flight::transport::ServiceCapability;
 use common::query_ir::{Literal, ValueType, coerce};
@@ -36,7 +41,9 @@ use super::api_error::ApiError;
 use crate::RouterState;
 
 pub fn router<S: RouterState>() -> Router<S> {
-    Router::new().route("/query", post(query_ir::<S>))
+    Router::new()
+        .route("/query", post(query_ir::<S>))
+        .route("/query/sources", get(super::discovery::query_sources::<S>))
 }
 
 /// The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,
@@ -78,8 +85,32 @@ pub struct QueryIrRequest {
     pub pipeline: Vec<serde_json::Value>,
 }
 
+impl QueryIrResponse {
+    /// The `metadata` envelope: an answer about the source rather than its
+    /// records. Every record-shaped field stays empty.
+    pub(super) fn metadata(
+        window: ResolvedWindow,
+        metadata: common::discovery::MetadataResult,
+    ) -> Self {
+        QueryIrResponse {
+            result: common::query_ir::ResultEnvelope::Metadata
+                .as_str()
+                .to_string(),
+            window,
+            columns: Vec::new(),
+            rows: Vec::new(),
+            series: Vec::new(),
+            step_ns: None,
+            heatmap: HeatmapResult::default(),
+            flamegraph: None,
+            metadata: Some(metadata),
+            warnings: Vec::new(),
+        }
+    }
+}
+
 /// The resolved absolute time window, echoed for reproducibility/replay.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
 pub struct ResolvedWindow {
     pub start_ns: i64,
     pub end_ns: i64,
@@ -226,6 +257,10 @@ pub struct QueryIrResponse {
     /// response has no flamegraph at all" (i.e. a different envelope).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flamegraph: Option<FlamegraphResult>,
+    /// Present iff `result == "metadata"` — what a `describe` document asked
+    /// about, with the provenance and cost of the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<common::discovery::MetadataResult>,
     /// Non-fatal diagnostics about this query. Empty (and omitted) when the
     /// server has nothing to report; a warning never suppresses the result.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -272,6 +307,20 @@ pub async fn query_ir<S: RouterState>(
     // The IR document is the request re-serialized; the querier validates it.
     let document = serde_json::to_value(&req)
         .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
+
+    // An introspection document is answered here, from the registry and the
+    // catalog. It never becomes a ticket, so discovery does not depend on
+    // query execution being available.
+    if is_introspection(&req) {
+        let doc: common::query_ir::Document = serde_json::from_value(document)
+            .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
+        let describe =
+            common::query_ir::validate_describe(&doc, &common::query_ir::SourceRegistry::core())
+                .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        return super::discovery::answer_describe(&state, ctx, &doc, describe, window, now)
+            .await
+            .map(axum::Json);
+    }
     let payload = serde_json::json!({ "document": document.clone(), "now_ns": now });
     let payload = serde_json::to_string(&payload)
         .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
@@ -284,6 +333,17 @@ pub async fn query_ir<S: RouterState>(
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
     response.warnings = unknown_group_by_warnings(&req.from, &document, &batches);
     Ok(axum::Json(response))
+}
+
+/// Whether the request asks about the source rather than its records.
+/// Deliberately syntactic: the document's own validator decides whether such a
+/// request is well formed, and reports why when it is not.
+fn is_introspection(req: &QueryIrRequest) -> bool {
+    req.result == common::query_ir::ResultEnvelope::Metadata.as_str()
+        || req
+            .pipeline
+            .iter()
+            .any(|stage| stage.get("describe").is_some())
 }
 
 /// The `code` of the warning raised for a group key that labelled nothing.
@@ -459,7 +519,7 @@ fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<ResolvedWindow, Api
 }
 
 /// Send a `query_ir` Flight ticket to a querier and collect the result batches.
-async fn execute_ticket<S: RouterState>(
+pub(super) async fn execute_ticket<S: RouterState>(
     state: &S,
     ticket_content: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
@@ -556,11 +616,12 @@ fn build_envelope(
                 step_ns,
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
+                metadata: None,
                 warnings: Vec::new(),
             })
         }
         "rows" | "table" => {
-            let (columns, rows) = to_rows(batches);
+            let (columns, rows) = ir_table(batches);
             Ok(QueryIrResponse {
                 result: result.to_string(),
                 window,
@@ -570,6 +631,7 @@ fn build_envelope(
                 step_ns: None,
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
+                metadata: None,
                 warnings: Vec::new(),
             })
         }
@@ -619,6 +681,7 @@ fn build_envelope(
                     cells: to_heatmap_cells(batches)?,
                 },
                 flamegraph: None,
+                metadata: None,
                 warnings: Vec::new(),
             })
         }
@@ -631,6 +694,7 @@ fn build_envelope(
             step_ns: None,
             heatmap: HeatmapResult::default(),
             flamegraph: Some(to_flamegraph_result(batches)?),
+            metadata: None,
             warnings: Vec::new(),
         }),
         other => Err(ApiError::bad_request(format!(
@@ -841,7 +905,9 @@ fn cell(array: &dyn Array, row: usize) -> serde_json::Value {
         .unwrap_or(Value::Null)
 }
 
-fn to_rows(batches: &[RecordBatch]) -> (Vec<ResultColumn>, Vec<Vec<serde_json::Value>>) {
+pub(super) fn ir_table(
+    batches: &[RecordBatch],
+) -> (Vec<ResultColumn>, Vec<Vec<serde_json::Value>>) {
     let mut columns = Vec::new();
     let mut rows = Vec::new();
     let Some(first) = batches
@@ -898,7 +964,7 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
         let value_col = ncols - 1;
         // Normalize every column to its declared canonical Arrow type first, so
         // narrow-int / view / dictionary encodings serialize as the right JSON
-        // (same as `to_rows`).
+        // (same as `ir_table`).
         let casted: Vec<ArrayRef> = schema
             .fields()
             .iter()
@@ -949,7 +1015,7 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
 
 #[cfg(test)]
 mod row_encoding {
-    use super::{column_meta, to_rows};
+    use super::{column_meta, ir_table};
     use datafusion::arrow::array::{ArrayRef, MapBuilder, RecordBatch, StringBuilder};
     use datafusion::arrow::datatypes::{Field, Schema};
     use std::sync::Arc;
@@ -988,7 +1054,7 @@ mod row_encoding {
             "log_attributes",
             vec![Some(vec![("http.method", "GET"), ("user.id", "u-1")]), None],
         );
-        let (columns, rows) = to_rows(&[batch]);
+        let (columns, rows) = ir_table(&[batch]);
 
         assert_eq!(columns[0].value_type, "map<string,string>");
         assert_eq!(
@@ -1008,7 +1074,7 @@ mod row_encoding {
     #[test]
     fn empty_map_encodes_as_an_empty_object() {
         let batch = map_batch("scope_attributes", vec![Some(vec![])]);
-        let (_, rows) = to_rows(&[batch]);
+        let (_, rows) = ir_table(&[batch]);
         assert_eq!(rows[0][0], serde_json::json!({}));
     }
 
