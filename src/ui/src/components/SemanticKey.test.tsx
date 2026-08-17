@@ -116,7 +116,9 @@ describe("SemanticKey", () => {
       namespace: "acme",
       version: "1.0.0",
       source: "custom",
-      entity_roles: [{ namespace: "otel", entity: "service", role: "identifying" }],
+      entity_roles: [
+        { namespace: "otel", entity: "service", role: "identifying" },
+      ],
     });
     const otel = hit({ key: "service.name" });
     render(
@@ -152,7 +154,9 @@ describe("SemanticKey", () => {
       screen.getByText("k8s.pod.uid", { selector: ".semkey-name" }),
     );
     const tip = await screen.findByRole("tooltip");
-    expect(within(tip).getByRole("link", { name: "otel@1.43.0" })).toHaveAttribute(
+    expect(
+      within(tip).getByRole("link", { name: "otel@1.43.0" }),
+    ).toHaveAttribute(
       "href",
       "/schema/conventions/otel/1.43.0/attributes/k8s.pod.uid",
     );
@@ -174,5 +178,47 @@ describe("SemanticInfo", () => {
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "The UID of the Pod.",
     );
+  });
+});
+
+describe("SemanticKey tooltip placement", () => {
+  it("renders the tooltip in a body portal, positioned from the trigger", async () => {
+    // Facet sidebars and attribute tables scroll (`overflow: auto`), which
+    // would clip a tooltip positioned inside them at the pane edge — so the
+    // tooltip escapes to <body> and is placed with fixed coordinates.
+    const { container } = render(
+      <SemanticInfo name="k8s.pod.uid" semantics={semOf([hit()])} />,
+    );
+    const glyph = screen.getByLabelText("About k8s.pod.uid");
+    const trigger = glyph.parentElement as HTMLElement;
+    trigger.getBoundingClientRect = () =>
+      ({
+        left: 40,
+        right: 60,
+        top: 100,
+        bottom: 116,
+        width: 20,
+        height: 16,
+      }) as DOMRect;
+
+    await userEvent.hover(glyph);
+    const tip = await screen.findByRole("tooltip");
+    expect(container.contains(tip)).toBe(false);
+    expect(tip.parentElement).toBe(document.body);
+    expect(tip.style.position).toBe("fixed");
+    expect(tip.style.left).toBe("40px");
+    expect(tip.style.top).toBe("120px");
+  });
+
+  it("stays open while the pointer moves from the trigger into the tooltip", async () => {
+    render(<SemanticInfo name="k8s.pod.uid" semantics={semOf([hit()])} />);
+    const glyph = screen.getByLabelText("About k8s.pod.uid");
+    await userEvent.hover(glyph);
+    const tip = await screen.findByRole("tooltip");
+
+    await userEvent.hover(tip);
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    await userEvent.unhover(tip);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 });

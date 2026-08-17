@@ -9,7 +9,17 @@
  * Both open the same hover/focus tooltip. Without semantics they render
  * exactly what the raw key would — a plain text node, or nothing.
  */
-import { useId, useState, type MouseEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 import { Link, useInRouterContext } from "react-router";
 import type { AttributeHit } from "../api/gen";
 import type { AttributeSemantics } from "../lib/semantics";
@@ -80,7 +90,9 @@ export function SemanticTooltip({
           {primary.entity_roles.map((r) => (
             <span key={`${r.namespace}/${r.entity}/${r.role}`}>
               {ROLE_GLYPH[r.role] ?? "·"} {r.role} for{" "}
-              <HubLink to={entityHref(r.namespace, r.entity)}>{r.entity}</HubLink>
+              <HubLink to={entityHref(r.namespace, r.entity)}>
+                {r.entity}
+              </HubLink>
             </span>
           ))}
         </span>
@@ -107,7 +119,43 @@ export function SemanticTooltip({
   );
 }
 
-/** Hover/focus target that reveals the tooltip. */
+/** Gap between the trigger and the tooltip; `.sem-tip::before` bridges it. */
+const TIP_GAP = 4;
+/** `.sem-tip` max-width, for deciding whether to right-align. */
+const TIP_MAX_WIDTH = 360;
+/** Height guess before the tooltip has been measured, for vertical flipping. */
+const TIP_HEIGHT_GUESS = 160;
+
+/**
+ * Fixed-position placement for the tooltip: below the trigger, left-aligned
+ * with it; right-aligned when it would run past the viewport's right edge,
+ * and above the trigger when it would run past the bottom.
+ */
+function tipStyle(anchor: DOMRect, height: number): CSSProperties {
+  const style: CSSProperties = { position: "fixed" };
+  if (anchor.left + TIP_MAX_WIDTH > window.innerWidth) {
+    style.right = Math.max(0, window.innerWidth - anchor.right);
+  } else {
+    style.left = anchor.left;
+  }
+  if (anchor.bottom + TIP_GAP + height > window.innerHeight) {
+    style.bottom = window.innerHeight - anchor.top + TIP_GAP;
+  } else {
+    style.top = anchor.bottom + TIP_GAP;
+  }
+  return style;
+}
+
+/**
+ * Hover/focus target that reveals the tooltip.
+ *
+ * The tooltip is portaled to `<body>` and placed with fixed coordinates
+ * from the trigger's rect: its triggers live in scrolling panes (facet
+ * sidebars, attribute tables — `overflow: auto`), which would clip a tooltip
+ * positioned inside them at the pane's edge. Leaving the trigger for the
+ * tooltip keeps it open so its links stay clickable; leaving either for
+ * anywhere else, or scrolling, closes it.
+ */
 function SemanticHover({
   semantics,
   className,
@@ -117,24 +165,66 @@ function SemanticHover({
   className: string;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const [height, setHeight] = useState(TIP_HEIGHT_GUESS);
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const tipRef = useRef<HTMLSpanElement>(null);
   const id = useId();
+
+  const open = () => {
+    if (triggerRef.current)
+      setAnchor(triggerRef.current.getBoundingClientRect());
+  };
+  const close = () => setAnchor(null);
+  // Pointer travelling between the trigger and the tooltip does not close it.
+  const leaveTo = (e: MouseEvent, other: HTMLElement | null) => {
+    if (
+      other &&
+      e.relatedTarget instanceof Node &&
+      other.contains(e.relatedTarget)
+    )
+      return;
+    close();
+  };
+
+  useLayoutEffect(() => {
+    const h = tipRef.current?.offsetHeight ?? 0;
+    if (h > 0 && h !== height) setHeight(h);
+  });
+
+  useEffect(() => {
+    if (!anchor) return;
+    // Fixed placement goes stale as soon as the pane scrolls.
+    window.addEventListener("scroll", close, true);
+    return () => window.removeEventListener("scroll", close, true);
+  }, [anchor]);
+
   return (
     <span
+      ref={triggerRef}
       className={className}
       tabIndex={0}
-      aria-describedby={open ? id : undefined}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
-      onBlur={() => setOpen(false)}
+      aria-describedby={anchor ? id : undefined}
+      onMouseEnter={open}
+      onMouseLeave={(e) => leaveTo(e, tipRef.current)}
+      onFocus={open}
+      onBlur={close}
     >
       {children}
-      {open && (
-        <span role="tooltip" id={id} className="sem-tip">
-          <SemanticTooltip semantics={semantics} />
-        </span>
-      )}
+      {anchor &&
+        createPortal(
+          <span
+            role="tooltip"
+            id={id}
+            ref={tipRef}
+            className="sem-tip"
+            style={tipStyle(anchor, height)}
+            onMouseLeave={(e) => leaveTo(e, triggerRef.current)}
+          >
+            <SemanticTooltip semantics={semantics} />
+          </span>,
+          document.body,
+        )}
     </span>
   );
 }

@@ -666,11 +666,9 @@ span.level-debug {
   white-space: nowrap;
 }
 
-/* A resolved key renders a SemanticKey whose hover tooltip is absolutely
-   positioned inside the cell; `overflow: hidden` on the dt would clip it to
-   the row height. The key itself keeps its ellipsis via `.semkey-name`. */
+/* A resolved key renders a multi-line SemanticKey; the key itself keeps its
+   ellipsis via `.semkey-name`. */
 .attr-row dt:has(.semkey) {
-  overflow: visible;
   white-space: normal;
 }
 
