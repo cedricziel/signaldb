@@ -55,6 +55,15 @@ target_partitions` (default `1`): the sorters share the one budget, so
 > too small for a spilling sort to use — since neither is visible from any
 > single value.
 >
+> **What the rewrite sorts by:** the table's own declared sort order (see
+> [Storage Layout](../../architecture/storage-layout.md#declared-sort-order)),
+> not a key list held by the compactor. Its output files record that order, so
+> a partition that held files written before the declaration existed comes out
+> fully attested — compaction is how such files converge, and there is no
+> backfill job. A table that has no declaration yet is still sorted by the
+> canonical key, but its output is written unattested, since there is no
+> declared order for it to claim.
+>
 > **Default behavior:** The compactor and retention enforcement are **enabled by default** with `dry_run = false` and a 30-day retention period for traces, logs, metrics, and profiles. A default deployment deletes data older than 30 days. To keep data indefinitely, set `[compactor.retention].enabled = false`; to keep it longer, raise the per-signal durations. Orphan cleanup is also **enabled by default** with `dry_run = false` and physically reclaims files no retained snapshot references — data Parquet and unreferenced metadata files (old metadata.json versions, expired snapshots' manifests) alike; set `[compactor.orphan_cleanup].enabled = false` to opt out or `dry_run = true` to observe first.
 
 ## Enabling Retention Enforcement

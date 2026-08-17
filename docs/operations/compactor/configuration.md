@@ -114,6 +114,8 @@ The defaults (512 MB pool, 128 MB target, fan-out 1) put peak job memory around 
 
 **What `memory_limit_mb` actually bounds:** the pool covers the rewrite's **DataFusion operators** — the partition sort above all — which spill to disk rather than growing past it. The rewrite streams its partition rather than collecting it, so the memory outside the pool is bounded too: the chunker holds at most one output file's worth of batches, and the attribute-statistics pass holds per-key state capped by cardinality. Neither grows with the size of the partition. Peak process memory for a job is therefore roughly the pool plus one `target_file_size_mb`, not the pool plus the whole partition.
 
+**What the rewrite sorts by (not configurable):** the table's own declared sort order — time-leading, one key per signal (see [Storage Layout](../../architecture/storage-layout.md#declared-sort-order)). There is deliberately no compactor setting for it: the declaration is what the query engine is told about the data, so a second knob here could only make the two disagree. Output files record the order they were written in, which is how a partition of pre-declaration files becomes fully attested.
+
 **Example:**
 
 ```toml

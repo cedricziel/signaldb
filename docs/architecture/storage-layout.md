@@ -350,6 +350,35 @@ sorted does not make queries slower, it makes them wrong — the engine drops a
 sort it believed was redundant. A code path that cannot guarantee the order
 must write its files unattested.
 
+#### What each producer does
+
+Both producers resolve the key through one shared decision,
+`common::iceberg::sort::write_sort_key`, so they cannot drift on what "the
+declared order" means or on when a file may claim it:
+
+- **Ingest** (`writer/src/storage/iceberg.rs`) concatenates each commit group
+  and sorts it once — columnar, one `lexsort_to_indices` pass plus a `take` —
+  before writing. The group is sorted as a whole rather than per batch,
+  because files are rolled from the stream in order, so a file can only be
+  sorted if the stream is. Debug builds re-derive the permutation afterwards
+  and assert it is the identity, so a build that gets the sort wrong fails
+  loudly in tests instead of shipping a false claim.
+- **Compaction** (`compactor/src/rewriter.rs`) already sorted its output; it
+  now takes the key from the table's declaration instead of a list of its own,
+  and attests the files it writes. Its output is a stream, so there is no
+  equivalent cheap self-check — verifying it would mean checking every batch
+  and every batch boundary.
+
+The two deliberately differ on one case: **a table that declares no order
+yet.** Ingest leaves such a write unsorted (nothing could attest it, so the
+sort would cost the write path and buy the reader nothing); compaction still
+sorts by the canonical key, because it has always laid partitions out sorted
+and dropping that would regress the layout. Neither attests. The asymmetry is
+expressed as an `UndeclaredFallback` argument at the two call sites rather
+than as two independently maintained branches — it is intentional, not drift.
+Sorted-but-unattested output must stay unattested: attribution is a claim
+about the table's _declared_ order, and there is none to claim.
+
 ### Table Schemas
 
 `schemas.toml` (compiled into the binary via `include_str!`) is the physical
