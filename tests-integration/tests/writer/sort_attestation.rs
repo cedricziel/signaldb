@@ -64,8 +64,12 @@ async fn an_out_of_order_batch_group_is_persisted_sorted_and_attested() -> Resul
         .iter()
         .map(|id| id.to_string())
         .collect();
-    generators::generate_trace_files_with_ids(&mut writer, &[ids.clone()], aligned_hour_start(2))
-        .await?;
+    generators::generate_trace_files_with_ids(
+        &mut writer,
+        std::slice::from_ref(&ids),
+        aligned_hour_start(2),
+    )
+    .await?;
 
     let stored = stored_trace_ids(&catalog_manager).await?;
     let mut expected = ids;
