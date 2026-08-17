@@ -5,9 +5,8 @@ pub mod otlp_log_handler;
 pub mod otlp_metrics_handler;
 pub mod otlp_profiles_handler;
 pub mod prometheus_handler;
-pub mod wal_manager;
 pub mod wal_retry;
 
+pub use common::wal::manager::WalManager;
 pub use prometheus_handler::{PrometheusHandler, PrometheusHandlerState};
-pub use wal_manager::WalManager;
 pub use wal_retry::WalRetryConsumer;

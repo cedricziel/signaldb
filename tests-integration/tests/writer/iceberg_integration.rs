@@ -4,7 +4,8 @@ use common::config::{
     AuthConfig, Configuration, DatasetConfig, SchemaConfig, StorageConfig, TenantConfig,
 };
 use common::iceberg::names::build_table_identifier;
-use common::wal::{Wal, WalConfig, WalOperation, record_batch_to_bytes};
+use common::wal::manager::WalManager;
+use common::wal::{WalConfig, WalOperation, record_batch_to_bytes};
 use datafusion::arrow::array::{Int64Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -144,12 +145,16 @@ async fn test_wal_processor_integration() -> Result<()> {
     // Setup test environment
     let temp_dir = tempdir()?;
     let wal_config = WalConfig::with_defaults(temp_dir.path().to_path_buf());
-    let wal = Arc::new(Wal::new(wal_config).await?);
+    // The writer keeps one WAL per tenant/dataset/signal; drive the processor
+    // through the same manager the service uses.
+    let wal_manager = Arc::new(WalManager::uniform(wal_config));
+    let wal = wal_manager.get_wal("default", "default", "metrics").await?;
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
     let object_store = Arc::new(InMemory::new());
 
     // Create WAL processor
-    let mut processor = WalProcessor::new(wal.clone(), catalog_manager.clone(), object_store);
+    let mut processor =
+        WalProcessor::new(wal_manager.clone(), catalog_manager.clone(), object_store);
 
     // Serialize a schema-correct metrics batch and write it to WAL.
     let batch = metrics_gauge_batch(&[1.0, 2.0])?;

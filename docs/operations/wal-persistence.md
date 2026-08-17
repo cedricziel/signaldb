@@ -183,10 +183,16 @@ spec:
 
 ### Directory Structure
 
-The acceptor keeps one WAL per tenant/dataset/signal combination; the writer keeps a single WAL directly in its WAL directory. Each WAL directory uses a segment-based structure:
+Both the acceptor and the writer keep one WAL per tenant/dataset/signal
+combination, so a poisoned segment, a slow fsync, or lock contention on one
+tenant's WAL cannot stall another tenant's **append** path. (The writer's
+background drain still walks those WALs one at a time, so a tenant with slow
+Iceberg commits delays other tenants' commits within a cycle — failures are
+isolated, commit latency is not.) Each WAL directory uses a segment-based
+structure:
 
-```
-/data/wal/                          # ACCEPTOR_WAL_DIR
+```text
+/data/wal/                          # ACCEPTOR_WAL_DIR or WRITER_WAL_DIR
 └── acme/                           # Tenant
     └── production/                 # Dataset
         └── traces/                 # Signal type
@@ -211,6 +217,43 @@ marker is the one exception: it exists precisely because the entry's id
 could not be recovered (the record that would have named it is what failed
 to deserialize), so it is keyed by `segment-<segment_id>-offset-<offset>` —
 its physical location in the `.log` file — instead.
+
+A writer WAL is opened lazily, on the first write for that
+tenant/dataset/signal. Directories left behind by a previous run are opened at
+startup as well, so entries pending from before a restart drain even if that
+tenant sends no new traffic.
+
+#### Upgrading a writer from the single-WAL layout
+
+Writers before this change kept one WAL for every tenant, with its segments
+lying directly in `{wal_dir}/writer` instead of in a
+`{tenant}/{dataset}/{signal}` tree. No operator step is needed: on startup the
+writer adopts any such segments as a drain-only WAL, logging
+
+```text
+WARN Adopting legacy single-directory WAL segments for draining; new writes use the per-tenant/dataset/signal tree
+```
+
+Their pending entries are processed normally: an entry that carries routing
+metadata is routed by it, and one that does not falls back to `default` /
+`default`, which is where a pre-upgrade writer put it. New writes always go to
+the per-tenant tree, so nothing is ever added to the legacy directory.
+
+**The drained files are not deleted automatically.** WAL segment cleanup
+(`Wal::start_background_cleanup`) has no caller in any service today, so the
+segments stay, are re-read into memory at every writer start, and the `WARN`
+above repeats on every restart. Once the writer logs no unprocessed entries
+for them — the writer's WAL backlog gauge is at zero and no
+`dead-letter/` markers are being added — the files are safe to remove by hand:
+
+```bash
+# With the writer stopped, after its last shutdown flush completed cleanly:
+rm -f /data/wal/writer/wal-*.log /data/wal/writer/wal-*.data /data/wal/writer/wal-*.index
+```
+
+Leave the per-tenant subdirectories (`/data/wal/writer/{tenant}/…`) alone —
+only the segment files sitting _directly_ in the writer's WAL directory belong
+to the legacy layout.
 
 ### Data Flow with WAL
 
@@ -291,7 +334,7 @@ differently:
   otherwise complete record. Because the framing is intact, the byte offset
   of the _next_ record is still known, so replay **skips the corrupt record
   and continues** rather than aborting: it logs a `WAL entry record corrupt
-  during replay` error naming the segment and offset, increments the
+during replay` error naming the segment and offset, increments the
   `signaldb.wal.corrupt_entries{record="log"}` counter, quarantines the raw
   record bytes to
   `<wal_dir>/dead-letter/segment-<segment_id>-offset-<offset>.corrupt.bin`,
@@ -351,10 +394,10 @@ the writer (and the acceptor's retry consumer) handle it in three steps:
    failures log `tenant_id`, `dataset_id`, `signal`, `data_offset`, and
    `data_size`, so a burst of failures is attributable to the affected tenant
    and signal instead of an anonymous flood.
-3. **Retire without blocking neighbours**: an *unreadable* entry (bounds or
+3. **Retire without blocking neighbours**: an _unreadable_ entry (bounds or
    integrity failure) is deterministic, so it is retired on first sight with
    a `<entry_id>.unreadable.json` marker and marked processed; an
-   *undecodable* entry is retried a bounded number of times and then moved to
+   _undecodable_ entry is retried a bounded number of times and then moved to
    `<wal_dir>/dead-letter/<entry_id>.bin` with its raw payload preserved.
    Either way the entries around it keep processing in the same cycle.
 
@@ -455,9 +498,11 @@ Tuning WAL throughput today means tuning the storage underneath it (see Storage 
 
 - **WAL Disk Usage**: Monitor disk space consumption
 - **WAL Segment Count**: Track number of segments
-- **WAL Flush Latency**: Monitor write performance
+- **WAL Flush Latency**: Monitor write performance (`signaldb.wal.flush.duration`)
 - **WAL Errors**: Alert on WAL operation failures
-- **Unprocessed Entries**: Monitor processing lag
+- **Unprocessed Entries**: Monitor processing lag (`signaldb.wal.entries_pending`)
+- **Open WAL instances** (`signaldb.wal.instances`): one per tenant/dataset/signal, opened on first write and never closed. Each holds three file descriptors and a flush timer, so this gauge is the early warning for file-descriptor pressure in a deployment that keeps adding tenants
+- **Skipped WALs** (`signaldb.wal.list_failures`): a WAL whose entries could not be listed is skipped for that processing cycle; a non-zero rate means some tenant's backlog is not draining
 
 ### Health Check Endpoints
 

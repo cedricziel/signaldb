@@ -243,7 +243,9 @@ async fn test_acceptor_writer_flow() {
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
 
-    let writer_wal = Arc::new(common::wal::Wal::new(wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
     let writer_catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
@@ -394,14 +396,35 @@ async fn test_acceptor_writer_flow() {
     // Verify WAL entries get marked processed on the writer side too. The
     // mark happens asynchronously after the Iceberg commit (object-store
     // visibility precedes it), so poll rather than assert instantly.
+    // The writer holds one WAL per tenant/dataset/signal, so scan every WAL
+    // it opened rather than a single global one.
     let deadline = Instant::now() + Duration::from_secs(15);
     let unprocessed = loop {
-        let unprocessed = writer_wal.get_unprocessed_entries().await.unwrap();
+        let mut unprocessed = Vec::new();
+        for (_key, wal) in writer_wal.all_wals().await {
+            unprocessed.extend(wal.get_unprocessed_entries().await.unwrap());
+        }
         if unprocessed.is_empty() || Instant::now() >= deadline {
             break unprocessed;
         }
         sleep(Duration::from_millis(100)).await;
     };
+    // Name the key: a count alone would also be satisfied by a WAL opened for
+    // some other tenant, and the loop above would then pass vacuously.
+    let writer_wal_keys: Vec<_> = writer_wal
+        .all_wals()
+        .await
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert!(
+        writer_wal_keys.contains(&(
+            "test-tenant".to_string(),
+            "test-dataset".to_string(),
+            "traces".to_string()
+        )),
+        "Expected the writer to have opened the ingesting tenant's own WAL, got {writer_wal_keys:?}"
+    );
     assert_eq!(
         unprocessed.len(),
         0,
@@ -583,7 +606,9 @@ async fn test_direct_acceptor_writer_flight() {
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Start writer
-    let writer_wal = Arc::new(common::wal::Wal::new(wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
     let writer_catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await

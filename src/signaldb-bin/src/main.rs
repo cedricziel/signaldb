@@ -8,7 +8,8 @@ use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
+use common::wal::manager::WalManager;
 use compactor::service::CompactorService;
 use querier::QuerierFlightService;
 use router::{RouterAppState, RouterState, create_flight_service, create_router};
@@ -234,17 +235,16 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let mut writer_wal = Wal::new(writer_wal_config)
-        .await
-        .context("Failed to initialize Writer WAL")?;
-    writer_wal.start_background_flush();
-    let writer_wal = Arc::new(writer_wal);
+    // One WAL per tenant/dataset/signal (#932); WALs left by a previous run
+    // are opened now so their pending entries drain.
+    let writer_wal_manager = Arc::new(WalManager::uniform(writer_wal_config));
+    writer::cli::open_existing_writer_wals(&writer_wal_manager).await;
 
     // Create Iceberg-based Flight ingestion service with CatalogManager
     let writer_flight_service = IcebergWriterFlightService::new(
         catalog_manager.clone(),
         object_store.clone(),
-        writer_wal.clone(),
+        writer_wal_manager.clone(),
         &config.writer,
     );
 
@@ -683,13 +683,10 @@ async fn main() -> Result<()> {
     writer_reconciler_handle.abort();
     let _ = writer_reconciler_handle.await;
 
-    if let Ok(wal) = Arc::try_unwrap(writer_wal) {
-        wal.shutdown()
-            .await
-            .context("Failed to shutdown Writer WAL")?;
-    } else {
-        tracing::warn!("Could not get exclusive access to Writer WAL for shutdown - forcing flush");
-    }
+    writer_wal_manager
+        .flush_all()
+        .await
+        .context("Failed to flush Writer WALs during shutdown")?;
 
     if let Some(telemetry) = _telemetry {
         telemetry.shutdown();

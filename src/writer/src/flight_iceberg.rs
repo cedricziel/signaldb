@@ -26,7 +26,8 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::config::WriterConfig;
 use common::flight::decode::flight_data_vec_to_batches;
-use common::wal::{Wal, WalOperation, record_batch_to_bytes};
+use common::wal::manager::WalManager;
+use common::wal::{WalOperation, record_batch_to_bytes};
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
@@ -79,7 +80,10 @@ fn parse_flush_scope(metadata: &tonic::metadata::MetadataMap) -> Result<FlushSco
 /// This demonstrates the integration of the new Iceberg-based processor
 pub struct IcebergWriterFlightService {
     processor: Arc<Mutex<WalProcessor>>,
-    wal: Arc<Wal>,
+    /// One WAL per tenant/dataset/signal (#932). `do_put` appends to the WAL
+    /// of the batch's own tenant, so a poisoned or slow WAL only ever affects
+    /// that tenant's ingest path.
+    wal_manager: Arc<WalManager>,
     reconciler: Arc<crate::reconcile::TableReconciler>,
     table_reconcile_interval: std::time::Duration,
 }
@@ -92,11 +96,11 @@ impl IcebergWriterFlightService {
     pub fn new(
         catalog_manager: Arc<CatalogManager>,
         object_store: Arc<dyn ObjectStore>,
-        wal: Arc<Wal>,
+        wal_manager: Arc<WalManager>,
         writer_config: &WriterConfig,
     ) -> Self {
         let processor = WalProcessor::with_config(
-            wal.clone(),
+            wal_manager.clone(),
             catalog_manager.clone(),
             object_store,
             writer_config,
@@ -104,7 +108,7 @@ impl IcebergWriterFlightService {
 
         Self {
             processor: Arc::new(Mutex::new(processor)),
-            wal,
+            wal_manager,
             reconciler: Arc::new(crate::reconcile::TableReconciler::new(catalog_manager)),
             table_reconcile_interval: writer_config.table_reconcile_interval,
         }
@@ -164,37 +168,33 @@ impl IcebergWriterFlightService {
     }
 
     /// Start the background WAL processing loop.
-    /// Returns the JoinHandle for the spawned task. Caller must abort() this handle
-    /// during shutdown to release the Arc<Wal> reference before calling Arc::try_unwrap.
+    ///
+    /// Returns the JoinHandle for the spawned task; the caller aborts it
+    /// during shutdown, before flushing the WALs.
+    ///
+    /// The loop ticks at a fixed interval. It carries no backoff because
+    /// `process_pending_entries` absorbs failures rather than propagating
+    /// them: an entry that cannot be decoded or committed is counted and, at
+    /// `MAX_ENTRY_FAILURES`, dead-lettered, and a WAL that cannot be listed is
+    /// skipped for the cycle. An error only escapes for an explicit
+    /// `do_action("flush")` scope, which this loop never passes. (The loop
+    /// used to compute an exponential delay from a `consecutive_failures`
+    /// counter that no reachable path could increment — removing it changes
+    /// no behaviour, only the impression that a failing catalog is throttled
+    /// here. Throttling a failing catalog is tracked separately.)
     pub fn start_background_processing(&self) -> tokio::task::JoinHandle<()> {
         let processor = self.processor.clone();
 
         let handle = tokio::spawn(async move {
-            const BASE_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
-            const MAX_BACKOFF: tokio::time::Duration = tokio::time::Duration::from_secs(300);
-            let mut consecutive_failures: u32 = 0;
+            const INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
             loop {
                 let mut processor_guard = processor.lock().await;
-                match processor_guard.process_pending_entries().await {
-                    Ok(()) => consecutive_failures = 0,
-                    Err(e) => {
-                        consecutive_failures = consecutive_failures.saturating_add(1);
-                        tracing::error!(
-                            error = %e,
-                            consecutive_failures,
-                            "Background WAL processing error"
-                        );
-                    }
+                if let Err(e) = processor_guard.process_pending_entries().await {
+                    tracing::error!(error = %e, "Background WAL processing error");
                 }
                 drop(processor_guard);
 
-                // Exponential backoff on repeated failures so a persistently
-                // failing catalog/store is not hammered every 5 seconds.
-                let delay = BASE_INTERVAL
-                    .saturating_mul(1u32 << consecutive_failures.min(6))
-                    .min(MAX_BACKOFF)
-                    .max(BASE_INTERVAL);
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep(INTERVAL).await;
             }
         });
 
@@ -422,7 +422,46 @@ impl FlightService for IcebergWriterFlightService {
             batches
         };
 
-        // Write all batches to WAL first for durability
+        // Write all batches to WAL first for durability — the WAL of this
+        // batch's own tenant/dataset/signal (#932), so one tenant's segment
+        // never carries, or blocks, another tenant's data.
+        // An absent *or empty* id falls back to the default tenant/dataset:
+        // an empty string would otherwise reach the WAL as a tenant and be
+        // rejected there, and the acceptor classifies the resulting
+        // `internal` as retryable (#1060), retrying a batch that can never
+        // succeed.
+        //
+        // These ids become path components of the WAL directory, and this
+        // Flight surface can be configured without authentication, so they
+        // are validated here as well as inside `get_wal`. A malformed id is
+        // the sender's fault and recurs identically on every retry, so it
+        // must be `invalid_argument`; a WAL that fails to open for any other
+        // reason (a full or unwritable disk) is `internal` and retryable.
+        let wal_id = |label: &str, value: Option<&String>, fallback: &str| {
+            let id = value
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+                .unwrap_or(fallback);
+            common::auth::validation::validate_id(id).map_err(|e| {
+                Status::invalid_argument(format!("Invalid {label} id in Flight metadata: {e}"))
+            })
+        };
+        let metadata = flight_metadata.as_ref();
+        let wal_tenant = wal_id(
+            "tenant",
+            metadata.and_then(|m| m.tenant_id.as_ref()),
+            common::bootstrap::DEFAULT_TENANT_ID,
+        )?;
+        let wal_dataset = wal_id(
+            "dataset",
+            metadata.and_then(|m| m.dataset_id.as_ref()),
+            common::bootstrap::DEFAULT_DATASET_ID,
+        )?;
+        let wal = self
+            .wal_manager
+            .get_wal(&wal_tenant, &wal_dataset, wal_operation.signal())
+            .await
+            .map_err(|e| Status::internal(format!("Failed to open WAL: {e}")))?;
         let mut wal_entry_ids = Vec::new();
 
         // Persist the active (flight_do_put) trace context alongside the
@@ -457,8 +496,7 @@ impl FlightService for IcebergWriterFlightService {
 
             // Write to WAL with correct operation type determined from metadata
             // Pass metadata to enable proper table routing (e.g., metrics_exponential_histogram)
-            let entry_id = self
-                .wal
+            let entry_id = wal
                 .append(wal_operation.clone(), batch_bytes, metadata_json.clone())
                 .await
                 .map_err(|e| Status::internal(format!("Failed to write to WAL: {e}")))?;
@@ -473,8 +511,7 @@ impl FlightService for IcebergWriterFlightService {
         // floor cap the commit rate (#888). Ingested data becomes queryable
         // once the loop commits it (bounded by `commit_interval`); a client
         // needing read-your-writes can force a drain with `do_action("flush")`.
-        self.wal
-            .flush()
+        wal.flush()
             .await
             .map_err(|e| Status::internal(format!("Failed to flush WAL: {e}")))?;
         tracing::debug!(
@@ -671,28 +708,39 @@ mod tests {
         );
     }
 
+    /// A per-tenant WAL manager rooted at `dir`, plus the `acme/production`
+    /// metrics WAL the tests below write into directly.
+    async fn test_wal_manager(dir: &std::path::Path) -> (Arc<WalManager>, Arc<common::wal::Wal>) {
+        let base = WalConfig {
+            wal_dir: dir.to_path_buf(),
+            max_segment_size: 8 * 1024 * 1024,
+            max_buffer_entries: 1000,
+            flush_interval_secs: 5,
+            tenant_id: "default".to_string(),
+            dataset_id: "default".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let manager = Arc::new(WalManager::uniform(base));
+        let wal = manager
+            .get_wal("acme", "production", "metrics")
+            .await
+            .unwrap();
+        (manager, wal)
+    }
+
     #[tokio::test]
     async fn test_iceberg_flight_service_creation() {
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 1024 * 1024, // 1MB
-            max_buffer_entries: 1000,
-            flush_interval_secs: 5,
-            tenant_id: "test-tenant".to_string(),
-            dataset_id: "test-dataset".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
-        };
-        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let (manager, _wal) = test_wal_manager(temp_dir.path()).await;
 
         let service = IcebergWriterFlightService::new(
             catalog_manager,
             object_store,
-            wal,
+            manager,
             &WriterConfig::default(),
         );
 
@@ -705,18 +753,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 8 * 1024 * 1024,
-            max_buffer_entries: 1000,
-            flush_interval_secs: 5,
-            tenant_id: "acme".to_string(),
-            dataset_id: "production".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
-        };
-        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let (manager, wal) = test_wal_manager(temp_dir.path()).await;
         // A large interval means the background loop would defer this write; the
         // flush action must commit it regardless.
         let writer_config = WriterConfig {
@@ -724,12 +761,8 @@ mod tests {
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let service = IcebergWriterFlightService::new(
-            catalog_manager,
-            object_store,
-            wal.clone(),
-            &writer_config,
-        );
+        let service =
+            IcebergWriterFlightService::new(catalog_manager, object_store, manager, &writer_config);
 
         wal.append(
             WalOperation::WriteMetrics,
@@ -788,22 +821,11 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 8 * 1024 * 1024,
-            max_buffer_entries: 1000,
-            flush_interval_secs: 5,
-            tenant_id: "acme".to_string(),
-            dataset_id: "production".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
-        };
-        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let (manager, wal) = test_wal_manager(temp_dir.path()).await;
         let service = IcebergWriterFlightService::new(
             catalog_manager,
             object_store,
-            wal.clone(),
+            manager,
             &WriterConfig::default(),
         );
 

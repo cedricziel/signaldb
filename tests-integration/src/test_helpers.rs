@@ -56,3 +56,18 @@ async fn create_test_bucket(container: &ContainerAsync<MinIO>, bucket: &str) -> 
     tracing::info!("Created test bucket: {bucket}");
     Ok(())
 }
+
+/// The writer's WAL configuration, derived from the acceptor's.
+///
+/// Both services lay out a `{tenant}/{dataset}/{signal}` tree under their WAL
+/// directory, so they must not share one: pointed at the same base directory,
+/// the writer's processor drains the acceptor's entries as well as its own and
+/// commits every batch twice. In production they are separated by
+/// `WalConfig::wal_dir_for_service` (`{wal_dir}/acceptor` vs `{wal_dir}/writer`);
+/// tests build one config and derive the writer's from it the same way.
+pub fn writer_wal_config(acceptor_wal: &common::wal::WalConfig) -> common::wal::WalConfig {
+    common::wal::WalConfig {
+        wal_dir: acceptor_wal.wal_dir.join("writer"),
+        ..acceptor_wal.clone()
+    }
+}

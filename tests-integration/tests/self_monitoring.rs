@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use acceptor::handler::otlp_grpc::TraceHandler;
-use acceptor::handler::wal_manager::WalManager;
 use acceptor::middleware::grpc_auth_interceptor;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
 use common::auth::{Authenticator, TenantContext, TenantSource};
@@ -22,6 +21,7 @@ use common::config::Configuration;
 use common::flight::transport::InMemoryFlightTransport;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::WalConfig;
+use common::wal::manager::WalManager;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::trace_service_server::{
     TraceService, TraceServiceServer,

@@ -10,6 +10,7 @@
 use anyhow::Result;
 use common::CatalogManager;
 use common::iceberg::names::build_table_identifier;
+use common::wal::manager::WalManager;
 use common::wal::{Wal, WalConfig, WalOperation, record_batch_to_bytes};
 use datafusion::arrow::array::{
     Array, Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
@@ -113,23 +114,40 @@ async fn count_rows(catalog_manager: &CatalogManager, table_name: &str) -> Resul
     Ok(count)
 }
 
+/// The writer holds one WAL per tenant/dataset/signal, so open the fixed test
+/// tenant's WAL through a manager and drive the processor with that manager.
+async fn open_writer_wal(config: &WalConfig) -> Result<(Arc<WalManager>, Arc<Wal>)> {
+    let manager = Arc::new(WalManager::uniform(config.clone()));
+    let wal = manager.get_wal("default", "default", "metrics").await?;
+    Ok((manager, wal))
+}
+
 /// Delete the WAL index files, simulating a crash where the Iceberg commit
-/// landed but the processed-index write did not.
+/// landed but the processed-index write did not. Walks the tenant tree, since
+/// the segments live under `{tenant}/{dataset}/{signal}/`.
 async fn drop_wal_indexes(wal_dir: &Path) -> Result<()> {
+    let deleted = drop_wal_indexes_in(wal_dir).await?;
+    anyhow::ensure!(deleted > 0, "expected at least one WAL index file");
+    Ok(())
+}
+
+async fn drop_wal_indexes_in(dir_path: &Path) -> Result<usize> {
     let mut deleted = 0;
-    let mut dir = tokio::fs::read_dir(wal_dir).await?;
+    let mut dir = tokio::fs::read_dir(dir_path).await?;
     while let Some(entry) = dir.next_entry().await? {
-        if entry
+        let path = entry.path();
+        if path.is_dir() {
+            deleted += Box::pin(drop_wal_indexes_in(&path)).await?;
+        } else if entry
             .file_name()
             .to_str()
             .is_some_and(|name| name.ends_with(".index"))
         {
-            tokio::fs::remove_file(entry.path()).await?;
+            tokio::fs::remove_file(path).await?;
             deleted += 1;
         }
     }
-    anyhow::ensure!(deleted > 0, "expected at least one WAL index file");
-    Ok(())
+    Ok(deleted)
 }
 
 #[tokio::test]
@@ -140,7 +158,7 @@ async fn replay_after_crash_does_not_duplicate_rows() -> Result<()> {
     let object_store = Arc::new(InMemory::new());
 
     // Ingest two entries and process them normally.
-    let wal = Arc::new(Wal::new(wal_config.clone()).await?);
+    let (wal_manager, wal) = open_writer_wal(&wal_config).await?;
     let batch1 = metrics_gauge_batch(&[1.0, 2.0, 3.0])?;
     let batch2 = metrics_gauge_batch(&[4.0, 5.0])?;
     wal.append(
@@ -157,8 +175,11 @@ async fn replay_after_crash_does_not_duplicate_rows() -> Result<()> {
     .await?;
     wal.flush().await?;
 
-    let mut processor =
-        WalProcessor::new(wal.clone(), catalog_manager.clone(), object_store.clone());
+    let mut processor = WalProcessor::new(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+        object_store.clone(),
+    );
     processor.process_pending_entries().await?;
     assert!(
         wal.get_unprocessed_entries().await?.is_empty(),
@@ -170,15 +191,19 @@ async fn replay_after_crash_does_not_duplicate_rows() -> Result<()> {
     processor.shutdown().await?;
     drop(processor);
     drop(wal);
+    drop(wal_manager);
     drop_wal_indexes(wal_dir.path()).await?;
 
     // Restart: entries load as unprocessed and are replayed.
-    let wal = Arc::new(Wal::new(wal_config.clone()).await?);
+    let (wal_manager, wal) = open_writer_wal(&wal_config).await?;
     let replayed = wal.get_unprocessed_entries().await?;
     assert_eq!(replayed.len(), 2, "index loss must resurface the entries");
 
-    let mut processor =
-        WalProcessor::new(wal.clone(), catalog_manager.clone(), object_store.clone());
+    let mut processor = WalProcessor::new(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+        object_store.clone(),
+    );
     processor.process_pending_entries().await?;
 
     // The idempotency marker must prevent re-inserting the committed rows.
@@ -202,7 +227,7 @@ async fn mixed_replay_commits_only_new_entries() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
     let object_store = Arc::new(InMemory::new());
 
-    let wal = Arc::new(Wal::new(wal_config.clone()).await?);
+    let (wal_manager, wal) = open_writer_wal(&wal_config).await?;
     let batch1 = metrics_gauge_batch(&[1.0, 2.0])?;
     wal.append(
         WalOperation::WriteMetrics,
@@ -212,18 +237,22 @@ async fn mixed_replay_commits_only_new_entries() -> Result<()> {
     .await?;
     wal.flush().await?;
 
-    let mut processor =
-        WalProcessor::new(wal.clone(), catalog_manager.clone(), object_store.clone());
+    let mut processor = WalProcessor::new(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+        object_store.clone(),
+    );
     processor.process_pending_entries().await?;
     assert_eq!(count_rows(&catalog_manager, "metrics_gauge").await?, 2);
     processor.shutdown().await?;
     drop(processor);
     drop(wal);
+    drop(wal_manager);
     drop_wal_indexes(wal_dir.path()).await?;
 
     // Restart with the old entry resurfaced AND a new entry appended: the
     // old one must be skipped, the new one committed.
-    let wal = Arc::new(Wal::new(wal_config.clone()).await?);
+    let (wal_manager, wal) = open_writer_wal(&wal_config).await?;
     let batch2 = metrics_gauge_batch(&[3.0, 4.0, 5.0])?;
     wal.append(
         WalOperation::WriteMetrics,
@@ -234,8 +263,11 @@ async fn mixed_replay_commits_only_new_entries() -> Result<()> {
     wal.flush().await?;
     assert_eq!(wal.get_unprocessed_entries().await?.len(), 2);
 
-    let mut processor =
-        WalProcessor::new(wal.clone(), catalog_manager.clone(), object_store.clone());
+    let mut processor = WalProcessor::new(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+        object_store.clone(),
+    );
     processor.process_pending_entries().await?;
 
     assert_eq!(
@@ -255,7 +287,7 @@ async fn processing_is_idempotent_across_repeated_replays() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
     let object_store = Arc::new(InMemory::new());
 
-    let wal = Arc::new(Wal::new(wal_config.clone()).await?);
+    let (wal_manager, wal) = open_writer_wal(&wal_config).await?;
     let batch = metrics_gauge_batch(&[1.0])?;
     wal.append(
         WalOperation::WriteMetrics,
@@ -265,19 +297,26 @@ async fn processing_is_idempotent_across_repeated_replays() -> Result<()> {
     .await?;
     wal.flush().await?;
 
-    let mut processor =
-        WalProcessor::new(wal.clone(), catalog_manager.clone(), object_store.clone());
+    let mut processor = WalProcessor::new(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+        object_store.clone(),
+    );
     processor.process_pending_entries().await?;
     processor.shutdown().await?;
     drop(processor);
     drop(wal);
+    drop(wal_manager);
 
     // Crash-replay twice in a row: still exactly one row.
     for _ in 0..2 {
         drop_wal_indexes(wal_dir.path()).await?;
-        let wal = Arc::new(Wal::new(wal_config.clone()).await?);
-        let mut processor =
-            WalProcessor::new(wal.clone(), catalog_manager.clone(), object_store.clone());
+        let (wal_manager, _wal) = open_writer_wal(&wal_config).await?;
+        let mut processor = WalProcessor::new(
+            wal_manager.clone(),
+            catalog_manager.clone(),
+            object_store.clone(),
+        );
         processor.process_pending_entries().await?;
         assert_eq!(count_rows(&catalog_manager, "metrics_gauge").await?, 1);
         processor.shutdown().await?;

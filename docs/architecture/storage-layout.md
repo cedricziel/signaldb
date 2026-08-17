@@ -642,7 +642,14 @@ Extends Gauge with aggregation fields.
 
 ### Directory Structure
 
-The WAL is organized by tenant, dataset, and signal type under the configured base directory:
+The WAL is organized by tenant, dataset, and signal type under the configured
+base directory. Both WAL-owning services — the acceptor and the writer — hold
+one `Wal` instance per `(tenant, dataset, signal)` behind a shared
+`WalManager` (`src/common/src/wal/manager.rs`), created lazily on that
+combination's first write. Isolation is the point: each instance has its own
+segments, its own flush mutex, and its own dead-letter directory, so a
+poisoned segment or a slow disk on one tenant neither blocks nor contaminates
+another tenant's ingest path.
 
 ```
 {wal_dir}/
@@ -687,7 +694,7 @@ for the full recovery behavior and the other `dead-letter/` artifact kinds.
 
 ### Concrete Example
 
-The runtime `WalConfig` (`src/common/src/wal/mod.rs`) defaults to `wal_dir = ".wal"`, but the services derive their WAL directory from the `[wal].wal_dir` config value (default `.data/wal`) with a per-service suffix: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer`, overridable via `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR`. The tenant tree shown below sits under the acceptor's service directory; with the defaults that is `.data/wal/acceptor`:
+The runtime `WalConfig` (`src/common/src/wal/mod.rs`) defaults to `wal_dir = ".wal"`, but the services derive their WAL directory from the `[wal].wal_dir` config value (default `.data/wal`) with a per-service suffix: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer`, overridable via `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR`. Both services lay out the same tenant tree under their own service directory; the one shown below sits under the acceptor's, which with the defaults is `.data/wal/acceptor`:
 
 ```
 .data/wal/

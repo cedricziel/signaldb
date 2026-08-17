@@ -51,8 +51,9 @@ No headers are emitted when self-monitoring tracing is disabled, or for
 Handlers accumulate the `<stage>;dur=<ms>` entries via `ServerTimings`
 (`src/common/src/self_monitoring/app_metrics.rs`), a small ordered
 name/duration list unrelated to the counter/histogram instruments the same
-file defines — those are the `signaldb.*` metrics exported over OTLP, not
-part of the response headers described here.
+file defines — those are the `signaldb.*` metrics (WAL, Flight and RPC
+counters, histograms and gauges) exported over OTLP, not part of the response
+headers described here.
 
 ## Correlating a request with its trace
 

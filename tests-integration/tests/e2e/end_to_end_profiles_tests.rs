@@ -29,7 +29,7 @@ use common::config::{
 };
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
 use datafusion::arrow::array::{Array, StringArray};
 use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectStore;
@@ -232,7 +232,9 @@ async fn setup_services() -> TestServices {
     // test execution.
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
     let writer_service = IcebergWriterFlightService::new(
         catalog_manager.clone(),
         object_store.clone(),
