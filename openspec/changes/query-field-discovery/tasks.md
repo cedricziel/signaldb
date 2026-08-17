@@ -39,7 +39,7 @@ suggestions statistics-served; the surface degrades honestly without it.
 
 ## 2. Router: the discovery surface (crate `router`)
 
-- [ ] 2.1 Tests (`cargo test -p router discovery`): a `describe: fields`
+- [x] 2.1 Tests (`cargo test -p router discovery`): a `describe: fields`
       document returns declared + observed fields for the authenticated tenant
       only and dispatches no Flight ticket; a request for another tenant is
       rejected; the source's read scope is enforced; missing statistics produce
@@ -49,7 +49,7 @@ suggestions statistics-served; the surface degrades honestly without it.
       locally from `LogicalSchema::core()`, the tenant's schema registries, and
       `Catalog::get_attribute_stats` (the `promql::label_stats` pattern) instead
       of building a ticket
-- [ ] 2.3 Tests: `describe: values` returns registry/intrinsic enumerations
+- [x] 2.3 Tests: `describe: values` returns registry/intrinsic enumerations
       exactly with `origin: registry`; an uncovered field returns no values,
       `origin: unavailable`, and the hint naming the equivalent IR query, having
       read no data; `sample: true` returns sampled values with
@@ -62,7 +62,7 @@ suggestions statistics-served; the surface degrades honestly without it.
       data is available-and-empty, never omitted
 - [x] 2.6 Bounds: `max_fields`/`max_values` caps with `truncated`; a `describe`
       response is capped independently of query limits
-- [ ] 2.7 OpenAPI (spec regenerated; `cargo xtask generate` still owed): `#[utoipa::path]` for the new route and schemas for the
+- [x] 2.7 OpenAPI: `#[utoipa::path]` for the new route and schemas for the
       metadata envelope; `UPDATE_OPENAPI=1 cargo test -p router
   openapi_spec_is_up_to_date`; `cargo xtask generate` for the Rust SDK and
       the TypeScript client
@@ -72,15 +72,15 @@ suggestions statistics-served; the surface degrades honestly without it.
 
 ## 3. CLI and MCP surfaces
 
-- [ ] 3.1 Tests + implementation: `signaldb discover fields|values|sources`
+- [x] 3.1 Tests + implementation: `signaldb discover fields|values|sources`
       against the native surface through the generated SDK, printing name, type,
       origin, coverage, cardinality, and the response's cost line; the
       data-reading path requires an explicit `--sample` flag
-- [ ] 3.2 Tests + implementation: MCP `discover_fields`, `discover_field_values`,
+- [x] 3.2 Tests + implementation: MCP `discover_fields`, `discover_field_values`,
       `discover_sources` (read-only hints, cache hints per the MCP tool surface),
       wired through the SDK; the existing `discover_attributes` tool keeps its
       current compat-backed behaviour, unchanged
-- [ ] 3.3 MCP tool-surface parity lists and their tests updated for the three new
+- [x] 3.3 MCP tool-surface parity lists and their tests updated for the three new
       tools
 
 ## 4. Documentation
@@ -88,9 +88,9 @@ suggestions statistics-served; the surface degrades honestly without it.
 - [x] 4.1 `docs/users/querying-ir.md`: the `metadata` envelope, the `describe`
       stage, the tiers, the cost object, and the explicit statement that
       discovery is not window- or predicate-scoped
-- [ ] 4.2 A discovery section for the CLI and MCP references; update any skill
+- [x] 4.2 A discovery section for the CLI and MCP references; update any skill
       whose described behaviour changed (`tempo-api`, MCP tool surface)
-- [ ] 4.3 `scripts/check-doc-freshness.sh "origin/main...HEAD"` clean
+- [x] 4.3 `scripts/check-doc-freshness.sh "origin/main...HEAD"` clean
 
 ## 5. Value sketches: making the statistics tier real (crate `compactor`)
 
