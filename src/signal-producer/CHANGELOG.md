@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/cedricziel/signaldb/compare/signal-producer-v0.2.1...signal-producer-v0.2.2) (2026-08-17)
+
+
+### Bug Fixes
+
+* **signal-producer:** emit realistic span durations instead of zero ([#797](https://github.com/cedricziel/signaldb/issues/797)) ([#974](https://github.com/cedricziel/signaldb/issues/974)) ([20c9120](https://github.com/cedricziel/signaldb/commit/20c9120762aff967590b62ffc5b3bce6c3e9bfea))
+
+
+### Code Refactoring
+
+* **signal-producer:** remove dead end_ms parameter from kafka_produce ([#1178](https://github.com/cedricziel/signaldb/issues/1178)) ([abb8c7f](https://github.com/cedricziel/signaldb/commit/abb8c7f749cf2963b10bec216d932687b4d89cbf))
+
 ## [0.2.1](https://github.com/cedricziel/signaldb/compare/signal-producer-v0.2.0...signal-producer-v0.2.1) (2026-07-30)
 
 

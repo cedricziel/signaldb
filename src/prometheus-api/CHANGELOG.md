@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/cedricziel/signaldb/compare/prometheus-api-v0.1.2...prometheus-api-v0.1.3) (2026-08-17)
+
+
+### Code Refactoring
+
+* **prometheus-api:** extract STATUS_SUCCESS/STATUS_ERROR constants ([#1182](https://github.com/cedricziel/signaldb/issues/1182)) ([130d95c](https://github.com/cedricziel/signaldb/commit/130d95c39933b2d46448ca8ff86f5ddaaf53d47e))
+
 ## [0.1.2](https://github.com/cedricziel/signaldb/compare/prometheus-api-v0.1.1...prometheus-api-v0.1.2) (2026-07-30)
 
 

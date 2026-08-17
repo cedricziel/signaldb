@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/cedricziel/signaldb/compare/logql-v0.1.1...logql-v0.1.2) (2026-08-17)
+
+
+### Code Refactoring
+
+* **logql:** simplify pass ([#1179](https://github.com/cedricziel/signaldb/issues/1179)) ([9c83c1b](https://github.com/cedricziel/signaldb/commit/9c83c1ba5a23abaab0107c4c217f6a3a0e6baafe))
+
 ## [0.1.1](https://github.com/cedricziel/signaldb/compare/logql-v0.1.0...logql-v0.1.1) (2026-07-30)
 
 
