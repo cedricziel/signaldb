@@ -989,6 +989,20 @@ describe("TracesView detail", () => {
     expect(await screen.findByText("+15 ms")).toBeInTheDocument();
   });
 
+  it("shows each event's absolute time next to its offset", async () => {
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
+    renderView({ trace: "t1cafe" });
+    await screen.findByText("+15 ms");
+    // 1_055_000_000ns = 1.055s after the epoch, rendered as wall-clock time
+    // (local zone) with millisecond precision.
+    const clock = screen.getByTestId("span-event-clock");
+    expect(clock).toHaveTextContent(/^\d{2}:\d{2}:\d{2}\.055$/);
+    expect(clock).toHaveAttribute(
+      "title",
+      expect.stringContaining("1055000000"),
+    );
+  });
+
   it("prefers preselecting an error span that recorded an exception over one that didn't", async () => {
     stubFetchRoutes([
       ...traceRoutes({
