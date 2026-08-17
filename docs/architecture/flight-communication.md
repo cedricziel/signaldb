@@ -329,6 +329,21 @@ sequenceDiagram
 3. Querier executes query using DataFusion against Parquet files
 4. Results streamed back to client via Flight → HTTP
 
+**Parquet footer caching.** Step 3 is dominated by *opening* candidate Parquet
+files rather than by reading them: pruning (partition, statistics, bloom)
+already reduces a point lookup to a handful of bytes, while every candidate
+file's footer still has to be fetched and decoded, one object-store round-trip
+each. The querier's session therefore installs
+`common::parquet_metadata_cache::CacheParquetMetadata`, a physical optimizer
+rule that makes every Parquet scan read footers through the shared
+`RuntimeEnv`'s metadata cache. DataFusion only wires that cache up on its own
+`ListingTable` path, so scans from the Iceberg table provider would otherwise
+re-read every footer on every query. The cache is sized by
+`[querier].parquet_metadata_cache_mb` (`0` disables it), lives on the one
+`RuntimeEnv` shared by every per-request session, and is safe because Iceberg
+data files are immutable — DataFusion still revalidates each hit against the
+current object metadata.
+
 ### 5.2 Schema Design ✅ **Implemented**
 
 Flight schemas are defined in `src/common/src/flight/schema.rs` with conversions for:

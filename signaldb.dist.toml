@@ -234,6 +234,13 @@ max_buffer_size_bytes = 134217728     # 128MB
 # spill to disk or fail (0.0-1.0).
 memory_pool_fraction = 0.8
 #
+# Memory budget for the Parquet file-metadata (footer) cache, in MiB.
+# A point lookup is dominated by opening candidate files rather than by
+# reading them, and Parquet footers are immutable, so caching them makes
+# repeated lookups skip those reads entirely. Separate from
+# memory_limit_mb, which bounds query operators. 0 disables the cache.
+parquet_metadata_cache_mb = 128
+#
 # Wall-clock timeout per Flight query.
 query_timeout = "60s"
 #

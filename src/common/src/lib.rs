@@ -13,6 +13,7 @@ pub mod error;
 pub mod flight;
 pub mod iceberg;
 pub mod model;
+pub mod parquet_metadata_cache;
 pub mod profile;
 pub mod query_ir;
 pub mod ratelimit;

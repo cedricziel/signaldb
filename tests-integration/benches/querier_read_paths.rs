@@ -16,6 +16,7 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use common::catalog_manager::CatalogManager;
+use common::config::QuerierConfig;
 use criterion::{Criterion, criterion_group, criterion_main};
 use datafusion::arrow::array::{Array, TimestampMicrosecondArray};
 use datafusion::datasource::MemTable;
@@ -41,10 +42,10 @@ const TARGET: &str = BLOOM_TARGET_TRACE_ID;
 /// Spans of TARGET, one per spread instant — the completeness ground truth.
 const TARGET_SPAN_COUNT: usize = 3;
 
-/// Seed a traces table and hand back a DataFusion context with it registered,
-/// plus the base timestamp (millis) used for seeding so the windowed lookup can
-/// build a bounded time predicate.
-async fn seed_traces_context() -> (SessionContext, i64) {
+/// Seed a traces table and hand back the catalog holding it, plus the base
+/// timestamp (millis) used for seeding so the windowed lookup can build a
+/// bounded time predicate.
+async fn seed_traces_catalog() -> (Arc<CatalogManager>, i64) {
     let config = common::testing::TestConfigBuilder::new()
         .in_memory()
         .with_tenant(TENANT, DATASET)
@@ -98,7 +99,12 @@ async fn seed_traces_context() -> (SessionContext, i64) {
         .expect("seed spread target span");
     }
 
-    // Register the freshly-written table exactly as the querier does.
+    (catalog_manager, base_ts)
+}
+
+/// Register the seeded table on `ctx` exactly as the querier does, so every
+/// context in this bench reads the same files through the same provider.
+async fn with_traces(ctx: SessionContext, catalog_manager: &CatalogManager) -> SessionContext {
     let identifier = catalog_manager.build_table_identifier(TENANT, DATASET, TABLE);
     let tabular = catalog_manager
         .catalog()
@@ -108,9 +114,23 @@ async fn seed_traces_context() -> (SessionContext, i64) {
     let table = Arc::new(datafusion_iceberg::DataFusionTable::new(
         tabular, None, None, None,
     ));
-    let ctx = SessionContext::new();
     ctx.register_table(TABLE, table).expect("register table");
-    (ctx, base_ts)
+    ctx
+}
+
+/// The point lookup every footer-cache scenario times: one trace id, no time
+/// bound, so every candidate file has to be opened.
+async fn lookup_by_id(ctx: &SessionContext) -> usize {
+    let batches = ctx
+        .sql(&format!(
+            "SELECT * FROM {TABLE} WHERE trace_id = '{TARGET}'"
+        ))
+        .await
+        .expect("plan lookup")
+        .collect()
+        .await
+        .expect("run lookup");
+    batches.iter().map(|b| b.num_rows()).sum()
 }
 
 /// Build the point index `trace_id -> {distinct hour buckets}` as a small
@@ -189,7 +209,8 @@ async fn lookup_via_index(ctx: &SessionContext) -> usize {
 
 fn bench_read_paths(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let (ctx, base_ts) = rt.block_on(seed_traces_context());
+    let (catalog_manager, base_ts) = rt.block_on(seed_traces_catalog());
+    let ctx = rt.block_on(with_traces(SessionContext::new(), &catalog_manager));
     rt.block_on(build_trace_index(&ctx));
 
     // A ±1h window (in microseconds) around the FIRST seeded instant — the
@@ -236,17 +257,65 @@ fn bench_read_paths(c: &mut Criterion) {
     // kept as the upper bound / regression guard against losing time pruning.
     group.bench_function("trace_lookup_by_id_unbounded", |b| {
         b.to_async(&rt).iter(|| async {
-            let batches = ctx
-                .sql(&format!(
-                    "SELECT * FROM {TABLE} WHERE trace_id = '{TARGET}'"
-                ))
-                .await
-                .expect("plan lookup")
-                .collect()
-                .await
-                .expect("run lookup");
-            let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-            black_box(rows);
+            black_box(lookup_by_id(&ctx).await);
+        });
+    });
+
+    // The footer-cache lever (#880): the same unbounded lookup on the real
+    // querier session, in the three states that matter.
+    //
+    // The three-way split exists because the cache's cold and warm effects are
+    // different questions. Warm-vs-cold is the win being claimed. Cold-with-
+    // vs cold-without is the regression guard: enabling the cache must not
+    // make a first-ever lookup slower. Reading DataFusion 54's opener says it
+    // should not — the opener passes an explicit `PageIndexPolicy::Skip` on
+    // the initial metadata load, which `CachedParquetFileReader::get_metadata`
+    // forwards, so the cache never triggers the extra page-index fetch that
+    // `DFParquetMetadata` would default to when no policy is set. The cold
+    // arms measure that rather than assuming it; all the cache should add on a
+    // miss is one hash lookup and one insert.
+    //
+    // Both cold arms clear their own cache inside the timed region so neither
+    // carries a call the other does not; on the uncached arm the clear is a
+    // no-op over an empty map. These run on an in-memory object store, so they
+    // show the decode half only — on S3 each avoided footer is also a
+    // round-trip, which is where #880's ~53 ms comes from.
+    let uncached = rt.block_on(with_traces(
+        querier::flight::session_context_with_limits(&QuerierConfig {
+            parquet_metadata_cache_mb: 0,
+            ..QuerierConfig::default()
+        }),
+        &catalog_manager,
+    ));
+    let cached = rt.block_on(with_traces(
+        querier::flight::session_context_with_limits(&QuerierConfig::default()),
+        &catalog_manager,
+    ));
+    let uncached_cache = uncached
+        .runtime_env()
+        .cache_manager
+        .get_file_metadata_cache();
+    let cached_cache = cached.runtime_env().cache_manager.get_file_metadata_cache();
+
+    group.bench_function("trace_lookup_by_id_cold_without_cache", |b| {
+        b.to_async(&rt).iter(|| async {
+            uncached_cache.clear();
+            black_box(lookup_by_id(&uncached).await);
+        });
+    });
+
+    group.bench_function("trace_lookup_by_id_cold_with_cache", |b| {
+        b.to_async(&rt).iter(|| async {
+            cached_cache.clear();
+            black_box(lookup_by_id(&cached).await);
+        });
+    });
+
+    // Warm: every candidate file's footer is already resident.
+    rt.block_on(lookup_by_id(&cached));
+    group.bench_function("trace_lookup_by_id_warm_with_cache", |b| {
+        b.to_async(&rt).iter(|| async {
+            black_box(lookup_by_id(&cached).await);
         });
     });
 
