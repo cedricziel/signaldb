@@ -379,6 +379,10 @@ than as two independently maintained branches — it is intentional, not drift.
 Sorted-but-unattested output must stay unattested: attribution is a claim
 about the table's _declared_ order, and there is none to claim.
 
+For the operator's view of all this — what changes on upgrade, how to check a
+plan, and how to switch the behavior off — see
+[Ordered queries and sort-order attestation](../operations/query-ordering.md).
+
 ### Table Schemas
 
 `schemas.toml` (compiled into the binary via `include_str!`) is the physical

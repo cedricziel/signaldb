@@ -62,7 +62,9 @@ target_partitions` (default `1`): the sorters share the one budget, so
 > fully attested — compaction is how such files converge, and there is no
 > backfill job. A table that has no declaration yet is still sorted by the
 > canonical key, but its output is written unattested, since there is no
-> declared order for it to claim.
+> declared order for it to claim. See
+> [Ordered queries and sort-order attestation](../query-ordering.md) for what
+> that means for query behavior and how to turn it off.
 >
 > **Default behavior:** The compactor and retention enforcement are **enabled by default** with `dry_run = false` and a 30-day retention period for traces, logs, metrics, and profiles. A default deployment deletes data older than 30 days. To keep data indefinitely, set `[compactor.retention].enabled = false`; to keep it longer, raise the per-signal durations. Orphan cleanup is also **enabled by default** with `dry_run = false` and physically reclaims files no retained snapshot references — data Parquet and unreferenced metadata files (old metadata.json versions, expired snapshots' manifests) alike; set `[compactor.orphan_cleanup].enabled = false` to opt out or `dry_run = true` to observe first.
 
