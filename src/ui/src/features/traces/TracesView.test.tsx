@@ -765,6 +765,93 @@ describe("TracesView detail", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows a rich tooltip with service, namespace, version, and kind when hovering a span", async () => {
+    const chargeSpan = TRACE_BODY.spanSets[0]!.spans[1]!;
+    stubFetchRoutes([
+      {
+        match: "/tempo/api/traces/t1cafe",
+        body: {
+          ...TRACE_BODY,
+          spanSets: [
+            {
+              matched: 2,
+              spans: [
+                TRACE_BODY.spanSets[0]!.spans[0]!,
+                {
+                  ...chargeSpan,
+                  attributes: {
+                    ...chargeSpan.attributes,
+                    "resource.service.namespace": {
+                      key: "resource.service.namespace",
+                      value: { stringValue: "shop" },
+                    },
+                    "resource.service.version": {
+                      key: "resource.service.version",
+                      value: { stringValue: "2.4.1" },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        match: "/api/v1/query",
+        body: {
+          result: "rows",
+          window: { start_ns: 0, end_ns: 0 },
+          columns: [
+            { name: "span_id", type: "string" },
+            { name: "span_kind", type: "string" },
+          ],
+          rows: [
+            ["root", "SERVER"],
+            ["charge", "CLIENT"],
+          ],
+        },
+      },
+    ]);
+    renderView({ trace: "t1cafe" });
+    const spans = await within(
+      await screen.findByRole("list", { name: "Spans" }),
+    ).findAllByRole("listitem");
+    // Wait for the kinds enrichment to land (legend appears with it).
+    await screen.findByLabelText("Span kind legend");
+
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    fireEvent.pointerMove(spans[1]!, { clientX: 200, clientY: 40 });
+    const tip = screen.getByRole("tooltip");
+    expect(within(tip).getByText("charge")).toBeInTheDocument();
+    const rows = within(tip).getAllByTestId("viz-tip-row");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      "servicepayments",
+      "namespaceshop",
+      "version2.4.1",
+      "kindCLIENT",
+      "duration258 ms",
+      "statuserror",
+    ]);
+    // Kind swatch matches the bar colour for CLIENT spans.
+    expect(
+      within(rows[3]!).getByTestId("viz-tip-swatch").style.background,
+    ).toBe("var(--svc-b)");
+    expect(spans[1]).toHaveAttribute("aria-describedby", tip.id);
+
+    // A span without namespace/version keeps the rows, muted, and no kind
+    // swatch before enrichment for an unknown kind.
+    fireEvent.pointerMove(spans[0]!, { clientX: 200, clientY: 20 });
+    const rootRows = within(screen.getByRole("tooltip")).getAllByTestId(
+      "viz-tip-row",
+    );
+    expect(rootRows[1]).toHaveTextContent("namespace–");
+    expect(rootRows[1]).toHaveClass("viz-tip-muted");
+    expect(rootRows[2]).toHaveTextContent("version–");
+
+    fireEvent.pointerLeave(screen.getByRole("list", { name: "Spans" }));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
   it("shows each event's time offset from the span start", async () => {
     stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
     renderView({ trace: "t1cafe" });
