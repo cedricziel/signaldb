@@ -1019,7 +1019,12 @@ function TraceDetail({ state, update }: Props) {
               </span>
               <span className="span-track">
                 <span
-                  className={`span-bar ${kindClass(spanKinds[row.span.spanId])}${row.span.status === "error" ? " error" : ""}`}
+                  className={`span-bar ${kindClass(spanKinds[row.span.spanId])}${row.span.status === "error" ? " error" : ""}${row.extentInferred ? " inferred" : ""}`}
+                  title={
+                    row.extentInferred
+                      ? "No duration recorded; drawn over its child spans"
+                      : undefined
+                  }
                   style={{
                     left: `${row.leftPct}%`,
                     width: `${row.widthPct}%`,

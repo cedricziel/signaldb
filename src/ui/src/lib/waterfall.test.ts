@@ -62,6 +62,46 @@ describe("buildWaterfall", () => {
     expect(half.durationMs).toBeCloseTo(250);
   });
 
+  it("stretches a zero-duration parent's bar over its subtree", () => {
+    // A parent with no recorded end (durNs 0 — e.g. a browser root span that
+    // was never ended) would otherwise draw as a sliver; it covers whatever
+    // its children cover instead. For the root that is the whole trace.
+    const { rows } = buildWaterfall([
+      span({ spanId: "root", startNs: "1000000000", durNs: "0" }),
+      span({
+        spanId: "a",
+        parentSpanId: "root",
+        startNs: "1000000000",
+        durNs: "400000000",
+      }),
+      span({
+        spanId: "b",
+        parentSpanId: "root",
+        startNs: "1600000000",
+        durNs: "400000000",
+      }),
+    ]);
+    const root = rows.find((r) => r.span.spanId === "root")!;
+    expect(root.leftPct).toBe(0);
+    expect(root.widthPct).toBeCloseTo(100, 1);
+    expect(root.extentInferred).toBe(true);
+    // Its own recorded duration is still what it was.
+    expect(root.durationMs).toBe(0);
+    // A zero-duration leaf stays a sliver, not inferred.
+    const { rows: leafRows } = buildWaterfall([
+      span({ spanId: "root", startNs: "1000000000", durNs: "1000000000" }),
+      span({
+        spanId: "mark",
+        parentSpanId: "root",
+        startNs: "1500000000",
+        durNs: "0",
+      }),
+    ]);
+    const mark = leafRows.find((r) => r.span.spanId === "mark")!;
+    expect(mark.widthPct).toBe(0.3);
+    expect(mark.extentInferred).toBe(false);
+  });
+
   it("handles nanosecond timestamps beyond float precision", () => {
     const base = 1_753_776_000_123_456_789n;
     const { rows, traceDurationNs } = buildWaterfall([
