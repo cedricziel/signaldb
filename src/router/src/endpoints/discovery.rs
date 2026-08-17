@@ -29,7 +29,7 @@ use common::schema::logical::LogicalSchema;
 use common::tenant_api::TenantApi;
 
 use super::api_error::ApiError;
-use super::query::{QueryIrResponse, ResolvedWindow, execute_ticket, ir_table};
+use super::query::{QueryIrResponse, QueryWarning, ResolvedWindow, execute_ticket, ir_table};
 use crate::RouterState;
 
 /// Answer a `describe` document. The caller has already authorized the source
@@ -46,7 +46,30 @@ pub(super) async fn answer_describe<S: RouterState>(
         DescribeTarget::Fields => fields(state, ctx, &doc.from, describe).await?,
         DescribeTarget::Values => values(state, ctx, doc, describe, window, now_ns).await?,
     };
-    Ok(QueryIrResponse::metadata(window, metadata))
+    let warnings = warnings_for(&metadata);
+    Ok(QueryIrResponse::metadata(window, metadata, warnings))
+}
+
+/// The `code` of the warning raised when no statistics back a field answer.
+pub(super) const NO_ATTRIBUTE_STATISTICS: &str = "no_attribute_statistics";
+
+/// Warn when a field answer rests on declared schema alone. Without
+/// statistics the response is not wrong — every field in it is real and
+/// queryable — but it is not the tenant's complete field set either, and a
+/// client that presented it as one would mislead its user.
+fn warnings_for(metadata: &MetadataResult) -> Vec<QueryWarning> {
+    if metadata.kind != MetadataKind::Fields || metadata.cost.as_of.is_some() {
+        return Vec::new();
+    }
+    vec![QueryWarning {
+        code: NO_ATTRIBUTE_STATISTICS.to_string(),
+        message: "no attribute statistics exist for this tenant and signal yet, so this lists \
+                  only the fields the schema declares; attribute keys this tenant emits appear \
+                  once the compactor's analyzer has run over the data"
+            .to_string(),
+        field: None,
+        suggestions: Vec::new(),
+    }]
 }
 
 /// `GET /api/v1/query/sources` — the signal sources this tenant can query.
@@ -59,10 +82,12 @@ pub(super) async fn answer_describe<S: RouterState>(
     path = "/api/v1/query/sources",
     tag = "query",
     operation_id = "query_sources",
+    description = "List the signal sources available to the authenticated tenant and dataset, each with whether it is currently queryable. A registered signal whose table exists but holds no data is reported as available and empty, never omitted.\n\nThis is the one discovery call that is a GET rather than a `POST /api/v1/query` document: an IR document must name the source it queries (`from`), and \"which sources exist\" is the question that has no source to name. Every other discovery request — fields and values — is a document with a terminal `describe` stage and the `metadata` envelope, so this exception is bounded to this one route rather than a pattern to copy.\n\nThe answer comes from tenant metadata; it reads no signal data. The response is the same `metadata` envelope the `describe` documents return.",
     security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "Available signal sources", body = QueryIrResponse),
         (status = 401, description = "Unauthorized"),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 503, description = "Catalog unavailable"),
     )
 )]
@@ -106,6 +131,7 @@ pub async fn query_sources<S: RouterState>(
             cost: DiscoveryCost::metadata(None),
             hint: None,
         },
+        Vec::new(),
     )))
 }
 
@@ -366,6 +392,281 @@ fn bounded(requested: Option<u64>, cap: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RouterAppState;
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use common::auth::TenantSource;
+    use common::catalog::Catalog;
+    use common::config::Configuration;
+    use tower::ServiceExt;
+
+    /// A router serving the discovery surface with `ctx` as the authenticated
+    /// principal, over an empty in-memory catalog.
+    ///
+    /// Its service registry holds **no querier**, which is the point: any
+    /// request that builds a Flight ticket fails with `503`. A `200` from these
+    /// tests is therefore positive evidence that discovery answered from
+    /// metadata alone, and a `403` is evidence that authorization was decided
+    /// before any ticket was attempted rather than after the work was done.
+    async fn app_with(catalog: Catalog, ctx: TenantContext) -> Router {
+        let state = RouterAppState::new(catalog, Configuration::default());
+        super::super::query::router()
+            .with_state(state)
+            .layer(axum::middleware::from_fn(
+                move |mut req: Request<Body>, next: axum::middleware::Next| {
+                    let ctx = ctx.clone();
+                    async move {
+                        req.extensions_mut().insert(ctx);
+                        next.run(req).await
+                    }
+                },
+            ))
+    }
+
+    fn ctx_for(tenant: &str, scopes: Option<Vec<String>>) -> TenantContext {
+        TenantContext::new(
+            tenant.to_string(),
+            "default".to_string(),
+            tenant.to_string(),
+            "default".to_string(),
+            Some("test".to_string()),
+            TenantSource::Config,
+        )
+        .with_api_key_restrictions(scopes, None)
+    }
+
+    fn describe(source: &str, stage: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "irVersion": 4, "from": source,
+            "range": { "from": "now-1h", "to": "now" },
+            "result": "metadata",
+            "pipeline": [ { "describe": stage } ]
+        })
+    }
+
+    async fn post(app: &Router, doc: serde_json::Value) -> (StatusCode, serde_json::Value) {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/query")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn fields_are_answered_without_a_querier() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe("logs", serde_json::json!({"target": "fields"})),
+        )
+        .await;
+
+        // No querier is registered: a Flight ticket would have produced 503.
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert_eq!(body["result"], "metadata");
+        assert_eq!(body["metadata"]["kind"], "fields");
+        let names: Vec<&str> = body["metadata"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"service.name"), "got {names:?}");
+        assert_eq!(body["metadata"]["cost"]["mode"], "metadata");
+        assert_eq!(
+            body["metadata"]["cost"]["window_scoped"], false,
+            "statistics carry no time dimension, so the range narrowed nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_statistics_are_reported_not_hidden() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe("logs", serde_json::json!({"target": "fields"})),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body["metadata"]["cost"]["as_of"].is_null(),
+            "no statistics exist, so the answer has no age to report"
+        );
+        assert!(
+            !body["metadata"]["fields"].as_array().unwrap().is_empty(),
+            "the declared fields are still returned"
+        );
+        let codes: Vec<&str> = body["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["code"].as_str().unwrap())
+            .collect();
+        assert!(
+            codes.contains(&NO_ATTRIBUTE_STATISTICS),
+            "the client must be told this is the declared set, not the tenant's whole field set: {codes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_sees_only_the_authenticated_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_attribute_scan_stats("acme", "default", "logs", "acme.only", 5, 10, 3, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_attribute_scan_stats("other", "default", "logs", "other.only", 5, 10, 3, false)
+            .await
+            .unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe("logs", serde_json::json!({"target": "fields"})),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let names: Vec<&str> = body["metadata"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"acme.only"), "got {names:?}");
+        assert!(
+            !names.contains(&"other.only"),
+            "another tenant's observed keys must never appear: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_uncovered_field_reads_nothing_and_names_the_query_that_would() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "logs",
+                serde_json::json!({"target": "values", "field": "http.route"}),
+            ),
+        )
+        .await;
+
+        // Again: 200 rather than 503 proves no ticket was built.
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert!(
+            body["metadata"]["values"]
+                .as_array()
+                .is_none_or(|v| v.is_empty()),
+            "nothing covers this field, so there is nothing honest to suggest"
+        );
+        assert_eq!(body["metadata"]["cost"]["mode"], "none");
+        let hint = body["metadata"]["hint"].as_str().unwrap_or_default();
+        assert!(
+            hint.contains("aggregate") && hint.contains("topk") && hint.contains("http.route"),
+            "the client must be told what would answer it: {hint}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declared_value_set_is_answered_exactly_and_for_free() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "traces",
+                serde_json::json!({"target": "values", "field": "span.kind"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let values: Vec<&str> = body["metadata"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["value"].as_str().unwrap())
+            .collect();
+        assert!(values.contains(&"Server"), "got {values:?}");
+        assert_eq!(body["metadata"]["cost"]["mode"], "metadata");
+    }
+
+    #[tokio::test]
+    async fn the_sampled_path_is_refused_before_it_can_read_anything() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        // A key scoped to logs only, asking to sample trace values.
+        let ctx = ctx_for("acme", Some(vec!["logs:read".to_string()]));
+        let app = app_with(catalog, ctx).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "traces",
+                serde_json::json!({"target": "values", "field": "http.route", "sample": true}),
+            ),
+        )
+        .await;
+
+        // The distinction that matters: 403 (refused at the authorization
+        // boundary) rather than 503 (refused only after trying to reach a
+        // querier). A 503 here would mean the request was authorized, did the
+        // work, and failed for an unrelated reason.
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "the missing scope must be decided before any read is attempted: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_predicate_before_describe_is_rejected_with_the_query_that_answers_it() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            serde_json::json!({
+                "irVersion": 4, "from": "logs",
+                "range": { "from": "now-1h", "to": "now" },
+                "result": "metadata",
+                "pipeline": [
+                    { "where": { "field": "service.name", "op": "eq", "value": "checkout" } },
+                    { "describe": { "target": "fields" } }
+                ]
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let message = body.to_string();
+        assert!(
+            message.contains("aggregate") && message.contains("topk"),
+            "the rejection must name the query that computes the scoped answer: {message}"
+        );
+    }
 
     #[test]
     fn a_limit_is_clamped_to_the_cap_and_never_zero() {

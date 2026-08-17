@@ -374,6 +374,8 @@ mod tests {
         "/api/v1/schemas/available",
         // endpoints/query.rs, mounted at /api/v1
         "/api/v1/query",
+        // endpoints/discovery.rs, mounted alongside it
+        "/api/v1/query/sources",
         // endpoints/management.rs, mounted at /api/v1/manage
         "/api/v1/manage/tenants",
         "/api/v1/manage/tenants/{tenant_id}/datasets",
@@ -628,6 +630,7 @@ mod tests {
             ("/pyroscope/profile-types", "get"),
             ("/api/profiles/trace/{trace_id}", "get"),
             ("/api/v1/query", "post"),
+            ("/api/v1/query/sources", "get"),
             ("/api/v1/whoami", "get"),
             ("/api/v1/admin/tenants/{tenant_id}/api-keys", "post"),
             ("/api/v1/admin/tenants/{tenant_id}/datasets", "post"),

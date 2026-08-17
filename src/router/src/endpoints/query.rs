@@ -91,6 +91,7 @@ impl QueryIrResponse {
     pub(super) fn metadata(
         window: ResolvedWindow,
         metadata: common::discovery::MetadataResult,
+        warnings: Vec<QueryWarning>,
     ) -> Self {
         QueryIrResponse {
             result: common::query_ir::ResultEnvelope::Metadata
@@ -104,7 +105,7 @@ impl QueryIrResponse {
             heatmap: HeatmapResult::default(),
             flamegraph: None,
             metadata: Some(metadata),
-            warnings: Vec::new(),
+            warnings,
         }
     }
 }
@@ -218,7 +219,8 @@ pub struct FlamegraphResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct QueryWarning {
     /// Stable machine-readable identifier — clients branch on this, not on
-    /// `message`. Currently only `unknown_group_by_field`.
+    /// `message`. Today `unknown_group_by_field` and
+    /// `no_attribute_statistics`.
     #[schema(example = "unknown_group_by_field")]
     pub code: String,
     /// Human-readable explanation, safe to show verbatim.

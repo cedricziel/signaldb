@@ -10,6 +10,12 @@
 //! `--scope resource|span|intrinsic` (traces only) restricts tag discovery
 //! to one scope, routing through the Tempo v2 discovery endpoints
 //! (`search_tags_v2`/`search_tag_values_v2`) instead of v1.
+//!
+//! `discover fields`, `discover values` and `discover sources` are the native
+//! surface: they go through the Query IR's `describe` stage rather than a
+//! compatibility dialect, so they speak logical dotted OTel names and are
+//! answered from the schema registry and maintained statistics instead of a
+//! scan. `discover attributes` stays as it is for the dialect-shaped view.
 
 use clap::{Args, Subcommand, ValueEnum};
 
@@ -61,6 +67,56 @@ pub enum DiscoverAction {
     Attributes(AttributesArgs),
     /// List distinct metric names
     Metrics(ConnectArgs),
+    /// List the queryable fields of a signal source (native surface)
+    Fields(FieldsArgs),
+    /// Suggest values for one field (native surface)
+    Values(ValuesArgs),
+    /// List the signal sources available to your tenant
+    Sources(ConnectArgs),
+}
+
+#[derive(Args)]
+pub struct FieldsArgs {
+    /// The signal source to describe
+    #[arg(long, default_value = "logs")]
+    source: String,
+    /// Range start (RFC3339, `now-1h`, or epoch nanoseconds)
+    #[arg(long, default_value = "now-1h")]
+    from: String,
+    /// Range end
+    #[arg(long, default_value = "now")]
+    to: String,
+    /// Maximum fields to return
+    #[arg(long)]
+    limit: Option<u64>,
+    #[command(flatten)]
+    connect: ConnectArgs,
+}
+
+#[derive(Args)]
+pub struct ValuesArgs {
+    /// The signal source the field belongs to
+    #[arg(long, default_value = "logs")]
+    source: String,
+    /// The logical field to suggest values for (a dotted OTel name)
+    #[arg(long)]
+    field: String,
+    /// Range start (RFC3339, `now-1h`, or epoch nanoseconds)
+    #[arg(long, default_value = "now-1h")]
+    from: String,
+    /// Range end
+    #[arg(long, default_value = "now")]
+    to: String,
+    /// Maximum values to return
+    #[arg(long)]
+    limit: Option<u64>,
+    /// Read data to answer when no declared value set or maintained statistics
+    /// cover the field. Without this the command reports what would answer it
+    /// instead of scanning.
+    #[arg(long)]
+    sample: bool,
+    #[command(flatten)]
+    connect: ConnectArgs,
 }
 
 #[derive(Args)]
@@ -113,8 +169,78 @@ impl DiscoverAction {
         match self {
             DiscoverAction::Attributes(args) => args.run().await,
             DiscoverAction::Metrics(connect) => run_metrics(&connect).await,
+            DiscoverAction::Fields(args) => args.run().await,
+            DiscoverAction::Values(args) => args.run().await,
+            DiscoverAction::Sources(connect) => run_sources(&connect).await,
         }
     }
+}
+
+/// The IR document for one `describe` request. Built as JSON and deserialized
+/// into the generated request type, so the CLI states the document exactly as
+/// the reference documents it.
+fn describe_document(
+    source: &str,
+    from: &str,
+    to: &str,
+    stage: serde_json::Value,
+) -> anyhow::Result<signaldb_sdk::types::QueryIrRequest> {
+    let document = serde_json::json!({
+        "irVersion": 4,
+        "from": source,
+        "range": { "from": from, "to": to },
+        "result": "metadata",
+        "pipeline": [ { "describe": stage } ]
+    });
+    Ok(serde_json::from_value(document)?)
+}
+
+impl FieldsArgs {
+    async fn run(self) -> anyhow::Result<()> {
+        let mut stage = serde_json::json!({ "target": "fields" });
+        if let Some(limit) = self.limit {
+            stage["limit"] = serde_json::json!(limit);
+        }
+        let body = describe_document(&self.source, &self.from, &self.to, stage)?;
+        let client = self.connect.build_client()?;
+        let result = client
+            .query_ir()
+            .body(body)
+            .send()
+            .await
+            .map(|r| r.into_inner());
+        print_json_response(result, "discover fields")
+    }
+}
+
+impl ValuesArgs {
+    async fn run(self) -> anyhow::Result<()> {
+        if self.field.trim().is_empty() {
+            anyhow::bail!("--field must name a logical field");
+        }
+        let mut stage = serde_json::json!({ "target": "values", "field": self.field });
+        if let Some(limit) = self.limit {
+            stage["limit"] = serde_json::json!(limit);
+        }
+        if self.sample {
+            stage["sample"] = serde_json::json!(true);
+        }
+        let body = describe_document(&self.source, &self.from, &self.to, stage)?;
+        let client = self.connect.build_client()?;
+        let result = client
+            .query_ir()
+            .body(body)
+            .send()
+            .await
+            .map(|r| r.into_inner());
+        print_json_response(result, "discover values")
+    }
+}
+
+async fn run_sources(connect: &ConnectArgs) -> anyhow::Result<()> {
+    let client = connect.build_client()?;
+    let result = client.query_sources().send().await.map(|r| r.into_inner());
+    print_json_response(result, "discover sources")
 }
 
 impl AttributesArgs {
@@ -208,6 +334,56 @@ mod tests {
     struct TestCli {
         #[command(subcommand)]
         action: DiscoverAction,
+    }
+
+    #[test]
+    fn fields_defaults_to_logs_over_the_last_hour() {
+        let cli = TestCli::try_parse_from(["discover", "fields"]).expect("parses");
+        let DiscoverAction::Fields(args) = cli.action else {
+            panic!("expected Fields");
+        };
+        assert_eq!(args.source, "logs");
+        assert_eq!(args.from, "now-1h");
+        assert_eq!(args.to, "now");
+        assert!(args.limit.is_none());
+    }
+
+    #[test]
+    fn values_requires_a_field_and_does_not_sample_by_default() {
+        assert!(
+            TestCli::try_parse_from(["discover", "values"]).is_err(),
+            "a value request without a field has nothing to answer"
+        );
+        let cli = TestCli::try_parse_from([
+            "discover",
+            "values",
+            "--source",
+            "traces",
+            "--field",
+            "http.route",
+        ])
+        .expect("parses");
+        let DiscoverAction::Values(args) = cli.action else {
+            panic!("expected Values");
+        };
+        assert_eq!(args.field, "http.route");
+        assert!(
+            !args.sample,
+            "reading data must be something the user asked for"
+        );
+    }
+
+    #[test]
+    fn the_describe_document_is_what_the_reference_documents() {
+        let stage =
+            serde_json::json!({ "target": "values", "field": "http.route", "sample": true });
+        let request = describe_document("traces", "now-6h", "now", stage).expect("builds");
+        let value = serde_json::to_value(&request).expect("serializes");
+        assert_eq!(value["irVersion"], 4);
+        assert_eq!(value["from"], "traces");
+        assert_eq!(value["result"], "metadata");
+        assert_eq!(value["pipeline"][0]["describe"]["field"], "http.route");
+        assert_eq!(value["pipeline"][0]["describe"]["sample"], true);
     }
 
     #[test]

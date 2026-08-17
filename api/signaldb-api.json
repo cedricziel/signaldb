@@ -1849,7 +1849,7 @@
           "query"
         ],
         "summary": "`GET /api/v1/query/sources` — the signal sources this tenant can query.",
-        "description": "A deliberate exception to \"a first-party read is a `POST /api/v1/query`\ndocument\": an IR document must name a `from`, and this is the one question\nthat has no source to name.",
+        "description": "List the signal sources available to the authenticated tenant and dataset, each with whether it is currently queryable. A registered signal whose table exists but holds no data is reported as available and empty, never omitted.\n\nThis is the one discovery call that is a GET rather than a `POST /api/v1/query` document: an IR document must name the source it queries (`from`), and \"which sources exist\" is the question that has no source to name. Every other discovery request — fields and values — is a document with a terminal `describe` stage and the `metadata` envelope, so this exception is bounded to this one route rather than a pattern to copy.\n\nThe answer comes from tenant metadata; it reads no signal data. The response is the same `metadata` envelope the `describe` documents return.",
         "operationId": "query_sources",
         "responses": {
           "200": {
@@ -1864,6 +1864,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           },
           "503": {
             "description": "Catalog unavailable"
@@ -6450,7 +6453,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Currently only `unknown_group_by_field`.",
+            "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Today `unknown_group_by_field` and\n`no_attribute_statistics`.",
             "example": "unknown_group_by_field"
           },
           "field": {
