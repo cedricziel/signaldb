@@ -174,7 +174,9 @@ function toSpan(row: Row): TempoSpan {
       : {}),
     ...(kind != null && kind !== "" ? { kind: String(kind) } : {}),
     startNs: str(row.start_time_unix_nano),
-    durNs: str(row.duration),
+    // The IR projects a logical field under its physical column name, so
+    // `duration` arrives as `duration_nanos` (the others' names coincide).
+    durNs: str(row.duration_nanos ?? row.duration),
     attributes: flattenAttributes(row),
     events: events(row.span_events),
   };
