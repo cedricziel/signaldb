@@ -25,17 +25,24 @@ const MAX_ENTRY_FAILURES: u32 = 10;
 /// from the originating ingest request.
 type EntryTraceContext = (Option<String>, Option<String>);
 
-/// Entries grouped for one table's batch write: the `(id, batch)` payloads to
-/// commit, paired with the trace context each entry arrived with.
-type TableBatch = (Arc<Wal>, Vec<(Uuid, RecordBatch)>, Vec<EntryTraceContext>);
+/// Entries grouped for one table's batch write: the WAL they came from, the
+/// `(id, batch)` payloads to commit, and the trace context each entry arrived
+/// with.
+struct TableBatch {
+    wal: Arc<Wal>,
+    entries: Vec<(Uuid, RecordBatch)>,
+    trace_contexts: Vec<EntryTraceContext>,
+}
 
-/// Grouping key for one processing cycle: the WAL the entries live in (by
-/// `writer_id`), then tenant, dataset, and table. Including the WAL keeps
-/// every group single-sourced, so marking and the per-WAL idempotency marker
-/// stay exact even when two WALs feed the same table (a legacy root WAL
-/// being drained alongside the tenant's own, see
-/// [`WalManager::adopt_root_segments`]).
-type GroupKey = (String, String, String, String);
+/// Grouping key for one processing cycle: which WAL the entries live in, then
+/// tenant, dataset, and table. Including the WAL keeps every group
+/// single-sourced, so marking and the per-WAL idempotency marker stay exact
+/// even when two WALs feed the same table (a legacy root WAL being drained
+/// alongside the tenant's own, see [`WalManager::adopt_root_segments`]). The
+/// WAL is identified by the address of the cached `Arc<Wal>`, which the
+/// manager keeps alive for the whole cycle — cheaper and more direct than
+/// re-deriving its `writer_id` string for every entry.
+type GroupKey = (usize, String, String, String);
 
 /// Why a WAL entry's payload could not be turned into a batch. The two are
 /// retired differently: an unreadable payload (bounds/CRC failure) is
@@ -398,14 +405,18 @@ impl WalProcessor {
             let trace_ctx = trace_context_from_metadata(&entry.metadata);
             let group = grouped_entries
                 .entry((
-                    wal.writer_id().to_string(),
+                    Arc::as_ptr(&wal) as usize,
                     tenant_id,
                     dataset_id,
                     table_name,
                 ))
-                .or_insert_with(|| (wal.clone(), Vec::new(), Vec::new()));
-            group.1.push((entry.id, batch));
-            group.2.push(trace_ctx);
+                .or_insert_with(|| TableBatch {
+                    wal: wal.clone(),
+                    entries: Vec::new(),
+                    trace_contexts: Vec::new(),
+                });
+            group.entries.push((entry.id, batch));
+            group.trace_contexts.push(trace_ctx);
         }
 
         // Process each group using batch writes. Marking happens inside
@@ -422,8 +433,14 @@ impl WalProcessor {
         // a group that fails to commit must surface as an error so the caller
         // does not believe its read-your-writes drain succeeded.
         let mut forced_commit_failed = false;
-        for ((_, tenant_id, dataset_id, table_name), (wal, entries, trace_contexts)) in
-            grouped_entries
+        for (
+            (_, tenant_id, dataset_id, table_name),
+            TableBatch {
+                wal,
+                entries,
+                trace_contexts,
+            },
+        ) in grouped_entries
         {
             let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 

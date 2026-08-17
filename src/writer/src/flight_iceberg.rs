@@ -425,33 +425,38 @@ impl FlightService for IcebergWriterFlightService {
         // Write all batches to WAL first for durability — the WAL of this
         // batch's own tenant/dataset/signal (#932), so one tenant's segment
         // never carries, or blocks, another tenant's data.
-        // An absent *or empty* id falls back to `default`: an empty string
-        // would otherwise reach the WAL as a tenant and be rejected there,
-        // and the acceptor classifies the resulting `internal` as retryable
-        // (#1060), retrying a batch that can never succeed.
-        let field = |value: &Option<String>| {
-            value
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or("default")
-                .to_string()
-        };
-        let (wal_tenant, wal_dataset) = flight_metadata
-            .as_ref()
-            .map(|m| (field(&m.tenant_id), field(&m.dataset_id)))
-            .unwrap_or_else(|| ("default".to_string(), "default".to_string()));
+        // An absent *or empty* id falls back to the default tenant/dataset:
+        // an empty string would otherwise reach the WAL as a tenant and be
+        // rejected there, and the acceptor classifies the resulting
+        // `internal` as retryable (#1060), retrying a batch that can never
+        // succeed.
+        //
         // These ids become path components of the WAL directory, and this
         // Flight surface can be configured without authentication, so they
         // are validated here as well as inside `get_wal`. A malformed id is
         // the sender's fault and recurs identically on every retry, so it
         // must be `invalid_argument`; a WAL that fails to open for any other
         // reason (a full or unwritable disk) is `internal` and retryable.
-        for (label, id) in [("tenant", &wal_tenant), ("dataset", &wal_dataset)] {
+        let wal_id = |label: &str, value: Option<&String>, fallback: &str| {
+            let id = value
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+                .unwrap_or(fallback);
             common::auth::validation::validate_id(id).map_err(|e| {
                 Status::invalid_argument(format!("Invalid {label} id in Flight metadata: {e}"))
-            })?;
-        }
+            })
+        };
+        let metadata = flight_metadata.as_ref();
+        let wal_tenant = wal_id(
+            "tenant",
+            metadata.and_then(|m| m.tenant_id.as_ref()),
+            common::bootstrap::DEFAULT_TENANT_ID,
+        )?;
+        let wal_dataset = wal_id(
+            "dataset",
+            metadata.and_then(|m| m.dataset_id.as_ref()),
+            common::bootstrap::DEFAULT_DATASET_ID,
+        )?;
         let wal = self
             .wal_manager
             .get_wal(&wal_tenant, &wal_dataset, wal_operation.signal())

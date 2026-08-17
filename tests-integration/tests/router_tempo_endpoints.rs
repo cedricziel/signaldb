@@ -138,12 +138,9 @@ async fn setup_test_services() -> TestServices {
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
 
-    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(WalConfig {
-        // The writer keeps its WALs under its own service directory, as it
-        // does in production, so it never drains the acceptor's entries.
-        wal_dir: wal_config.wal_dir.join("writer"),
-        ..wal_config.clone()
-    }));
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
 
     // Create CatalogManager for shared Iceberg catalog
     let catalog_manager = Arc::new(
@@ -1241,12 +1238,9 @@ async fn setup_multi_tenant_test_services() -> TestServices {
     drop(writer_listener);
 
     // Create WAL for writer (we'll use acme's config as default, but writer should handle both)
-    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(WalConfig {
-        // The writer keeps its WALs under its own service directory, as it
-        // does in production, so it never drains the acceptor's entries.
-        wal_dir: acme_wal_config.wal_dir.join("writer"),
-        ..acme_wal_config.clone()
-    }));
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&acme_wal_config),
+    ));
     let catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await

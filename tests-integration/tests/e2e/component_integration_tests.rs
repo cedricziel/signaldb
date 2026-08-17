@@ -243,12 +243,9 @@ async fn test_acceptor_writer_flow() {
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
 
-    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(WalConfig {
-        // The writer keeps its WALs under its own service directory, as it
-        // does in production, so it never drains the acceptor's entries.
-        wal_dir: wal_config.wal_dir.join("writer"),
-        ..wal_config.clone()
-    }));
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
     let writer_catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
@@ -609,12 +606,9 @@ async fn test_direct_acceptor_writer_flight() {
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Start writer
-    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(WalConfig {
-        // The writer keeps its WALs under its own service directory, as it
-        // does in production, so it never drains the acceptor's entries.
-        wal_dir: wal_config.wal_dir.join("writer"),
-        ..wal_config.clone()
-    }));
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
     let writer_catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await

@@ -209,12 +209,9 @@ async fn setup() -> TestServices {
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
-    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(WalConfig {
-        // The writer keeps its WALs under its own service directory, as it
-        // does in production, so it never drains the acceptor's entries.
-        wal_dir: wal_config.wal_dir.join("writer"),
-        ..wal_config.clone()
-    }));
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
     let catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await

@@ -9,7 +9,7 @@
 //! tenant's ingest path.
 
 use crate::wal::{Wal, WalConfig};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -92,7 +92,22 @@ impl WalManager {
     /// that keeps writing through it is not.
     #[must_use = "the displaced WAL must not keep writing to the same directory"]
     pub async fn register(&self, key: WalKey, wal: Arc<Wal>) -> Option<Arc<Wal>> {
-        self.wals.lock().await.insert(key, wal)
+        let displaced = self.wals.lock().await.insert(key, wal);
+        if displaced.is_none() {
+            Self::record_instance_opened();
+        }
+        displaced
+    }
+
+    /// Every cached WAL — however it got there — counts towards
+    /// `signaldb.wal.instances`. The instance count grows with the tenant
+    /// count and nothing closes them, so this gauge is the early warning for
+    /// file-descriptor and timer pressure; a WAL that entered the cache
+    /// through a side door would make it lie.
+    fn record_instance_opened() {
+        crate::self_monitoring::app_metrics()
+            .wal_instances
+            .add(1, &[]);
     }
 
     /// Adopt segments left directly in the base directory by a pre-#932
@@ -290,12 +305,7 @@ impl WalManager {
         // Clean up the per-key guard (optional, but prevents unbounded growth)
         self.init_guards.lock().await.remove(&key);
 
-        // One WAL per tenant/dataset/signal means the instance count grows
-        // with the tenant count and nothing closes them, so it is the early
-        // warning for file-descriptor and timer pressure.
-        crate::self_monitoring::app_metrics()
-            .wal_instances
-            .add(1, &[]);
+        Self::record_instance_opened();
 
         tracing::info!(
             "Successfully created WAL for tenant='{tenant_id}', dataset='{dataset_id}', signal='{signal_type}'"
@@ -327,22 +337,29 @@ impl WalManager {
             return Ok(());
         }
         let total = wals.len();
-        let pending: Arc<Mutex<HashMap<WalKey, ()>>> = Arc::new(Mutex::new(
-            wals.iter().map(|(key, _)| (key.clone(), ())).collect(),
-        ));
-        let first_err: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
+        // One lock, because the two are always written together: a completed
+        // flush leaves `unflushed` and may set `first_err` in the same step.
+        // Whatever remains in `unflushed` when the budget expires is what was
+        // never made durable.
+        struct FlushProgress {
+            unflushed: HashSet<WalKey>,
+            first_err: Option<anyhow::Error>,
+        }
+        let progress = Arc::new(Mutex::new(FlushProgress {
+            unflushed: wals.iter().map(|(key, _)| key.clone()).collect(),
+            first_err: None,
+        }));
 
         let sweep = {
-            let pending = pending.clone();
-            let first_err = first_err.clone();
+            let progress = progress.clone();
             async move {
                 futures::stream::iter(wals)
                     .for_each_concurrent(Self::FLUSH_ALL_CONCURRENCY, |(key, wal)| {
-                        let pending = pending.clone();
-                        let first_err = first_err.clone();
+                        let progress = progress.clone();
                         async move {
                             let result = wal.flush().await;
-                            pending.lock().await.remove(&key);
+                            let mut progress = progress.lock().await;
+                            progress.unflushed.remove(&key);
                             if let Err(e) = result {
                                 let (tenant, dataset, signal) = &key;
                                 tracing::error!(
@@ -352,7 +369,7 @@ impl WalManager {
                                     error = %e,
                                     "Failed to flush WAL during shutdown"
                                 );
-                                first_err.lock().await.get_or_insert(e);
+                                progress.first_err.get_or_insert(e);
                             }
                         }
                     })
@@ -361,10 +378,11 @@ impl WalManager {
         };
 
         if tokio::time::timeout(budget, sweep).await.is_err() {
-            let unreached: Vec<String> = pending
+            let unreached: Vec<String> = progress
                 .lock()
                 .await
-                .keys()
+                .unflushed
+                .iter()
                 .map(|(tenant, dataset, signal)| format!("{tenant}/{dataset}/{signal}"))
                 .collect();
             tracing::error!(
@@ -382,8 +400,7 @@ impl WalManager {
             ));
         }
 
-        let err = first_err.lock().await.take();
-        match err {
+        match progress.lock().await.first_err.take() {
             Some(e) => Err(e),
             None => Ok(()),
         }
