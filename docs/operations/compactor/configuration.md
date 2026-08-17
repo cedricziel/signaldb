@@ -451,6 +451,7 @@ max_live_files_threshold = 500000   # Skip huge tables instead of OOMing
 - **Small batches** (100-500): More frequent progress checkpoints, better resumability, higher overhead
 - **Large batches** (1000-5000): Faster processing, less overhead, coarser checkpoints
 - **Live-file threshold**: If cleanup is skipped for a table, run snapshot expiration and compaction first to reduce file counts before raising or disabling the cap
+- **What the cap actually bounds**: detection holds one 64-bit fingerprint per live file plus one entry per orphan candidate — it does not hold the object-store listing or the decoded manifest entries, and a manifest shared by several retained snapshots is read once. At the default cap a table therefore costs single-digit megabytes, so raising it is reasonable on a compactor with memory to spare; see [How detection scales](operations.md#how-detection-scales)
 
 ### Complete Orphan Cleanup Example
 

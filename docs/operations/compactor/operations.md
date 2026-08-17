@@ -812,14 +812,44 @@ snapshots_to_keep = 5
 max_live_files_threshold = 500000
 ```
 
-**Memory Optimization:**
+#### How detection scales
 
-```rust
-// For very large tables (millions of files), consider:
-// - Incremental scanning (scan per partition)
-// - Bloom filters for reference set
-// - Database-backed reference set instead of in-memory HashSet
-```
+Detection cost per table is bounded by three quantities, none of which grows
+with the number of snapshots that reference the same file:
+
+| Resource                       | Cost                                                                 | Notes                                                                                                                                                                     |
+| ------------------------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Manifest-list reads            | one per retained snapshot                                            | `snapshots_to_keep` is the lever                                                                                                                                          |
+| Manifest file reads            | one per _distinct_ manifest                                          | manifests shared by several retained snapshots are deduplicated by path before any of them is fetched, so a manifest referenced by all 14 retained snapshots is read once |
+| Manifest entries in memory     | one manifest's worth                                                 | entries are streamed; only the live path is inspected, never collected                                                                                                    |
+| Live set in memory             | one 64-bit fingerprint per live file (≈16 bytes per hash-table slot) | a 500k-file table costs single-digit MB, not the ~75 MB the same set of path strings would                                                                                |
+| Object-store listing in memory | zero                                                                 | the `data/` (and `metadata/`) listing is streamed and each entry is decided as it arrives                                                                                 |
+| Candidates in memory           | one entry per orphan candidate                                       | this, plus the live set, is the working set of a cleanup pass                                                                                                             |
+
+Consequences for tuning:
+
+- Peak memory tracks the **live file count** and the **orphan count**, not the
+  total object-store listing length and not the snapshot count. A table with
+  tens of thousands of files across a handful of shared manifests is cheap.
+- Lowering `snapshots_to_keep` reduces manifest-list reads and can shrink the
+  live set (files referenced only by expired snapshots stop being protected),
+  but it does not change the per-file memory cost.
+- `max_live_files_threshold` remains the backstop for pathological tables. It
+  is evaluated from manifest-list metadata _before_ any manifest is fetched,
+  so a table over the cap costs one manifest-list read per retained snapshot
+  and nothing else.
+
+Two deliberate non-goals:
+
+- **Fingerprints, not paths.** The live set stores a 64-bit hash of each live
+  path. A collision can only make an orphan look live — the file is kept, not
+  deleted — so the failure direction is "reclaim later", never "delete a live
+  file".
+- **One table-scoped listing, not per-partition listings.** Orphans can sit
+  under partition prefixes that table metadata no longer mentions (that is
+  precisely what makes them orphans), so cleanup lists the whole `data/`
+  prefix. Listing per partition prefix would issue more requests for the same
+  objects and would silently skip orphans in dropped partitions.
 
 ### Concurrent Operation Tuning
 

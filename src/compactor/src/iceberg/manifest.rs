@@ -10,6 +10,8 @@ use iceberg_rust::spec::manifest_list::ManifestListEntry;
 use iceberg_rust::table::Table;
 use std::collections::HashSet;
 
+use crate::iceberg::live_set::LiveFileSet;
+
 /// Information about a data file from a manifest
 #[derive(Debug, Clone)]
 pub struct ManifestFileInfo {
@@ -86,20 +88,29 @@ impl ManifestReader {
         Ok(manifests)
     }
 
-    /// Read the live data file paths referenced by the given manifests.
+    /// Stream the live data file paths referenced by the given manifests
+    /// to `visit`, one call per non-deleted manifest entry.
+    ///
+    /// Each manifest is fetched and decoded exactly once (callers dedupe
+    /// across snapshots via [`Self::collect_retained_manifests`]); decoded
+    /// entries are held only per manifest, never for the whole table, so
+    /// memory is bounded by the largest manifest × the fetch concurrency
+    /// rather than by the table's file count.
     ///
     /// A file with a DELETED entry in one manifest may still be live through
     /// an ADDED or EXISTING entry in another retained manifest, so DELETED
     /// entries are simply skipped: the union of non-deleted entries across
-    /// all retained manifests is the live set.
-    pub async fn read_live_files(
+    /// all retained manifests is the live set. The same path may therefore
+    /// be visited more than once.
+    pub async fn for_each_live_file(
         &self,
         table: &Table,
         manifests: &[ManifestListEntry],
-    ) -> Result<HashSet<String>> {
+        mut visit: impl FnMut(&str),
+    ) -> Result<()> {
         if manifests.is_empty() {
             tracing::debug!("No manifests found, live file set is empty");
-            return Ok(HashSet::new());
+            return Ok(());
         }
 
         let file_iter = table
@@ -107,14 +118,30 @@ impl ManifestReader {
             .await
             .context("Failed to read data files from manifests")?;
 
-        let mut live_files = HashSet::new();
         let mut file_iter = std::pin::pin!(file_iter);
         while let Some(result) = file_iter.next().await {
             let (_, entry) = result.context("Failed to read manifest entry")?;
             if *entry.status() != Status::Deleted {
-                live_files.insert(entry.data_file().file_path().to_string());
+                visit(entry.data_file().file_path());
             }
         }
+        Ok(())
+    }
+
+    /// Read the live data file set referenced by the given manifests.
+    ///
+    /// Streams entries through [`Self::for_each_live_file`] into a
+    /// [`LiveFileSet`], so only one fingerprint per live file is retained.
+    pub async fn read_live_files(
+        &self,
+        table: &Table,
+        manifests: &[ManifestListEntry],
+    ) -> Result<LiveFileSet> {
+        let mut live_files = LiveFileSet::new();
+        self.for_each_live_file(table, manifests, |path| {
+            live_files.insert(path);
+        })
+        .await?;
 
         tracing::debug!(
             live_files_count = live_files.len(),
@@ -124,12 +151,12 @@ impl ManifestReader {
         Ok(live_files)
     }
 
-    /// Build the set of data file paths referenced by any retained snapshot.
+    /// Build the set of data files referenced by any retained snapshot.
     ///
     /// # Safety
     /// Run snapshot expiration before calling this to ensure that files
     /// referenced only by expired snapshots are not protected from cleanup.
-    pub async fn build_live_file_set(&self, table: &Table) -> Result<HashSet<String>> {
+    pub async fn build_live_file_set(&self, table: &Table) -> Result<LiveFileSet> {
         let manifests = self.collect_retained_manifests(table).await?;
         self.read_live_files(table, &manifests).await
     }
