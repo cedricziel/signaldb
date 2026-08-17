@@ -10,7 +10,7 @@
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import { facetField, type TraceFilter } from "../lib/traceFilters";
+import { filterStages, type TraceFilter } from "../lib/traceFilters";
 
 /** Groups shown before the table is disclosed as truncated. */
 export const GROUP_BUDGET = 500;
@@ -116,13 +116,7 @@ export function buildGroupDoc(
         ]
       : [];
 
-  const active = filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet) return [];
-    return [
-      { where: { field: facet.irField, op: "eq", value: f.value } },
-    ] as Record<string, unknown>[];
-  });
+  const active = filterStages(filters);
 
   return {
     irVersion: 1,

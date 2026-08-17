@@ -99,6 +99,55 @@ describe("TraceFacets", () => {
     expect(values[1]).toHaveTextContent("980");
   });
 
+  it("lists every span kind as a checkbox with its count, checked for the selected ones", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/query",
+        body: table([
+          ["Server", 218135],
+          ["Internal", 83586],
+        ]),
+      },
+    ]);
+    const { onAddFilter, onRemoveFilter } = renderFacets({
+      filters: [
+        { field: "kind", value: "Server" },
+        { field: "kind", value: "Client" },
+      ],
+    });
+    await userEvent.click(screen.getByRole("button", { name: /span\.kind/ }));
+    // Every kind is offered, in the fixed order, even with no data for it.
+    const boxes = await screen.findAllByRole("checkbox", {
+      name: /^(Server|Client|Internal|Producer|Consumer)/,
+    });
+    expect(boxes.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Server",
+      "Client",
+      "Internal",
+      "Producer",
+      "Consumer",
+    ]);
+    expect(screen.getByRole("checkbox", { name: "Server" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Client" })).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Internal" }),
+    ).not.toBeChecked();
+    const values = screen.getAllByTestId("facet-value");
+    expect(values[0]).toHaveTextContent("218,135");
+    expect(values[1]).toHaveTextContent("0");
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Internal" }));
+    expect(onAddFilter).toHaveBeenCalledWith({
+      field: "kind",
+      value: "Internal",
+    });
+    await userEvent.click(screen.getByRole("checkbox", { name: "Server" }));
+    expect(onRemoveFilter).toHaveBeenCalledWith({
+      field: "kind",
+      value: "Server",
+    });
+  });
+
   it("selects a value", async () => {
     stubFetchRoutes([
       { match: "/api/v1/query", body: table([["signaldb", 2903]]) },

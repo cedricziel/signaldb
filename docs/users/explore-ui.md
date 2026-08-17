@@ -35,7 +35,11 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   all sortable. An **Errors only** checkbox at the top of the facet sidebar
   narrows groups, list, volume chart, and facet counts to traces whose root
   span has an error status (it is the `status = Error` facet filter as a
-  one-click toggle). Selecting a group lists just its traces — each with its
+  one-click toggle). The **span.kind** facet always lists all five kinds as
+  checkboxes with their counts, several can be on at once (one `in` filter),
+  and Server, Client, Producer, and Consumer are selected by default —
+  Internal spans are opted into; unchecking the last kind selects them all.
+  Root spans are what the default **Traces** grain already inspects. Selecting a group lists just its traces — each with its
   status as a coloured chip (error / ok / unset), sortable with errors
   first; selecting a trace
   opens a waterfall with span details and error highlighting. A parent span

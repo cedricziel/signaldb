@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_KIND_FILTERS,
   FACET_FIELDS,
+  KIND_VALUES,
   compileTraceQL,
+  facetField,
+  filterStages,
+  removeTraceFilter,
   traceFilterFromParam,
   traceFilterToParam,
+  traceFiltersForUrl,
   upsertTraceFilter,
+  withDefaultTraceFilters,
   type TraceFilter,
 } from "./traceFilters";
 
@@ -158,5 +165,108 @@ describe("upsertTraceFilter", () => {
       { field: "status", value: "error" },
       { field: "service.name", value: "api" },
     ]);
+  });
+});
+describe("multi-value facets (kind)", () => {
+  it("lists every span kind as a fixed value set, Server/Client/Producer/Consumer by default", () => {
+    expect(KIND_VALUES).toEqual([
+      "Server",
+      "Client",
+      "Internal",
+      "Producer",
+      "Consumer",
+    ]);
+    expect(DEFAULT_KIND_FILTERS).toEqual(
+      ["Server", "Client", "Producer", "Consumer"].map((value) => ({
+        field: "kind",
+        value,
+      })),
+    );
+    expect(facetField("kind")?.multi).toBe(true);
+    expect(facetField("service.name")?.multi).toBeUndefined();
+  });
+
+  it("upsert adds a second value for a multi facet instead of replacing", () => {
+    const one = upsertTraceFilter([], { field: "kind", value: "Server" });
+    const two = upsertTraceFilter(one, { field: "kind", value: "Client" });
+    expect(two).toEqual([
+      { field: "kind", value: "Server" },
+      { field: "kind", value: "Client" },
+    ]);
+    // Idempotent for a value already present.
+    expect(upsertTraceFilter(two, { field: "kind", value: "Client" })).toEqual(
+      two,
+    );
+  });
+
+  it("removing the last kind selects all kinds rather than none", () => {
+    const only = [{ field: "kind", value: "Server" }];
+    expect(removeTraceFilter(only, { field: "kind", value: "Server" })).toEqual(
+      KIND_VALUES.map((value) => ({ field: "kind", value })),
+    );
+    // Removing one of several just drops it; other fields are untouched.
+    expect(
+      removeTraceFilter(
+        [
+          { field: "service.name", value: "api" },
+          { field: "kind", value: "Server" },
+          { field: "kind", value: "Client" },
+        ],
+        { field: "kind", value: "Server" },
+      ),
+    ).toEqual([
+      { field: "service.name", value: "api" },
+      { field: "kind", value: "Client" },
+    ]);
+  });
+
+  it("applies the default kinds when the state has no kind filter, and strips them from the URL", () => {
+    expect(withDefaultTraceFilters([])).toEqual(DEFAULT_KIND_FILTERS);
+    const svc = { field: "service.name", value: "api" };
+    expect(withDefaultTraceFilters([svc])).toEqual([
+      svc,
+      ...DEFAULT_KIND_FILTERS,
+    ]);
+    const custom = [svc, { field: "kind", value: "Internal" }];
+    expect(withDefaultTraceFilters(custom)).toEqual(custom);
+
+    expect(traceFiltersForUrl([svc, ...DEFAULT_KIND_FILTERS])).toEqual([svc]);
+    // Order-insensitive equality with the default set.
+    expect(traceFiltersForUrl([...DEFAULT_KIND_FILTERS].reverse())).toEqual([]);
+    expect(traceFiltersForUrl(custom)).toEqual(custom);
+  });
+
+  it("compiles several values of one field into a single `in` predicate", () => {
+    const stages = filterStages([
+      { field: "service.name", value: "api" },
+      { field: "kind", value: "Server" },
+      { field: "kind", value: "Client" },
+    ]);
+    expect(stages).toEqual([
+      { where: { field: "service.name", op: "eq", value: "api" } },
+      { where: { field: "span_kind", op: "in", value: ["Server", "Client"] } },
+    ]);
+    // A facet's own field is left out when counting its values.
+    expect(
+      filterStages(
+        [
+          { field: "service.name", value: "api" },
+          { field: "kind", value: "Server" },
+        ],
+        "span_kind",
+      ),
+    ).toEqual([{ where: { field: "service.name", op: "eq", value: "api" } }]);
+  });
+
+  it("compiles several values of one field as an OR group in TraceQL", () => {
+    expect(
+      compileTraceQL([
+        { field: "service.name", value: "api" },
+        { field: "kind", value: "server" },
+        { field: "kind", value: "client" },
+      ]),
+    ).toBe(
+      '{ resource.service.name = "api" && (kind = server || kind = client) }',
+    );
   });
 });

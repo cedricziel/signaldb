@@ -38,8 +38,12 @@ import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
 import {
+  KIND_VALUES,
   compileTraceQL,
+  facetField,
+  removeTraceFilter,
   upsertTraceFilter,
+  withDefaultTraceFilters,
   type TraceFilter,
 } from "../../lib/traceFilters";
 import {
@@ -152,7 +156,10 @@ function TraceSearch({ state, update }: Props) {
     "histogram" | "area" | "heatmap"
   >("histogram");
   const rangeKey = rangeScopeKey(state);
-  const filters = state.traceFilters;
+  // The state may carry no kind filter (a fresh URL, a link from another
+  // view): the default kinds apply on read, and every update writes the
+  // full, explicit set back.
+  const filters = withDefaultTraceFilters(state.traceFilters);
   const traceql = compileTraceQL(filters);
   const dims = parseGroupBy(state.groupBy);
 
@@ -180,12 +187,10 @@ function TraceSearch({ state, update }: Props) {
   const addFilter = (f: TraceFilter) =>
     update({ traceFilters: upsertTraceFilter(filters, f), group: "" });
   const removeFilter = (f: TraceFilter) =>
-    update({
-      traceFilters: filters.filter(
-        (x) => !(x.field === f.field && x.value === f.value),
-      ),
-      group: "",
-    });
+    update({ traceFilters: removeTraceFilter(filters, f), group: "" });
+  // Multi-value facets (kind) show their selection in the sidebar checkboxes;
+  // as chips they would be permanent clutter (a default set is always on).
+  const chips = filters.filter((f) => !facetField(f.field)?.multi);
 
   return (
     <div className="traces-search">
@@ -260,9 +265,9 @@ function TraceSearch({ state, update }: Props) {
           />
         ) : null}
       </div>
-      {filters.length > 0 && (
+      {chips.length > 0 && (
         <div className="trace-chips" aria-label="Active filters">
-          {filters.map((f) => (
+          {chips.map((f) => (
             <button
               className="chip"
               key={`${f.field}|${f.value}`}
@@ -604,7 +609,12 @@ function GroupList({
   const done = !pending && result.data !== undefined;
   // Trace grain scopes the aggregate to root spans only; a filter on a field
   // that only ever appears on a child span legitimately matches nothing.
-  const rootGrainOnly = grain === "traces" && filters.length > 0;
+  const rootGrainOnly =
+    grain === "traces" && filters.some((f) => !facetField(f.field)?.multi);
+  // Kind is a selection that is always on (Server/Client/Producer/Consumer
+  // by default): when it hides everything, say so rather than "no groups".
+  const kindsNarrowed =
+    filters.filter((f) => f.field === "kind").length < KIND_VALUES.length;
 
   return (
     <>
@@ -724,7 +734,11 @@ function GroupList({
         </div>
       )}
       {done && !unresolved && groups.length === 0 && !rootGrainOnly && (
-        <div className="traces-note">No groups in this time range.</div>
+        <div className="traces-note">
+          No groups in this time range.
+          {kindsNarrowed &&
+            " Only the selected span kinds are included — Internal spans are off by default; adjust span.kind in the sidebar."}
+        </div>
       )}
       {result.data?.truncated && (
         <div className="traces-note">

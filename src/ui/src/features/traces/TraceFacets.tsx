@@ -137,6 +137,52 @@ function FacetValues({
     staleTime: 30_000,
   });
 
+  const isActive = (v: FacetValue) =>
+    v.value !== null &&
+    filters.some((f) => f.field === facet.field && f.value === v.value);
+
+  // A multi facet with a fixed value set always offers every value — as
+  // checkboxes, so several can be on at once — with the counts the data
+  // has for them (0 while absent, blank while loading).
+  if (facet.multi && facet.values) {
+    const counts = new Map(
+      (result.data?.values ?? []).map((v) => [v.value, v.count]),
+    );
+    return (
+      <div className="fieldvals">
+        {facet.values.map((value) => {
+          const active = filters.some(
+            (f) => f.field === facet.field && f.value === value,
+          );
+          const count = counts.get(value);
+          return (
+            <label
+              className="fieldval facet-val facet-check"
+              data-testid="facet-value"
+              key={value}
+            >
+              <input
+                type="checkbox"
+                aria-label={value}
+                checked={active}
+                onChange={() =>
+                  (active ? onRemoveFilter : onAddFilter)({
+                    field: facet.field,
+                    value,
+                  })
+                }
+              />
+              <span className="facet-val-name">{value}</span>
+              <span className="facet-val-count">
+                {result.isPending ? "…" : NUM.format(count ?? 0)}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    );
+  }
+
   if (result.isPending) return <div className="fieldvals-note">Loading…</div>;
   if (result.isError) {
     return <div className="fieldvals-note">Could not load values</div>;
@@ -147,10 +193,6 @@ function FacetValues({
   if (result.data.values.length === 0) {
     return <div className="fieldvals-note">No values in range</div>;
   }
-
-  const isActive = (v: FacetValue) =>
-    v.value !== null &&
-    filters.some((f) => f.field === facet.field && f.value === v.value);
 
   return (
     <div className="fieldvals">
