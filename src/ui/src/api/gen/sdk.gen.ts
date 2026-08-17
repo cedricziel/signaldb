@@ -313,9 +313,11 @@ export const queryIr = <ThrowOnError extends boolean = false>(options: Options<Q
 /**
  * `GET /api/v1/query/sources` — the signal sources this tenant can query.
  *
- * A deliberate exception to "a first-party read is a `POST /api/v1/query`
- * document": an IR document must name a `from`, and this is the one question
- * that has no source to name.
+ * List the signal sources available to the authenticated tenant and dataset, each with whether it is currently queryable. A registered signal whose table exists but holds no data is reported as available and empty, never omitted.
+ *
+ * This is the one discovery call that is a GET rather than a `POST /api/v1/query` document: an IR document must name the source it queries (`from`), and "which sources exist" is the question that has no source to name. Every other discovery request — fields and values — is a document with a terminal `describe` stage and the `metadata` envelope, so this exception is bounded to this one route rather than a pattern to copy.
+ *
+ * The answer comes from tenant metadata; it reads no signal data. The response is the same `metadata` envelope the `describe` documents return.
  */
 export const querySources = <ThrowOnError extends boolean = false>(options?: Options<QuerySourcesData, ThrowOnError>): RequestResult<QuerySourcesResponses, QuerySourcesErrors, ThrowOnError> => (options?.client ?? client).get<QuerySourcesResponses, QuerySourcesErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],

@@ -4417,7 +4417,7 @@ pub mod types {
     ///  ],
     ///  "properties": {
     ///    "code": {
-    ///      "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Currently only `unknown_group_by_field`.",
+    ///      "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Today `unknown_group_by_field` and\n`no_attribute_statistics`.",
     ///      "examples": [
     ///        "unknown_group_by_field"
     ///      ],
@@ -4448,7 +4448,8 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryWarning {
         /**Stable machine-readable identifier — clients branch on this, not on
-        `message`. Currently only `unknown_group_by_field`.*/
+        `message`. Today `unknown_group_by_field` and
+        `no_attribute_statistics`.*/
         pub code: ::std::string::String,
         ///The document field the warning is about, when it names one.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -15831,9 +15832,11 @@ impl Client {
     }
     /**`GET /api/v1/query/sources` — the signal sources this tenant can query
 
-    A deliberate exception to "a first-party read is a `POST /api/v1/query`
-    document": an IR document must name a `from`, and this is the one question
-    that has no source to name.
+    List the signal sources available to the authenticated tenant and dataset, each with whether it is currently queryable. A registered signal whose table exists but holds no data is reported as available and empty, never omitted.
+
+    This is the one discovery call that is a GET rather than a `POST /api/v1/query` document: an IR document must name the source it queries (`from`), and "which sources exist" is the question that has no source to name. Every other discovery request — fields and values — is a document with a terminal `describe` stage and the `metadata` envelope, so this exception is bounded to this one route rather than a pattern to copy.
+
+    The answer comes from tenant metadata; it reads no signal data. The response is the same `metadata` envelope the `describe` documents return.
 
     Sends a `GET` request to `/api/v1/query/sources`
 
@@ -19067,6 +19070,7 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }

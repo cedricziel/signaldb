@@ -1102,7 +1102,8 @@ export type QueryRange = {
 export type QueryWarning = {
     /**
      * Stable machine-readable identifier — clients branch on this, not on
-     * `message`. Currently only `unknown_group_by_field`.
+     * `message`. Today `unknown_group_by_field` and
+     * `no_attribute_statistics`.
      */
     code: string;
     /**
@@ -2957,10 +2958,33 @@ export type QuerySourcesErrors = {
      */
     401: unknown;
     /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
      * Catalog unavailable
      */
     503: unknown;
 };
+
+export type QuerySourcesError = QuerySourcesErrors[keyof QuerySourcesErrors];
 
 export type QuerySourcesResponses = {
     /**
