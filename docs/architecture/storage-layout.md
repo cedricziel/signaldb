@@ -612,8 +612,8 @@ The WAL is organized by tenant, dataset, and signal type under the configured ba
   {tenant_id}/
     {dataset_id}/
       {signal_type}/
-        wal-0000000000.log      # Entry metadata (bincode-serialized WalEntry structs)
-        wal-0000000000.data     # Raw data (Arrow IPC StreamWriter format)
+        wal-0000000000.log      # Entry metadata (framed, CRC-checked bincode WalEntry records)
+        wal-0000000000.data     # Payloads (framed, CRC-checked Arrow IPC streams)
         wal-0000000000.index    # Processed entry tracking (UUID list)
         wal-0000000001.log      # Next segment after rotation
         wal-0000000001.data
@@ -630,18 +630,21 @@ offset recorded in its `.log` entry (the writer seeks to that offset rather than
 blind-appending), so a short or partial write cannot shift the offsets of the
 entries that follow it.
 
-Replaying a segment's `.log` file on load can hit a record whose 8-byte length
-prefix is intact but whose payload no longer deserializes (a bit flip or
-partial overwrite from an OOM kill or disk fault). Because the framing is
-intact, the offset of the next record is still known, so `WalSegment::load`
-skips just that record — logging the failure, quarantining its raw bytes to
-`dead-letter/segment-<id>-offset-<offset>.corrupt.bin`, and resuming — rather
-than aborting the whole replay, which would otherwise turn one corrupted
-record into a permanent crash loop on every restart. Every other
+Replaying a segment's `.log` file on load can hit a record whose header is
+intact but whose payload no longer matches its CRC or no longer deserializes
+(a bit flip or partial overwrite from an OOM kill or disk fault). Because the
+framing is intact, the offset of the next record is still known, so
+`WalSegment::load` skips just that record — logging the failure, quarantining
+its raw bytes to `dead-letter/segment-<id>-offset-<offset>.corrupt.bin`, and
+resuming — rather than aborting the whole replay, which would otherwise turn
+one corrupted record into a permanent crash loop on every restart. Every other
 `dead-letter/` artifact is keyed by `<entry_id>`, taken from a
 successfully-decoded `WalEntry`; this is the one kind keyed by its physical
 `segment-<id>-offset-<offset>` location instead, because the entry id lives
-inside the very bytes that failed to decode. See
+inside the very bytes that failed to decode. A damaged `.data` record is caught
+the same way on read (its record CRC fails), quarantined as
+`dead-letter/<entry_id>.corrupt.bin`, and the entry retired without touching
+its neighbours. See
 [WAL Persistence](../operations/wal-persistence.md#corrupted-entry-records-during-replay)
 for the full recovery behavior and the other `dead-letter/` artifact kinds.
 
@@ -696,11 +699,43 @@ The WAL enforces non-empty `tenant_id` and `dataset_id` at construction time.
 
 Each WAL segment consists of three files:
 
-| File     | Format                  | Content                                                                     |
-| -------- | ----------------------- | --------------------------------------------------------------------------- |
-| `.log`   | Length-prefixed bincode | Sequence of `WalEntry` structs (8-byte length prefix + bincode bytes)       |
-| `.data`  | Raw bytes               | Arrow IPC `StreamWriter` format. Entries reference data by offset and size. |
-| `.index` | Binary                  | 8-byte count + 16-byte UUIDs of processed entries                           |
+| File     | Format                       | Content                                                                                    |
+| -------- | ---------------------------- | ------------------------------------------------------------------------------------------ |
+| `.log`   | Segment header + framed records | `SDBW` magic + u32 version, then `[u32 len][u32 crc32][bincode WalEntry]` per record     |
+| `.data`  | Framed records               | `[SDBR magic][u32 len][u32 crc32][Arrow IPC stream]` per entry; entries address the record header by offset |
+| `.index` | Binary                       | 8-byte count + 16-byte UUIDs of processed entries                                          |
+
+#### Record Framing (format v1)
+
+Every record in both files is self-describing and checksummed
+(`src/common/src/wal/framing.rs`), so corruption at rest is *attributable*
+(the read names the entry, tenant, dataset, signal, and offset) and
+*skippable* (the reader steps over the one bad record and keeps serving its
+neighbours) instead of surfacing as an opaque Arrow parse error that poisons
+the whole segment.
+
+```text
+.log:  [ "SDBW" | u32 version=1 ]                          once, at offset 0
+       [ u32 payload_len | u32 crc32(payload) | payload ]  per WalEntry record
+
+.data: [ "SDBR" | u32 payload_len | u32 crc32(payload) | payload ]  per entry
+```
+
+All integers are little-endian; the checksum is CRC-32 (IEEE). A `WalEntry`'s
+`data_offset` points at the `.data` record *header* and its `data_size` is the
+payload length (header excluded), so a read cross-checks the header's length
+against the entry before trusting the checksum. Any mismatch — wrong magic,
+length disagreement, or CRC failure — is reported as corruption of that one
+entry.
+
+**Legacy segments.** Segments written before format v1 have no segment
+header and no record headers (`.log` = `[u64 len][bincode]`, `.data` = raw
+payloads). They are recognised by the missing magic and handled without an
+operator step: entries are read on the legacy layout, the segment is sealed
+against new appends (the WAL rotates onto a fresh v1 segment on open, logging
+a warning naming the legacy file), and compaction rewrites survivors into v1.
+Once fully processed a legacy segment is deleted like any other. Nothing
+converts a legacy segment in place.
 
 ### WAL Entry Structure
 
@@ -709,8 +744,8 @@ pub struct WalEntry {
     pub id: Uuid,
     pub timestamp: u64,
     pub operation: WalOperation,      // WriteTraces | WriteLogs | WriteMetrics | Flush
-    pub data_size: u64,               // Size of data in .data file
-    pub data_offset: u64,             // Offset into .data file
+    pub data_size: u64,               // Payload length in .data file (record header excluded)
+    pub data_offset: u64,             // Offset of the record header in .data file
     pub processed: bool,
     pub tenant_id: String,
     pub dataset_id: String,

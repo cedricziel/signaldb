@@ -28,6 +28,28 @@ type EntryTraceContext = (Option<String>, Option<String>);
 /// commit, paired with the trace context each entry arrived with.
 type TableBatch = (Vec<(Uuid, RecordBatch)>, Vec<EntryTraceContext>);
 
+/// Why a WAL entry's payload could not be turned into a batch. The two are
+/// retired differently: an unreadable payload (bounds/CRC failure) is
+/// deterministic and has no bytes worth preserving, so it is retired at once
+/// via [`Wal::dead_letter_unreadable`]; an undecodable one is retried a few
+/// times and then preserved via [`Wal::dead_letter`].
+#[derive(Debug)]
+enum EntryDecodeError {
+    /// The WAL refused to hand out the bytes (out of bounds, CRC mismatch).
+    Unreadable(anyhow::Error),
+    /// The bytes read fine but are not a valid Arrow IPC stream.
+    Undecodable(anyhow::Error),
+}
+
+impl std::fmt::Display for EntryDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EntryDecodeError::Unreadable(e) => write!(f, "unreadable payload: {e}"),
+            EntryDecodeError::Undecodable(e) => write!(f, "undecodable payload: {e}"),
+        }
+    }
+}
+
 /// Per-`(tenant, dataset, table)` commit-coalescing gate.
 ///
 /// Decides whether a group's pending rows should be committed now, so a
@@ -292,13 +314,21 @@ impl WalProcessor {
                             error = %e,
                             "Failed to deserialize WAL entry"
                         );
-                        self.record_entry_failure(
-                            entry.id,
-                            &entry.tenant_id,
-                            &entry.dataset_id,
-                            entry.operation.signal(),
-                        )
-                        .await;
+                        match e {
+                            EntryDecodeError::Unreadable(cause) => {
+                                self.record_unreadable_entry(&entry, &cause.to_string())
+                                    .await;
+                            }
+                            EntryDecodeError::Undecodable(_) => {
+                                self.record_entry_failure(
+                                    entry.id,
+                                    &entry.tenant_id,
+                                    &entry.dataset_id,
+                                    entry.operation.signal(),
+                                )
+                                .await;
+                            }
+                        }
                     })
                     .await;
                     continue;
@@ -596,6 +626,43 @@ impl WalProcessor {
         }
     }
 
+    /// Retire an entry whose payload the WAL cannot read at all (byte range
+    /// past the data file, or a record that failed its integrity check).
+    ///
+    /// The failure is a property of the bytes on disk, so retrying only keeps
+    /// the entry pending and pins its segment. [`Wal::dead_letter`] cannot be
+    /// used: it re-reads the payload, which is the very read that failed. The
+    /// WAL has already quarantined whatever bytes it could and logged the
+    /// tenant/dataset/signal/offset; this records the marker and marks the
+    /// entry processed so the neighbours keep flowing.
+    async fn record_unreadable_entry(&mut self, entry: &WalEntry, reason: &str) {
+        match self.wal.dead_letter_unreadable(entry.id, reason).await {
+            Ok(path) => {
+                tracing::error!(
+                    entry_id = %entry.id,
+                    tenant_id = %entry.tenant_id,
+                    dataset_id = %entry.dataset_id,
+                    signal = entry.operation.signal(),
+                    data_offset = entry.data_offset,
+                    data_size = entry.data_size,
+                    path = %path.display(),
+                    "WAL entry payload is unreadable; marker recorded in the dead-letter directory and entry marked processed"
+                );
+                self.entry_failures.remove(&entry.id);
+            }
+            Err(e) => {
+                tracing::error!(
+                    entry_id = %entry.id,
+                    tenant_id = %entry.tenant_id,
+                    dataset_id = %entry.dataset_id,
+                    signal = entry.operation.signal(),
+                    error = %e,
+                    "Failed to retire unreadable WAL entry; it will be retried"
+                );
+            }
+        }
+    }
+
     /// Determine which tenant, dataset, and table an entry should go to
     /// Extracts tenant_id and dataset_id from the WalEntry, but prefers metadata-provided
     /// values (from Flight metadata) when available for proper tenant isolation.
@@ -662,10 +729,20 @@ impl WalProcessor {
     }
 
     /// Deserialize WAL entry data back to RecordBatch
-    async fn deserialize_entry_data(&self, entry: &WalEntry) -> Result<RecordBatch> {
-        let data = self.wal.read_entry_data(entry).await?;
-        bytes_to_record_batch(&data)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize WAL entry data: {}", e))
+    async fn deserialize_entry_data(
+        &self,
+        entry: &WalEntry,
+    ) -> std::result::Result<RecordBatch, EntryDecodeError> {
+        let data = self
+            .wal
+            .read_entry_data(entry)
+            .await
+            .map_err(EntryDecodeError::Unreadable)?;
+        bytes_to_record_batch(&data).map_err(|e| {
+            EntryDecodeError::Undecodable(anyhow::anyhow!(
+                "Failed to deserialize WAL entry data: {e}"
+            ))
+        })
     }
 
     /// Get statistics about the processor
@@ -955,6 +1032,96 @@ mod tests {
             .join(format!("{}.bin", entry_id.simple()));
         let preserved = tokio::fs::read(&dead_letter_path).await.unwrap();
         assert_eq!(preserved, b"not arrow ipc");
+    }
+
+    #[tokio::test]
+    async fn corrupt_payload_is_retired_immediately_and_neighbours_still_process() {
+        // #946: a payload that fails its record CRC is unreadable for good.
+        // The processor must retire it on the first sighting (not after
+        // MAX_ENTRY_FAILURES cycles) and keep processing the entries around it.
+        let temp_dir = tempdir().unwrap();
+        let wal_config = WalConfig {
+            wal_dir: temp_dir.path().to_path_buf(),
+            max_segment_size: 1024 * 1024,
+            max_buffer_entries: 1000,
+            flush_interval_secs: 5,
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            retention_secs: 3600,
+            cleanup_interval_secs: 300,
+            compaction_threshold: 0.5,
+        };
+        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+
+        let meta = Some(r#"{"tenant_id":"acme","dataset_id":"production"}"#.to_string());
+        let good_before = wal
+            .append(
+                WalOperation::WriteMetrics,
+                metrics_gauge_bytes(1),
+                meta.clone(),
+            )
+            .await
+            .unwrap();
+        let victim = wal
+            .append(
+                WalOperation::WriteMetrics,
+                metrics_gauge_bytes(2),
+                meta.clone(),
+            )
+            .await
+            .unwrap();
+        let good_after = wal
+            .append(WalOperation::WriteMetrics, metrics_gauge_bytes(3), meta)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        // Flip one payload byte of the middle entry on disk.
+        let victim_entry = wal
+            .get_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|e| e.id == victim)
+            .unwrap();
+        let data_path = temp_dir.path().join("wal-0000000000.data");
+        let mut bytes = tokio::fs::read(&data_path).await.unwrap();
+        let idx =
+            victim_entry.data_offset as usize + common::wal::framing::DATA_RECORD_HEADER_LEN + 4;
+        bytes[idx] ^= 0x01;
+        tokio::fs::write(&data_path, &bytes).await.unwrap();
+
+        let mut processor = WalProcessor::new(wal.clone(), catalog_manager, object_store);
+        processor
+            .process_pending_entries()
+            .await
+            .expect("a corrupt payload must not abort the cycle");
+
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "good neighbours must be committed and the corrupt entry retired in one cycle"
+        );
+        let dead_letter = temp_dir.path().join("dead-letter");
+        assert!(
+            dead_letter
+                .join(format!("{}.unreadable.json", victim.simple()))
+                .exists(),
+            "unreadable marker must be recorded"
+        );
+        assert!(
+            dead_letter
+                .join(format!("{}.corrupt.bin", victim.simple()))
+                .exists(),
+            "corrupt record bytes must be quarantined by the WAL"
+        );
+        for good in [good_before, good_after] {
+            assert!(
+                !dead_letter.join(format!("{}.bin", good.simple())).exists(),
+                "healthy neighbours must not be dead-lettered"
+            );
+        }
     }
 
     #[tokio::test]

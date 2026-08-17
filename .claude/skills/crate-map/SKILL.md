@@ -51,6 +51,7 @@ This is the shared foundation. Key modules:
 | `testing`                  | `src/common/src/testing/`             | Test utilities (config builder)                                                       |
 | `catalog_manager`          | `src/common/src/catalog_manager.rs`   | CatalogManager singleton for Iceberg catalog                                          |
 | `wal`                      | `src/common/src/wal/mod.rs`           | Write-Ahead Log implementation                                                        |
+| `wal::framing`             | `src/common/src/wal/framing.rs`       | WAL record framing v1: segment header, length + CRC-32 record headers, legacy detection |
 | `flight`                   | `src/common/src/flight/`              | Flight schemas, conversions, transport                                                |
 | `flight/schema.rs`         | `src/common/src/flight/schema.rs`     | Arrow schema definitions for OTLP data                                                |
 | `flight/transport.rs`      | `src/common/src/flight/transport.rs`  | InMemoryFlightTransport, connection pooling                                           |

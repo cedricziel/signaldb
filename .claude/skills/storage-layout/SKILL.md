@@ -79,13 +79,24 @@ Path: `{wal_dir}/{tenant_id}/{dataset_id}/{signal_type}/`
   acme/
     production/
       traces/
-        wal-0000000000.log    # Entry metadata (bincode)
-        wal-0000000000.data   # Raw data (Arrow IPC StreamWriter)
+        wal-0000000000.log    # "SDBW"+version header, then [u32 len][u32 crc32][bincode WalEntry] records
+        wal-0000000000.data   # ["SDBR"][u32 len][u32 crc32][Arrow IPC stream] records
         wal-0000000000.index  # Processed entry tracking (UUID list)
         dead-letter/          # Retired entries (unreadable/rejected/corrupt), see below
 ```
 
-On replay, a `.log` record whose payload fails to deserialize (framing
+Record framing v1 (`src/common/src/wal/framing.rs`, #946): every record in
+both files carries its length and a CRC-32 of its payload; `data_offset`
+points at the `.data` record header, `data_size` is the payload length. A
+`.data` record failing magic/length/CRC on read is quarantined as
+`dead-letter/<entry_id>.corrupt.bin`, logged with tenant/dataset/signal/offset,
+counted in `signaldb.wal.corrupt_entries{record="data"}`, and retired by the
+reader (`dead_letter_unreadable`) without touching its neighbours. Legacy
+unframed segments (no `SDBW` header) are read on the old layout, sealed
+against appends (the WAL rotates onto a fresh v1 segment on open), and
+rewritten to v1 by compaction — no operator step.
+
+On replay, a `.log` record whose payload fails its CRC or deserialize (framing
 intact, content corrupted) is skipped rather than aborting the whole
 segment — the offset of the next record is still known from the length
 prefix, so `offset += entry_len` resyncs onto it. The corrupt bytes are
@@ -105,8 +116,8 @@ pub struct WalEntry {
     pub id: Uuid,
     pub timestamp: u64,
     pub operation: WalOperation,    // WriteTraces | WriteLogs | WriteMetrics | Flush
-    pub data_size: u64,
-    pub data_offset: u64,
+    pub data_size: u64,             // payload length (record header excluded)
+    pub data_offset: u64,           // offset of the .data record header
     pub processed: bool,
     pub tenant_id: String,
     pub dataset_id: String,

@@ -37,6 +37,7 @@ Write-Ahead Logging ensures data persistence and crash recovery:
 - **Before acknowledgment**: Data written to WAL before client response
 - **Automatic recovery**: Unprocessed entries replayed on restart
 - **Per-tenant/dataset isolation**: Separate WAL directories per tenant, dataset, and signal type
+- **Record integrity**: Every WAL record is length-framed and CRC-32 checked, so corruption is attributed to one entry and skipped rather than poisoning a segment
 - **Segment management**: Automatic rotation, compaction, and cleanup of processed segments
 
 ### 3. Dual Catalog System

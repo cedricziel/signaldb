@@ -190,17 +190,19 @@ The acceptor keeps one WAL per tenant/dataset/signal combination; the writer kee
 └── acme/                           # Tenant
     └── production/                 # Dataset
         └── traces/                 # Signal type
-            ├── wal-0000000000.log    # Segment entry records
-            ├── wal-0000000000.data   # Segment payload bytes
+            ├── wal-0000000000.log    # Segment entry records (framed + CRC)
+            ├── wal-0000000000.data   # Segment payload records (framed + CRC)
             ├── wal-0000000000.index  # Processed-entry index
             ├── writer.id             # Stable identity of this WAL directory
             └── dead-letter/          # Entries retired so they stop blocking
                 ├── <entry_id>.bin                        # Preserved payload
                 ├── <entry_id>.rejected.json              # Why the writer refused it
                 ├── <entry_id>.unreadable.json             # Marker; no bytes recoverable
+                ├── <entry_id>.corrupt.bin                 # Raw bytes of a payload record
+                                                           # that failed its CRC on read
                 └── segment-<id>-offset-<offset>.corrupt.bin  # Raw bytes of a log
-                                                               # record that failed to
-                                                               # deserialize on replay
+                                                               # record that failed its
+                                                               # CRC / decode on replay
 ```
 
 Every other marker is keyed by `<entry_id>`, because it is produced by code
@@ -242,11 +244,39 @@ that seed the gauge drifts negative after every restart that recovers a
 backlog, since those entries are decremented when processed but were
 incremented by a process that is gone.
 
+#### Record Framing and Checksums
+
+Every WAL record carries a length and a CRC-32 of its payload, and every
+`.log` file opens with a format header (`SDBW` magic + version). The exact
+layout is documented in
+[Storage Layout](../architecture/storage-layout.md#record-framing-format-v1).
+Operationally this means:
+
+- **Corruption is attributable.** A damaged record is reported against the
+  entry it belongs to (`entry_id`, `tenant_id`, `dataset_id`, `signal`,
+  `segment_id`, `data_offset`), never as an anonymous Arrow parse error.
+- **Corruption is skippable.** One bad record never blocks the records around
+  it: replay resyncs on the next `.log` record, and a bad `.data` record fails
+  only its own read.
+- **Legacy (pre-framing) segments keep working.** A segment without the
+  format header is read on the old layout, sealed against new writes, and
+  rewritten into the framed format by compaction; the service logs a
+  `WAL segment uses the legacy unframed format` warning per legacy segment on
+  open. No operator action is needed, and nothing converts a segment in place.
+  A `.log` file whose header names a version this build does not know is
+  refused at open with a clear error (a downgrade after an upgrade that
+  bumped the format).
+
+`signaldb.wal.corrupt_entries` carries a `record` attribute: `log` for a
+`.log` record that failed replay, `data` for a `.data` record that failed its
+integrity check on read (with a `signal` attribute).
+
 #### Corrupted Entry Records During Replay
 
-Replay reads a segment's `.log` file as a sequence of `[8-byte length
-prefix][bincode-encoded WalEntry]` records. Two distinct failures can occur
-while walking that sequence, and they are handled differently:
+Replay reads a segment's `.log` file as a sequence of `[u32 length][u32
+crc32][bincode-encoded WalEntry]` records after the segment header. Two
+distinct failures can occur while walking that sequence, and they are handled
+differently:
 
 - **Torn tail** (short read): the length prefix or the payload it describes
   runs past the end of the file — the shape of a crash or kill mid-write.
@@ -254,15 +284,16 @@ while walking that sequence, and they are handled differently:
   `WAL segment tail truncated` warning naming the segment and byte offset.
   Every entry before the tear is preserved; the incomplete final record is
   dropped.
-- **Content corruption** (framing intact, payload undecodable): the length
-  prefix is valid and an in-bounds byte range was read, but that range does
-  not deserialize as a `WalEntry` — for example a bit flip or partial
-  overwrite from an OOM kill or disk fault landed inside an otherwise
-  complete record. Because the framing is intact, the byte offset of the
-  _next_ record is still known, so replay **skips the corrupt record and
-  continues** rather than aborting: it logs a `WAL entry failed to
-deserialize` error naming the segment and offset, increments the
-  `signaldb.wal.corrupt_entries` counter, quarantines the raw record bytes to
+- **Content corruption** (framing intact, payload damaged): the length
+  prefix is valid and an in-bounds byte range was read, but that range fails
+  its CRC or does not deserialize as a `WalEntry` — for example a bit flip
+  or partial overwrite from an OOM kill or disk fault landed inside an
+  otherwise complete record. Because the framing is intact, the byte offset
+  of the _next_ record is still known, so replay **skips the corrupt record
+  and continues** rather than aborting: it logs a `WAL entry record corrupt
+  during replay` error naming the segment and offset, increments the
+  `signaldb.wal.corrupt_entries{record="log"}` counter, quarantines the raw
+  record bytes to
   `<wal_dir>/dead-letter/segment-<segment_id>-offset-<offset>.corrupt.bin`,
   and resumes at the next record.
 
@@ -304,27 +335,32 @@ all following entries.
 ### Corrupt or Unreadable Entries
 
 An entry can become unreadable — a truncated or partial data write, an entry
-whose stored `[data_offset, data_size)` range runs past the data file, or a
-payload that no longer decodes as Arrow IPC (e.g. legacy-format segments). One
-such entry must not wedge the processing loop, so the writer handles it in
-three steps:
+whose stored byte range runs past the data file, a `.data` record whose CRC no
+longer matches its payload — or readable but undecodable (bytes that are not a
+valid Arrow IPC stream). One such entry must not wedge the processing loop, so
+the writer (and the acceptor's retry consumer) handle it in three steps:
 
-1. **Bounds check first**: before reading, the writer validates the entry's
-   byte range against the actual data-file length and rejects an out-of-bounds
-   range with a precise error naming the entry and segment — rather than
-   reading past the file or handing misaligned bytes to the Arrow decoder,
-   which would surface only as an opaque parse error later.
-2. **Attributed diagnostics**: route, deserialize, and dead-letter failures log
-   `tenant_id`, `dataset_id`, `signal`, `data_offset`, and `data_size`, so a
-   burst of failures is attributable to the affected tenant and signal instead
-   of an anonymous flood.
-3. **Dead-letter after retries**: an entry that keeps failing is moved to
-   `<wal_dir>/dead-letter/` with its raw payload preserved, and marked
-   processed so ingestion continues.
+1. **Bounds and integrity check first**: before handing bytes to the Arrow
+   decoder, the WAL validates the entry's byte range against the actual
+   data-file length and then verifies the record header (magic, length, CRC).
+   A failure is a precise error naming the entry and segment, rather than an
+   opaque parse error later; the damaged record's raw bytes are quarantined
+   as `dead-letter/<entry_id>.corrupt.bin` and
+   `signaldb.wal.corrupt_entries{record="data"}` is incremented.
+2. **Attributed diagnostics**: route, read, deserialize, and dead-letter
+   failures log `tenant_id`, `dataset_id`, `signal`, `data_offset`, and
+   `data_size`, so a burst of failures is attributable to the affected tenant
+   and signal instead of an anonymous flood.
+3. **Retire without blocking neighbours**: an *unreadable* entry (bounds or
+   integrity failure) is deterministic, so it is retired on first sight with
+   a `<entry_id>.unreadable.json` marker and marked processed; an
+   *undecodable* entry is retried a bounded number of times and then moved to
+   `<wal_dir>/dead-letter/<entry_id>.bin` with its raw payload preserved.
+   Either way the entries around it keep processing in the same cycle.
 
 A growing dead-letter directory or a spike in these error logs indicates
-corrupt or legacy-format WAL segments; inspect the preserved payloads and,
-if a whole segment is unreadable, remove it so replay stops retrying it.
+corrupt WAL segments; inspect the preserved payloads and, if a whole segment
+is unreadable, remove it so replay stops retrying it.
 
 ### Entries the Writer Refuses
 
@@ -450,7 +486,7 @@ find /data/wal -path '*/dead-letter/*' | wc -l
 
 When `[self_monitoring]` is enabled, services also export `signaldb.wal.*` metrics (entries written/processed/pending, flush duration) via OTLP into SignalDB itself. `signaldb.wal.entries_pending` is the backlog signal: it is process-local (a restart resets it, then re-seeds it from the recovered backlog) and must never read below zero — a negative value means increments and decrements have gone out of balance and the metric cannot be trusted until that is fixed.
 
-`signaldb.wal.corrupt_entries` counts entries discarded during replay because they failed to deserialize (see [Corrupted Entry Records During Replay](#corrupted-entry-records-during-replay)). It is an alertable signal, not just a diagnostic: it should stay at zero, and any increase means an entry's data was permanently lost — not merely delayed or retried — with only the quarantined `segment-<id>-offset-<offset>.corrupt.bin` file under `dead-letter/` left to inspect by hand. A nonzero rate points at disk-level corruption (OOM kill mid-write, disk fault, or similar) rather than an application bug, so treat it as a storage-health alert.
+`signaldb.wal.corrupt_entries` counts records that failed their integrity check: `record="log"` for entry records discarded during replay (see [Corrupted Entry Records During Replay](#corrupted-entry-records-during-replay)), `record="data"` for payload records that failed their CRC on read. It is an alertable signal, not just a diagnostic: it should stay at zero, and any increase means an entry's data was permanently lost — not merely delayed or retried — with only the quarantined `segment-<id>-offset-<offset>.corrupt.bin` / `<entry_id>.corrupt.bin` file under `dead-letter/` left to inspect by hand. A nonzero rate points at disk-level corruption (OOM kill mid-write, disk fault, or similar) rather than an application bug, so treat it as a storage-health alert.
 
 ### Example Prometheus Alerts
 
