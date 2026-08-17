@@ -7,6 +7,9 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - "scripts/render-bench-summary.py"
+      - "scripts/render-schema-files.py"
+      - "otel/registry/manifest.yaml"
+      - "src/common/CHANGELOG.md"
       - ".github/workflows/docs.yml"
   # Re-publish after each nightly benchmark run so the "latest results"
   # table and the trend charts under /benchmarks/ stay current.
@@ -63,6 +66,15 @@ jobs:
 
       - name: Build
         run: mkdocs build --site-dir _site
+
+      # SignalDB's telemetry carries schema_url: <site>/schemas/<version> on
+      # every instrumentation scope; publish one OTel telemetry-schema file
+      # per released version at exactly that path (see
+      # docs/users/schema-registry.md).
+      - name: Publish telemetry schema files
+        run: |
+          python3 scripts/render-schema-files.py \
+            otel/registry/manifest.yaml src/common/CHANGELOG.md _site
 
       - name: Add benchmark trend charts to the site
         run: |

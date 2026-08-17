@@ -11,7 +11,12 @@ sources:
 
 The spans SignalDB emits about its own operation follow the OpenTelemetry
 semantic conventions, pinned at **semconv v1.43.0** (the `schema_url` on
-every exported resource and instrumentation scope). This page is the
+every exported resource). The instrumentation scopes carry SignalDB's own
+registry URL, `https://cedricziel.github.io/signaldb/schemas/<version>`, where `<version>` is
+the SignalDB release that emitted the telemetry: `otel/registry/manifest.yaml`
+defines the `signaldb.*` attributes on top of that semconv pin, release-please
+bumps its version with each release, and the build script hands it to the
+code as `SIGNALDB_SCHEMA_URL`. This page is the
 operator-facing reference: what spans exist, what they're named, and what
 changed if you had dashboards on the old names.
 

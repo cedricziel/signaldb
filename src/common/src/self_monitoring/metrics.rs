@@ -108,7 +108,11 @@ pub fn register_system_metrics(
     meter_provider: &SdkMeterProvider,
     service_name: &str,
 ) -> MetricsHandle {
-    let meter = meter_provider.meter("signaldb.self_monitoring");
+    let meter = meter_provider.meter_with_scope(
+        opentelemetry::InstrumentationScope::builder("signaldb.self_monitoring")
+            .with_schema_url(super::SIGNALDB_SCHEMA_URL)
+            .build(),
+    );
     let svc = service_name.to_string();
 
     let process_cpu_user = Arc::new(AtomicU64::new(0));
