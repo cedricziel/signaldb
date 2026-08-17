@@ -185,8 +185,11 @@ spec:
 
 Both the acceptor and the writer keep one WAL per tenant/dataset/signal
 combination, so a poisoned segment, a slow fsync, or lock contention on one
-tenant's WAL cannot stall another tenant's ingest path. Each WAL directory
-uses a segment-based structure:
+tenant's WAL cannot stall another tenant's **append** path. (The writer's
+background drain still walks those WALs one at a time, so a tenant with slow
+Iceberg commits delays other tenants' commits within a cycle — failures are
+isolated, commit latency is not.) Each WAL directory uses a segment-based
+structure:
 
 ```
 /data/wal/                          # ACCEPTOR_WAL_DIR or WRITER_WAL_DIR
@@ -231,10 +234,26 @@ writer adopts any such segments as a drain-only WAL, logging
 WARN Adopting legacy single-directory WAL segments for draining; new writes use the per-tenant/dataset/signal tree
 ```
 
-Their pending entries are processed normally — each entry names its own tenant
-and dataset in its metadata, which is what routing uses — and the segments are
-deleted by the WAL's own cleanup once every entry is processed. New writes
-always go to the per-tenant tree, so the legacy directory only shrinks.
+Their pending entries are processed normally: an entry that carries routing
+metadata is routed by it, and one that does not falls back to `default` /
+`default`, which is where a pre-upgrade writer put it. New writes always go to
+the per-tenant tree, so nothing is ever added to the legacy directory.
+
+**The drained files are not deleted automatically.** WAL segment cleanup
+(`Wal::start_background_cleanup`) has no caller in any service today, so the
+segments stay, are re-read into memory at every writer start, and the `WARN`
+above repeats on every restart. Once the writer logs no unprocessed entries
+for them — the writer's WAL backlog gauge is at zero and no
+`dead-letter/` markers are being added — the files are safe to remove by hand:
+
+```bash
+# With the writer stopped, after its last shutdown flush completed cleanly:
+rm -f /data/wal/writer/wal-*.log /data/wal/writer/wal-*.data /data/wal/writer/wal-*.index
+```
+
+Leave the per-tenant subdirectories (`/data/wal/writer/{tenant}/…`) alone —
+only the segment files sitting _directly_ in the writer's WAL directory belong
+to the legacy layout.
 
 ### Data Flow with WAL
 

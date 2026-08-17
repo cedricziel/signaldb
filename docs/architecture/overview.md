@@ -36,7 +36,7 @@ Write-Ahead Logging ensures data persistence and crash recovery:
 
 - **Before acknowledgment**: Data written to WAL before client response
 - **Automatic recovery**: Unprocessed entries replayed on restart
-- **Per-tenant/dataset isolation**: Both the acceptor and the writer hold a separate WAL instance — own segments, own flush mutex, own dead-letter directory — per tenant, dataset, and signal type, so one tenant's corruption or fsync latency cannot stall another's ingest path
+- **Per-tenant/dataset isolation on the append path**: Both the acceptor and the writer hold a separate WAL instance — own segments, own flush mutex, own dead-letter directory — per tenant, dataset, and signal type, so one tenant's corrupted segment or slow fsync cannot block another tenant's `append`/`flush`. The writer's _drain_ is still one sequential loop over those WALs, so a tenant with slow Iceberg commits delays the others' commit latency within a cycle; failure is isolated, latency is not
 - **Record integrity**: Every WAL record is length-framed and CRC-32 checked, so corruption is attributed to one entry and skipped rather than poisoning a segment
 - **Segment management**: Automatic rotation, compaction, and cleanup of processed segments
 
