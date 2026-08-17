@@ -80,11 +80,19 @@ impl WalManager {
     pub const LEGACY_ROOT_KEY: (&'static str, &'static str, &'static str) =
         ("_legacy", "_legacy", "_root");
 
-    /// Register an already-open WAL under `key`, replacing any cached
-    /// instance. Used to adopt WALs the manager did not create itself (see
-    /// [`Self::adopt_root_segments`]) and by tests that build a WAL by hand.
-    pub async fn register(&self, key: WalKey, wal: Arc<Wal>) {
-        self.wals.lock().await.insert(key, wal);
+    /// Register an already-open WAL under `key`, returning the instance it
+    /// displaced, if any. Used to adopt WALs the manager did not create
+    /// itself (see [`Self::adopt_root_segments`]) and by tests that build a
+    /// WAL by hand.
+    ///
+    /// The displaced instance is handed back deliberately: two live `Wal`
+    /// values over the same directory keep independent write handles and
+    /// offset state, which is the desync class that #883 fixed. A caller that
+    /// drops the returned `Arc` without any other clone alive is safe; one
+    /// that keeps writing through it is not.
+    #[must_use = "the displaced WAL must not keep writing to the same directory"]
+    pub async fn register(&self, key: WalKey, wal: Arc<Wal>) -> Option<Arc<Wal>> {
+        self.wals.lock().await.insert(key, wal)
     }
 
     /// Adopt segments left directly in the base directory by a pre-#932
@@ -92,10 +100,21 @@ impl WalManager {
     ///
     /// The segments are opened as a single drain-only WAL registered under
     /// [`Self::LEGACY_ROOT_KEY`] so a consumer iterating [`Self::all_wals`]
-    /// still processes their pending entries (each entry's metadata names its
-    /// real tenant/dataset, which is what routing uses). New writes never go
-    /// there: `get_wal` always resolves to the per-tenant tree. Once every
-    /// entry is processed the WAL's own cleanup deletes the segments.
+    /// still processes their pending entries: an entry that carries routing
+    /// metadata is routed by it, and one that does not falls back to the
+    /// WAL's configured tenant/dataset, which is why the config below stays
+    /// `default`/`default` even though the cache key does not. New writes
+    /// never go there: `get_wal` always resolves to the per-tenant tree.
+    ///
+    /// The segment files are **not** deleted once drained — `Wal`'s segment
+    /// cleanup has no caller in any service today — so the adoption (and its
+    /// warning) repeats on every restart until an operator removes them. See
+    /// `docs/operations/wal-persistence.md`.
+    ///
+    /// Only `traces_config.wal_dir` is scanned, which covers every manager
+    /// built with [`Self::uniform`] (the writer's). A manager built with
+    /// [`Self::new`] and per-signal directories would need each of them
+    /// scanned; no such manager has legacy root segments to adopt.
     ///
     /// Returns whether a legacy root WAL was found and adopted.
     pub async fn adopt_root_segments(&self) -> Result<bool, anyhow::Error> {
@@ -129,13 +148,18 @@ impl WalManager {
             "Adopting legacy single-directory WAL segments for draining; new writes use \
              the per-tenant/dataset/signal tree"
         );
-        // Tenant/dataset here only satisfy `Wal::new`'s non-empty check; the
-        // entries carry their real tenant/dataset in metadata.
+        // The cache KEY is `_legacy/_legacy/_root` so it can never collide
+        // with a real WAL, but the CONFIG keeps `default`/`default`: an entry
+        // that carries no metadata is stamped with, and routed by, its WAL's
+        // configured tenant/dataset (`WalEntry::tenant_id`), and a pre-#932
+        // writer wrote exactly such entries into a `default`/`default` WAL.
+        // Naming the config `_legacy` would silently re-namespace that
+        // upgrade-time data into an Iceberg namespace nobody asked for.
         let mut config = self.traces_config.clone();
-        config.tenant_id = tenant.to_string();
-        config.dataset_id = dataset.to_string();
+        config.tenant_id = "default".to_string();
+        config.dataset_id = "default".to_string();
         let wal = Wal::new(config).await?;
-        self.register(key, Arc::new(wal)).await;
+        let _ = self.register(key, Arc::new(wal)).await;
         Ok(true)
     }
 
@@ -154,13 +178,31 @@ impl WalManager {
     ///
     /// # Errors
     ///
-    /// Returns an error if WAL initialization fails.
+    /// Returns an error if the tenant or dataset id is not a valid identifier,
+    /// or if WAL initialization fails.
+    ///
+    /// # Security
+    ///
+    /// `tenant_id` and `dataset_id` become path components of the WAL
+    /// directory (`{wal_dir}/{tenant}/{dataset}/{signal}`), and
+    /// [`std::path::PathBuf::join`] with an absolute path *replaces* the base
+    /// while `..` escapes it. Both ids are therefore validated here — at the
+    /// point where they turn into a path — rather than trusting every caller
+    /// to have validated them at its own boundary. The writer's Flight
+    /// surface, for instance, takes them from a request's `app_metadata`, and
+    /// can be configured to run without authentication.
     pub async fn get_wal(
         &self,
         tenant_id: &str,
         dataset_id: &str,
         signal_type: &str,
     ) -> Result<Arc<Wal>, anyhow::Error> {
+        let tenant_id = crate::auth::validation::validate_id(tenant_id)
+            .map_err(|e| anyhow::anyhow!("Invalid tenant ID for WAL path: {e}"))?;
+        let dataset_id = crate::auth::validation::validate_id(dataset_id)
+            .map_err(|e| anyhow::anyhow!("Invalid dataset ID for WAL path: {e}"))?;
+        let (tenant_id, dataset_id) = (tenant_id.as_str(), dataset_id.as_str());
+
         let key = (
             tenant_id.to_string(),
             dataset_id.to_string(),
@@ -248,6 +290,13 @@ impl WalManager {
         // Clean up the per-key guard (optional, but prevents unbounded growth)
         self.init_guards.lock().await.remove(&key);
 
+        // One WAL per tenant/dataset/signal means the instance count grows
+        // with the tenant count and nothing closes them, so it is the early
+        // warning for file-descriptor and timer pressure.
+        crate::self_monitoring::app_metrics()
+            .wal_instances
+            .add(1, &[]);
+
         tracing::info!(
             "Successfully created WAL for tenant='{tenant_id}', dataset='{dataset_id}', signal='{signal_type}'"
         );
@@ -255,28 +304,95 @@ impl WalManager {
         Ok(wal)
     }
 
+    /// How many WAL flushes [`Self::flush_all`] runs at once.
+    const FLUSH_ALL_CONCURRENCY: usize = 32;
+
     /// Flush every cached WAL so buffered entries are durable before the
     /// process exits. Errors are logged per WAL and the first is returned
     /// after every WAL has been attempted — one tenant's failing flush must
     /// not skip the others.
-    pub async fn flush_all(&self) -> Result<(), anyhow::Error> {
-        let mut first_err = None;
-        for ((tenant, dataset, signal), wal) in self.all_wals().await {
-            if let Err(e) = wal.flush().await {
-                tracing::error!(
-                    tenant_id = %tenant,
-                    dataset_id = %dataset,
-                    signal = %signal,
-                    error = %e,
-                    "Failed to flush WAL during shutdown"
-                );
-                first_err.get_or_insert(e);
-            }
+    ///
+    /// The flushes run concurrently, and the whole sweep is bounded by
+    /// `budget`: a shutdown has a container's SIGTERM grace (commonly 10-30 s)
+    /// to finish, and one fsync pair per WAL run back-to-back would blow past
+    /// it once a deployment has a few hundred tenants — with the WALs late in
+    /// the sweep dying silently. On timeout the WALs that were never reached
+    /// are named in the error and logged, so lost buffered entries are
+    /// attributable instead of invisible.
+    pub async fn flush_all_within(&self, budget: std::time::Duration) -> Result<(), anyhow::Error> {
+        use futures::StreamExt;
+
+        let wals = self.all_wals().await;
+        if wals.is_empty() {
+            return Ok(());
         }
-        match first_err {
+        let total = wals.len();
+        let pending: Arc<Mutex<HashMap<WalKey, ()>>> = Arc::new(Mutex::new(
+            wals.iter().map(|(key, _)| (key.clone(), ())).collect(),
+        ));
+        let first_err: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
+
+        let sweep = {
+            let pending = pending.clone();
+            let first_err = first_err.clone();
+            async move {
+                futures::stream::iter(wals)
+                    .for_each_concurrent(Self::FLUSH_ALL_CONCURRENCY, |(key, wal)| {
+                        let pending = pending.clone();
+                        let first_err = first_err.clone();
+                        async move {
+                            let result = wal.flush().await;
+                            pending.lock().await.remove(&key);
+                            if let Err(e) = result {
+                                let (tenant, dataset, signal) = &key;
+                                tracing::error!(
+                                    tenant_id = %tenant,
+                                    dataset_id = %dataset,
+                                    signal = %signal,
+                                    error = %e,
+                                    "Failed to flush WAL during shutdown"
+                                );
+                                first_err.lock().await.get_or_insert(e);
+                            }
+                        }
+                    })
+                    .await
+            }
+        };
+
+        if tokio::time::timeout(budget, sweep).await.is_err() {
+            let unreached: Vec<String> = pending
+                .lock()
+                .await
+                .keys()
+                .map(|(tenant, dataset, signal)| format!("{tenant}/{dataset}/{signal}"))
+                .collect();
+            tracing::error!(
+                unreached = unreached.len(),
+                total,
+                budget_secs = budget.as_secs_f64(),
+                wals = %unreached.join(","),
+                "WAL flush sweep did not finish within its budget; buffered entries in the \
+                 unreached WALs are not durable"
+            );
+            return Err(anyhow::anyhow!(
+                "WAL flush sweep timed out after {budget:?}: {} of {total} WALs unflushed ({})",
+                unreached.len(),
+                unreached.join(", ")
+            ));
+        }
+
+        let err = first_err.lock().await.take();
+        match err {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    /// [`Self::flush_all_within`] with the default shutdown budget.
+    pub async fn flush_all(&self) -> Result<(), anyhow::Error> {
+        self.flush_all_within(std::time::Duration::from_secs(10))
+            .await
     }
 
     /// Get the number of cached WAL instances
@@ -656,6 +772,44 @@ mod tests {
         let manager = WalManager::uniform(create_test_config(temp_dir.path()));
         assert!(!manager.adopt_root_segments().await.unwrap());
         assert_eq!(manager.wal_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn get_wal_rejects_ids_that_would_escape_the_wal_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+        let manager = WalManager::uniform(create_test_config(&base_path));
+        let escape_target = temp_dir.path().parent().unwrap().join("escaped");
+
+        // `PathBuf::join` with an absolute path REPLACES the base, and `..`
+        // walks out of it, so an unvalidated id from a request would be a
+        // write primitive anywhere on the filesystem.
+        for (tenant, dataset) in [
+            ("../../escaped", "production"),
+            ("acme", "../../escaped"),
+            ("/etc/signaldb", "production"),
+            ("acme", "/etc/signaldb"),
+            ("acme/production", "traces"),
+            ("", "production"),
+            ("acme", ""),
+        ] {
+            let err = match manager.get_wal(tenant, dataset, "traces").await {
+                Ok(_) => panic!("id must be rejected: {tenant:?}/{dataset:?}"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                err.contains("Invalid tenant ID for WAL path")
+                    || err.contains("Invalid dataset ID for WAL path"),
+                "unexpected error for {tenant:?}/{dataset:?}: {err}"
+            );
+        }
+
+        assert_eq!(manager.wal_count().await, 0);
+        assert!(
+            !escape_target.exists(),
+            "nothing was created outside the WAL directory"
+        );
+        assert!(!std::path::Path::new("/etc/signaldb").exists());
     }
 
     #[tokio::test]

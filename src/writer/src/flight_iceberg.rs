@@ -168,37 +168,33 @@ impl IcebergWriterFlightService {
     }
 
     /// Start the background WAL processing loop.
-    /// Returns the JoinHandle for the spawned task. Caller must abort() this handle
-    /// during shutdown to release the Arc<Wal> reference before calling Arc::try_unwrap.
+    ///
+    /// Returns the JoinHandle for the spawned task; the caller aborts it
+    /// during shutdown, before flushing the WALs.
+    ///
+    /// The loop ticks at a fixed interval. It carries no backoff because
+    /// `process_pending_entries` absorbs failures rather than propagating
+    /// them: an entry that cannot be decoded or committed is counted and, at
+    /// `MAX_ENTRY_FAILURES`, dead-lettered, and a WAL that cannot be listed is
+    /// skipped for the cycle. An error only escapes for an explicit
+    /// `do_action("flush")` scope, which this loop never passes. (The loop
+    /// used to compute an exponential delay from a `consecutive_failures`
+    /// counter that no reachable path could increment — removing it changes
+    /// no behaviour, only the impression that a failing catalog is throttled
+    /// here. Throttling a failing catalog is tracked separately.)
     pub fn start_background_processing(&self) -> tokio::task::JoinHandle<()> {
         let processor = self.processor.clone();
 
         let handle = tokio::spawn(async move {
-            const BASE_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
-            const MAX_BACKOFF: tokio::time::Duration = tokio::time::Duration::from_secs(300);
-            let mut consecutive_failures: u32 = 0;
+            const INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
             loop {
                 let mut processor_guard = processor.lock().await;
-                match processor_guard.process_pending_entries().await {
-                    Ok(()) => consecutive_failures = 0,
-                    Err(e) => {
-                        consecutive_failures = consecutive_failures.saturating_add(1);
-                        tracing::error!(
-                            error = %e,
-                            consecutive_failures,
-                            "Background WAL processing error"
-                        );
-                    }
+                if let Err(e) = processor_guard.process_pending_entries().await {
+                    tracing::error!(error = %e, "Background WAL processing error");
                 }
                 drop(processor_guard);
 
-                // Exponential backoff on repeated failures so a persistently
-                // failing catalog/store is not hammered every 5 seconds.
-                let delay = BASE_INTERVAL
-                    .saturating_mul(1u32 << consecutive_failures.min(6))
-                    .min(MAX_BACKOFF)
-                    .max(BASE_INTERVAL);
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep(INTERVAL).await;
             }
         });
 
@@ -429,15 +425,33 @@ impl FlightService for IcebergWriterFlightService {
         // Write all batches to WAL first for durability — the WAL of this
         // batch's own tenant/dataset/signal (#932), so one tenant's segment
         // never carries, or blocks, another tenant's data.
+        // An absent *or empty* id falls back to `default`: an empty string
+        // would otherwise reach the WAL as a tenant and be rejected there,
+        // and the acceptor classifies the resulting `internal` as retryable
+        // (#1060), retrying a batch that can never succeed.
+        let field = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("default")
+                .to_string()
+        };
         let (wal_tenant, wal_dataset) = flight_metadata
             .as_ref()
-            .map(|m| {
-                (
-                    m.tenant_id.clone().unwrap_or_else(|| "default".to_string()),
-                    m.dataset_id.clone().unwrap_or_else(|| "default".to_string()),
-                )
-            })
+            .map(|m| (field(&m.tenant_id), field(&m.dataset_id)))
             .unwrap_or_else(|| ("default".to_string(), "default".to_string()));
+        // These ids become path components of the WAL directory, and this
+        // Flight surface can be configured without authentication, so they
+        // are validated here as well as inside `get_wal`. A malformed id is
+        // the sender's fault and recurs identically on every retry, so it
+        // must be `invalid_argument`; a WAL that fails to open for any other
+        // reason (a full or unwritable disk) is `internal` and retryable.
+        for (label, id) in [("tenant", &wal_tenant), ("dataset", &wal_dataset)] {
+            common::auth::validation::validate_id(id).map_err(|e| {
+                Status::invalid_argument(format!("Invalid {label} id in Flight metadata: {e}"))
+            })?;
+        }
         let wal = self
             .wal_manager
             .get_wal(&wal_tenant, &wal_dataset, wal_operation.signal())
