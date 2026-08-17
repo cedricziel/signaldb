@@ -274,6 +274,31 @@ impl LogicalSchema {
             "service.name",
             LogicalType::String,
         ));
+        // A record's whole attribute bag per OTel scope, as one map value.
+        // Retrieval-only: individual attributes are addressed by name (with
+        // an optional scope qualifier); the bag itself is not a predicate
+        // operand.
+        for (source, record_scope) in [("logs", "log"), ("traces", "span"), ("profiles", "profile")]
+        {
+            // The record-level bag keeps the source's own qualifier
+            // (`log.`/`span.`/`profile.`); `scope.`/`resource.` are the
+            // schema's attribute levels, so those two are level attributes
+            // named `attributes`.
+            fields.push(
+                LogicalField::record_metadata(
+                    source,
+                    &format!("{record_scope}.attributes"),
+                    LogicalType::AnyValue,
+                )
+                .retrieval_only(),
+            );
+            for level in [AttributeLevel::Scope, AttributeLevel::Resource] {
+                fields.push(
+                    LogicalField::attribute(source, level, "attributes", LogicalType::AnyValue)
+                        .retrieval_only(),
+                );
+            }
+        }
         for source in ["logs", "traces"] {
             fields.push(LogicalField::join_key(source, "trace_id"));
             fields.push(LogicalField::join_key(source, "span_id"));
