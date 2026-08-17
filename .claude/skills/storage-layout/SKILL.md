@@ -176,6 +176,10 @@ the services resolve their WAL directory from the TOML-level `[wal] wal_dir`
 
 All tables partitioned by `Hour(timestamp)` as `timestamp_hour`.
 
+### Declared sort order
+
+Every signal table declares an Iceberg sort order (order id `1`; id `0` is Iceberg's reserved unsorted order) — traces `(timestamp, trace_id)`, logs `(timestamp, service_name, severity_text)`, metrics `(timestamp, metric_name, service_name)`, profiles `(timestamp, service_name)`, all ascending nulls-first. `TableSchema::sort_key_columns()` in `iceberg/schemas.rs` is the single source of truth; the keys are frozen from what the compactor already produced, so declaring them rewrites nothing. Sort fields bind to the field ids of the schema they're declared against (materialized-label columns shift ids per tenant). Set at creation, and added to pre-existing tables by `table_manager.rs::backfill_sort_order` on load (metadata-only, idempotent, at most one commit per table). Declaration is table-level **intent**; per-file honesty is a separate fact carried by the file itself (Parquet row-group `sorting_columns` + `iceberg.sort-order-id` footer entry → manifest `sort_order_id`), and the DataFusion provider claims the ordering only for attested files, so any unattested file in range keeps the explicit sort. **Attesting an unsorted file yields wrong results, not slow ones** — a producer that can't guarantee the order must write unattested. Legacy files converge through compaction; no backfill job. See `docs/architecture/storage-layout.md#declared-sort-order`.
+
 ### Typed attribute maps
 
 New tables across all four signals store their attribute columns as Iceberg `Map<String,String>` — any attribute matches exactly (incl. regex/ordered) via `get_field` extraction; legacy tables keep JSON strings with the substring approximation. The querier detects the form per table (`attr_context_of`); labels/values/detected_fields read either form (`attr_documents`; `distinct()` skipped for maps — Arrow row format can't sort them). Epic #737 L1 (#730), logs first.

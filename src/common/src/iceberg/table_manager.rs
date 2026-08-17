@@ -88,6 +88,82 @@ impl IcebergTableManager {
         }
     }
 
+    /// Declare the canonical sort order on a table that does not already
+    /// carry it.
+    ///
+    /// Tables created before the ordering contract landed have the reserved
+    /// unsorted order as their default, so nothing they hold can ever be
+    /// attributed an ordering. Declaring the order is metadata-only and says
+    /// nothing about the files already in the table: a file is only claimed
+    /// as ordered when its own manifest entry attests the order id, so old
+    /// unsorted files stay unattributed and keep their explicit sorts.
+    ///
+    /// Idempotent: the order is resolved against the table's *current*
+    /// schema (field ids differ per tenant because of materialized-label
+    /// columns) and compared against the declared default, so this commits
+    /// at most once per table and is a no-op afterwards. A failed commit —
+    /// typically losing a CAS race to a concurrent writer — is logged and
+    /// skipped; the loaded handle stays valid and the next `ensure_table`
+    /// call retries.
+    async fn backfill_sort_order(&self, table_name: &str, table: &mut Table) {
+        let Some(table_schema) = schemas::TableSchema::from_table_name(table_name) else {
+            return;
+        };
+
+        let current_schema = match table.metadata().current_schema() {
+            Ok(schema) => schema.clone(),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    table = %table.identifier(),
+                    "Cannot read current schema; skipping sort-order declaration"
+                );
+                return;
+            }
+        };
+
+        let desired = match table_schema.sort_order_for(&current_schema) {
+            Ok(Some(order)) => order,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    table = %table.identifier(),
+                    "Cannot resolve the canonical sort order against this table's schema; \
+                     leaving it undeclared"
+                );
+                return;
+            }
+        };
+
+        if table
+            .metadata()
+            .default_sort_order()
+            .is_ok_and(|declared| *declared == desired)
+        {
+            return;
+        }
+
+        let ident = table.identifier().clone();
+        if let Err(e) = table
+            .new_transaction(None)
+            .replace_sort_order(desired)
+            .commit()
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                table = %ident,
+                "Failed to declare the canonical sort order; will retry on next load"
+            );
+        } else {
+            tracing::info!(
+                table = %ident,
+                "Declared the canonical sort order on a pre-existing table"
+            );
+        }
+    }
+
     /// Bring `table_name`'s schema forward to its current `schemas.toml`
     /// version via [`evolution::ensure_schema_current`].
     ///
@@ -134,6 +210,7 @@ impl IcebergTableManager {
         mut table: Table,
     ) -> Table {
         self.backfill_metadata_pruning_properties(&mut table).await;
+        self.backfill_sort_order(table_name, &mut table).await;
 
         if let Err(e) = self.ensure_schema_evolved(table_name, ident).await {
             tracing::warn!(
@@ -179,17 +256,8 @@ impl IcebergTableManager {
                 .await);
         }
 
-        let table_schema = match table_name {
-            "traces" => schemas::TableSchema::Traces,
-            "logs" => schemas::TableSchema::Logs,
-            "metrics_gauge" => schemas::TableSchema::MetricsGauge,
-            "metrics_sum" => schemas::TableSchema::MetricsSum,
-            "metrics_histogram" => schemas::TableSchema::MetricsHistogram,
-            "metrics_exponential_histogram" => schemas::TableSchema::MetricsExponentialHistogram,
-            "metrics_summary" => schemas::TableSchema::MetricsSummary,
-            "profiles" => schemas::TableSchema::Profiles,
-            _ => return Err(anyhow::anyhow!("Unknown table name: {table_name}")),
-        };
+        let table_schema = schemas::TableSchema::from_table_name(table_name)
+            .ok_or_else(|| anyhow::anyhow!("Unknown table name: {table_name}"))?;
 
         // Ensure namespace exists before creating table
         let namespace = names::build_namespace(tenant_slug, dataset_slug)?;
@@ -241,6 +309,12 @@ impl IcebergTableManager {
         let metrics_properties =
             crate::schema::metrics_properties_for_free_text_columns(&column_names);
 
+        // Declare the canonical per-signal sort order. Bound to this
+        // schema's field ids, since materialized-label columns shift them
+        // per tenant. Declaring it here is what lets producers attest their
+        // files and the query engine trust the attestation.
+        let sort_order = table_schema.sort_order_for(&schema)?;
+
         let mut builder = CreateTableBuilder::default();
         builder
             .with_name(table_name.to_string())
@@ -251,6 +325,9 @@ impl IcebergTableManager {
                 dataset_slug,
                 table_name,
             ));
+        if let Some(sort_order) = sort_order {
+            builder.with_sort_order(sort_order);
+        }
         // Bound accumulated metadata: keep a window of previous metadata files
         // and reclaim the rest on commit. Without this the catalog leaves one
         // orphaned `metadata.json` per commit, growing without bound under
@@ -575,6 +652,126 @@ mod tests {
                 .properties
                 .contains_key(evolution::SCHEMA_VERSION_PROPERTY),
             "metrics tables are not versioned by this mechanism yet"
+        );
+        Ok(())
+    }
+
+    /// The declared default order, as the column names it names in key order.
+    fn declared_key(table: &Table) -> anyhow::Result<Vec<String>> {
+        let schema = table.current_schema()?;
+        let order = table
+            .metadata()
+            .default_sort_order()
+            .map_err(|e| anyhow::anyhow!("no default sort order: {e}"))?;
+        Ok(order
+            .fields
+            .iter()
+            .map(|field| {
+                schema
+                    .fields()
+                    .iter()
+                    .find(|f| f.id == field.source_id)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| format!("<unknown field {}>", field.source_id))
+            })
+            .collect())
+    }
+
+    #[tokio::test]
+    async fn a_new_signal_table_declares_its_canonical_sort_order() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+
+        for (table_name, expected) in [
+            ("traces", vec!["timestamp", "trace_id"]),
+            ("logs", vec!["timestamp", "service_name", "severity_text"]),
+            (
+                "metrics_gauge",
+                vec!["timestamp", "metric_name", "service_name"],
+            ),
+            ("profiles", vec!["timestamp", "service_name"]),
+        ] {
+            let table = table_manager
+                .ensure_table(
+                    "sort_tenant",
+                    "sort_dataset",
+                    table_name,
+                    &MaterializedLabels::default(),
+                )
+                .await?;
+
+            assert_eq!(
+                table.metadata().default_sort_order_id,
+                schemas::SIGNAL_SORT_ORDER_ID,
+                "{table_name} must declare its order as the default, not the unsorted order"
+            );
+            assert_eq!(declared_key(&table)?, expected, "sort key of {table_name}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_pre_existing_table_gets_the_sort_order_declared_once() -> anyhow::Result<()> {
+        // A table created before the ordering contract: same schema, but no
+        // declared order at all.
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let namespace = names::build_namespace("legacy_tenant", "legacy_dataset")?;
+        let _ = catalog.clone().create_namespace(&namespace, None).await;
+        let ident = names::build_table_identifier("legacy_tenant", "legacy_dataset", "traces");
+        let create = CreateTableBuilder::default()
+            .with_name("traces".to_string())
+            .with_schema(schemas::TableSchema::Traces.schema()?)
+            .with_location(names::build_table_location(
+                "legacy_tenant",
+                "legacy_dataset",
+                "traces",
+            ))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        let legacy = catalog.clone().create_table(ident.clone(), create).await?;
+        assert!(
+            legacy
+                .metadata()
+                .default_sort_order()
+                .is_ok_and(|order| order.fields.is_empty()),
+            "the legacy table must start out with no declared order"
+        );
+
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        let upgraded = table_manager
+            .ensure_table(
+                "legacy_tenant",
+                "legacy_dataset",
+                "traces",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+        assert_eq!(declared_key(&upgraded)?, vec!["timestamp", "trace_id"]);
+        // The SQL catalog appends one metadata-log entry per commit, so this
+        // counts commits without depending on wall-clock timestamps.
+        let commits_after_first = upgraded.metadata().metadata_log.len();
+
+        // Idempotent: a second pass declares nothing further.
+        let again = table_manager
+            .ensure_table(
+                "legacy_tenant",
+                "legacy_dataset",
+                "traces",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+        assert_eq!(declared_key(&again)?, vec!["timestamp", "trace_id"]);
+        assert_eq!(
+            again.metadata().sort_orders.len(),
+            2,
+            "only the unsorted order and the declared one should exist"
+        );
+        assert_eq!(
+            again.metadata().metadata_log.len(),
+            commits_after_first,
+            "a second reconcile must not commit the sort order again"
         );
         Ok(())
     }

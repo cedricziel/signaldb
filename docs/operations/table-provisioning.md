@@ -81,6 +81,14 @@ Datasets created while the writer was down, datasets predating this behavior,
 and datasets added at runtime all converge on a later pass — no restart, no
 configuration-file edit.
 
+Loading an existing table also reconciles its metadata, which is how tables
+created by older builds catch up. Each step is idempotent, metadata-only, and
+commits at most once per table: metadata-pruning properties are backfilled, the
+canonical [sort order](../architecture/storage-layout.md#declared-sort-order) is
+declared if the table predates it, and traces/logs schemas are evolved to the
+current `schemas.toml` version. A step that loses a commit race is logged at
+`warn` and retried on the next load; it never fails the pass.
+
 ### Steady-state cost
 
 The writer remembers, per process, which `(tenant, dataset, table)` triples it
