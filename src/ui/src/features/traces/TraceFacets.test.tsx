@@ -39,6 +39,34 @@ function renderFacets(props: Partial<Parameters<typeof TraceFacets>[0]> = {}) {
 }
 
 describe("TraceFacets", () => {
+  it("offers an errors-only checkbox that toggles the status = Error filter", async () => {
+    stubFetchRoutes([{ match: "/api/v1/query", body: table([]) }]);
+    const { onAddFilter } = renderFacets();
+    const box = screen.getByRole("checkbox", { name: "Errors only" });
+    expect(box).not.toBeChecked();
+    await userEvent.click(box);
+    // Same filter the status facet would add, so groups, list, volume, and
+    // facet counts all narrow together.
+    expect(onAddFilter).toHaveBeenCalledWith({
+      field: "status",
+      value: "Error",
+    });
+  });
+
+  it("shows the errors-only checkbox checked while the filter is active and clears it on click", async () => {
+    stubFetchRoutes([{ match: "/api/v1/query", body: table([]) }]);
+    const { onRemoveFilter } = renderFacets({
+      filters: [{ field: "status", value: "Error" }],
+    });
+    const box = screen.getByRole("checkbox", { name: "Errors only" });
+    expect(box).toBeChecked();
+    await userEvent.click(box);
+    expect(onRemoveFilter).toHaveBeenCalledWith({
+      field: "status",
+      value: "Error",
+    });
+  });
+
   it("lists the enumerable facet fields", () => {
     stubFetchRoutes([{ match: "/api/v1/query", body: table([]) }]);
     renderFacets();

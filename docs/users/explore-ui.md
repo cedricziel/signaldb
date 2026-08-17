@@ -32,7 +32,12 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   span name (or by service, any observed root-span/resource attribute, or
   two dimensions combined via "Then by"), with per-group trace count,
   request rate, error rate, p50/p95 latency, and last-seen columns —
-  all sortable. Selecting a group lists just its traces; selecting a trace
+  all sortable. An **Errors only** checkbox at the top of the facet sidebar
+  narrows groups, list, volume chart, and facet counts to traces whose root
+  span has an error status (it is the `status = Error` facet filter as a
+  one-click toggle). Selecting a group lists just its traces — each with its
+  status as a coloured chip (error / ok / unset), sortable with errors
+  first; selecting a trace
   opens a waterfall with span details and error highlighting. A parent span
   that recorded no duration (an un-ended root, for instance) is drawn as a
   dashed outline over its child spans instead of a sliver; its own duration

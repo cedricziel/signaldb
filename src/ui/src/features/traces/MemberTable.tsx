@@ -10,12 +10,22 @@ import { formatTimestamp, nanosToMs } from "../../lib/time";
 import { formatDurationMs } from "../../lib/waterfall";
 import type { TraceGroupMember } from "../../api/traceGroupMembers";
 
+/** OTel status as a display word and a severity rank (errors sort first). */
+function statusOf(code: string): { word: string; rank: number } {
+  const word = code.toLowerCase();
+  if (word === "error") return { word, rank: 0 };
+  if (word === "ok") return { word, rank: 1 };
+  return { word: "unset", rank: 2 };
+}
+
 function memberSortValue(m: TraceGroupMember, key: string): SortValue {
   switch (key) {
     case "root":
       return m.spanName;
     case "service":
       return m.serviceName;
+    case "status":
+      return statusOf(m.statusCode).rank;
     case "duration":
       return BigInt(m.durationNanos);
     case "id":
@@ -64,6 +74,7 @@ export function MemberTable({
         toggle={toggle}
       />
       <SortTh label="Service" sortKey="service" sort={sort} toggle={toggle} />
+      <SortTh label="Status" sortKey="status" sort={sort} toggle={toggle} />
       <SortTh
         label="Time"
         sortKey="time"
@@ -95,7 +106,7 @@ export function MemberTable({
       <table className="trace-table" aria-busy="true">
         <thead>{header}</thead>
         <tbody>
-          <SkeletonRows rows={8} columns={5} numericFrom={3} />
+          <SkeletonRows rows={8} columns={6} numericFrom={4} />
         </tbody>
       </table>
     );
@@ -119,6 +130,14 @@ export function MemberTable({
                 <button className="trace-open">{m.spanName}</button>
               </td>
               <td>{m.serviceName}</td>
+              <td>
+                {(() => {
+                  const { word } = statusOf(m.statusCode);
+                  return (
+                    <span className={`status-chip status-${word}`}>{word}</span>
+                  );
+                })()}
+              </td>
               <td>{formatTimestamp(nanosToMs(m.startNs))}</td>
               <td className="num">
                 {formatDurationMs(nanosToMs(m.durationNanos))}
