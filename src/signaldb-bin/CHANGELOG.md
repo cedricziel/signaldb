@@ -2,6 +2,8 @@
 
 ## [0.3.0](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.1.3...signaldb-bin-v0.3.0) (2026-08-17)
 
+> **Note:** this release jumps `signaldb-bin` from the `0.1.x` line straight to `0.3.0`. `signaldb-bin` now versions in lockstep with the other core crates (`signaldb-cli`, `acceptor`, `router`, `writer`, `querier`, `compactor`, `common`) through a release-please `linked-versions` group named `signaldb-core`, so it adopted the group's highest version. The jump is pure harmonization — there is no additional feature scope behind the skipped `0.2.x` line.
+
 
 ### Features
 
