@@ -191,7 +191,7 @@ Iceberg commits delays other tenants' commits within a cycle — failures are
 isolated, commit latency is not.) Each WAL directory uses a segment-based
 structure:
 
-```
+```text
 /data/wal/                          # ACCEPTOR_WAL_DIR or WRITER_WAL_DIR
 └── acme/                           # Tenant
     └── production/                 # Dataset
@@ -230,7 +230,7 @@ lying directly in `{wal_dir}/writer` instead of in a
 `{tenant}/{dataset}/{signal}` tree. No operator step is needed: on startup the
 writer adopts any such segments as a drain-only WAL, logging
 
-```
+```text
 WARN Adopting legacy single-directory WAL segments for draining; new writes use the per-tenant/dataset/signal tree
 ```
 
