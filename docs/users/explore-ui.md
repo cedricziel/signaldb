@@ -33,7 +33,10 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   two dimensions combined via "Then by"), with per-group trace count,
   request rate, error rate, p50/p95 latency, and last-seen columns —
   all sortable. Selecting a group lists just its traces; selecting a trace
-  opens a waterfall with span details and error highlighting. The span
+  opens a waterfall with span details and error highlighting. Hovering a
+  span in the waterfall shows a tooltip with the span name, its service,
+  namespace, and version, its kind (coloured like the bar), duration, and
+  status, without changing the selection. The span
   panel lists that span's events, giving exceptions an error treatment that
   surfaces the message, type, and stacktrace, followed by its attributes —
   split into **Span** and **Resource** sections and sorted alphabetically,

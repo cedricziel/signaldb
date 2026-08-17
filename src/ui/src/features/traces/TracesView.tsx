@@ -27,6 +27,11 @@ import {
 import { SignalHistogram } from "../explore/SignalHistogram";
 import { AttributeValue } from "../../components/AttributeValue";
 import { SemanticKey } from "../../components/SemanticKey";
+import {
+  useVizPointer,
+  VizTooltip,
+  type VizTooltipRow,
+} from "../../components/VizTooltip";
 import { useAttributeSearch, useSemantics } from "../../hooks/useSemantics";
 import { mergeLabelSuggestions } from "../../lib/labelSuggestions";
 import { groupBySemanticTitle } from "../../lib/semantics";
@@ -94,6 +99,42 @@ const KIND_CLASS: Record<string, string> = {
 function kindClass(kind: string | undefined): string {
   if (!kind) return "";
   return KIND_CLASS[kind.toUpperCase()] ?? "";
+}
+
+/** The kind's palette colour (what `.span-bar.kind-*` and the legend use). */
+const KIND_SWATCH: Record<string, string> = {
+  SERVER: "var(--svc-a)",
+  CLIENT: "var(--svc-b)",
+  INTERNAL: "var(--svc-c)",
+  PRODUCER: "var(--svc-d)",
+  CONSUMER: "var(--svc-e)",
+};
+
+/**
+ * Rows of the waterfall hover tooltip: who ran the span (service, namespace,
+ * version from the resource), its kind, duration, and status. Absent
+ * namespace/version/kind stay listed, muted, so the layout is stable while
+ * the pointer moves between spans.
+ */
+function spanTooltipRows(
+  span: TempoSpan,
+  durationMs: number,
+  kind: string | undefined,
+): VizTooltipRow[] {
+  const optional = (label: string, value: unknown): VizTooltipRow =>
+    value === undefined || value === ""
+      ? { label, value: "–", muted: true }
+      : { label, value: String(value) };
+  return [
+    { label: "service", value: span.serviceName },
+    optional("namespace", span.attributes["resource.service.namespace"]),
+    optional("version", span.attributes["resource.service.version"]),
+    kind
+      ? { swatch: KIND_SWATCH[kind.toUpperCase()], label: "kind", value: kind }
+      : { label: "kind", value: "–", muted: true },
+    { label: "duration", value: formatDurationMs(durationMs) },
+    { label: "status", value: span.status },
+  ];
 }
 
 function plural(n: number, noun: string): string {
@@ -819,6 +860,17 @@ function useSidebarWidth() {
 function TraceDetail({ state, update }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const { width: sidebarWidth, startDrag } = useSidebarWidth();
+  // Waterfall hover tooltip: the shared VizTooltip, hosted on the (non-
+  // scrolling) trace body so it can overlap the detail pane and isn't
+  // affected by the waterfall's own scroll offset.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const pointer = useVizPointer(bodyRef);
+  const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null);
+  const tipId = useId();
+  const clearHover = () => {
+    setHoveredSpanId(null);
+    pointer.clear();
+  };
   const trace = useQuery({
     queryKey: ["tempo-trace", state.trace, state.tenant, state.dataset],
     queryFn: () => tempoGetTrace(state.trace),
@@ -877,6 +929,9 @@ function TraceDetail({ state, update }: Props) {
 
   if (!waterfall) return null;
 
+  const hoveredRow = hoveredSpanId
+    ? waterfall.rows.find((r) => r.span.spanId === hoveredSpanId)
+    : undefined;
   const selectedRow =
     waterfall.rows.find((r) => r.span.spanId === selected) ??
     // An error span with no recorded exception (e.g. a root span that only
@@ -927,17 +982,35 @@ function TraceDetail({ state, update }: Props) {
         </div>
       )}
       <div
-        className="trace-body"
+        className="trace-body viz-host"
+        ref={bodyRef}
         style={{ "--span-detail-w": `${sidebarWidth}px` } as CSSProperties}
       >
-        <div className="waterfall" role="list" aria-label="Spans">
+        <div
+          className="waterfall"
+          role="list"
+          aria-label="Spans"
+          onPointerLeave={clearHover}
+        >
           {waterfall.rows.map((row) => (
             <button
               key={row.span.spanId}
               role="listitem"
               className="span-row"
               aria-selected={selectedRow?.span.spanId === row.span.spanId}
+              aria-describedby={
+                hoveredSpanId === row.span.spanId ? tipId : undefined
+              }
               onClick={() => setSelected(row.span.spanId)}
+              onPointerMove={(e) => {
+                setHoveredSpanId(row.span.spanId);
+                pointer.track(e);
+              }}
+              onFocus={(e) => {
+                setHoveredSpanId(row.span.spanId);
+                pointer.anchorTo(e.currentTarget);
+              }}
+              onBlur={clearHover}
             >
               <span
                 className="span-label"
@@ -980,6 +1053,19 @@ function TraceDetail({ state, update }: Props) {
               update={update}
             />
           </>
+        )}
+        {hoveredRow && pointer.anchor && (
+          <VizTooltip
+            id={tipId}
+            anchor={pointer.anchor}
+            host={pointer.host}
+            title={hoveredRow.span.name}
+            rows={spanTooltipRows(
+              hoveredRow.span,
+              hoveredRow.durationMs,
+              spanKinds[hoveredRow.span.spanId],
+            )}
+          />
         )}
       </div>
     </div>
