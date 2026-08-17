@@ -550,9 +550,11 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+          # No draft/prerelease inputs: release-please already created the
+          # release with the flags from release-please-config.json, and
+          # softprops overrides them when they are set here (an explicit
+          # `prerelease: false` would flip a pre-release back to a full one).
           tag_name: ${{ needs.release-please.outputs.tag_name }}
-          draft: false
-          prerelease: ${{ contains(needs.release-please.outputs.tag_name, 'alpha') || contains(needs.release-please.outputs.tag_name, 'beta') || contains(needs.release-please.outputs.tag_name, 'rc') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
