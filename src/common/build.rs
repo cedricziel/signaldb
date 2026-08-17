@@ -40,7 +40,16 @@ fn main() {
         panic!("vendored semconv failed to resolve: {}", join_errors(&errs))
     });
 
-    let signaldb_version = signaldb_version(&signaldb_dir);
+    let signaldb_schema_url = signaldb_schema_url(&signaldb_dir);
+    // Exposed as `common::self_monitoring::SIGNALDB_SCHEMA_URL` so the
+    // instrumentation scopes claim the same registry version this snapshot
+    // bundles; release-please bumps the manifest with the crate version.
+    println!("cargo:rustc-env=SIGNALDB_SCHEMA_URL={signaldb_schema_url}");
+    let signaldb_version = signaldb_schema_url
+        .rsplit('/')
+        .next()
+        .unwrap_or("0.0.0")
+        .to_string();
     let signaldb_doc = RegistryDocument::from_dir("signaldb", &signaldb_version, &signaldb_dir)
         .unwrap_or_else(|e| panic!("parse otel/registry: {e}"));
     let signaldb = Registry::resolve(&signaldb_doc, &[&otel])
@@ -61,17 +70,17 @@ fn main() {
     .unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
 }
 
-/// SignalDB's registry version is the last path segment of the manifest's
-/// `schema_url` (`https://signaldb.dev/schemas/0.1.0` → `0.1.0`).
-fn signaldb_version(dir: &Path) -> String {
+/// The manifest's top-level `schema_url` (`https://signaldb.dev/schemas/X.Y.Z`);
+/// its last path segment is the registry version. Only the first
+/// `schema_url:` line counts — the dependency entries below it are indented.
+fn signaldb_schema_url(dir: &Path) -> String {
     let manifest = std::fs::read_to_string(dir.join("manifest.yaml"))
         .unwrap_or_else(|e| panic!("otel/registry/manifest.yaml: {e}"));
     manifest
         .lines()
-        .find_map(|l| l.trim().strip_prefix("schema_url:"))
-        .and_then(|url| url.trim().rsplit('/').next())
-        .map(str::to_string)
-        .unwrap_or_else(|| "0.0.0".to_string())
+        .find_map(|l| l.strip_prefix("schema_url:"))
+        .map(|url| url.trim().to_string())
+        .unwrap_or_else(|| panic!("otel/registry/manifest.yaml: no top-level schema_url"))
 }
 
 fn join_errors(errs: &[schema_model::ValidationError]) -> String {

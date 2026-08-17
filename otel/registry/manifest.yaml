@@ -8,7 +8,15 @@
 # pinned against this file by a unit test in the common crate.
 name: signaldb
 description: SignalDB self-monitoring semantic conventions
-schema_url: https://signaldb.dev/schemas/0.1.0
+# The registry version tracks the SignalDB release: release-please rewrites
+# the version between the markers below (extra-files on src/common), and
+# src/common/build.rs exposes the URL to the code as SIGNALDB_SCHEMA_URL,
+# which every instrumentation scope SignalDB emits carries. Do not edit by
+# hand — the common crate's version and this URL are asserted equal in
+# src/common/tests/registry_pins.rs.
+# x-release-please-start-version
+schema_url: https://signaldb.dev/schemas/0.2.1
+# x-release-please-end
 dependencies:
   - schema_url: https://opentelemetry.io/schemas/1.43.0
     registry_path: https://github.com/open-telemetry/semantic-conventions@v1.43.0[model]

@@ -299,3 +299,34 @@ fn vendored_semconv_matches_self_monitoring_pin() {
         "vendor/otel-semconv/{pinned}/model missing"
     );
 }
+
+/// SignalDB's own registry version (`otel/registry/manifest.yaml`
+/// `schema_url`) is bumped by release-please together with this crate, and
+/// `build.rs` hands it to the code as `SIGNALDB_SCHEMA_URL`, which the
+/// instrumentation scopes claim. All three must agree.
+#[test]
+fn signaldb_schema_url_tracks_crate_version_and_manifest() {
+    let manifest = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../otel/registry/manifest.yaml"),
+    )
+    .expect("otel/registry/manifest.yaml");
+    let manifest_url = manifest
+        .lines()
+        .find_map(|l| l.strip_prefix("schema_url:"))
+        .map(str::trim)
+        .expect("top-level schema_url in manifest");
+
+    let url = common::self_monitoring::SIGNALDB_SCHEMA_URL;
+    assert_eq!(
+        url, manifest_url,
+        "SIGNALDB_SCHEMA_URL drifted from the manifest"
+    );
+    assert_eq!(
+        url,
+        format!("https://signaldb.dev/schemas/{}", env!("CARGO_PKG_VERSION")),
+        "registry schema_url must carry the common crate version (release-please extra-files)"
+    );
+    // The manifest line sits inside release-please generic-updater markers.
+    assert!(manifest.contains("# x-release-please-start-version"));
+    assert!(manifest.contains("# x-release-please-end"));
+}

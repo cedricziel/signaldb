@@ -129,7 +129,11 @@ pub fn should_count_tenant(tenant_id: &str) -> bool {
 
 impl AppMetrics {
     fn from_global_meter() -> Self {
-        let meter = global::meter("signaldb");
+        let meter = global::meter_with_scope(
+            opentelemetry::InstrumentationScope::builder("signaldb")
+                .with_schema_url(super::SIGNALDB_SCHEMA_URL)
+                .build(),
+        );
         Self {
             http_request_duration: meter
                 .f64_histogram("http.server.request.duration")

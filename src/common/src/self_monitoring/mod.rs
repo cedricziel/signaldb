@@ -136,10 +136,19 @@ pub(crate) fn build_metadata(config: &Configuration) -> MetadataMap {
 }
 
 /// The OpenTelemetry semantic-conventions version SignalDB's own telemetry
-/// targets. Single source of truth: the resource and instrumentation-scope
-/// `schema_url` both derive from it, and the convention registry pins the
-/// same version.
+/// targets. Single source of truth: the resource `schema_url` derives from
+/// it, and the convention registry (`otel/registry/manifest.yaml`) declares
+/// the same version as its upstream dependency.
 pub const SEMCONV_SCHEMA_URL: &str = "https://opentelemetry.io/schemas/1.43.0";
+
+/// SignalDB's own semantic-convention registry version
+/// (`https://signaldb.dev/schemas/<version>`), read from
+/// `otel/registry/manifest.yaml` by the build script. Every instrumentation
+/// scope SignalDB emits carries it, since the `signaldb.*` attributes are
+/// defined there (layered on [`SEMCONV_SCHEMA_URL`]). The version tracks the
+/// SignalDB release: release-please bumps the manifest with the `common`
+/// crate, and `tests/registry_pins.rs` asserts the two stay equal.
+pub const SIGNALDB_SCHEMA_URL: &str = env!("SIGNALDB_SCHEMA_URL");
 
 /// Per-process `service.instance.id`, generated once so the
 /// `(service.namespace, service.name, service.instance.id)` triplet is

@@ -93,10 +93,12 @@ pub mod utils {
             .with(tracing_subscriber::fmt::layer().with_writer(writer));
 
         if let Some(telemetry) = telemetry {
-            // Scope carries the pinned semconv schema_url alongside the
-            // resource-level one set in `build_resource`.
+            // The scope claims SignalDB's own registry (which layers on the
+            // semconv version the resource-level schema_url in
+            // `build_resource` pins), since the spans carry `signaldb.*`
+            // attributes defined there.
             let scope = opentelemetry::InstrumentationScope::builder("signaldb")
-                .with_schema_url(crate::self_monitoring::SEMCONV_SCHEMA_URL)
+                .with_schema_url(crate::self_monitoring::SIGNALDB_SCHEMA_URL)
                 .build();
             let tracer = telemetry.tracer_provider().tracer_with_scope(scope);
             let otel_span_layer =
