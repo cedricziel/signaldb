@@ -313,6 +313,43 @@ PartitionField {
 
 Hour-level partitioning automatically enables day/month/year pruning in DataFusion queries.
 
+### Declared sort order
+
+Every signal table also declares an Iceberg **sort order** in its table
+metadata, under order id `1` (Iceberg reserves order id `0` for "unsorted").
+The key is time-leading for every signal, matching both the hour partitioning
+and the dominant query shape, "filter a time range, order by time, take the
+most recent _n_":
+
+| Table                  | Sort key                                     |
+| ---------------------- | -------------------------------------------- |
+| `traces`               | `timestamp`, `trace_id`                      |
+| `logs`                 | `timestamp`, `service_name`, `severity_text` |
+| `metrics_*` (all five) | `timestamp`, `metric_name`, `service_name`   |
+| `profiles`             | `timestamp`, `service_name`                  |
+
+All columns are ascending with nulls first. `TableSchema::sort_key_columns()`
+in `iceberg/schemas.rs` is the single source of truth: producers sort by it,
+and it is the only ordering the query engine is ever told about. Sort fields
+are bound to the field ids of the schema they are declared against, because
+materialized-label columns shift those ids from tenant to tenant.
+
+The declaration is table-level **intent**. Whether a given file honors it is a
+per-file fact, recorded in the file itself: a producer that sorts its rows
+writes Parquet row-group `sorting_columns` plus an `iceberg.sort-order-id`
+footer entry, which becomes the `sort_order_id` on the file's manifest entry.
+The DataFusion provider claims the declared ordering only for files carrying
+that attestation, so a table holding any unattested file keeps its explicit
+sort and results stay correct. Files written before the table declared an
+order are simply unattested; compaction converges them as it rewrites
+partitions. There is no backfill job.
+
+The invariant the whole arrangement rests on: **a file may only be attested if
+its rows really are sorted by the declared key.** Attesting a file that is not
+sorted does not make queries slower, it makes them wrong — the engine drops a
+sort it believed was redundant. A code path that cannot guarantee the order
+must write its files unattested.
+
 ### Table Schemas
 
 `schemas.toml` (compiled into the binary via `include_str!`) is the physical
@@ -699,18 +736,18 @@ The WAL enforces non-empty `tenant_id` and `dataset_id` at construction time.
 
 Each WAL segment consists of three files:
 
-| File     | Format                       | Content                                                                                    |
-| -------- | ---------------------------- | ------------------------------------------------------------------------------------------ |
-| `.log`   | Segment header + framed records | `SDBW` magic + u32 version, then `[u32 len][u32 crc32][bincode WalEntry]` per record     |
-| `.data`  | Framed records               | `[SDBR magic][u32 len][u32 crc32][Arrow IPC stream]` per entry; entries address the record header by offset |
-| `.index` | Binary                       | 8-byte count + 16-byte UUIDs of processed entries                                          |
+| File     | Format                          | Content                                                                                                     |
+| -------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `.log`   | Segment header + framed records | `SDBW` magic + u32 version, then `[u32 len][u32 crc32][bincode WalEntry]` per record                        |
+| `.data`  | Framed records                  | `[SDBR magic][u32 len][u32 crc32][Arrow IPC stream]` per entry; entries address the record header by offset |
+| `.index` | Binary                          | 8-byte count + 16-byte UUIDs of processed entries                                                           |
 
 #### Record Framing (format v1)
 
 Every record in both files is self-describing and checksummed
-(`src/common/src/wal/framing.rs`), so corruption at rest is *attributable*
+(`src/common/src/wal/framing.rs`), so corruption at rest is _attributable_
 (the read names the entry, tenant, dataset, signal, and offset) and
-*skippable* (the reader steps over the one bad record and keeps serving its
+_skippable_ (the reader steps over the one bad record and keeps serving its
 neighbours) instead of surfacing as an opaque Arrow parse error that poisons
 the whole segment.
 
@@ -722,7 +759,7 @@ the whole segment.
 ```
 
 All integers are little-endian; the checksum is CRC-32 (IEEE). A `WalEntry`'s
-`data_offset` points at the `.data` record *header* and its `data_size` is the
+`data_offset` points at the `.data` record _header_ and its `data_size` is the
 payload length (header excluded), so a read cross-checks the header's length
 against the entry before trusting the checksum. Any mismatch — wrong magic,
 length disagreement, or CRC failure — is reported as corruption of that one
@@ -894,9 +931,13 @@ When the `WalProcessor` encounters data for a new tenant/dataset/table combinati
 3. Call `CatalogManager::ensure_table()`, which delegates to `IcebergTableManager::ensure_table()`:
    - Try `load_tabular()` -- a single catalog round-trip returning fresh metadata
    - On not-found, `create_namespace` (idempotent) then create with `CreateTableBuilder`:
-     schema and partition spec (Hour on timestamp) from `iceberg/schemas.rs` matched by
-     table name, location `{tenant_slug}/{dataset_slug}/{table_name}` relative to the
-     object store root
+     schema, partition spec (Hour on timestamp) and sort order from `iceberg/schemas.rs`
+     matched by table name, location `{tenant_slug}/{dataset_slug}/{table_name}` relative
+     to the object store root
+   - On found, the table is reconciled before it is handed back: metadata-pruning
+     properties are backfilled, the declared sort order is added if the table predates it,
+     and the schema is evolved to the current `schemas.toml` version. Each step is
+     idempotent and commits at most once per table
    - Concurrent "already exists" errors resolve by reloading the table
 4. The returned `Table` handle is deliberately **not cached** (issue #537): a handle carries
    metadata as of load time, and a cached handle would hide snapshots committed by other

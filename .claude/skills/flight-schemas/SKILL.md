@@ -138,6 +138,10 @@ Tables:
 
 All partitioned by `Hour(timestamp)`.
 
+## Declared sort order
+
+Beyond the partition spec, every signal table declares an Iceberg sort order (order id `1`) built by `TableSchema::sort_order_for()` in `iceberg/schemas.rs`: traces `(timestamp, trace_id)`, logs `(timestamp, service_name, severity_text)`, metrics `(timestamp, metric_name, service_name)`, profiles `(timestamp, service_name)` — ascending, nulls first. Sort fields carry schema **field ids**, so they must be resolved against the same schema being declared (materialized labels shift ids per tenant); `sort_key_columns()` is the name-level source of truth every producer sorts by. See `docs/architecture/storage-layout.md#declared-sort-order`.
+
 ## Flight RPC Methods by Service
 
 | Method          | Router | Querier | Writer      |
