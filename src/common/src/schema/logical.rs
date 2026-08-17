@@ -236,6 +236,11 @@ impl LogicalSchema {
             LogicalField::record_metadata("traces", "is_root", LogicalType::Bool),
             LogicalField::record_metadata("traces", "trace_state", LogicalType::String),
             LogicalField::record_metadata("traces", "name", LogicalType::String),
+            // The span's events list (name, timestamp, attributes per event),
+            // as a JSON array. Retrieval-only like `body`: exception fields
+            // are addressed via `exception.*`, not by filtering on the list.
+            LogicalField::record_metadata("traces", "span_events", LogicalType::AnyValue)
+                .retrieval_only(),
             LogicalField::record_metadata("traces", "span.name", LogicalType::String),
             LogicalField::record_metadata("traces", "duration", LogicalType::DurationNs),
             LogicalField::record_metadata("traces", "duration_nano", LogicalType::DurationNs),

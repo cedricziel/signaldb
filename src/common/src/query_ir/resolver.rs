@@ -44,6 +44,9 @@ pub enum Resolved {
         key: String,
         value_type: ValueType,
     },
+    /// The whole span-events list, read from an events JSON-array column and
+    /// normalized to `[{name, timestamp_unix_nano, attributes}]` (String).
+    SpanEvents { events_column: String },
 }
 
 impl Resolved {
@@ -53,6 +56,7 @@ impl Resolved {
             Resolved::Column { value_type, .. } => value_type,
             Resolved::JsonPath { value_type, .. } => value_type,
             Resolved::EventAttribute { value_type, .. } => value_type,
+            Resolved::SpanEvents { .. } => &ValueType::String,
         }
     }
 }

@@ -729,6 +729,14 @@ impl FieldResolver for SchemaResolver {
                 value_type: ValueType::String,
             });
         }
+        if self.source == "traces"
+            && field == "span_events"
+            && self.physical_names.contains("events")
+        {
+            return Some(Resolved::SpanEvents {
+                events_column: "events".to_string(),
+            });
+        }
         if let Some(logical) = self.logical_schema.resolve(&self.source, field) {
             let value_type = logical_to_value_type(logical.value_type);
             return match self.column_for(field, value_type.clone()) {
@@ -1603,6 +1611,7 @@ impl Lowering<'_> {
                 key,
                 ..
             }) => Ok(self.event_attr_expr(&events_column, &event_name, &key)),
+            Some(Resolved::SpanEvents { events_column }) => Ok(span_events_expr(&events_column)),
             None => Err(QuerierError::InvalidInput(format!(
                 "field '{logical}' has no canonical type"
             ))),
@@ -1713,6 +1722,7 @@ impl Lowering<'_> {
                     key,
                     ..
                 } => self.event_attr_expr(events_column, event_name, key),
+                Resolved::SpanEvents { events_column } => span_events_expr(events_column),
             };
             (is_json, ty, expr)
         };
@@ -1869,6 +1879,9 @@ impl Lowering<'_> {
                             }) => self
                                 .event_attr_expr(&events_column, &event_name, &key)
                                 .alias(safe_ident(f)),
+                            Some(Resolved::SpanEvents { events_column }) => {
+                                span_events_expr(&events_column).alias(safe_ident(f))
+                            }
                             None => col(safe_ident(f)),
                         }
                     }
@@ -2171,6 +2184,70 @@ fn extract_event_attr(events_json: &str, event_name: &str, key: &str) -> Option<
         serde_json::Value::Null => None,
         other => Some(other.to_string()),
     }
+}
+
+/// The `span_events` logical field: the events column through the
+/// `ir_span_events` UDF (see [`SpanEventsUdf`]).
+fn span_events_expr(events_column: &str) -> Expr {
+    ScalarUDF::from(SpanEventsUdf::new()).call(vec![col(events_column)])
+}
+
+/// A scalar UDF, `ir_span_events(events) -> Utf8`, that normalizes the stored
+/// per-span events JSON (`[{name, timestamp_unix_nano, attributes_json}]`,
+/// attributes double-encoded as a string by the writer) into the client
+/// shape `[{name, timestamp_unix_nano, attributes: {...}}]`. NULL stays NULL;
+/// malformed input yields `[]`, matching `parse_span_events`' tolerance.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct SpanEventsUdf {
+    signature: Signature,
+}
+
+impl SpanEventsUdf {
+    fn new() -> Self {
+        SpanEventsUdf {
+            signature: Signature::exact(vec![DataType::Utf8], Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for SpanEventsUdf {
+    fn name(&self) -> &str {
+        "ir_span_events"
+    }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+    fn invoke_with_args(
+        &self,
+        args: ScalarFunctionArgs,
+    ) -> datafusion::error::Result<ColumnarValue> {
+        let num_rows = args.number_rows;
+        let events = StrArg::try_from(&args.args[0])?;
+        let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 64);
+        for i in 0..num_rows {
+            builder.append_option(events.value_at(i).map(normalize_span_events));
+        }
+        Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+    }
+}
+
+/// Re-encode the stored events JSON with each event's attributes as an
+/// object (see [`SpanEventsUdf`]).
+fn normalize_span_events(events_json: &str) -> String {
+    let events: Vec<serde_json::Value> = common::model::span::parse_span_events(events_json)
+        .into_iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "timestamp_unix_nano": e.timestamp_unix_nano,
+                "attributes": e.attributes,
+            })
+        })
+        .collect();
+    serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string())
 }
 
 /// Whether a value type compares numerically.
@@ -3983,6 +4060,77 @@ mod tests {
             Some(&Some("std::io::Error".to_string()))
         );
         assert_eq!(by_name.get("GET /c"), Some(&None));
+    }
+
+    // `span_events` is the whole events list of a span (issue #1280): the
+    // stored `events` column, normalized so each event's attributes are a
+    // JSON object rather than the writer's double-encoded `attributes_json`
+    // string. A span without events yields NULL; the field is retrieval-only.
+    #[tokio::test]
+    async fn span_events_returns_the_normalized_events_list() {
+        let svc = IrService::new(traces_events_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["span_id", "span_events"]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let mut by_span: HashMap<String, Option<serde_json::Value>> = HashMap::new();
+        for batch in &batches {
+            let ids = batch
+                .column_by_name("span_id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let events = batch
+                .column_by_name("span_events")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                by_span.insert(
+                    ids.value(i).to_string(),
+                    (!events.is_null(i)).then(|| serde_json::from_str(events.value(i)).unwrap()),
+                );
+            }
+        }
+        assert_eq!(by_span.get("s0"), Some(&None), "no events column value");
+        assert_eq!(
+            by_span.get("s1"),
+            Some(&Some(serde_json::json!([{
+                "name": "exception",
+                "timestamp_unix_nano": 1700000000000000000_u64,
+                "attributes": {
+                    "exception.type": "std::io::Error",
+                    "exception.message": "boom",
+                    "exception.stacktrace": "at foo"
+                }
+            }])))
+        );
+        assert_eq!(by_span.get("s2"), Some(&Some(serde_json::json!([]))));
+    }
+
+    #[tokio::test]
+    async fn span_events_is_retrieval_only() {
+        let svc = IrService::new(traces_events_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["span_id"],
+            "pipeline": [{ "where": { "field": "span_events", "op": "exists" } }]
+        }));
+        let err = svc.plan(&d, "t", "d", 0).await.expect_err("rejected");
+        assert!(
+            format!("{err}").contains("span_events"),
+            "unexpected error: {err}"
+        );
     }
 
     // The Errors & Exceptions UI groups spans by exception.type to count
