@@ -4,19 +4,19 @@ Fork work first (everything downstream pins it), then declaration, producers, en
 
 ## 1. Fork: sorting_columns writer support (D4a)
 
-- [ ] 1.1 Fork test: writer properties derived from a table with SortOrder carry `sorting_columns` matching the order; footer of a written file attests it
-- [ ] 1.2 Implement `set_sorting_columns` derivation in the fork's writer-properties builder (mirror #379's bloom plumbing); PR upstream to JanKaul/iceberg-rust; pin fork rev in workspace
+- [x] 1.1 Fork test: writer properties derived from a table with SortOrder carry `sorting_columns` matching the order; footer of a written file attests it
+- [x] 1.2 Implement `set_sorting_columns` derivation in the fork's writer-properties builder (mirror #379's bloom plumbing); PR upstream to JanKaul/iceberg-rust; pin fork rev in workspace
 
 ## 2. Fork: provider output_ordering (D4b)
 
-- [ ] 2.1 Fork test: scan over footer-attested files reports the table SortOrder as output ordering; scan including one unattested file downgrades the claim (Inexact — explicit sort retained)
-- [ ] 2.2 Map table SortOrder → `with_output_ordering` in `datafusion_iceberg`, gating per-file claims on footer attestation; PR upstream; pin fork rev
+- [x] 2.1 Fork test: scan over footer-attested files reports the table SortOrder as output ordering; scan including one unattested file downgrades the claim (Inexact — explicit sort retained)
+- [x] 2.2 Map table SortOrder → `with_output_ordering` in `datafusion_iceberg`, gating per-file claims on footer attestation; PR upstream; pin fork rev
 
 ## 3. Table metadata: declare canonical sort orders (D2)
 
-- [ ] 3.1 Tests: new signal tables carry the canonical per-signal SortOrder (incl. profiles `(timestamp, service_name)`); startup add-sort-order on a pre-existing table is idempotent
-- [ ] 3.2 Add `with_sort_order` to table creation in `table_manager.rs` with per-signal keys; add startup metadata upgrade for existing tables; remove the profiles no-sort warning path in the compactor by defining its key
-- [ ] 3.3 Release-note the BREAKING metadata addition per post-1.0 policy
+- [x] 3.1 Tests: new signal tables carry the canonical per-signal SortOrder (incl. profiles `(timestamp, service_name)`); startup add-sort-order on a pre-existing table is idempotent
+- [x] 3.2 Add `with_sort_order` to table creation in `table_manager.rs` with per-signal keys; add startup metadata upgrade for existing tables; remove the profiles no-sort warning path in the compactor by defining its key
+- [x] 3.3 Release-note the BREAKING metadata addition per post-1.0 policy
 
 ## 4. Ingest-path sorting (D3)
 

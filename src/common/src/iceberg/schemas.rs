@@ -5,6 +5,16 @@ use iceberg_rust::spec::partition::{
     PartitionField, PartitionSpec, PartitionSpecBuilder, Transform,
 };
 use iceberg_rust::spec::schema::Schema;
+use iceberg_rust::spec::sort::{NullOrder, SortDirection, SortField, SortOrder, SortOrderBuilder};
+
+/// Order id carried by every signal table's declared sort order.
+///
+/// Iceberg reserves order id `0` for the unsorted order, so a declared order
+/// needs an id of its own. Every signal table uses the same id because every
+/// signal table declares exactly one order; readers compare a data file's
+/// `sort_order_id` against the table's default order id to decide whether the
+/// file attests that order.
+pub const SIGNAL_SORT_ORDER_ID: i32 = 1;
 
 /// Create an hour partition spec for a schema, partitioning on the given source field.
 /// Uses the Iceberg convention: partition field_id = 1000 + source_id.
@@ -297,6 +307,98 @@ impl TableSchema {
                 "Custom partition specs must be defined in configuration"
             )),
         }
+    }
+
+    /// The signal table this name refers to, or `None` for a name that is
+    /// not one of SignalDB's own signal tables.
+    ///
+    /// Deliberately never returns [`TableSchema::Custom`]: callers use this
+    /// to decide whether the built-in schema, partition spec and sort order
+    /// apply, and none of those are defined for a custom table.
+    pub fn from_table_name(table_name: &str) -> Option<TableSchema> {
+        match table_name {
+            "traces" => Some(TableSchema::Traces),
+            "logs" => Some(TableSchema::Logs),
+            "metrics_gauge" => Some(TableSchema::MetricsGauge),
+            "metrics_sum" => Some(TableSchema::MetricsSum),
+            "metrics_histogram" => Some(TableSchema::MetricsHistogram),
+            "metrics_exponential_histogram" => Some(TableSchema::MetricsExponentialHistogram),
+            "metrics_summary" => Some(TableSchema::MetricsSummary),
+            "profiles" => Some(TableSchema::Profiles),
+            _ => None,
+        }
+    }
+
+    /// The canonical sort key for this table, as column names in key order.
+    ///
+    /// Time-leading for every signal: `ORDER BY timestamp` with a limit is
+    /// the dominant query shape, and hour partitioning already clusters on
+    /// the same column. These are exactly the keys the compactor has always
+    /// sorted its output by, so declaring them costs no rewrite of existing
+    /// data. A custom table has no canonical key.
+    ///
+    /// This is the single source of truth for the ordering contract: every
+    /// producer sorts by it and the query engine is only ever told about
+    /// this order (see `openspec/specs/declared-data-ordering`).
+    pub fn sort_key_columns(&self) -> &'static [&'static str] {
+        match self {
+            TableSchema::Traces => &["timestamp", "trace_id"],
+            TableSchema::Logs => &["timestamp", "service_name", "severity_text"],
+            TableSchema::MetricsGauge
+            | TableSchema::MetricsSum
+            | TableSchema::MetricsHistogram
+            | TableSchema::MetricsExponentialHistogram
+            | TableSchema::MetricsSummary => &["timestamp", "metric_name", "service_name"],
+            TableSchema::Profiles => &["timestamp", "service_name"],
+            TableSchema::Custom(_) => &[],
+        }
+    }
+
+    /// The canonical sort order for this table, with each key column bound to
+    /// its field id in `schema`.
+    ///
+    /// Binding against the schema that is actually being declared matters:
+    /// two tables for the same signal can carry different field ids, because
+    /// materialized-label columns are injected per tenant. Ascending with
+    /// nulls first on every column, matching what the compactor has always
+    /// produced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a key column is missing from `schema` — that means
+    /// the sort key and the schema have drifted apart, and declaring a
+    /// partial order would silently claim a different ordering than the one
+    /// producers honor.
+    pub fn sort_order_for(&self, schema: &Schema) -> Result<Option<SortOrder>> {
+        let columns = self.sort_key_columns();
+        if columns.is_empty() {
+            return Ok(None);
+        }
+
+        let mut builder = SortOrderBuilder::default();
+        builder.with_order_id(SIGNAL_SORT_ORDER_ID);
+        for column in columns {
+            let field = schema
+                .fields()
+                .iter()
+                .find(|field| field.name == *column)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Sort key column '{column}' is missing from the {} schema",
+                        self.table_name()
+                    )
+                })?;
+            builder.with_sort_field(SortField {
+                source_id: field.id,
+                transform: Transform::Identity,
+                direction: SortDirection::Ascending,
+                null_order: NullOrder::First,
+            });
+        }
+
+        builder.build().map(Some).map_err(|e| {
+            anyhow::anyhow!("Failed to build sort order for {}: {e}", self.table_name())
+        })
     }
 
     /// Get the table name for this schema
@@ -605,5 +707,153 @@ mod tests {
             1,
             "Should have exactly 1 partition field (Hour)"
         );
+    }
+}
+
+#[cfg(test)]
+mod sort_order_tests {
+    use super::*;
+    use crate::config::MaterializedLabels;
+
+    /// Resolve a sort order back to the column names it names, so the
+    /// assertions read as the contract rather than as field ids.
+    fn key_column_names(schema: &Schema, order: &SortOrder) -> Vec<String> {
+        order
+            .fields
+            .iter()
+            .map(|field| {
+                schema
+                    .fields()
+                    .iter()
+                    .find(|f| f.id == field.source_id)
+                    .unwrap_or_else(|| panic!("sort field {} not in schema", field.source_id))
+                    .name
+                    .clone()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_signal_declares_its_canonical_time_leading_key() {
+        let expected: &[(TableSchema, &[&str])] = &[
+            (TableSchema::Traces, &["timestamp", "trace_id"]),
+            (
+                TableSchema::Logs,
+                &["timestamp", "service_name", "severity_text"],
+            ),
+            (
+                TableSchema::MetricsGauge,
+                &["timestamp", "metric_name", "service_name"],
+            ),
+            (
+                TableSchema::MetricsSum,
+                &["timestamp", "metric_name", "service_name"],
+            ),
+            (
+                TableSchema::MetricsHistogram,
+                &["timestamp", "metric_name", "service_name"],
+            ),
+            (
+                TableSchema::MetricsExponentialHistogram,
+                &["timestamp", "metric_name", "service_name"],
+            ),
+            (
+                TableSchema::MetricsSummary,
+                &["timestamp", "metric_name", "service_name"],
+            ),
+            (TableSchema::Profiles, &["timestamp", "service_name"]),
+        ];
+
+        for (table, key) in expected {
+            let schema = table.schema().unwrap();
+            let order = table
+                .sort_order_for(&schema)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{} declares no sort order", table.table_name()));
+
+            assert_eq!(
+                order.order_id,
+                SIGNAL_SORT_ORDER_ID,
+                "{} must not use the reserved unsorted order id",
+                table.table_name()
+            );
+            assert_eq!(
+                key_column_names(&schema, &order),
+                *key,
+                "unexpected sort key for {}",
+                table.table_name()
+            );
+            for field in &order.fields {
+                assert_eq!(field.transform, Transform::Identity);
+                assert_eq!(field.direction, SortDirection::Ascending);
+                assert_eq!(field.null_order, NullOrder::First);
+            }
+        }
+    }
+
+    #[test]
+    fn sort_fields_bind_to_the_schema_they_are_declared_against() {
+        // Materialized labels shift field ids, so an order resolved against
+        // one tenant's schema would name the wrong columns in another's.
+        let labels = MaterializedLabels {
+            traces: vec!["http.method".to_string()],
+            ..Default::default()
+        };
+        let plain = TableSchema::Traces.schema().unwrap();
+        let with_labels = TableSchema::Traces.schema_with_labels(&labels).unwrap();
+
+        for schema in [&plain, &with_labels] {
+            let order = TableSchema::Traces
+                .sort_order_for(schema)
+                .unwrap()
+                .expect("traces declares a sort order");
+            assert_eq!(
+                key_column_names(schema, &order),
+                vec!["timestamp".to_string(), "trace_id".to_string()]
+            );
+        }
+    }
+
+    #[test]
+    fn custom_tables_declare_no_order() {
+        let custom = TableSchema::Custom("whatever".to_string());
+        assert!(custom.sort_key_columns().is_empty());
+        let schema = TableSchema::Traces.schema().unwrap();
+        assert!(custom.sort_order_for(&schema).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_key_column_missing_from_the_schema_is_an_error() {
+        // A sort key and a schema that have drifted apart must surface, not
+        // silently declare a truncated order that producers would honor
+        // differently from what the engine is told.
+        use iceberg_rust::spec::types::StructType;
+
+        let full = TableSchema::Traces.schema().unwrap();
+        let without_trace_id: Vec<_> = full
+            .fields()
+            .iter()
+            .filter(|f| f.name != "trace_id")
+            .cloned()
+            .collect();
+        let drifted = Schema::from_struct_type(StructType::new(without_trace_id), 0, None);
+
+        let error = TableSchema::Traces
+            .sort_order_for(&drifted)
+            .expect_err("a missing key column must not declare a partial order");
+        assert!(
+            error.to_string().contains("trace_id"),
+            "error should name the missing column: {error}"
+        );
+    }
+
+    #[test]
+    fn table_names_round_trip_to_their_schema() {
+        for table in TableSchema::all() {
+            let resolved = TableSchema::from_table_name(table.table_name())
+                .unwrap_or_else(|| panic!("{} does not resolve back", table.table_name()));
+            assert_eq!(resolved.table_name(), table.table_name());
+        }
+        assert!(TableSchema::from_table_name("not_a_signal_table").is_none());
     }
 }
