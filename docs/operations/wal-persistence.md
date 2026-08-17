@@ -498,9 +498,11 @@ Tuning WAL throughput today means tuning the storage underneath it (see Storage 
 
 - **WAL Disk Usage**: Monitor disk space consumption
 - **WAL Segment Count**: Track number of segments
-- **WAL Flush Latency**: Monitor write performance
+- **WAL Flush Latency**: Monitor write performance (`signaldb.wal.flush.duration`)
 - **WAL Errors**: Alert on WAL operation failures
-- **Unprocessed Entries**: Monitor processing lag
+- **Unprocessed Entries**: Monitor processing lag (`signaldb.wal.entries_pending`)
+- **Open WAL instances** (`signaldb.wal.instances`): one per tenant/dataset/signal, opened on first write and never closed. Each holds three file descriptors and a flush timer, so this gauge is the early warning for file-descriptor pressure in a deployment that keeps adding tenants
+- **Skipped WALs** (`signaldb.wal.list_failures`): a WAL whose entries could not be listed is skipped for that processing cycle; a non-zero rate means some tenant's backlog is not draining
 
 ### Health Check Endpoints
 
