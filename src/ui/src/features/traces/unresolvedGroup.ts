@@ -24,7 +24,7 @@ import {
   type TraceGroup,
 } from "../../api/traceGroups";
 import { msToNanos, type ResolvedRange } from "../../lib/time";
-import { facetField, type TraceFilter } from "../../lib/traceFilters";
+import { filterStages, type TraceFilter } from "../../lib/traceFilters";
 
 /**
  * True when a group result has the *shape* an unresolved dimension produces:
@@ -59,13 +59,7 @@ export function buildWindowTotalDoc(
         ]
       : [];
 
-  const active = filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet) return [];
-    return [
-      { where: { field: facet.irField, op: "eq", value: f.value } },
-    ] as Record<string, unknown>[];
-  });
+  const active = filterStages(filters);
 
   return {
     irVersion: 1,

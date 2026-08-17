@@ -12,7 +12,7 @@ import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { ROOT_SPAN_SENTINEL, type GroupGrain } from "./traceGroups";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import { facetField, type TraceFilter } from "../lib/traceFilters";
+import { filterStages, type TraceFilter } from "../lib/traceFilters";
 
 export interface TraceGroupMember {
   traceId: string;
@@ -53,13 +53,7 @@ export function buildMembersDoc(
         ]
       : [];
 
-  const active = filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet) return [];
-    return [
-      { where: { field: facet.irField, op: "eq", value: f.value } },
-    ] as Record<string, unknown>[];
-  });
+  const active = filterStages(filters);
 
   const pinned = dims.map((dim, i) => ({
     where:

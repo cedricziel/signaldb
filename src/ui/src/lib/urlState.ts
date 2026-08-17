@@ -10,6 +10,7 @@ import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
 import {
   traceFilterFromParam,
   traceFilterToParam,
+  traceFiltersForUrl,
   type TraceFilter,
 } from "./traceFilters";
 import { DEFAULT_GROUP_BY, KEY_SEP } from "./traceGroups";
@@ -309,7 +310,9 @@ export function buildSearch(state: ExploreState): string {
   if (state.live) p.set("live", "1");
   if (state.scale !== DEFAULT_SCALE) p.set("scale", state.scale);
   if (state.step !== "") p.set("step", state.step);
-  for (const f of state.traceFilters) p.append("tf", traceFilterToParam(f));
+  for (const f of traceFiltersForUrl(state.traceFilters)) {
+    p.append("tf", traceFilterToParam(f));
+  }
   if (state.group) p.set("group", state.group);
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);
   if (state.grain !== DEFAULT_GRAIN) p.set("grain", state.grain);

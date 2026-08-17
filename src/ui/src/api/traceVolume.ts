@@ -10,7 +10,7 @@
 import type { HeatmapResult, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import { facetField, type TraceFilter } from "../lib/traceFilters";
+import { filterStages, type TraceFilter } from "../lib/traceFilters";
 import type { VolumeSeries } from "../features/explore/SignalHistogram";
 export type TraceLatencyHeatmap = HeatmapResult & {
   window: { start_ns: number; end_ns: number };
@@ -77,13 +77,7 @@ export function buildTraceVolumeDoc(
 }
 
 function traceFilterStages(filters: TraceFilter[]): Record<string, unknown>[] {
-  return filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet) return [];
-    return [
-      { where: { field: facet.irField, op: "eq", value: f.value } },
-    ] as Record<string, unknown>[];
-  });
+  return filterStages(filters);
 }
 
 /** Build the v2 terminal heatmap relation over the full selected window. */

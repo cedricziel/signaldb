@@ -2,6 +2,7 @@ import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
+import { DEFAULT_KIND_FILTERS } from "../../lib/traceFilters";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { resetSemanticsCache } from "../../hooks/useSemantics";
 import { TracesView } from "./TracesView";
@@ -1596,10 +1597,11 @@ describe("TracesView facet filtering", () => {
     stubFetchRoutes(routes);
     renderView({ traceFilters: [{ field: "service.name", value: "gateway" }] });
     await screen.findByText("POST /api/checkout");
+    // The default kind selection rides along with every filter set.
     expect(fetchTraceGroups).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.anything(),
-      [{ field: "service.name", value: "gateway" }],
+      [{ field: "service.name", value: "gateway" }, ...DEFAULT_KIND_FILTERS],
       expect.anything(),
       expect.anything(),
     );
@@ -1614,7 +1616,10 @@ describe("TracesView facet filtering", () => {
       name: "Remove filter service.name = gateway",
     });
     await userEvent.click(chip);
-    expect(update).toHaveBeenCalledWith({ traceFilters: [], group: "" });
+    expect(update).toHaveBeenCalledWith({
+      traceFilters: DEFAULT_KIND_FILTERS,
+      group: "",
+    });
   });
 
   it("narrows the span-volume chart with the same filters", async () => {

@@ -196,6 +196,18 @@
   font-weight: 600;
 }
 
+/* Multi-select facet rows (span.kind): a checkbox in front of the value. */
+.facet-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.facet-check input {
+  margin: 0;
+}
+
 /* Trace-level status in the list: the OTel status word, coloured. */
 .status-chip {
   display: inline-block;

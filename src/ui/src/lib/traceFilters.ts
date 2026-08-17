@@ -27,7 +27,35 @@ export interface FacetField {
   selector: string;
   /** Intrinsic enums are bare in TraceQL; everything else is quoted. */
   quoted: boolean;
+  /**
+   * Several values may be selected at once (compiled to one `in`); the
+   * sidebar lists `values` as a fixed set rather than only what the data
+   * currently holds, so every option is always offered.
+   */
+  multi?: true;
+  values?: readonly string[];
 }
+
+/** OTel span kinds, in the writer's stored spelling. */
+export const KIND_VALUES = [
+  "Server",
+  "Client",
+  "Internal",
+  "Producer",
+  "Consumer",
+] as const;
+
+/**
+ * The kinds selected when the state names none: every kind that marks a
+ * remote-boundary span. Internal spans are noise for the traces landing
+ * page and are opted into.
+ */
+export const DEFAULT_KIND_FILTERS: TraceFilter[] = [
+  "Server",
+  "Client",
+  "Producer",
+  "Consumer",
+].map((value) => ({ field: "kind", value }));
 
 export const FACET_FIELDS: FacetField[] = [
   {
@@ -57,6 +85,8 @@ export const FACET_FIELDS: FacetField[] = [
     irField: "span_kind",
     selector: "kind",
     quoted: false,
+    multi: true,
+    values: KIND_VALUES,
   },
   {
     // A span attribute (db client spans set it directly, not on the
@@ -135,13 +165,70 @@ export function facetField(field: string): FacetField | undefined {
  * TraceQL. An empty set compiles to "" — the caller omits `q` entirely.
  */
 export function compileTraceQL(filters: TraceFilter[]): string {
-  const terms = filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet) return [];
-    const rhs = facet.quoted ? `"${escapeQuotedString(f.value)}"` : f.value;
-    return [`${facet.selector} = ${rhs}`];
+  const terms = groupByFacet(filters).map(({ facet, values }) => {
+    const eq = (v: string) =>
+      `${facet.selector} = ${facet.quoted ? `"${escapeQuotedString(v)}"` : v}`;
+    return values.length === 1
+      ? eq(values[0]!)
+      : `(${values.map(eq).join(" || ")})`;
   });
   return terms.length === 0 ? "" : `{ ${terms.join(" && ")} }`;
+}
+
+/** Filters grouped by facet, in first-seen order; unknown fields dropped. */
+function groupByFacet(
+  filters: TraceFilter[],
+): { facet: FacetField; values: string[] }[] {
+  const groups: { facet: FacetField; values: string[] }[] = [];
+  for (const f of filters) {
+    const facet = facetField(f.field);
+    if (!facet) continue;
+    const group = groups.find((g) => g.facet.field === facet.field);
+    if (group) group.values.push(f.value);
+    else groups.push({ facet, values: [f.value] });
+  }
+  return groups;
+}
+
+/**
+ * The Query IR `where` stages for a filter set: one `eq` per single-valued
+ * field, one `in` for a field with several values. `excludeIrField` leaves
+ * that facet's own filters out — a facet's value counts must not be
+ * narrowed by the facet itself.
+ */
+export function filterStages(
+  filters: TraceFilter[],
+  excludeIrField?: string,
+): Record<string, unknown>[] {
+  return groupByFacet(filters)
+    .filter(({ facet }) => facet.irField !== excludeIrField)
+    .map(({ facet, values }) => ({
+      where:
+        values.length === 1
+          ? { field: facet.irField, op: "eq", value: values[0] }
+          : { field: facet.irField, op: "in", value: values },
+    }));
+}
+
+/**
+ * The filters as the traces tab reads them: when the state names no kind,
+ * the default kinds apply — so a fresh URL and a link from elsewhere both
+ * start on remote-boundary spans.
+ */
+export function withDefaultTraceFilters(filters: TraceFilter[]): TraceFilter[] {
+  return filters.some((f) => f.field === "kind")
+    ? filters
+    : [...filters, ...DEFAULT_KIND_FILTERS];
+}
+
+/** The filters as the URL carries them: the default kind set is implied. */
+export function traceFiltersForUrl(filters: TraceFilter[]): TraceFilter[] {
+  const kinds = filters.filter((f) => f.field === "kind").map((f) => f.value);
+  const defaults = DEFAULT_KIND_FILTERS.map((f) => f.value);
+  const isDefault =
+    kinds.length === defaults.length &&
+    defaults.every((k) => kinds.includes(k));
+  return isDefault ? filters.filter((f) => f.field !== "kind") : filters;
 }
 
 /** URL serialization: one `tf` param per filter, "field|value". */
@@ -158,10 +245,44 @@ export function traceFilterFromParam(param: string): TraceFilter | null {
   return { field, value: param.slice(sep + 1) };
 }
 
-/** One value per field: selecting another replaces the previous choice. */
+/**
+ * One value per field — selecting another replaces the previous choice —
+ * except for a multi facet, where a further value is added alongside.
+ */
 export function upsertTraceFilter(
   filters: TraceFilter[],
   next: TraceFilter,
 ): TraceFilter[] {
+  if (facetField(next.field)?.multi) {
+    return filters.some((f) => f.field === next.field && f.value === next.value)
+      ? filters
+      : [...filters, next];
+  }
   return upsertBy(filters, next, (f) => f.field === next.field);
+}
+
+/**
+ * Drop one filter. Removing the last value of a multi facet with a fixed
+ * value set selects every value instead: an empty kind selection would
+ * mean "no kinds", which is never what unchecking the last box intends.
+ */
+export function removeTraceFilter(
+  filters: TraceFilter[],
+  gone: TraceFilter,
+): TraceFilter[] {
+  const rest = filters.filter(
+    (f) => !(f.field === gone.field && f.value === gone.value),
+  );
+  const facet = facetField(gone.field);
+  if (
+    facet?.multi &&
+    facet.values &&
+    !rest.some((f) => f.field === gone.field)
+  ) {
+    return [
+      ...rest,
+      ...facet.values.map((value) => ({ field: gone.field, value })),
+    ];
+  }
+  return rest;
 }
