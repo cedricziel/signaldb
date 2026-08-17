@@ -23,7 +23,6 @@ jemalloc-profiling = [
 # Optional: only pulled in by the `testing` feature, for `TempCatalog`.
 tempfile = { workspace = true, optional = true }
 anyhow.workspace = true
-tempo-api = { path = "../tempo-api" }
 schema-model = { path = "../schema-model" }
 
 datafusion.workspace = true
