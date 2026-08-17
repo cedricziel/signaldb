@@ -1305,7 +1305,6 @@ dependencies = [
  "sqlx",
  "sysinfo",
  "tempfile",
- "tempo-api",
  "testcontainers",
  "testcontainers-modules",
  "thiserror 2.0.20",
