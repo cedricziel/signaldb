@@ -1,5 +1,15 @@
-import { useMemo, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type PointerEvent,
+} from "react";
 import type { RenderResponse } from "../../api/pyroscope";
+import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import {
   type FlameFrame,
   type FlameView,
@@ -31,6 +41,108 @@ const COLLAPSE_PRESETS = [
 
 type ViewMode = "flame" | "top";
 
+/** What the pointer is over — a flame frame or a top-functions row. */
+interface HoverInfo {
+  name: string;
+  self: number;
+  total: number;
+  /** CSS colour of the frame's bar; top-table rows have none. */
+  swatch?: string;
+}
+
+/** Colour of a frame's bar, keyed by name; the root uses the accent. */
+function frameColor(frame: FlameFrame): string {
+  return frame.level === 0
+    ? "--accent"
+    : PALETTE[colorBucket(frame.name, PALETTE.length)]!;
+}
+
+function frameHoverInfo(frame: FlameFrame): HoverInfo {
+  const isOther = frame.name === OTHER_FRAME_NAME;
+  return {
+    name: frame.name,
+    self: frame.self,
+    total: frame.total,
+    swatch: isOther ? undefined : `var(${frameColor(frame)})`,
+  };
+}
+
+interface FlameRowsProps {
+  placed: ReturnType<typeof placeFrames>;
+  needle: string;
+  /** The frame the tooltip currently describes, for `aria-describedby`. */
+  hovered: FlameFrame | null;
+  tipId: string;
+  onHover: (frame: FlameFrame, e: PointerEvent<HTMLElement>) => void;
+  onFocus: (frame: FlameFrame, e: FocusEvent<HTMLElement>) => void;
+  onLeave: () => void;
+  onZoom: (frame: FlameFrame) => void;
+}
+
+/**
+ * The frame bars. Memoized so that pointer tracking for the tooltip — a
+ * state update on every mousemove — re-renders only the tooltip, not the
+ * thousands of frames a real profile can have; the rows re-render only when
+ * the layout, highlight, or hovered frame changes.
+ */
+const FlameRows = memo(function FlameRows({
+  placed,
+  needle,
+  hovered,
+  tipId,
+  onHover,
+  onFocus,
+  onLeave,
+  onZoom,
+}: FlameRowsProps) {
+  return (
+    <div className="flame-rows" onPointerLeave={onLeave}>
+      {placed.map((row, depth) =>
+        row.length === 0 ? null : (
+          <div className="flame-row" key={depth}>
+            {row.map(({ frame, leftPct, widthPct }) => {
+              const isOther = frame.name === OTHER_FRAME_NAME;
+              const color = frameColor(frame);
+              const dim =
+                needle !== "" && !frame.name.toLowerCase().includes(needle);
+              return (
+                <div
+                  key={`${frame.level}-${frame.x}`}
+                  className="flame-frame-wrap"
+                  style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                >
+                  <button
+                    type="button"
+                    className={`flame-frame${dim ? " dim" : ""}${isOther ? " other" : ""}`}
+                    style={
+                      isOther
+                        ? undefined
+                        : {
+                            background: `var(${color}-soft, var(${color}))`,
+                            borderColor: `var(${color})`,
+                          }
+                    }
+                    aria-label={frame.name}
+                    aria-describedby={hovered === frame ? tipId : undefined}
+                    onPointerMove={(e) => onHover(frame, e)}
+                    onFocus={(e) => onFocus(frame, e)}
+                    onBlur={onLeave}
+                    onClick={() => onZoom(frame)}
+                  >
+                    <span className="flame-label">
+                      {simplifyFrameName(frame.name)}
+                    </span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ),
+      )}
+    </div>
+  );
+});
+
 interface FlamePaneProps {
   levels: FlameFrame[][];
   /** Root width in ticks — the denominator for percentage formatting. */
@@ -56,6 +168,33 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
     COLLAPSE_PRESETS[1]!.value, // 0.5% by default — "big and noisy" is the common case
   );
   const [topSort, toggleTopSort] = useSort("self", "desc");
+  // One pointer-following VizTooltip for the whole pane (flame graph and
+  // top-functions table alike); the pane root is its positioning host.
+  const hostRef = useRef<HTMLDivElement>(null);
+  const pointer = useVizPointer(hostRef);
+  const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
+  const tipId = useId();
+  const clearHover = useCallback(() => {
+    setHovered(null);
+    setHoverInfo(null);
+    pointer.clear();
+  }, [pointer.clear]);
+  const hoverFrame = useCallback(
+    (frame: FlameFrame, e: PointerEvent<HTMLElement>) => {
+      setHovered(frame);
+      setHoverInfo(frameHoverInfo(frame));
+      pointer.track(e);
+    },
+    [pointer.track],
+  );
+  const focusFrame = useCallback(
+    (frame: FlameFrame, e: FocusEvent<HTMLElement>) => {
+      setHovered(frame);
+      setHoverInfo(frameHoverInfo(frame));
+      pointer.anchorTo(e.currentTarget);
+    },
+    [pointer.anchorTo],
+  );
 
   // Below-threshold frames (and their subtrees) fold into "(other)" bars so
   // a wide, noisy profile isn't dominated by hairline slivers. Computed
@@ -97,13 +236,16 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
 
   const detail = hovered ?? focused ?? effectiveLevels[0]?.[0] ?? null;
 
-  function zoomTo(frame: FlameFrame) {
-    if (frame.level === 0) {
-      setZoomStack([]);
-      return;
-    }
-    setZoomStack(ancestorPath(effectiveLevels, frame));
-  }
+  const zoomTo = useCallback(
+    (frame: FlameFrame) => {
+      if (frame.level === 0) {
+        setZoomStack([]);
+        return;
+      }
+      setZoomStack(ancestorPath(effectiveLevels, frame));
+    },
+    [effectiveLevels],
+  );
 
   // The flat "top functions" table aggregates over the original,
   // uncollapsed tree — ranking is already a form of noise reduction, so it
@@ -126,7 +268,7 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
   }
 
   return (
-    <div className="flamegraph">
+    <div className="flamegraph viz-host" ref={hostRef}>
       {title && <div className="flame-title">{title}</div>}
       <div className="flame-toolbar">
         <div className="flame-view-toggle" role="tablist" aria-label="View">
@@ -208,59 +350,16 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
 
       {viewMode === "flame" ? (
         <>
-          <div className="flame-rows" onMouseLeave={() => setHovered(null)}>
-            {placed.map((row, depth) =>
-              row.length === 0 ? null : (
-                <div className="flame-row" key={depth}>
-                  {row.map(({ frame, leftPct, widthPct }) => {
-                    const isRoot = frame.level === 0;
-                    const isOther = frame.name === OTHER_FRAME_NAME;
-                    const color = isRoot
-                      ? "--accent"
-                      : PALETTE[colorBucket(frame.name, PALETTE.length)];
-                    const dim =
-                      needle !== "" &&
-                      !frame.name.toLowerCase().includes(needle);
-                    return (
-                      <div
-                        key={`${frame.level}-${frame.x}`}
-                        className="flame-frame-wrap"
-                        style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                      >
-                        <button
-                          type="button"
-                          className={`flame-frame${dim ? " dim" : ""}${isOther ? " other" : ""}`}
-                          style={
-                            isOther
-                              ? undefined
-                              : {
-                                  background: `var(${color}-soft, var(${color}))`,
-                                  borderColor: `var(${color})`,
-                                }
-                          }
-                          aria-label={frame.name}
-                          onMouseEnter={() => setHovered(frame)}
-                          onFocus={() => setHovered(frame)}
-                          onClick={() => zoomTo(frame)}
-                        >
-                          <span className="flame-label">
-                            {simplifyFrameName(frame.name)}
-                          </span>
-                        </button>
-                        <FrameTooltip
-                          name={frame.name}
-                          self={frame.self}
-                          total={frame.total}
-                          unit={unit}
-                          totalTicks={totalTicks}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              ),
-            )}
-          </div>
+          <FlameRows
+            placed={placed}
+            needle={needle}
+            hovered={hovered}
+            tipId={tipId}
+            onHover={hoverFrame}
+            onFocus={focusFrame}
+            onLeave={clearHover}
+            onZoom={zoomTo}
+          />
 
           {detail && (
             <div className="flame-detail" aria-live="polite">
@@ -305,18 +404,17 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
             </thead>
             <tbody>
               {topRows.map((f) => (
-                <tr key={f.name} onClick={() => selectFunction(f.name)}>
+                <tr
+                  key={f.name}
+                  onClick={() => selectFunction(f.name)}
+                  onPointerMove={(e) => {
+                    setHoverInfo({ name: f.name, self: f.self, total: f.total });
+                    pointer.track(e);
+                  }}
+                  onPointerLeave={clearHover}
+                >
                   <td>
-                    <span className="flame-top-name-wrap">
-                      <button className="flame-top-open">{f.name}</button>
-                      <FrameTooltip
-                        name={f.name}
-                        self={f.self}
-                        total={f.total}
-                        unit={unit}
-                        totalTicks={totalTicks}
-                      />
-                    </span>
+                    <button className="flame-top-open">{f.name}</button>
                     {f.count > 1 && (
                       <span className="flame-top-count"> ×{f.count}</span>
                     )}
@@ -340,40 +438,27 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
           )}
         </div>
       )}
+      {hoverInfo && pointer.anchor && (
+        <VizTooltip
+          id={tipId}
+          anchor={pointer.anchor}
+          host={pointer.host}
+          title={hoverInfo.name}
+          rows={[
+            {
+              swatch: hoverInfo.swatch,
+              label: "self",
+              value: `${formatTicks(hoverInfo.self, unit)} (${formatPct(hoverInfo.self, totalTicks)})`,
+            },
+            {
+              swatch: hoverInfo.swatch,
+              label: "total",
+              value: `${formatTicks(hoverInfo.total, unit)} (${formatPct(hoverInfo.total, totalTicks)})`,
+            },
+          ]}
+        />
+      )}
     </div>
-  );
-}
-
-/**
- * Hover content for a frame: the full (never-simplified, never-truncated)
- * name plus self/total. Pure CSS show/hide (`:hover`/`:focus-within` on the
- * wrapper) rather than a JS-tracked floating tooltip — cheap even with
- * thousands of frames on screen, since there's no mousemove handler or
- * per-hover re-render.
- */
-function FrameTooltip({
-  name,
-  self,
-  total,
-  unit,
-  totalTicks,
-}: {
-  name: string;
-  self: number;
-  total: number;
-  unit: string;
-  totalTicks: number;
-}) {
-  return (
-    <span className="flame-tooltip" role="tooltip">
-      <span className="flame-tooltip-name">{name}</span>
-      <span className="flame-tooltip-row">
-        self {formatTicks(self, unit)} ({formatPct(self, totalTicks)})
-      </span>
-      <span className="flame-tooltip-row">
-        total {formatTicks(total, unit)} ({formatPct(total, totalTicks)})
-      </span>
-    </span>
   );
 }
 
