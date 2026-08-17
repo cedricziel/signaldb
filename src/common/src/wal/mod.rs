@@ -1,5 +1,12 @@
+pub mod framing;
+
 use anyhow::{Context, Result};
 use datafusion::arrow::record_batch::RecordBatch;
+use framing::{
+    DATA_RECORD_HEADER_LEN, LOG_RECORD_HEADER_LEN, SEGMENT_HEADER_LEN, SegmentFormat,
+    data_record_header, detect_segment_format, log_record_header, parse_log_record_header,
+    segment_header, validate_data_record,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -95,6 +102,10 @@ pub struct WalSegment {
     /// into an O(1) lookup; without it those scans dominated CPU on hosts
     /// with large, not-yet-compacted segments (issue #1112).
     entry_index: rustc_hash::FxHashMap<Uuid, usize>,
+    /// On-disk layout of this segment (see [`framing`]). Only [`SegmentFormat::V1`]
+    /// segments accept appends; legacy segments are read-only survivors that
+    /// compaction rewrites into v1.
+    format: SegmentFormat,
 }
 
 impl WalSegment {
@@ -110,15 +121,18 @@ impl WalSegment {
         // authoritative offset before writing (see `append`), so O_APPEND —
         // which forces every write to the physical EOF regardless of the
         // recorded offset — must not be set (issue #865).
-        let file = Some(
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(&path)
-                .await
-                .context("Failed to create WAL segment file")?,
-        );
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .await
+            .context("Failed to create WAL segment file")?;
+        // Every v1 segment opens with the format header so a later `load`
+        // can tell it apart from a legacy (unframed) segment.
+        file.seek(SeekFrom::Start(0)).await?;
+        file.write_all(&segment_header()).await?;
+        file.flush().await?;
 
         let data_file = Some(
             OpenOptions::new()
@@ -135,13 +149,19 @@ impl WalSegment {
             path,
             data_path,
             index_path,
-            file,
+            file: Some(file),
             data_file,
-            size: 0,
+            size: SEGMENT_HEADER_LEN as u64,
             data_size: 0,
             entries: Vec::new(),
             entry_index: rustc_hash::FxHashMap::default(),
+            format: SegmentFormat::V1,
         })
+    }
+
+    /// On-disk layout of this segment.
+    pub fn format(&self) -> SegmentFormat {
+        self.format
     }
 
     /// Load an existing WAL segment from disk
@@ -160,10 +180,32 @@ impl WalSegment {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
 
-        let mut offset = 0;
+        let format = detect_segment_format(&buffer)
+            .with_context(|| format!("Failed to classify WAL segment {}", path.display()))?;
+        if format == SegmentFormat::Legacy {
+            tracing::warn!(
+                segment_id,
+                path = %path.display(),
+                "WAL segment uses the legacy unframed format (pre-#946); it is read on \
+                 the legacy layout, sealed against new appends, and rewritten into the \
+                 framed format on compaction"
+            );
+        }
+        let mut is_empty_v1 = false;
+        let mut offset = match format {
+            SegmentFormat::Legacy => 0,
+            SegmentFormat::V1 if buffer.is_empty() => {
+                is_empty_v1 = true;
+                0
+            }
+            SegmentFormat::V1 => SEGMENT_HEADER_LEN,
+        };
+        let record_header_len = match format {
+            SegmentFormat::Legacy => 8,
+            SegmentFormat::V1 => LOG_RECORD_HEADER_LEN,
+        };
         while offset < buffer.len() {
-            // Read entry length (8 bytes)
-            if offset + 8 > buffer.len() {
+            if offset + record_header_len > buffer.len() {
                 tracing::warn!(
                     segment_id,
                     offset,
@@ -173,15 +215,27 @@ impl WalSegment {
                 );
                 break;
             }
-            let entry_len = u64::from_le_bytes(
-                buffer[offset..offset + 8]
-                    .try_into()
-                    .context("Failed to read entry length")?,
-            );
-            offset += 8;
+            // v1 records carry a CRC of the payload; legacy records only a
+            // u64 length. `expected_crc = None` means "nothing to verify".
+            let (entry_len, expected_crc) = match format {
+                SegmentFormat::Legacy => (
+                    u64::from_le_bytes(
+                        buffer[offset..offset + 8]
+                            .try_into()
+                            .context("Failed to read entry length")?,
+                    ) as usize,
+                    None,
+                ),
+                SegmentFormat::V1 => {
+                    let (len, crc) = parse_log_record_header(&buffer[offset..])
+                        .context("Failed to read entry record header")?;
+                    (len, Some(crc))
+                }
+            };
+            offset += record_header_len;
 
             // Read entry data
-            if offset + entry_len as usize > buffer.len() {
+            if offset + entry_len > buffer.len() {
                 tracing::warn!(
                     segment_id,
                     offset,
@@ -192,8 +246,18 @@ impl WalSegment {
                 );
                 break;
             }
-            let entry_data = &buffer[offset..offset + entry_len as usize];
-            match bincode::deserialize::<WalEntry>(entry_data) {
+            let entry_data = &buffer[offset..offset + entry_len];
+            let decoded = match expected_crc {
+                Some(expected) if framing::checksum(entry_data) != expected => {
+                    Err(anyhow::anyhow!(
+                        "entry record CRC mismatch (stored {expected:#010x}, computed {:#010x})",
+                        framing::checksum(entry_data)
+                    ))
+                }
+                _ => bincode::deserialize::<WalEntry>(entry_data)
+                    .map_err(|e| anyhow::anyhow!("entry record failed to deserialize: {e}")),
+            };
+            match decoded {
                 Ok(entry) => entries.push(entry),
                 Err(e) => {
                     // Framing is intact (the length prefix matched a
@@ -210,12 +274,12 @@ impl WalSegment {
                         offset,
                         entry_len,
                         error = %e,
-                        "WAL entry failed to deserialize during replay; \
+                        "WAL entry record corrupt during replay; \
                          skipping and quarantining it, replay continues"
                     );
                     crate::self_monitoring::app_metrics()
                         .wal_corrupt_entries
-                        .add(1, &[]);
+                        .add(1, &[opentelemetry::KeyValue::new("record", "log")]);
                     if let Err(quarantine_err) =
                         Self::quarantine_corrupt_entry(wal_dir, segment_id, offset, entry_data)
                             .await
@@ -234,7 +298,7 @@ impl WalSegment {
                     }
                 }
             }
-            offset += entry_len as usize;
+            offset += entry_len;
         }
 
         // Load processed state from index file if it exists
@@ -268,14 +332,22 @@ impl WalSegment {
         // Reopened for writing without O_APPEND, matching `new` — appends seek
         // to the tracked offset (issue #865). `data_size`/`size` are reseeded
         // from the on-disk lengths below, so writes resume at the true EOF.
-        let file = Some(
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(&path)
-                .await?,
-        );
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .await?;
+        // An empty v1 file (crash between create and header write) gets its
+        // header now so the next `load` classifies it correctly.
+        let size = if is_empty_v1 {
+            file.seek(SeekFrom::Start(0)).await?;
+            file.write_all(&segment_header()).await?;
+            file.flush().await?;
+            SEGMENT_HEADER_LEN as u64
+        } else {
+            size
+        };
 
         let data_file = Some(
             OpenOptions::new()
@@ -291,12 +363,13 @@ impl WalSegment {
             path,
             data_path,
             index_path,
-            file,
+            file: Some(file),
             data_file,
             size,
             data_size,
             entries,
             entry_index,
+            format,
         })
     }
 
@@ -370,13 +443,21 @@ impl WalSegment {
         // to the same offset and overwrites the debris instead of landing
         // past it. With O_APPEND a single short write permanently shifted every
         // subsequent entry, corrupting the Arrow framing (issue #865).
+        if self.format != SegmentFormat::V1 {
+            anyhow::bail!(
+                "WAL segment {} uses the legacy unframed format and is read-only",
+                self.id
+            );
+        }
         let data_offset = self.data_size;
+        let data_header = data_record_header(data)?;
         if let Some(ref mut data_file) = self.data_file {
             data_file.seek(SeekFrom::Start(data_offset)).await?;
+            data_file.write_all(&data_header).await?;
             data_file.write_all(data).await?;
             data_file.flush().await?;
         }
-        self.data_size += data.len() as u64;
+        self.data_size += (DATA_RECORD_HEADER_LEN + data.len()) as u64;
 
         // Create WAL entry
         let entry = WalEntry {
@@ -399,15 +480,15 @@ impl WalSegment {
         // short log write leaves `self.size` unadvanced so the next append
         // overwrites the partial record rather than appending past it, which
         // would otherwise wedge recovery with a mid-file garbage record.
+        let log_header = log_record_header(&entry_data)?;
         if let Some(ref mut file) = self.file {
-            let entry_len = entry_data.len() as u64;
             file.seek(SeekFrom::Start(self.size)).await?;
-            file.write_all(&entry_len.to_le_bytes()).await?;
+            file.write_all(&log_header).await?;
             file.write_all(&entry_data).await?;
             file.flush().await?;
         }
 
-        self.size += 8 + entry_data.len() as u64;
+        self.size += (LOG_RECORD_HEADER_LEN + entry_data.len()) as u64;
         self.entries.push(entry);
         self.entry_index.insert(entry_id, self.entries.len() - 1);
 
@@ -416,28 +497,39 @@ impl WalSegment {
 
     /// Read data for a specific entry.
     ///
-    /// Validates the entry's `[data_offset, data_offset + data_size)` range
-    /// against the actual data-file length before reading. A range that runs
-    /// past the file (truncated/partial write, stale offset bookkeeping, or a
-    /// corrupt index) yields a clear, attributable bounds error here rather
-    /// than an opaque `read_exact` "failed to fill whole buffer" or, worse,
-    /// in-bounds garbage that the Arrow reader later rejects as
-    /// `RangeOutOfBounds`. The caller's dead-letter path then records which
-    /// tenant/dataset/signal was affected.
+    /// Validates the entry's byte range against the actual data-file length
+    /// before reading. A range that runs past the file (truncated/partial
+    /// write, stale offset bookkeeping, or a corrupt index) yields a clear,
+    /// attributable bounds error here rather than an opaque `read_exact`
+    /// "failed to fill whole buffer" or, worse, in-bounds garbage that the
+    /// Arrow reader later rejects as `RangeOutOfBounds`.
+    ///
+    /// On a v1 segment the record header is then verified (magic, length,
+    /// payload CRC). A record that fails is corruption at rest — a bit flip
+    /// or torn write that survived the bounds check — so the raw bytes are
+    /// quarantined to `<wal_dir>/dead-letter/<entry_id>.corrupt.bin`, a
+    /// structured warning names the tenant/dataset/signal/offset,
+    /// `signaldb.wal.corrupt_entries{record="data"}` is incremented, and an
+    /// error is returned. Neighbouring records are unaffected: the caller
+    /// retires this entry (see [`Wal::dead_letter_unreadable`]) and moves on.
     pub async fn read_entry_data(&self, entry: &WalEntry) -> Result<Vec<u8>> {
         let data_len = tokio::fs::metadata(&self.data_path)
             .await
             .with_context(|| format!("Failed to stat WAL data file {}", self.data_path.display()))?
             .len();
-        let end = entry
-            .data_offset
-            .checked_add(entry.data_size)
-            .with_context(|| {
-                format!(
-                    "WAL entry {} data range overflows u64 (offset={}, size={})",
-                    entry.id, entry.data_offset, entry.data_size
-                )
-            })?;
+        let record_len = match self.format {
+            SegmentFormat::Legacy => entry.data_size,
+            SegmentFormat::V1 => entry
+                .data_size
+                .checked_add(DATA_RECORD_HEADER_LEN as u64)
+                .with_context(|| format!("WAL entry {} data size overflows u64", entry.id))?,
+        };
+        let end = entry.data_offset.checked_add(record_len).with_context(|| {
+            format!(
+                "WAL entry {} data range overflows u64 (offset={}, size={})",
+                entry.id, entry.data_offset, entry.data_size
+            )
+        })?;
         if end > data_len {
             anyhow::bail!(
                 "WAL entry {} data out of bounds: [{}, {}) exceeds data file length {} (segment {})",
@@ -452,10 +544,80 @@ impl WalSegment {
         let mut data_file = File::open(&self.data_path).await?;
         data_file.seek(SeekFrom::Start(entry.data_offset)).await?;
 
-        let mut buffer = vec![0u8; entry.data_size as usize];
+        let mut buffer = vec![0u8; record_len as usize];
         data_file.read_exact(&mut buffer).await?;
 
-        Ok(buffer)
+        if self.format == SegmentFormat::Legacy {
+            return Ok(buffer);
+        }
+
+        match validate_data_record(&buffer, entry.data_size) {
+            Ok(payload) => Ok(payload.to_vec()),
+            Err(e) => {
+                tracing::warn!(
+                    entry_id = %entry.id,
+                    tenant_id = %entry.tenant_id,
+                    dataset_id = %entry.dataset_id,
+                    signal = entry.operation.signal(),
+                    segment_id = self.id,
+                    data_offset = entry.data_offset,
+                    data_size = entry.data_size,
+                    error = %e,
+                    "WAL data record failed integrity check; quarantining its bytes, \
+                     neighbouring records remain readable"
+                );
+                crate::self_monitoring::app_metrics()
+                    .wal_corrupt_entries
+                    .add(
+                        1,
+                        &[
+                            opentelemetry::KeyValue::new("record", "data"),
+                            opentelemetry::KeyValue::new("signal", entry.operation.signal()),
+                        ],
+                    );
+                if let Some(wal_dir) = self.path.parent()
+                    && let Err(quarantine_err) =
+                        Self::quarantine_corrupt_payload(wal_dir, entry.id, &buffer).await
+                {
+                    tracing::error!(
+                        entry_id = %entry.id,
+                        error = %quarantine_err,
+                        "Failed to quarantine corrupt WAL data record bytes"
+                    );
+                }
+                Err(anyhow::anyhow!(
+                    "WAL entry {} data record corrupt at offset {} (segment {}): {e}",
+                    entry.id,
+                    entry.data_offset,
+                    self.id
+                ))
+            }
+        }
+    }
+
+    /// Preserve the raw bytes (header included) of a `.data` record that
+    /// failed its integrity check, as
+    /// `<wal_dir>/dead-letter/<entry_id>.corrupt.bin`. Unlike
+    /// [`Self::quarantine_corrupt_entry`] the entry id *is* known here — the
+    /// `.log` record decoded fine, only its payload is damaged — so the file
+    /// is keyed by it like every other dead-letter artefact.
+    async fn quarantine_corrupt_payload(
+        wal_dir: &Path,
+        entry_id: Uuid,
+        record: &[u8],
+    ) -> Result<PathBuf> {
+        let dir = wal_dir.join("dead-letter");
+        create_dir_all(&dir).await?;
+        let path = dir.join(format!("{}.corrupt.bin", entry_id.simple()));
+        let mut file = File::create(&path)
+            .await
+            .with_context(|| format!("Failed to create quarantine file {}", path.display()))?;
+        file.write_all(record).await?;
+        file.flush().await?;
+        file.sync_all()
+            .await
+            .context("Failed to fsync quarantined WAL data record")?;
+        Ok(path)
     }
 
     /// Durably persist appended entries and data to disk (fsync)
@@ -754,11 +916,26 @@ impl Wal {
             all_segments.push(segment);
         }
 
+        // A legacy (unframed) segment is read-only: if the newest segment on
+        // disk is one, rotate onto a fresh framed segment so appends have
+        // somewhere to go. Its pending entries stay replayable and it is
+        // reclaimed like any sealed segment once processed.
+        let last_is_legacy = match all_segments.last() {
+            Some(segment) => segment.lock().await.format() == SegmentFormat::Legacy,
+            None => false,
+        };
+        let mut next_id = max_segment_id + 1;
+
         // Load or create current segment if no segments exist
         let current_segment = if segment_ids.is_empty() {
             let segment = Arc::new(Mutex::new(
                 WalSegment::new(&config.wal_dir, max_segment_id).await?,
             ));
+            all_segments.push(segment.clone());
+            segment
+        } else if last_is_legacy {
+            let segment = Arc::new(Mutex::new(WalSegment::new(&config.wal_dir, next_id).await?));
+            next_id += 1;
             all_segments.push(segment.clone());
             segment
         } else {
@@ -806,7 +983,7 @@ impl Wal {
         let wal = Self {
             config: config.clone(),
             current_segment,
-            next_segment_id: Arc::new(Mutex::new(max_segment_id + 1)),
+            next_segment_id: Arc::new(Mutex::new(next_id)),
             buffer: Arc::new(RwLock::new(VecDeque::new())),
             flush_handle: None,
             cleanup_handle: None,
@@ -1778,6 +1955,279 @@ mod tests {
         make_batch_val(1)
     }
 
+    /// Flip one byte inside the payload of `entry` in the segment's `.data`
+    /// file, leaving its record header intact.
+    async fn flip_payload_byte(data_path: &Path, entry: &WalEntry) {
+        let mut bytes = tokio::fs::read(data_path).await.unwrap();
+        let idx = entry.data_offset as usize + DATA_RECORD_HEADER_LEN + 2;
+        bytes[idx] ^= 0x01;
+        tokio::fs::write(data_path, &bytes).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn framed_records_round_trip_through_reopen() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+        let payloads: Vec<Vec<u8>> = (0..5)
+            .map(|i| record_batch_to_bytes(&make_batch_val(i)).unwrap())
+            .collect();
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+        let mut ids = Vec::new();
+        for p in &payloads {
+            ids.push(
+                wal.append(WalOperation::WriteTraces, p.clone(), None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        wal.flush().await.unwrap();
+        drop(wal);
+
+        let log = tokio::fs::read(temp_dir.path().join("wal-0000000000.log"))
+            .await
+            .unwrap();
+        assert_eq!(&log[..SEGMENT_HEADER_LEN], &segment_header());
+
+        let reopened = Wal::new(config).await.unwrap();
+        for (id, p) in ids.iter().zip(&payloads) {
+            let entry = reopened
+                .get_entries()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|e| e.id == *id)
+                .unwrap();
+            assert_eq!(entry.data_size, p.len() as u64);
+            assert_eq!(&reopened.read_entry_data(&entry).await.unwrap(), p);
+        }
+    }
+
+    #[tokio::test]
+    async fn flipped_payload_byte_is_detected_quarantined_and_neighbours_still_read() {
+        // The #946 promise: a bit flip inside one record's payload is caught
+        // by the record CRC, attributed to that entry, and does not disturb
+        // the entries around it.
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+        let wal = Wal::new(config.clone()).await.unwrap();
+
+        let payloads: Vec<Vec<u8>> = (0..3)
+            .map(|i| record_batch_to_bytes(&make_batch_val(i)).unwrap())
+            .collect();
+        let mut ids = Vec::new();
+        for p in &payloads {
+            ids.push(
+                wal.append(WalOperation::WriteTraces, p.clone(), None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        wal.flush().await.unwrap();
+        let entries = wal.get_entries().await.unwrap();
+        let victim = entries.iter().find(|e| e.id == ids[1]).unwrap().clone();
+
+        flip_payload_byte(&temp_dir.path().join("wal-0000000000.data"), &victim).await;
+
+        let err = wal
+            .read_entry_data(&victim)
+            .await
+            .expect_err("a flipped payload byte must fail the CRC");
+        assert!(
+            err.to_string().contains("CRC mismatch"),
+            "expected a CRC error, got: {err}"
+        );
+
+        // Bytes preserved for forensics, keyed by entry id.
+        let quarantined = temp_dir
+            .path()
+            .join("dead-letter")
+            .join(format!("{}.corrupt.bin", victim.id.simple()));
+        let bytes = tokio::fs::read(&quarantined).await.unwrap();
+        assert_eq!(bytes.len(), DATA_RECORD_HEADER_LEN + payloads[1].len());
+
+        // Neighbours are unaffected.
+        for i in [0usize, 2] {
+            let e = entries.iter().find(|e| e.id == ids[i]).unwrap();
+            assert_eq!(&wal.read_entry_data(e).await.unwrap(), &payloads[i]);
+        }
+
+        // Also after a reopen: the log records are intact, only the payload
+        // is damaged, so the entry is still listed and still refuses to read.
+        drop(wal);
+        let reopened = Wal::new(config).await.unwrap();
+        let entries = reopened.get_entries().await.unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(reopened.read_entry_data(&victim).await.is_err());
+        let last = entries.iter().find(|e| e.id == ids[2]).unwrap();
+        assert_eq!(&reopened.read_entry_data(last).await.unwrap(), &payloads[2]);
+    }
+
+    #[tokio::test]
+    async fn truncated_data_tail_fails_only_the_torn_record() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+        let wal = Wal::new(config.clone()).await.unwrap();
+        let first = record_batch_to_bytes(&make_batch_val(1)).unwrap();
+        let second = record_batch_to_bytes(&make_batch_val(2)).unwrap();
+        let first_id = wal
+            .append(WalOperation::WriteTraces, first.clone(), None)
+            .await
+            .unwrap();
+        let second_id = wal
+            .append(WalOperation::WriteTraces, second.clone(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        drop(wal);
+
+        let data_path = temp_dir.path().join("wal-0000000000.data");
+        let mut bytes = tokio::fs::read(&data_path).await.unwrap();
+        let torn = bytes.len() - 5;
+        bytes.truncate(torn);
+        tokio::fs::write(&data_path, &bytes).await.unwrap();
+
+        let reopened = Wal::new(config).await.unwrap();
+        let entries = reopened.get_entries().await.unwrap();
+        let first_entry = entries.iter().find(|e| e.id == first_id).unwrap();
+        let second_entry = entries.iter().find(|e| e.id == second_id).unwrap();
+        assert_eq!(reopened.read_entry_data(first_entry).await.unwrap(), first);
+        let err = reopened.read_entry_data(second_entry).await.unwrap_err();
+        assert!(err.to_string().contains("out of bounds"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn corrupt_log_record_crc_is_skipped_and_neighbours_survive() {
+        // A single flipped bit in a `.log` record payload no longer has to
+        // wait for bincode to choke on it: the record CRC catches it, and
+        // replay resyncs onto the next record exactly as before.
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+        let wal = Wal::new(config.clone()).await.unwrap();
+        let mut ids = Vec::new();
+        for i in 0..3u8 {
+            ids.push(
+                wal.append(WalOperation::WriteTraces, vec![i; 16], None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        wal.flush().await.unwrap();
+        drop(wal);
+
+        let log_path = temp_dir.path().join("wal-0000000000.log");
+        let mut buffer = tokio::fs::read(&log_path).await.unwrap();
+        // Second record: skip file header, first record header + payload.
+        let (first_len, _) = parse_log_record_header(&buffer[SEGMENT_HEADER_LEN..]).unwrap();
+        let second_payload =
+            SEGMENT_HEADER_LEN + LOG_RECORD_HEADER_LEN + first_len + LOG_RECORD_HEADER_LEN;
+        buffer[second_payload + 20] ^= 0x01;
+        tokio::fs::write(&log_path, &buffer).await.unwrap();
+
+        let reopened = Wal::new(config).await.unwrap();
+        let surviving: Vec<Uuid> = reopened
+            .get_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(surviving, vec![ids[0], ids[2]]);
+    }
+
+    /// Hand-write a segment in the pre-#946 layout: `.log` = `[u64 len][bincode]`
+    /// records with no file header, `.data` = raw concatenated payloads.
+    async fn write_legacy_segment(dir: &Path, payloads: &[Vec<u8>]) -> Vec<Uuid> {
+        let mut log = Vec::new();
+        let mut data = Vec::new();
+        let mut ids = Vec::new();
+        for p in payloads {
+            let entry = WalEntry {
+                id: Uuid::new_v4(),
+                timestamp: 0,
+                operation: WalOperation::WriteTraces,
+                data_size: p.len() as u64,
+                data_offset: data.len() as u64,
+                processed: false,
+                tenant_id: "test-tenant".to_string(),
+                dataset_id: "test-dataset".to_string(),
+                metadata: None,
+            };
+            ids.push(entry.id);
+            data.extend_from_slice(p);
+            let bytes = bincode::serialize(&entry).unwrap();
+            log.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            log.extend_from_slice(&bytes);
+        }
+        tokio::fs::write(dir.join("wal-0000000000.log"), &log)
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("wal-0000000000.data"), &data)
+            .await
+            .unwrap();
+        ids
+    }
+
+    #[tokio::test]
+    async fn legacy_unframed_segment_is_readable_sealed_and_rotated_past() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+        let payloads = vec![b"legacy one".to_vec(), b"legacy two".to_vec()];
+        let legacy_ids = write_legacy_segment(temp_dir.path(), &payloads).await;
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+
+        // Legacy entries are listed and read on the legacy layout.
+        let entries = wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(entries.len(), 2);
+        for (entry, payload) in entries.iter().zip(&payloads) {
+            assert_eq!(
+                entry.id,
+                legacy_ids[entries.iter().position(|e| e.id == entry.id).unwrap()]
+            );
+            assert_eq!(&wal.read_entry_data(entry).await.unwrap(), payload);
+        }
+
+        // New appends land in a fresh framed segment, not the legacy one.
+        let new_id = wal
+            .append(WalOperation::WriteTraces, b"framed".to_vec(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        assert!(temp_dir.path().join("wal-0000000001.log").exists());
+        let legacy_log = tokio::fs::read(temp_dir.path().join("wal-0000000000.log"))
+            .await
+            .unwrap();
+        assert_ne!(
+            &legacy_log[..4],
+            &framing::SEGMENT_MAGIC,
+            "legacy log must stay untouched"
+        );
+        {
+            let segments = wal.segments.lock().await;
+            assert_eq!(segments[0].lock().await.format(), SegmentFormat::Legacy);
+            assert_eq!(segments[1].lock().await.format(), SegmentFormat::V1);
+        }
+
+        // Everything is still readable after a reopen, and the reopen does
+        // not keep rotating (the current segment is already framed).
+        drop(wal);
+        let reopened = Wal::new(config).await.unwrap();
+        assert!(!temp_dir.path().join("wal-0000000002.log").exists());
+        let entries = reopened.get_unprocessed_entries().await.unwrap();
+        assert_eq!(entries.len(), 3);
+        let new_entry = entries.iter().find(|e| e.id == new_id).unwrap();
+        assert_eq!(
+            reopened.read_entry_data(new_entry).await.unwrap(),
+            b"framed"
+        );
+        let legacy_entry = entries.iter().find(|e| e.id == legacy_ids[1]).unwrap();
+        assert_eq!(
+            reopened.read_entry_data(legacy_entry).await.unwrap(),
+            payloads[1]
+        );
+    }
+
     fn make_batch_val(v: i64) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
         // Vary row count with the value so distinct entries have distinct
@@ -1971,29 +2421,28 @@ mod tests {
 
     /// Corrupt the payload bytes of the `target_index`-th entry (0-based, in
     /// append order) in a single-segment WAL log file on disk, leaving the
-    /// entry's 8-byte length prefix — and every other entry — untouched.
+    /// entry's record header — and every other entry — untouched.
     /// Overwrites with `0xFF` rather than flipping a byte or two: a small
     /// flip can still deserialize into garbage bincode, which would not
     /// exercise the deserialize-failure path this helper exists to trigger.
     ///
     /// Returns `(entry_payload_offset, entry_payload_len)` of the corrupted
-    /// entry — the byte range inside the `.log` file, after its length
-    /// prefix — so callers can assert on the quarantine file name/contents.
+    /// entry — the byte range inside the `.log` file, after its record
+    /// header — so callers can assert on the quarantine file name/contents.
     async fn corrupt_nth_log_entry_payload(log_path: &Path, target_index: usize) -> (usize, usize) {
         let mut buffer = tokio::fs::read(log_path).await.unwrap();
 
         // Walk the file exactly like `WalSegment::load` does, to find the
         // byte range of the target entry's payload.
-        let mut offset = 0usize;
+        let mut offset = SEGMENT_HEADER_LEN;
         let mut index = 0usize;
         loop {
             assert!(
-                offset + 8 <= buffer.len(),
+                offset + LOG_RECORD_HEADER_LEN <= buffer.len(),
                 "ran out of entries before reaching index {target_index}"
             );
-            let entry_len =
-                u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap()) as usize;
-            offset += 8;
+            let (entry_len, _) = parse_log_record_header(&buffer[offset..]).unwrap();
+            offset += LOG_RECORD_HEADER_LEN;
             assert!(offset + entry_len <= buffer.len(), "entry runs past EOF");
 
             if index == target_index {

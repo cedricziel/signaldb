@@ -109,7 +109,10 @@ commit.
 **A WAL in front of the columnar path.** Arrow batches are buffered
 poorly by object stores, so ingestion writes to a local write-ahead log
 before acknowledging the client; the writer drains the WAL into Parquet
-asynchronously. See [WAL persistence](../operations/wal-persistence.md).
+asynchronously. WAL records are length-framed and CRC-32 checked (the
+`crc32fast` dependency), so a damaged record is attributed and skipped
+instead of poisoning its segment. See
+[WAL persistence](../operations/wal-persistence.md).
 
 **Semantics ride outside the stack.** The FDAP layers carry bytes and
 types, not meaning. What an attribute key or metric name _means_ comes from
