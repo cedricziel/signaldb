@@ -153,6 +153,9 @@ impl SourcePlan {
                     ("scope.name", "scope_name"),
                     ("scope.version", "scope_version"),
                     ("scope.schema_url", "scope_schema_url"),
+                    ("log.attributes", "log_attributes"),
+                    ("scope.attributes", "scope_attributes"),
+                    ("resource.attributes", "resource_attributes"),
                 ],
             }),
             "traces" => Some(SourcePlan {
@@ -187,6 +190,9 @@ impl SourcePlan {
                     ("scope.name", "scope_name"),
                     ("scope.version", "scope_version"),
                     ("scope.schema_url", "scope_schema_url"),
+                    ("span.attributes", "span_attributes"),
+                    ("scope.attributes", "scope_attributes"),
+                    ("resource.attributes", "resource_attributes"),
                 ],
             }),
             "profiles" => Some(SourcePlan {
@@ -220,6 +226,9 @@ impl SourcePlan {
                     "span_id",
                 ],
                 aliases: &[
+                    ("profile.attributes", "profile_attributes"),
+                    ("scope.attributes", "scope_attributes"),
+                    ("resource.attributes", "resource_attributes"),
                     ("profile.id", "profile_id"),
                     ("duration", "duration_nano"),
                     ("sample.type", "sample_type"),
@@ -688,8 +697,10 @@ impl SchemaResolver {
 
     /// Resolve a declared logical field to its current physical realization.
     fn column_for(&self, field: &str, value_type: ValueType) -> Option<(String, ValueType)> {
+        // An alias may target a column with no scalar value type (an
+        // attribute-container Map), so check the scanned names, not `columns`.
         if let Some((_, physical)) = self.aliases.iter().find(|(logical, _)| *logical == field)
-            && self.columns.contains_key(*physical)
+            && self.physical_names.contains(*physical)
         {
             return Some((physical.to_string(), value_type));
         }
@@ -3597,6 +3608,150 @@ mod tests {
             format!("{err}").contains("log_attributes"),
             "unexpected error: {err}"
         );
+    }
+
+    /// The attribute containers are addressable under their OTel scope as
+    /// retrieval-only logical fields (`log.attributes`, `scope.attributes`,
+    /// `resource.attributes`; `span.attributes` / `profile.attributes` on the
+    /// other sources), so a client can ask for a record's whole attribute
+    /// bag by scope without naming a storage column.
+    #[tokio::test]
+    async fn attribute_containers_are_addressable_by_otel_scope() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["trace_id", "log.attributes", "scope.attributes", "resource.attributes"],
+            "pipeline": [{ "where": { "field": "trace_id", "op": "eq", "value": "t1" } }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let batch = batches.iter().find(|b| b.num_rows() > 0).expect("one row");
+        assert_eq!(batch.num_rows(), 1);
+        let schema = batch.schema();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "trace_id",
+                "log_attributes",
+                "scope_attributes",
+                "resource_attributes"
+            ],
+            "output columns keep the OTel-scope naming"
+        );
+        let attrs = batch
+            .column_by_name("log_attributes")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::MapArray>()
+            .expect("the container comes back as its Map, not a rendering");
+        let entries = attrs.value(0);
+        let keys = entries
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let values = entries
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(keys.value(0), "deployment.environment");
+        assert_eq!(values.value(0), "prod");
+    }
+
+    #[tokio::test]
+    async fn attribute_containers_are_retrieval_only() {
+        let svc = IrService::new(logs_ctx());
+        for field in ["log.attributes", "scope.attributes", "resource.attributes"] {
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "fields": ["trace_id"],
+                "pipeline": [{ "where": { "field": field, "op": "exists" } }]
+            }));
+            let err = svc.plan(&d, "t", "d", 0).await.expect_err("rejected");
+            assert!(format!("{err}").contains(field), "unexpected error: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn span_attributes_container_is_addressable_on_traces() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            map_field_named("span_attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0"])),
+                Arc::new(StringArray::from(vec!["s0"])),
+                Arc::new(StringArray::from(vec!["GET /a"])),
+                Arc::new(StringArray::from(vec!["api"])),
+                Arc::new(Int64Array::from(vec![10_i64])),
+                Arc::new(Int64Array::from(vec![100_i64])),
+                build_map(&[&[("http.request.method", "GET")]]),
+                build_map(&[&[("service.version", "1.2.3")]]),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["span_id", "span.attributes", "resource.attributes"]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let batch = batches.iter().find(|b| b.num_rows() > 0).expect("one row");
+        for (col_name, key, value) in [
+            ("span_attributes", "http.request.method", "GET"),
+            ("resource_attributes", "service.version", "1.2.3"),
+        ] {
+            let attrs = batch
+                .column_by_name(col_name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<datafusion::arrow::array::MapArray>()
+                .unwrap();
+            let entries = attrs.value(0);
+            let keys = entries
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let values = entries
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            assert_eq!(keys.value(0), key);
+            assert_eq!(values.value(0), value);
+        }
     }
 
     #[tokio::test]

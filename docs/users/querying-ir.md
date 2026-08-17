@@ -152,6 +152,11 @@ scope's name (a first-class column), not a key called `name` inside the scope
 attributes. To reach a key that literally begins with one of these prefixes,
 qualify it: `log.resource.foo` is the key `resource.foo` on the record.
 
+The whole bag of one scope is a field too: `log.attributes`, `span.attributes`,
+`profile.attributes`, `scope.attributes`, and `resource.attributes` project
+the container as a `map<string,string>` (a JSON object in a `rows` result).
+They are retrieval-only — filter on the individual keys, not on the bag.
+
 ### Exception attributes
 
 An exception can be recorded two different ways depending on the source, and
