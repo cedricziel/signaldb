@@ -262,36 +262,59 @@ fn bench_read_paths(c: &mut Criterion) {
     });
 
     // The footer-cache lever (#880): the same unbounded lookup on the real
-    // querier session, with and without the Parquet metadata cache. The
-    // difference is the cost of re-reading and re-decoding every candidate
-    // file's footer. These run on an in-memory object store, so they show the
-    // decode half only; on S3 each avoided footer is also a round-trip.
-    for (name, limits) in [
-        (
-            "trace_lookup_by_id_footers_uncached",
-            QuerierConfig {
-                parquet_metadata_cache_mb: 0,
-                ..QuerierConfig::default()
-            },
-        ),
-        (
-            "trace_lookup_by_id_footers_cached",
-            QuerierConfig::default(),
-        ),
-    ] {
-        let session = rt.block_on(with_traces(
-            querier::flight::session_context_with_limits(&limits),
-            &catalog_manager,
-        ));
-        // Warm the cache (a no-op for the uncached session) so the benchmark
-        // measures the steady state, not the one-off first read.
-        rt.block_on(lookup_by_id(&session));
-        group.bench_function(name, |b| {
-            b.to_async(&rt).iter(|| async {
-                black_box(lookup_by_id(&session).await);
-            });
+    // querier session, in the three states that matter.
+    //
+    // The three-way split exists because the cache's cold and warm effects are
+    // different questions. Warm-vs-cold is the win being claimed. Cold-with-
+    // vs cold-without is the regression guard: enabling the cache must not
+    // make a first-ever lookup slower. Reading DataFusion 54's opener says it
+    // should not — the opener passes an explicit `PageIndexPolicy::Skip` on
+    // the initial metadata load, which `CachedParquetFileReader::get_metadata`
+    // forwards, so the cache never triggers the extra page-index fetch that
+    // `DFParquetMetadata` would default to when no policy is set. The cold
+    // arms measure that rather than assuming it; all the cache should add on a
+    // miss is one hash lookup and one insert.
+    //
+    // Both cold arms clear their own cache inside the timed region so neither
+    // carries a call the other does not; on the uncached arm the clear is a
+    // no-op over an empty map. These run on an in-memory object store, so they
+    // show the decode half only — on S3 each avoided footer is also a
+    // round-trip, which is where #880's ~53 ms comes from.
+    let uncached = rt.block_on(with_traces(
+        querier::flight::session_context_with_limits(&QuerierConfig {
+            parquet_metadata_cache_mb: 0,
+            ..QuerierConfig::default()
+        }),
+        &catalog_manager,
+    ));
+    let cached = rt.block_on(with_traces(
+        querier::flight::session_context_with_limits(&QuerierConfig::default()),
+        &catalog_manager,
+    ));
+    let uncached_cache = uncached.runtime_env().cache_manager.get_file_metadata_cache();
+    let cached_cache = cached.runtime_env().cache_manager.get_file_metadata_cache();
+
+    group.bench_function("trace_lookup_by_id_cold_without_cache", |b| {
+        b.to_async(&rt).iter(|| async {
+            uncached_cache.clear();
+            black_box(lookup_by_id(&uncached).await);
         });
-    }
+    });
+
+    group.bench_function("trace_lookup_by_id_cold_with_cache", |b| {
+        b.to_async(&rt).iter(|| async {
+            cached_cache.clear();
+            black_box(lookup_by_id(&cached).await);
+        });
+    });
+
+    // Warm: every candidate file's footer is already resident.
+    rt.block_on(lookup_by_id(&cached));
+    group.bench_function("trace_lookup_by_id_warm_with_cache", |b| {
+        b.to_async(&rt).iter(|| async {
+            black_box(lookup_by_id(&cached).await);
+        });
+    });
 
     // Open a single trace WITH a fixed ±1h window. Fast (prunes partitions) but
     // INCOMPLETE for a spread trace — it only finds spans near `base_ts`. Kept
