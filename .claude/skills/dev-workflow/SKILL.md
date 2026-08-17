@@ -5,9 +5,10 @@ description: SignalDB development workflow - build, test, lint, format, run serv
 
 # SignalDB Development Workflow
 
-Read `CLAUDE.md` for build/test/run commands, storage locations, Docker
-compose, and configuration — all standard `cargo`/`pnpm` invocations. Use
-`commit-discipline` for semantic-commit format.
+Build and test are plain `cargo build` / `cargo test [-p <crate>]`; local
+runs go through `scripts/run-dev.sh` (read its header for flags), Docker via
+`compose.yml`, JS via the `package.json` scripts, config via
+`signaldb.dist.toml`. Use `commit-discipline` for semantic-commit format.
 
 Read `docs/contributing/benchmarking.md` for the Criterion micro-benchmark
 suite: `scripts/run-benches.sh` (all targets, `-p <crate>`, or `-- --baseline
@@ -22,8 +23,7 @@ warnings`, `cargo machete`, and `cargo deny check` automatically (all
   fatal) whenever staged files match `*.rs`, `Cargo.{toml,lock}`,
   `deny.toml`, `rustfmt.toml`, or `.cargo-husky/`; it runs `pnpm --filter
 signaldb-ui typecheck` + `lint` automatically when `src/ui/` files are
-  staged. A commit touching neither skips both — this differs from
-  CLAUDE.md's "run manually before commit" note for `cargo machete`.
+  staged. A commit touching neither skips both.
 - **JS/TS tooling is pnpm, not npm.** Workspace = `src/grafana-plugin` +
   `src/ui` (`pnpm-workspace.yaml`); scripts are in `package.json`
   (`grafana:dev`/`grafana:build`/`grafana:test`, `ui:dev`/`ui:build`/

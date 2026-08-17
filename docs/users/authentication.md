@@ -223,10 +223,12 @@ manifests every `[auth].storage_usage_refresh_interval` (default 60s) —
 against `max_storage_bytes`, so enforcement is eventually consistent by
 design; usage is exported as the `signaldb.tenant.storage_usage` gauge.
 
-Every rejection increments `signaldb_rate_limit_rejections_total{surface,kind}`
-(`surface` ∈ `query | admin | otlp_http | otlp_grpc | prometheus`; `kind` ∈
+Every token-bucket rejection increments
+`signaldb_rate_limit_rejections_total{surface,kind}` (`surface` ∈
+`query | admin | otlp_http | otlp_grpc | prometheus`; `kind` ∈
 `query_requests | requests | bytes | quota`) and logs one `warn` with
-`retry_after_ms`.
+`retry_after_ms`. Storage-quota rejections on the Prometheus remote-write
+surface return `429` without incrementing the counter.
 
 ## Tenant self-service API
 

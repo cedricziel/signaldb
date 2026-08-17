@@ -391,8 +391,9 @@ Defined in `schemas.toml`.
 
 ### Typed attribute maps
 
-New tables across all four signals store their attribute columns as Iceberg
-`Map<String,String>` rather than a JSON string: any attribute matches
+New tables across all four signals store their `attributes`,
+`resource_attributes`, and `scope_attributes` columns as Iceberg
+`Map<String,String>` rather than a JSON string (see `schemas.toml`): any attribute matches
 exactly (including regex and ordered comparisons) via `get_field`
 extraction, instead of the JSON substring approximation legacy tables are
 stuck with. The querier detects which form a table uses per column
@@ -543,11 +544,11 @@ Defined in `src/common/src/iceberg/schemas.rs`.
 | 7   | `value`                    | Double             | Yes      |                                 |
 | 8   | `flags`                    | Int                | No       |                                 |
 | 9   | `resource_schema_url`      | String             | No       |                                 |
-| 10  | `resource_attributes`      | String             | No       | JSON                            |
+| 10  | `resource_attributes`      | Map<String,String> | No       | typed map (legacy: JSON string) |
 | 11  | `scope_name`               | String             | No       |                                 |
 | 12  | `scope_version`            | String             | No       |                                 |
 | 13  | `scope_schema_url`         | String             | No       |                                 |
-| 14  | `scope_attributes`         | String             | No       | JSON                            |
+| 14  | `scope_attributes`         | Map<String,String> | No       | typed map (legacy: JSON string) |
 | 15  | `scope_dropped_attr_count` | Int                | No       |                                 |
 | 16  | `attributes`               | Map<String,String> | No       | typed map (legacy: JSON string) |
 | 17  | `exemplars`                | String             | No       | JSON                            |

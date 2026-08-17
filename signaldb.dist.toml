@@ -599,11 +599,11 @@ default_tenant = "default"
 # SIGNALDB_DATABASE_DSN=postgres://user:pass@localhost/signaldb
 # SIGNALDB_STORAGE_DSN=file:///data/signaldb
 # SIGNALDB__SCHEMA__CATALOG_TYPE=sql
-# SIGNALDB__SCHEMA__CATALOG_URI=postgres://user:pass@localhost:5432/iceberg
+# SIGNALDB__SCHEMA__CATALOG_URI=sqlite:///data/signaldb/iceberg_catalog.db
 # SIGNALDB__TENANTS__DEFAULT_TENANT=my_tenant
 
 # Production environment example with Iceberg:
 # SIGNALDB_DATABASE_DSN=postgres://signaldb:password@postgres:5432/signaldb_metadata
 # SIGNALDB_STORAGE_DSN=s3://my-data-bucket/iceberg-tables/
 # SIGNALDB__SCHEMA__CATALOG_TYPE=sql
-# SIGNALDB__SCHEMA__CATALOG_URI=postgres://iceberg:password@postgres:5432/iceberg_catalog
+# SIGNALDB__SCHEMA__CATALOG_URI=sqlite:///mnt/shared/signaldb/iceberg_catalog.db   # shared file-backed SQLite; PostgreSQL is rejected

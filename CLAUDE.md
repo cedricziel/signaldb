@@ -7,7 +7,7 @@ SignalDB: distributed observability database on the FDAP stack (Flight, DataFusi
 - One binary: `signaldb` runs the monolith, `signaldb <service>` (acceptor, router, writer, querier, compactor, mcp) runs one service. `./scripts/run-dev.sh` wraps the common local setups; local state lives under `.data/` (WAL, Parquet, SQLite).
 - Write path: Acceptor (OTLP) → WAL → Writer (Flight) → Iceberg/Parquet. Query path: Router (HTTP) → Querier (Flight) → DataFusion → Iceberg.
 - Config precedence: defaults → `signaldb.toml` → `SIGNALDB_*` env. `signaldb.dist.toml` is the annotated reference.
-- Tenancy: `Authorization: Bearer <key>` plus an explicit `X-Tenant-ID` header (intentional; don't infer tenant from the key). WAL is laid out `{tenant}/{dataset}/{signal}/`, Iceberg tables are namespaced per tenant.
+- Tenancy: API-key requests send `Authorization: Bearer <key>` plus an explicit `X-Tenant-ID` header (intentional; don't infer the tenant from the key). OAuth access tokens are the exception: they are bound to one tenant at consent. WAL is laid out `{tenant}/{dataset}/{signal}/`, Iceberg tables are namespaced per tenant.
 - Tables: the writer reconciles signal tables per tenant/dataset (startup + `[writer].table_reconcile_interval`), so a dataset is queryable before its first write; ingest still load-or-creates. Queries against a signal with no table return empty, never an error. See `docs/operations/table-provisioning.md`.
 - JS tooling is pnpm (root workspace + lockfile); never `npm install`.
 - Fresh worktrees: run `git submodule update --init opentelemetry-proto` or tempo-api fails to build.
