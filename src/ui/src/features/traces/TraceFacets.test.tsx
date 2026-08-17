@@ -115,7 +115,7 @@ describe("TraceFacets", () => {
         { field: "kind", value: "Client" },
       ],
     });
-    await userEvent.click(screen.getByRole("button", { name: /span\.kind/ }));
+    // kind has a selection, so it is listed first and already expanded.
     // Every kind is offered, in the fixed order, even with no data for it.
     const boxes = await screen.findAllByRole("checkbox", {
       name: /^(Server|Client|Internal|Producer|Consumer)/,
@@ -132,6 +132,8 @@ describe("TraceFacets", () => {
     expect(
       screen.getByRole("checkbox", { name: "Internal" }),
     ).not.toBeChecked();
+    // Counts fill in once the facet query resolves; 0 for kinds without data.
+    await screen.findByText("218,135");
     const values = screen.getAllByTestId("facet-value");
     expect(values[0]).toHaveTextContent("218,135");
     expect(values[1]).toHaveTextContent("0");
@@ -200,9 +202,7 @@ describe("TraceFacets", () => {
     const { onRemoveFilter } = renderFacets({
       filters: [{ field: "service.name", value: "signaldb" }],
     });
-    await userEvent.click(
-      screen.getByRole("button", { name: /service\.name/ }),
-    );
+    // A facet with a filter set starts expanded — no click needed.
     const active = await screen.findByTestId("facet-value");
     expect(active).toHaveAttribute("aria-pressed", "true");
     await userEvent.click(active);
@@ -228,6 +228,42 @@ describe("TraceFacets", () => {
     renderFacets({ filters: [{ field: "status", value: "error" }] });
     const statusBtn = screen.getByRole("button", { name: /status/ });
     expect(within(statusBtn).getByText("1")).toBeInTheDocument();
+  });
+
+  it("lists facets with a filter set first, expanded, and lets them collapse", async () => {
+    stubFetchRoutes([{ match: "/api/v1/query", body: table([["error", 6]]) }]);
+    renderFacets({
+      filters: [
+        { field: "status", value: "error" },
+        { field: "kind", value: "Server" },
+      ],
+    });
+    const fields = screen
+      .getAllByRole("button", { expanded: true })
+      .concat(screen.getAllByRole("button", { expanded: false }));
+    // Active facets first, in the curated order (status before kind), then
+    // the rest in their curated order.
+    const names = screen
+      .getByLabelText("Facets")
+      .querySelectorAll(".field-row .field > span:first-child");
+    expect([...names].slice(0, 3).map((n) => n.textContent)).toEqual([
+      "status",
+      "span.kind",
+      "service.name",
+    ]);
+    expect(fields.length).toBeGreaterThan(2);
+    const statusBtn = screen.getByRole("button", { name: /status/ });
+    const kindBtn = screen.getByRole("button", { name: /span\.kind/ });
+    const serviceBtn = screen.getByRole("button", { name: /service\.name/ });
+    expect(statusBtn).toHaveAttribute("aria-expanded", "true");
+    expect(kindBtn).toHaveAttribute("aria-expanded", "true");
+    expect(serviceBtn).toHaveAttribute("aria-expanded", "false");
+    // Both stay expanded together — this is no longer one-at-a-time.
+    await screen.findAllByTestId("facet-value");
+    // An active facet can still be collapsed by hand.
+    await userEvent.click(statusBtn);
+    expect(statusBtn).toHaveAttribute("aria-expanded", "false");
+    expect(kindBtn).toHaveAttribute("aria-expanded", "true");
   });
 
   it("adds an info glyph with the registry tooltip to facets it knows", async () => {
