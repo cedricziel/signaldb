@@ -18,8 +18,13 @@ import { msToNanos, type ResolvedRange } from "../lib/time";
  * trace opened by pasting its ID may be much older than the explore window. */
 const WIDE_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 
-function whereTrace(traceId: string): Record<string, unknown> {
-  return { where: { field: "trace_id", op: "eq", value: traceId } };
+/** The trace-id filter. The traces source names the join key `trace_id`;
+ * the profiles source calls it `trace.id`. */
+function whereTrace(
+  traceId: string,
+  field: "trace_id" | "trace.id" = "trace_id",
+): Record<string, unknown> {
+  return { where: { field, op: "eq", value: traceId } };
 }
 
 function irRange(range: ResolvedRange) {
@@ -74,7 +79,7 @@ export function buildTraceProfilesDoc(
     from: "profiles",
     range: irRange(range),
     result: "rows",
-    pipeline: [whereTrace(traceId)],
+    pipeline: [whereTrace(traceId, "trace.id")],
   };
 }
 

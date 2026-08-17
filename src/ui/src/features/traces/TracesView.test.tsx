@@ -286,7 +286,7 @@ function irProfilesBody(trace: WireTraceFixture) {
 const isTraceDetailQuery = (from: string) => (b: unknown) => {
   const body = b as { from?: string; pipeline?: unknown };
   return (
-    body?.from === from && JSON.stringify(body.pipeline).includes('"trace_id"')
+    body?.from === from && /"trace[._]id"/.test(JSON.stringify(body.pipeline))
   );
 };
 

@@ -133,8 +133,9 @@ describe("buildTraceSpansDoc", () => {
   it("asks the profiles source for the trace's profiles", () => {
     const doc = buildTraceProfilesDoc("t1cafe", RANGE);
     expect(doc.from).toBe("profiles");
+    // The profiles source names the join key `trace.id`, not `trace_id`.
     expect(doc.pipeline).toEqual([
-      { where: { field: "trace_id", op: "eq", value: "t1cafe" } },
+      { where: { field: "trace.id", op: "eq", value: "t1cafe" } },
     ]);
   });
 });
