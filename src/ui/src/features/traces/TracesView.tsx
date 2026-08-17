@@ -10,14 +10,13 @@ import {
   type CSSProperties,
 } from "react";
 import {
-  tempoGetTrace,
   tempoSearchTags,
   type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
 } from "../../api/tempo";
 import { ApiError } from "../../api/http";
-import { fetchSpanKinds } from "../../api/spanKinds";
+import { fetchTraceDetail } from "../../api/traceDetail";
 import {
   STATUS_COLORS,
   STATUS_ORDER,
@@ -871,34 +870,32 @@ function TraceDetail({ state, update }: Props) {
     setHoveredSpanId(null);
     pointer.clear();
   };
+  // One Query IR read for the whole trace: spans with kind, status,
+  // attribute containers, and events, plus the profiles captured during it.
+  // The viewer's range is tried first; a trace opened by ID that lies
+  // outside it is retried over a wide window (see fetchTraceDetail).
   const trace = useQuery({
-    queryKey: ["tempo-trace", state.trace, state.tenant, state.dataset],
-    queryFn: () => tempoGetTrace(state.trace),
-  });
-
-  // Span kind isn't part of the Tempo-compat wire format — fetched
-  // separately over Query IR once the trace's own time extent is known
-  // (the viewer's selected range may not cover a trace opened by ID).
-  const traceStartMs = trace.data ? nanosToMs(trace.data.startNs) : 0;
-  const traceDurationMs = trace.data?.durationMs ?? 0;
-  const kindsQuery = useQuery({
-    queryKey: ["span-kinds", state.trace, state.tenant, state.dataset],
+    queryKey: ["trace-detail", state.trace, state.tenant, state.dataset],
     queryFn: () =>
-      fetchSpanKinds(
-        state.trace,
-        traceStartMs - 60_000,
-        traceStartMs + traceDurationMs + 60_000,
-      ),
-    enabled: trace.data !== undefined,
+      fetchTraceDetail(state.trace, resolveRange(state.range, Date.now())),
   });
-  const spanKinds = kindsQuery.data ?? {};
+  const spanKinds = useMemo(() => {
+    const kinds: Record<string, string> = {};
+    for (const s of trace.data?.spans ?? []) {
+      if (s.kind) kinds[s.spanId] = s.kind;
+    }
+    return kinds;
+  }, [trace.data]);
   const waterfall = useMemo(
     () => (trace.data ? buildWaterfall(trace.data.spans) : undefined),
     [trace.data],
   );
 
-  if (trace.isError) {
-    if (trace.error instanceof ApiError && trace.error.status === 404) {
+  if (trace.isError || (trace.isSuccess && trace.data === null)) {
+    if (
+      !trace.isError ||
+      (trace.error instanceof ApiError && trace.error.status === 404)
+    ) {
       return (
         <div className="trace-not-found" role="alert">
           <button className="backbtn" onClick={() => update({ trace: "" })}>
@@ -927,7 +924,8 @@ function TraceDetail({ state, update }: Props) {
     );
   }
 
-  if (!waterfall) return null;
+  if (!waterfall || !trace.data) return null;
+  const traceData = trace.data;
 
   const hoveredRow = hoveredSpanId
     ? waterfall.rows.find((r) => r.span.spanId === hoveredSpanId)
@@ -951,12 +949,12 @@ function TraceDetail({ state, update }: Props) {
         <button className="backbtn" onClick={() => update({ trace: "" })}>
           ← traces
         </button>
-        <h3>{trace.data.rootTraceName}</h3>
+        <h3>{traceData.rootTraceName}</h3>
         <span className="tmeta">
           {formatDurationMs(
             // The search API truncates durationMs; span extents are exact.
-            trace.data.durationMs > 0
-              ? trace.data.durationMs
+            traceData.durationMs > 0
+              ? traceData.durationMs
               : Number(waterfall.traceDurationNs) / 1e6,
           )}{" "}
           · {plural(waterfall.rows.length, "span")} ·{" "}
@@ -968,7 +966,7 @@ function TraceDetail({ state, update }: Props) {
             </em>
           )}
         </span>
-        <span className="trace-id">{trace.data.traceId}</span>
+        <span className="trace-id">{traceData.traceId}</span>
       </div>
       {Object.keys(spanKinds).length > 0 && (
         <div className="span-kind-legend" aria-label="Span kind legend">
@@ -1047,8 +1045,8 @@ function TraceDetail({ state, update }: Props) {
             />
             <SpanDetail
               span={selectedRow.span}
-              traceId={trace.data.traceId}
-              profiles={trace.data.profiles}
+              traceId={traceData.traceId}
+              profiles={traceData.profiles}
               kind={spanKinds[selectedRow.span.spanId]}
               update={update}
             />
@@ -1082,8 +1080,7 @@ function SpanDetail({
   span: TempoSpan;
   traceId: string;
   profiles: ProfileSummaryView[];
-  /** Not part of the Tempo wire format — fetched separately over Query IR
-   * (see fetchSpanKinds); undefined while that query is still loading. */
+  /** OTel span kind, when the IR row carried one. */
   kind: string | undefined;
   update: UpdateFn;
 }) {
@@ -1195,6 +1192,41 @@ function eventOffsetLabel(
   }
 }
 
+/** When an event happened: wall-clock time (ms precision, local zone) with
+ * the exact nanosecond timestamp on hover, and the offset from the span's
+ * start. Timing marks such as the browser's `fetchStart`/`responseEnd`
+ * carry nothing but this. */
+function EventTime({
+  spanStartNs,
+  eventTimeNs,
+}: {
+  spanStartNs: string;
+  eventTimeNs: string;
+}) {
+  const offset = eventOffsetLabel(spanStartNs, eventTimeNs);
+  if (!eventTimeNs) return null;
+  let clock: string | null;
+  try {
+    clock = formatTimestamp(nanosToMs(eventTimeNs));
+  } catch {
+    clock = null;
+  }
+  return (
+    <span className="span-event-time">
+      {clock && (
+        <span
+          data-testid="span-event-clock"
+          title={`${eventTimeNs} ns since the epoch`}
+        >
+          {clock}
+        </span>
+      )}
+      {clock && offset && " · "}
+      {offset && <span>{offset}</span>}
+    </span>
+  );
+}
+
 /** One span event. Exceptions (name === "exception") get an error treatment
  * with message/type promoted and the stacktrace shown as preformatted text. */
 function SpanEventItem({
@@ -1205,7 +1237,6 @@ function SpanEventItem({
   spanStartNs: string;
 }) {
   const isException = event.name === "exception";
-  const offset = eventOffsetLabel(spanStartNs, event.timeUnixNano);
   if (isException) {
     const message = event.attributes["exception.message"];
     const type = event.attributes["exception.type"];
@@ -1222,7 +1253,10 @@ function SpanEventItem({
       <li className="span-event span-event-err">
         <div className="span-event-head">
           <span className="span-event-name">exception</span>
-          {offset && <span className="span-event-time">{offset}</span>}
+          <EventTime
+            spanStartNs={spanStartNs}
+            eventTimeNs={event.timeUnixNano}
+          />
           {type !== undefined && (
             <span className="span-event-type">
               <AttributeValue
@@ -1261,7 +1295,7 @@ function SpanEventItem({
     <li className="span-event">
       <div className="span-event-head">
         <span className="span-event-name">{event.name}</span>
-        {offset && <span className="span-event-time">{offset}</span>}
+        <EventTime spanStartNs={spanStartNs} eventTimeNs={event.timeUnixNano} />
       </div>
       {Object.entries(event.attributes).map(([k, v]) => (
         <div className="span-event-attr" key={k}>

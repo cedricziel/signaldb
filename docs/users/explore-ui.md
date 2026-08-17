@@ -39,7 +39,8 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   status, without changing the selection. The span
   panel lists that span's events, giving exceptions an error treatment that
   surfaces the message, type, and stacktrace, followed by its attributes —
-  split into **Span** and **Resource** sections and sorted alphabetically,
+  split into **Span**, **Scope**, and **Resource** sections (a section with
+  nothing in it is omitted) and sorted alphabetically,
   with the sub-header compiling service name, namespace, deployment
   environment, and version from the resource attributes that carry them. A
   value over ~200 characters (a Rust `Debug` dump, a stack trace) collapses

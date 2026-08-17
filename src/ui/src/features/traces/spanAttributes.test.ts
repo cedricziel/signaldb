@@ -13,6 +13,18 @@ describe("groupSpanAttributes", () => {
     ]);
   });
 
+  it("puts scope.-prefixed keys in a Scope group between Span and Resource", () => {
+    const groups = groupSpanAttributes({
+      "http.request.method": "GET",
+      "scope.otel.library.name": "@opentelemetry/instrumentation-fetch",
+      "resource.service.name": "signaldb-ui",
+    });
+    expect(groups.map((g) => g.label)).toEqual(["Span", "Scope", "Resource"]);
+    expect(groups[1]!.entries).toEqual([
+      ["otel.library.name", "@opentelemetry/instrumentation-fetch"],
+    ]);
+  });
+
   it("sorts entries alphabetically by key within each group", () => {
     const groups = groupSpanAttributes({
       "url.full": "https://example.com",

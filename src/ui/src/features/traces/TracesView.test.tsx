@@ -151,6 +151,164 @@ const TRACE_BODY = {
   ],
 };
 
+// The trace detail is read over the Query IR (api/traceDetail.ts). The
+// fixtures below keep the compact Tempo-like shape they always had;
+// `traceRoutes` turns one into the two IR responses the detail view issues
+// (spans, profiles), matched by request body since both hit /api/v1/query.
+type WireAttrs = Record<
+  string,
+  { key: string; value: Record<string, unknown> } | undefined
+>;
+type WireSpanFixture = {
+  spanID: string;
+  parentSpanID?: string;
+  startTimeUnixNano: string;
+  durationNanos: string;
+  name?: string;
+  serviceName?: string;
+  status?: string;
+  attributes?: WireAttrs;
+  events?: { name: string; timeUnixNano?: string; attributes?: WireAttrs }[];
+};
+type WireTraceFixture = {
+  /** Kept on the fixtures for readability; the IR reads span rows only. */
+  traceID?: string;
+  rootServiceName?: string;
+  rootTraceName?: string;
+  startTimeUnixNano?: string;
+  durationMs?: number;
+  spanSets?: { matched?: number; spans: WireSpanFixture[] }[];
+  profiles?: {
+    profileID: string;
+    timeUnixNano: string;
+    durationNano: string;
+    sampleType: string;
+    sampleUnit: string;
+    serviceName: string;
+    spanID?: string;
+  }[];
+};
+
+const flatAttrs = (attrs: WireAttrs | undefined) =>
+  Object.fromEntries(
+    Object.entries(attrs ?? {}).flatMap(([k, a]) =>
+      a ? [[k, String(Object.values(a.value)[0] ?? "")]] : [],
+    ),
+  );
+
+function irSpansBody(trace: WireTraceFixture, kinds: Record<string, string>) {
+  const spans = (trace.spanSets ?? []).flatMap((s) => s.spans);
+  return {
+    result: "rows",
+    window: { start_ns: 0, end_ns: 0 },
+    columns: [
+      { name: "trace_id", type: "string" },
+      { name: "span_id", type: "string" },
+      { name: "parent_span_id", type: "string" },
+      { name: "span_name", type: "string" },
+      { name: "service_name", type: "string" },
+      { name: "status_code", type: "string" },
+      { name: "status_message", type: "string" },
+      { name: "start_time_unix_nano", type: "timestamp_ns" },
+      { name: "duration", type: "duration_ns" },
+      { name: "span_kind", type: "string" },
+      { name: "span_attributes", type: "map<string,string>" },
+      { name: "scope_attributes", type: "map<string,string>" },
+      { name: "resource_attributes", type: "map<string,string>" },
+      { name: "span_events", type: "string" },
+    ],
+    rows: spans.map((sp) => {
+      const all = flatAttrs(sp.attributes);
+      const span: Record<string, string> = {};
+      const resource: Record<string, string> = {};
+      for (const [k, v] of Object.entries(all)) {
+        if (k.startsWith("resource.")) resource[k.slice(9)] = v;
+        else span[k] = v;
+      }
+      const events = (sp.events ?? []).map((e) => ({
+        name: e.name,
+        timestamp_unix_nano: Number(e.timeUnixNano ?? sp.startTimeUnixNano),
+        attributes: flatAttrs(e.attributes),
+      }));
+      return [
+        "trace",
+        sp.spanID,
+        sp.parentSpanID ?? null,
+        sp.name ?? "",
+        sp.serviceName ?? "",
+        (sp.status ?? "unset").toUpperCase(),
+        null,
+        Number(sp.startTimeUnixNano),
+        Number(sp.durationNanos),
+        kinds[sp.spanID] ?? null,
+        span,
+        {},
+        resource,
+        events.length > 0 ? JSON.stringify(events) : null,
+      ];
+    }),
+  };
+}
+
+function irProfilesBody(trace: WireTraceFixture) {
+  return {
+    result: "rows",
+    window: { start_ns: 0, end_ns: 0 },
+    columns: [
+      { name: "profile_id", type: "string" },
+      { name: "timestamp", type: "timestamp_ns" },
+      { name: "duration_nano", type: "int64" },
+      { name: "sample_type", type: "string" },
+      { name: "sample_unit", type: "string" },
+      { name: "period_type", type: "string" },
+      { name: "period_unit", type: "string" },
+      { name: "period", type: "int64" },
+      { name: "service_name", type: "string" },
+      { name: "trace_id", type: "string" },
+      { name: "span_id", type: "string" },
+    ],
+    rows: (trace.profiles ?? []).map((pr) => [
+      pr.profileID,
+      Number(pr.timeUnixNano),
+      Number(pr.durationNano),
+      pr.sampleType,
+      pr.sampleUnit,
+      "",
+      "",
+      0,
+      pr.serviceName,
+      "trace",
+      pr.spanID ?? null,
+    ]),
+  };
+}
+
+const isTraceDetailQuery = (from: string) => (b: unknown) => {
+  const body = b as { from?: string; pipeline?: unknown };
+  return (
+    body?.from === from && /"trace[._]id"/.test(JSON.stringify(body.pipeline))
+  );
+};
+
+/** IR routes serving one trace's detail (spans + profiles). */
+function traceRoutes(
+  trace: WireTraceFixture,
+  kinds: Record<string, string> = {},
+) {
+  return [
+    {
+      match: "/api/v1/query",
+      bodyMatch: isTraceDetailQuery("traces"),
+      body: irSpansBody(trace, kinds),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isTraceDetailQuery("profiles"),
+      body: irProfilesBody(trace),
+    },
+  ];
+}
+
 function renderView(state: Partial<ExploreState> = {}) {
   const update = vi.fn();
   renderWithClient(
@@ -720,7 +878,7 @@ describe("TracesView group detail", () => {
 
 describe("TracesView detail", () => {
   it("renders the waterfall with the error span preselected", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
     const spans = await within(
       await screen.findByRole("list", { name: "Spans" }),
@@ -733,24 +891,9 @@ describe("TracesView detail", () => {
   });
 
   it("colors waterfall bars by span kind and shows a legend, fetched over Query IR", async () => {
-    stubFetchRoutes([
-      { match: "/tempo/api/traces/t1cafe", body: TRACE_BODY },
-      {
-        match: "/api/v1/query",
-        body: {
-          result: "rows",
-          window: { start_ns: 0, end_ns: 0 },
-          columns: [
-            { name: "span_id", type: "string" },
-            { name: "span_kind", type: "string" },
-          ],
-          rows: [
-            ["root", "SERVER"],
-            ["charge", "CLIENT"],
-          ],
-        },
-      },
-    ]);
+    stubFetchRoutes(
+      traceRoutes(TRACE_BODY, { root: "SERVER", charge: "CLIENT" }),
+    );
     renderView({ trace: "t1cafe" });
     await screen.findByRole("list", { name: "Spans" });
 
@@ -768,9 +911,8 @@ describe("TracesView detail", () => {
   it("shows a rich tooltip with service, namespace, version, and kind when hovering a span", async () => {
     const chargeSpan = TRACE_BODY.spanSets[0]!.spans[1]!;
     stubFetchRoutes([
-      {
-        match: "/tempo/api/traces/t1cafe",
-        body: {
+      ...traceRoutes(
+        {
           ...TRACE_BODY,
           spanSets: [
             {
@@ -795,22 +937,8 @@ describe("TracesView detail", () => {
             },
           ],
         },
-      },
-      {
-        match: "/api/v1/query",
-        body: {
-          result: "rows",
-          window: { start_ns: 0, end_ns: 0 },
-          columns: [
-            { name: "span_id", type: "string" },
-            { name: "span_kind", type: "string" },
-          ],
-          rows: [
-            ["root", "SERVER"],
-            ["charge", "CLIENT"],
-          ],
-        },
-      },
+        { root: "SERVER", charge: "CLIENT" },
+      ),
     ]);
     renderView({ trace: "t1cafe" });
     const spans = await within(
@@ -853,7 +981,7 @@ describe("TracesView detail", () => {
   });
 
   it("shows each event's time offset from the span start", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
 
     // charge span starts at 1_040_000_000ns; the exception event fires at
@@ -861,52 +989,63 @@ describe("TracesView detail", () => {
     expect(await screen.findByText("+15 ms")).toBeInTheDocument();
   });
 
+  it("shows each event's absolute time next to its offset", async () => {
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
+    renderView({ trace: "t1cafe" });
+    await screen.findByText("+15 ms");
+    // 1_055_000_000ns = 1.055s after the epoch, rendered as wall-clock time
+    // (local zone) with millisecond precision.
+    const clock = screen.getByTestId("span-event-clock");
+    expect(clock).toHaveTextContent(/^\d{2}:\d{2}:\d{2}\.055$/);
+    expect(clock).toHaveAttribute(
+      "title",
+      expect.stringContaining("1055000000"),
+    );
+  });
+
   it("prefers preselecting an error span that recorded an exception over one that didn't", async () => {
     stubFetchRoutes([
-      {
-        match: "/tempo/api/traces/tpropagated",
-        body: {
-          ...TRACE_BODY,
-          traceID: "tpropagated",
-          spanSets: [
-            {
-              matched: 2,
-              spans: [
-                {
-                  spanID: "root",
-                  startTimeUnixNano: "1000000000",
-                  durationNanos: "412000000",
-                  name: "POST /api/checkout",
-                  serviceName: "gateway",
-                  status: "error",
-                  attributes: {},
-                },
-                {
-                  spanID: "charge",
-                  parentSpanID: "root",
-                  startTimeUnixNano: "1040000000",
-                  durationNanos: "258000000",
-                  name: "charge",
-                  serviceName: "payments",
-                  status: "error",
-                  attributes: {},
-                  events: [
-                    {
-                      name: "exception",
-                      attributes: {
-                        "exception.message": {
-                          key: "exception.message",
-                          value: { stringValue: "card declined" },
-                        },
+      ...traceRoutes({
+        ...TRACE_BODY,
+        traceID: "tpropagated",
+        spanSets: [
+          {
+            matched: 2,
+            spans: [
+              {
+                spanID: "root",
+                startTimeUnixNano: "1000000000",
+                durationNanos: "412000000",
+                name: "POST /api/checkout",
+                serviceName: "gateway",
+                status: "error",
+                attributes: {},
+              },
+              {
+                spanID: "charge",
+                parentSpanID: "root",
+                startTimeUnixNano: "1040000000",
+                durationNanos: "258000000",
+                name: "charge",
+                serviceName: "payments",
+                status: "error",
+                attributes: {},
+                events: [
+                  {
+                    name: "exception",
+                    attributes: {
+                      "exception.message": {
+                        key: "exception.message",
+                        value: { stringValue: "card declined" },
                       },
                     },
-                  ],
-                },
-              ],
-            },
-          ],
-        },
-      },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
     ]);
     renderView({ trace: "tpropagated" });
 
@@ -916,7 +1055,7 @@ describe("TracesView detail", () => {
   });
 
   it("selects a span on click and shows its details", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
     const rows = await screen.findAllByRole("listitem");
     await userEvent.click(rows[0]!);
@@ -929,7 +1068,7 @@ describe("TracesView detail", () => {
   it("copies span and promoted exception attribute values", async () => {
     const writeText = vi.fn();
     vi.stubGlobal("navigator", { clipboard: { writeText } });
-    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
 
     await screen.findByText("payment.provider");
@@ -960,46 +1099,43 @@ describe("TracesView detail", () => {
 
   it("groups span attributes separately from resource attributes, sorted within each", async () => {
     stubFetchRoutes([
-      {
-        match: "/tempo/api/traces/tgrouped",
-        body: {
-          ...TRACE_BODY,
-          traceID: "tgrouped",
-          spanSets: [
-            {
-              matched: 1,
-              spans: [
-                {
-                  spanID: "root",
-                  startTimeUnixNano: "1000000000",
-                  durationNanos: "412000000",
-                  name: "POST /api/checkout",
-                  serviceName: "gateway",
-                  status: "ok",
-                  attributes: {
-                    "url.full": {
-                      key: "url.full",
-                      value: { stringValue: "https://x" },
-                    },
-                    "session.id": {
-                      key: "session.id",
-                      value: { stringValue: "abc" },
-                    },
-                    "resource.telemetry.sdk.version": {
-                      key: "resource.telemetry.sdk.version",
-                      value: { stringValue: "2.1.0" },
-                    },
-                    "resource.service.name": {
-                      key: "resource.service.name",
-                      value: { stringValue: "signaldb-ui" },
-                    },
+      ...traceRoutes({
+        ...TRACE_BODY,
+        traceID: "tgrouped",
+        spanSets: [
+          {
+            matched: 1,
+            spans: [
+              {
+                spanID: "root",
+                startTimeUnixNano: "1000000000",
+                durationNanos: "412000000",
+                name: "POST /api/checkout",
+                serviceName: "gateway",
+                status: "ok",
+                attributes: {
+                  "url.full": {
+                    key: "url.full",
+                    value: { stringValue: "https://x" },
+                  },
+                  "session.id": {
+                    key: "session.id",
+                    value: { stringValue: "abc" },
+                  },
+                  "resource.telemetry.sdk.version": {
+                    key: "resource.telemetry.sdk.version",
+                    value: { stringValue: "2.1.0" },
+                  },
+                  "resource.service.name": {
+                    key: "resource.service.name",
+                    value: { stringValue: "signaldb-ui" },
                   },
                 },
-              ],
-            },
-          ],
-        },
-      },
+              },
+            ],
+          },
+        ],
+      }),
     ]);
     renderView({ trace: "tgrouped" });
 
@@ -1043,42 +1179,39 @@ describe("TracesView detail", () => {
           ],
         },
       },
-      {
-        match: "/tempo/api/traces/tsem",
-        body: {
-          ...TRACE_BODY,
-          traceID: "tsem",
-          spanSets: [
-            {
-              matched: 1,
-              spans: [
-                {
-                  spanID: "root",
-                  startTimeUnixNano: "1000000000",
-                  durationNanos: "412000000",
-                  name: "POST /api/checkout",
-                  serviceName: "gateway",
-                  status: "ok",
-                  attributes: {
-                    "payment.provider": {
-                      key: "payment.provider",
-                      value: { stringValue: "stripe" },
-                    },
-                    "resource.k8s.pod.uid": {
-                      key: "resource.k8s.pod.uid",
-                      value: { stringValue: "275ecb36" },
-                    },
-                    "resource.app.order.id": {
-                      key: "resource.app.order.id",
-                      value: { stringValue: "o-1" },
-                    },
+      ...traceRoutes({
+        ...TRACE_BODY,
+        traceID: "tsem",
+        spanSets: [
+          {
+            matched: 1,
+            spans: [
+              {
+                spanID: "root",
+                startTimeUnixNano: "1000000000",
+                durationNanos: "412000000",
+                name: "POST /api/checkout",
+                serviceName: "gateway",
+                status: "ok",
+                attributes: {
+                  "payment.provider": {
+                    key: "payment.provider",
+                    value: { stringValue: "stripe" },
+                  },
+                  "resource.k8s.pod.uid": {
+                    key: "resource.k8s.pod.uid",
+                    value: { stringValue: "275ecb36" },
+                  },
+                  "resource.app.order.id": {
+                    key: "resource.app.order.id",
+                    value: { stringValue: "o-1" },
                   },
                 },
-              ],
-            },
-          ],
-        },
-      },
+              },
+            ],
+          },
+        ],
+      }),
     ]);
     renderView({ trace: "tsem" });
 
@@ -1113,7 +1246,7 @@ describe("TracesView detail", () => {
         body: { error: "boom" },
         status: 500,
       },
-      { match: "/tempo/api/traces/t1cafe", body: TRACE_BODY },
+      ...traceRoutes(TRACE_BODY),
     ]);
     renderView({ trace: "t1cafe" });
     const detail = await screen.findByLabelText("Span details");
@@ -1128,7 +1261,7 @@ describe("TracesView detail", () => {
   });
 
   it("resizes the span-detail sidebar by dragging the resizer, clamped and persisted", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
 
     const resizer = await screen.findByRole("separator", {
@@ -1152,7 +1285,7 @@ describe("TracesView detail", () => {
   });
 
   it("pivots to logs filtered by trace_id", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
     const update = renderView({ trace: "t1cafe" });
     await userEvent.click(
       await screen.findByRole("button", { name: "Logs for this trace →" }),
@@ -1167,23 +1300,20 @@ describe("TracesView detail", () => {
 
   it("links to a profile captured during the selected span", async () => {
     stubFetchRoutes([
-      {
-        match: "/tempo/api/traces/t1cafe",
-        body: {
-          ...TRACE_BODY,
-          profiles: [
-            {
-              profileID: "prof-1",
-              timeUnixNano: "1040000000",
-              durationNano: "258000000",
-              sampleType: "cpu",
-              sampleUnit: "nanoseconds",
-              serviceName: "payments",
-              spanID: "charge",
-            },
-          ],
-        },
-      },
+      ...traceRoutes({
+        ...TRACE_BODY,
+        profiles: [
+          {
+            profileID: "prof-1",
+            timeUnixNano: "1040000000",
+            durationNano: "258000000",
+            sampleType: "cpu",
+            sampleUnit: "nanoseconds",
+            serviceName: "payments",
+            spanID: "charge",
+          },
+        ],
+      }),
     ]);
     // "charge" (the error span with a recorded exception) is preselected.
     const update = renderView({ trace: "t1cafe" });
@@ -1198,7 +1328,7 @@ describe("TracesView detail", () => {
   });
 
   it("shows no profile link when the selected span has none", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
     await screen.findByRole("button", { name: "Logs for this trace →" });
     expect(
@@ -1207,7 +1337,7 @@ describe("TracesView detail", () => {
   });
 
   it("navigates back to the search list", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
     const update = renderView({ trace: "t1cafe" });
     await userEvent.click(
       await screen.findByRole("button", { name: "← traces" }),
@@ -1216,13 +1346,9 @@ describe("TracesView detail", () => {
   });
 
   it("shows a dedicated not-found page for a 404, with a way back to search", async () => {
-    stubFetchRoutes([
-      {
-        match: "/tempo/api/traces/missing",
-        body: { error: "Trace not found", errorType: "not_found" },
-        status: 404,
-      },
-    ]);
+    // The IR answers with no rows in the viewer's window and in the wide
+    // retry alike: the trace does not exist in reachable storage.
+    stubFetchRoutes(traceRoutes({ spanSets: [] }));
     const update = renderView({ trace: "missing" });
     expect(
       await screen.findByRole("heading", { name: "Trace not found" }),
@@ -1239,17 +1365,19 @@ describe("TracesView detail", () => {
     // 502/503/504 are), so the failure surfaces immediately.
     stubFetchRoutes([
       {
-        match: "/tempo/api/traces/broken",
+        match: "/api/v1/query",
         body: { error: "Flight backend unavailable" },
         status: 500,
       },
     ]);
     renderView({ trace: "broken" });
-    expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /Flight backend unavailable/,
+    );
   });
 
   it("renders a skeleton while the trace is loading", async () => {
-    stubFetchRoutes([{ match: "/tempo/api/traces/t1cafe", body: TRACE_BODY }]);
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
     const { container } = renderWithClient(
       <TracesView
         state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
