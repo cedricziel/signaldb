@@ -165,6 +165,16 @@ AWS_REGION=us-east-1
 
 ## Key Development Patterns
 
+### Query IR is our own query surface
+
+Everything first-party that reads data — the Explore UI, CLI, MCP tools,
+tests, benchmarks, debugging — goes through the Query IR
+(`POST /api/v1/query`, see `docs/users/querying-ir.md`), never the
+Tempo/Loki/Prometheus/Pyroscope compatibility APIs. Those exist for external
+clients (Grafana) and are lossy by design. If the IR can't express something
+we need, extend the IR (a logical field, a stage) rather than reaching for a
+compat endpoint.
+
 ### Flight Communication
 
 Flight schemas defined in `src/common/flight/schema.rs` with conversions in `conversion/` subdirectory. Pattern: zero-copy RecordBatch transfer, connection pooling, streaming for large datasets.
