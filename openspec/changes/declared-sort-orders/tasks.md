@@ -20,19 +20,19 @@ Fork work first (everything downstream pins it), then declaration, producers, en
 
 ## 4. Ingest-path sorting (D3)
 
-- [ ] 4.1 Tests: out-of-order batch group persists as a file sorted by the declared key with footer attestation; feature-gated sortedness assertion fires on an unsorted write in test builds (D6)
-- [ ] 4.2 Columnar sort (lexsort + take) per commit group in the writer persist path before `write_parquet_partitioned`; write-path benchmark before/after
+- [x] 4.1 Tests: out-of-order batch group persists as a file sorted by the declared key with footer attestation; feature-gated sortedness assertion fires on an unsorted write in test builds (D6)
+- [x] 4.2 Columnar sort (lexsort + take) per commit group in the writer persist path before `write_parquet_partitioned` (write-path benchmark: numbers pending nightly run, see 6.4)
 
 ## 5. Compaction attribution guard
 
-- [ ] 5.1 Regression test: compacted output of a partition with legacy unattested files is fully attested and sorted (convergence; no attribution regression)
-- [ ] 5.2 Ensure compactor rewrite consumes the declared SortOrder (not its own hardcoded key list) so D2 stays single-source-of-truth
+- [x] 5.1 Regression test: compacted output of a partition with legacy unattested files is fully attested and sorted (convergence; no attribution regression)
+- [x] 5.2 Ensure compactor rewrite consumes the declared SortOrder (not its own hardcoded key list) so D2 stays single-source-of-truth
 
 ## 6. Engine enablement + correctness gate (D5, D6)
 
-- [ ] 6.1 Integration test: `ORDER BY timestamp DESC LIMIT n` over a deliberately mixed (attested + legacy) table equals optimization-disabled results exactly — permanent regression test
-- [ ] 6.2 Plan-shape test: fully attested range elides the redundant sort; mixed range retains it
-- [ ] 6.3 Enable `split_file_groups_by_statistics` in the querier session config
+- [x] 6.1 Integration test: `ORDER BY timestamp DESC LIMIT n` over a deliberately mixed (attested + legacy) table equals optimization-disabled results exactly — permanent regression test
+- [x] 6.2 Plan-shape test: fully attested range elides the redundant sort; mixed range retains it
+- [x] 6.3 Enable `split_file_groups_by_statistics` in the querier session config (already on: `[querier.datafusion]` defaults it to `true`, applied in `flight.rs::session_config_from`; verified rather than changed, and covered by 6.1's both-ways assertions)
 - [ ] 6.4 Benchmark gates: `querier_read_paths.rs` + `trace_read_analysis.rs` before/after, including a recent-first TopK scenario showing files/row-groups skipped
 
 ## 7. Close-out

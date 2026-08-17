@@ -7,9 +7,13 @@ use crate::schema_transform::{
 use anyhow::{Context, Result};
 use common::CatalogManager;
 
+use common::iceberg::sort::{
+    DeclaredSortColumn, UndeclaredFallback, is_sorted_by, sort_batch_by, write_sort_key,
+};
 use datafusion::arrow::array::{RecordBatch, new_null_array};
+use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::SchemaRef as ArrowSchemaRef;
-use iceberg_rust::arrow::write::write_parquet_partitioned;
+use iceberg_rust::arrow::write::{write_parquet_partitioned, write_sorted_parquet_partitioned};
 use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
 use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
@@ -249,6 +253,76 @@ impl IcebergTableWriter {
         Ok(self.read_marker(wal_writer_id))
     }
 
+    /// Put a commit group's rows in the table's declared sort order, so the
+    /// files written from them can honestly attest that order.
+    ///
+    /// The whole group is concatenated and sorted once rather than sorted per
+    /// batch: files are rolled from the stream in order, so a file can only be
+    /// sorted if the stream as a whole is. The group is one commit interval of
+    /// ingest — seconds of data, already held in memory here — and the sort is
+    /// columnar (one `lexsort_to_indices` pass plus a `take`), so the cost is
+    /// bounded by the group rather than by the table.
+    ///
+    /// Every reason the sort cannot be done writes the files unattested: a
+    /// table that declares no order (nothing to honor), a key column absent
+    /// from the batches, or a failed concat. Ingest does not sort an
+    /// undeclared table at all ([`UndeclaredFallback::LeaveUnsorted`]) —
+    /// nothing could attest the result, so the reader would gain nothing for
+    /// the write path's trouble. Unattested files are read as unsorted and
+    /// queried correctly; falsely attested ones would not be.
+    ///
+    /// Returns the batches to write and whether they may attest the order.
+    fn order_for_write(
+        &self,
+        batches: Vec<RecordBatch>,
+        target_schema: &ArrowSchemaRef,
+    ) -> (Vec<RecordBatch>, bool) {
+        let key = write_sort_key(
+            self.table.metadata(),
+            self.table.identifier().name(),
+            UndeclaredFallback::LeaveUnsorted,
+        );
+        if key.columns.is_empty() {
+            return (batches, false);
+        }
+
+        match Self::sort_group(&batches, target_schema, &key.columns) {
+            Ok(sorted) => (vec![sorted], key.attest),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    table = %self.table.identifier(),
+                    "Failed to sort rows by the declared key; writing files unattested"
+                );
+                (batches, false)
+            }
+        }
+    }
+
+    /// Concatenate a commit group and sort it by `sort_columns`.
+    fn sort_group(
+        batches: &[RecordBatch],
+        target_schema: &ArrowSchemaRef,
+        sort_columns: &[DeclaredSortColumn],
+    ) -> Result<RecordBatch> {
+        let merged = match batches {
+            [single] => single.clone(),
+            many => concat_batches(target_schema, many)
+                .context("Failed to concatenate a commit group for sorting")?,
+        };
+        let sorted = sort_batch_by(&merged, sort_columns)?;
+
+        // The honesty invariant is worth a self-check where it is cheap to
+        // run. Debug builds (tests included) verify the sort actually held
+        // before the file claims it; release builds trust the sort kernel.
+        debug_assert!(
+            is_sorted_by(&sorted, sort_columns).unwrap_or(false),
+            "rows about to be attested are not sorted by the declared key"
+        );
+
+        Ok(sorted)
+    }
+
     /// Atomically append `entries`' batches and record their WAL entry ids
     /// as this writer's idempotency marker — data files and marker ride in
     /// ONE Iceberg commit (a single catalog CAS), so replay after a crash
@@ -308,15 +382,20 @@ impl IcebergTableWriter {
         }
         let total_rows: usize = transformed.iter().map(|b| b.num_rows()).sum();
 
-        let stream = futures::stream::iter(transformed.into_iter().map(Ok));
-        let files = write_parquet_partitioned(&self.table, stream, None)
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to write Parquet files for Iceberg table {}: {e}",
-                    self.table.identifier()
-                )
-            })?;
+        let (batches, attest) = self.order_for_write(transformed, &target_schema);
+
+        let stream = futures::stream::iter(batches.into_iter().map(Ok));
+        let write = if attest {
+            write_sorted_parquet_partitioned(&self.table, stream, None).await
+        } else {
+            write_parquet_partitioned(&self.table, stream, None).await
+        };
+        let files = write.map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to write Parquet files for Iceberg table {}: {e}",
+                self.table.identifier()
+            )
+        })?;
         if files.is_empty() {
             return Err(anyhow::anyhow!(
                 "write_parquet_partitioned produced no data files for {total_rows} rows"
