@@ -1553,17 +1553,19 @@ describe("TracesView span-volume chart", () => {
     stubFetchRoutes(routes);
     renderView({ limit: 25 });
     await screen.findByRole("img", { name: /span volume/i });
-    const body = vi
+    // The facet sidebar (kind is expanded by default) also queries this
+    // endpoint; pick the volume aggregate by its result shape.
+    const requests = vi
       .mocked(globalThis.fetch)
       .mock.calls.map(([input]) => input)
-      .find(
+      .filter(
         (i): i is Request =>
           i instanceof Request && i.url.includes("/api/v1/query"),
       );
-    expect(body).toBeDefined();
-    const doc = await body!.clone().json();
+    const docs = await Promise.all(requests.map((r) => r.clone().json()));
+    const doc = docs.find((d) => d.result === "series");
+    expect(doc).toBeDefined();
     expect(doc.from).toBe("traces");
-    expect(doc.result).toBe("series");
     expect(JSON.stringify(doc)).not.toContain("limit");
   });
 

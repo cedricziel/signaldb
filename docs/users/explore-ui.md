@@ -39,7 +39,9 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
   checkboxes with their counts, several can be on at once (one `in` filter),
   and Server, Client, Producer, and Consumer are selected by default —
   Internal spans are opted into; unchecking the last kind selects them all.
-  Root spans are what the default **Traces** grain already inspects. Selecting a group lists just its traces — each with its
+  Root spans are what the default **Traces** grain already inspects. Facets
+  with a selection sit at the top of the sidebar and start expanded (collapse
+  them by hand); the rest follow, collapsed, in their curated order. Selecting a group lists just its traces — each with its
   status as a coloured chip (error / ok / unset), sortable with errors
   first; selecting a trace
   opens a waterfall with span details and error highlighting. A parent span

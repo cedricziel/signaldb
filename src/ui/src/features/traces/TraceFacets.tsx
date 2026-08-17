@@ -44,8 +44,27 @@ export function TraceFacets({
   onAddFilter,
   onRemoveFilter,
 }: Props) {
-  const [open, setOpen] = useState<string | null>(null);
+  // Facets with a filter set sit at the top and start expanded; the user can
+  // still collapse one (`collapsed`) or expand an inactive one (`opened`).
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const semantics = useSemantics(FACET_KEYS);
+  const isActive = (field: string) => filters.some((f) => f.field === field);
+  const isOpen = (field: string) =>
+    isActive(field) ? !collapsed.has(field) : opened.has(field);
+  const toggle = (field: string) => {
+    const set = isActive(field) ? setCollapsed : setOpened;
+    set((prev) => {
+      const next = new Set(prev);
+      if (next.has(field)) next.delete(field);
+      else next.add(field);
+      return next;
+    });
+  };
+  const ordered = [
+    ...FACET_FIELDS.filter((f) => isActive(f.field)),
+    ...FACET_FIELDS.filter((f) => !isActive(f.field)),
+  ];
   // "Errors only" is the status facet's Error value as a one-click toggle;
   // going through the same filter keeps groups, list, volume, and facet
   // counts in step.
@@ -68,17 +87,16 @@ export function TraceFacets({
         Errors only
       </label>
       <div className="fieldlist">
-        {FACET_FIELDS.map((facet) => {
+        {ordered.map((facet) => {
           const active = filters.filter((f) => f.field === facet.field);
+          const expanded = isOpen(facet.field);
           return (
             <div key={facet.field}>
               <div className="field-row">
                 <button
-                  className={`field ${open === facet.field ? "open" : ""}`}
-                  aria-expanded={open === facet.field}
-                  onClick={() =>
-                    setOpen(open === facet.field ? null : facet.field)
-                  }
+                  className={`field ${expanded ? "open" : ""}`}
+                  aria-expanded={expanded}
+                  onClick={() => toggle(facet.field)}
                 >
                   <span>{facet.label}</span>
                   {active.length > 0 && (
@@ -90,7 +108,7 @@ export function TraceFacets({
                   semantics={semantics.get(facet.field)}
                 />
               </div>
-              {open === facet.field && (
+              {expanded && (
                 <FacetValues
                   facet={facet}
                   range={range}
