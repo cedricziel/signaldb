@@ -7,13 +7,22 @@ immutable sorted files, the compactor as compaction — but is missing the
 memtable. Every processing tick, `WalProcessor::drain_pending` re-reads and
 re-deserializes the entire unprocessed WAL backlog from disk to rebuild its
 pending groups (entries deferred by the coalescing floor are decoded again
-each tick), and `read_entry_data` linearly scans segment entry lists under
-the WAL lock — O(pending × entries) per tick. Keeping decoded batches
-resident removes that per-tick read-back and decode entirely, bounds writer
-memory explicitly instead of implicitly, and is the prerequisite for a
-follow-up change (`unflushed-data-visibility`) that decouples query
-visibility from commit cadence so the commit interval can later be raised
-for larger files and fewer snapshots.
+each tick). The cost is the disk I/O and the decode themselves, paid per
+entry per tick and itemized in design.md's Context; it is not lookup, which
+has been a hash probe since #1112 gave each segment an `entry_index`.
+Keeping decoded batches resident removes the per-tick read-back and
+decode entirely, bounds writer memory explicitly instead of implicitly, and
+is the prerequisite for a follow-up change (`unflushed-data-visibility`)
+that decouples query visibility from commit cadence so the commit interval
+can later be raised for larger files and fewer snapshots.
+
+What this change does NOT remove is the per-tick *metadata* scan.
+`Wal::get_unprocessed_entries` walks every entry of every segment,
+processed ones included, and no service calls
+`Wal::start_background_cleanup` today (#1305), so segments are never
+reclaimed and that scan stays linear in the total number of entries ever
+written to the WAL. The memtable removes payload reads and decodes; the
+metadata scan is untouched until #1305 lands.
 
 Note this change does NOT claim query traffic currently forces small
 Parquet files: the writer's `do_action("flush")` has no production caller
@@ -22,15 +31,18 @@ semantics are unchanged by this stage.
 
 ## What Changes
 
-- **Resident memtable as a reconciled cache over the WAL.** `do_put`
-  appends to the writer WAL, and only after the WAL flush succeeds inserts
-  the decoded RecordBatch into an in-memory pending group keyed by
-  `(tenant, dataset, table)`. The commit loop drains resident groups;
-  batches are evicted only after `mark_processed` succeeds, so a failed
-  commit retries from memory. A cheap per-tick reconciliation compares
-  unprocessed WAL entry ids (metadata only, no payload reads) against
-  resident ids and lazily loads any difference — preserving today's
-  self-healing for failed commits, poison entries, and dead-lettering.
+- **Resident memtable as a reconciled cache over the WALs.** `do_put`
+  appends to the WAL of the batch's own tenant/dataset/signal (#1299: the
+  writer holds one WAL per such triple, never a global one), and only after
+  that WAL's flush succeeds inserts the decoded RecordBatch into an
+  in-memory pending group keyed by
+  `(WAL identity, tenant, dataset, table)`. The commit loop drains resident
+  groups; batches are evicted only after `mark_processed` succeeds on their
+  own WAL, so a failed commit retries from memory. A per-tick
+  reconciliation compares each WAL's unprocessed entry ids (metadata only,
+  no payload reads) against resident ids and lazily loads any difference —
+  preserving today's self-healing for failed commits, poison entries, and
+  dead-lettering.
 - **Shared routing.** One routing function computes
   `(tenant, dataset, table)` for both the `do_put` insert path and WAL
   replay, so a batch lands in the same table before and after a restart.

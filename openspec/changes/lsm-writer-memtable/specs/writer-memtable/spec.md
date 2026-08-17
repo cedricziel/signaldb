@@ -60,9 +60,9 @@ it succeeds.
 
 The steady-state commit path SHALL drain resident groups without reading
 WAL payloads back from disk. The writer SHALL nevertheless reconcile the
-memtable against the WAL's unprocessed entry set on a regular cadence using
-entry metadata only (no payload reads), lazily loading payloads for any
-unprocessed entry not resident. Batches SHALL leave the memtable only when
+memtable against each WAL's unprocessed entry set on a regular cadence
+using entry metadata only (no payload reads), lazily loading payloads for
+any unprocessed entry not resident. Batches SHALL leave the memtable only when
 their entries are marked processed or dead-lettered — a failed Iceberg
 commit therefore retries from memory, and failure handling (retry counting,
 poison-entry dead-lettering) keeps functioning without per-tick payload
@@ -93,6 +93,15 @@ re-reads.
 - **WHEN** an entry exhausts its failure budget and is dead-lettered
 - **THEN** its batches are removed from the memtable and its bytes are
   released from the memory accounting
+
+#### Scenario: Two WALs feeding one table never share a commit
+
+- **WHEN** two WALs (a tenant's own and an adopted legacy root WAL) both
+  hold unprocessed entries that route to the same
+  `(tenant, dataset, table)`
+- **THEN** each WAL's entries are committed and marked separately, so the
+  per-WAL idempotency marker a commit writes covers exactly the entries of
+  the WAL it names and never those of the other
 
 ### Requirement: Crash recovery rebuilds the memtable within the memory budget
 
@@ -151,7 +160,10 @@ ingest path, so ingest acknowledgement latency never couples to catalog
 latency. At the hard ceiling the writer SHALL reject further ingest with a
 retryable error rather than growing without bound — under sustained commit
 failure, memtable memory stays bounded while upstream WAL retry preserves
-the data. Accounting SHALL be tracked per `(tenant, dataset, table)`.
+the data. Accounting SHALL be tracked per group — that is, per
+`(WAL identity, tenant, dataset, table)` — so the per-group byte ceiling
+governs exactly the unit that commits; reported attribution MAY aggregate
+groups up to `(tenant, dataset, table)`.
 
 #### Scenario: Soft-budget breach flushes the largest group
 
