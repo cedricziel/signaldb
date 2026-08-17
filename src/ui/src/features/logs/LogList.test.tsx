@@ -332,19 +332,19 @@ describe("LogList semantic labels", () => {
 });
 
 describe("log detail attribute styling", () => {
-  it("does not clip the semantic tooltip with the key cell's overflow", async () => {
-    // jsdom does not lay out CSS, so pin the rule that keeps `.sem-tip`
-    // (absolutely positioned inside the <dt>) visible: the plain dt clips for
-    // its ellipsis, a dt holding a resolved key must not.
+  it("keeps the semantic tooltip out of the clipping key cell", async () => {
+    // jsdom does not lay out CSS, so pin the mechanism instead: `.sem-tip`
+    // is portaled to <body> with fixed placement (SemanticHover), so the
+    // dt's `overflow: hidden` for its ellipsis cannot clip it.
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const css = readFileSync(
-      join(import.meta.dirname, "../explore/explore.css"),
+      join(import.meta.dirname, "../../styles/global.css"),
       "utf8",
     );
-    const start = css.indexOf(".attr-row dt:has(.semkey)");
-    expect(start, "rule for dt cells holding a SemanticKey").toBeGreaterThan(-1);
+    const start = css.indexOf(".sem-tip {");
+    expect(start, "shared .sem-tip rule").toBeGreaterThan(-1);
     const rule = css.slice(start, css.indexOf("}", start));
-    expect(rule).toMatch(/overflow:\s*visible/);
+    expect(rule).toMatch(/position:\s*fixed/);
   });
 });

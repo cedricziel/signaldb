@@ -403,12 +403,12 @@ select:focus-visible {
   color: var(--accent);
 }
 
-/* Shared tooltip: absolutely positioned under its trigger. */
+/* Shared tooltip: portaled to <body> and placed with fixed inline coordinates
+   from the trigger's rect (see SemanticHover), so scrolling panes around the
+   trigger cannot clip it. */
 .sem-tip {
-  position: absolute;
+  position: fixed;
   z-index: 30;
-  top: calc(100% + 4px);
-  left: 0;
   min-width: 220px;
   max-width: 360px;
   padding: 8px 10px;
