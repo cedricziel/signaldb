@@ -69,6 +69,7 @@ nav:
       - operations/wal-persistence.md
       - operations/binaries.md
       - operations/dokku.md
+      - operations/truenas.md
       - Compactor:
           - operations/compactor/phase3-configuration.md
           - operations/compactor/phase3-operations.md
