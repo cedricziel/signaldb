@@ -335,7 +335,13 @@ pub struct QuerierFlightService {
 /// per-request session builder (`session_for_request`) relies on the default
 /// catalog behavior of the shared context and disables it itself when
 /// cloning state.
-fn session_config_from(limits: &QuerierConfig) -> SessionConfig {
+///
+/// Public so ordering tests can plan against the querier's real session
+/// options rather than DataFusion's defaults: whether a scan's declared
+/// ordering survives to the physical plan depends on the options and optimizer
+/// rules actually in force, so a test that builds its own bare session would
+/// not notice the querier losing the ordering.
+pub fn session_config_from(limits: &QuerierConfig) -> SessionConfig {
     let mut config = SessionConfig::new();
     let options = config.options_mut();
     options.execution.split_file_groups_by_statistics =

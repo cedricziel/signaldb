@@ -211,3 +211,37 @@ async fn the_plan_elides_the_sort_only_when_every_file_is_attested() -> Result<(
 
     Ok(())
 }
+
+#[tokio::test]
+async fn the_querier_session_preserves_the_declared_ordering() -> Result<()> {
+    // The tests above plan against a session built for the test. This one
+    // plans against the querier's real session options and optimizer rules,
+    // because that is where the ordering can be lost without anything going
+    // red: a rule that rebuilds a `FileScanConfig` and drops its
+    // `output_ordering` breaks no correctness test — the plan simply starts
+    // sorting again, silently giving up the whole benefit of attestation.
+    tests_integration::init_test_logging();
+    let attested = Fixture::seeded("querier-session-tenant", &timestamps(), 8).await?;
+
+    let config = querier::session_config_from(&common::config::QuerierConfig::default());
+    let ctx = SessionContext::new_with_config(config);
+    ctx.register_table(
+        TABLE,
+        Arc::new(datafusion_iceberg::DataFusionTable::from(
+            attested.table().await?,
+        )),
+    )?;
+
+    let sql = format!("SELECT timestamp, trace_id FROM {TABLE} ORDER BY timestamp ASC");
+    let plan = attested.plan_of(&ctx, &sql).await?;
+    assert!(
+        plan.contains("output_ordering="),
+        "the querier's session must still see the scan's declared ordering:\n{plan}"
+    );
+    assert!(
+        !plan.contains("SortExec"),
+        "the querier's session must still elide the redundant sort:\n{plan}"
+    );
+
+    Ok(())
+}
