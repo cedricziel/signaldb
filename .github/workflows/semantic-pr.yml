@@ -25,3 +25,13 @@ jobs:
       - uses: amannn/action-semantic-pull-request@v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Angle brackets in a squash-merged subject land in the release
+          # notes as an HTML tag; release-please decodes them during its
+          # notes round-trip and the unclosed tag swallows every later
+          # section (see the 0.3.0 release run). Spell it `--{lang}`.
+          subjectPattern: ^[^<>]+$
+          subjectPatternError: |
+            The subject "{subject}" contains "<" or ">", which breaks
+            release-please's release-notes parsing. Use braces or plain
+            words instead (e.g. `--{lang}` rather than `--<lang>`).
