@@ -129,6 +129,17 @@ pub fn should_count_tenant(tenant_id: &str) -> bool {
     !is_self_monitoring_tenant(tenant_id)
 }
 
+/// Whether a request's `x-tenant-id` header names the `_system` self-monitoring
+/// tenant. Shared anti-loop guard used by [`http_metrics_middleware`] and
+/// [`http_trace_context_middleware`] to skip instrumenting/re-ingesting
+/// SignalDB's own telemetry exports.
+fn is_system_tenant_request(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get("x-tenant-id")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(is_self_monitoring_tenant)
+}
+
 impl AppMetrics {
     fn from_global_meter() -> Self {
         let meter = global::meter_with_scope(
@@ -351,12 +362,7 @@ pub async fn http_metrics_middleware(
 ) -> axum::response::Response {
     use opentelemetry::KeyValue;
 
-    let is_system_request = request
-        .headers()
-        .get("x-tenant-id")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(is_self_monitoring_tenant);
-    if is_system_request {
+    if is_system_tenant_request(request.headers()) {
         return next.run(request).await;
     }
 
@@ -457,12 +463,7 @@ pub async fn http_trace_context_middleware(
 ) -> axum::response::Response {
     use tracing::Instrument;
 
-    let is_system_request = request
-        .headers()
-        .get("x-tenant-id")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(is_self_monitoring_tenant);
-    if is_system_request {
+    if is_system_tenant_request(request.headers()) {
         return next.run(request).await;
     }
 

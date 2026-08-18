@@ -7,7 +7,6 @@ use super::oauth::hash_oauth_token;
 use super::{AuthError, TenantContext, TenantSource, UserContext, hash_session_token};
 use crate::catalog::{Catalog, MembershipRole, UserRecord};
 use crate::config::{AuthConfig, TenantConfig};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -469,9 +468,7 @@ impl Authenticator {
 
     /// Hash an API key using SHA-256
     pub fn hash_api_key(api_key: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(api_key.as_bytes());
-        hex::encode(hasher.finalize())
+        super::sha256_hex(api_key)
     }
 }
 

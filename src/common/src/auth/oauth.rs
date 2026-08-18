@@ -12,7 +12,6 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rand::TryRng;
 use sha2::{Digest, Sha256};
 
 /// Random bytes in an opaque value before base64 encoding (256 bits).
@@ -57,12 +56,7 @@ impl TokenKind {
 /// Panics if the OS random number generator fails — a predictable token would
 /// be a security vulnerability, and RNG failure is not recoverable here.
 pub fn generate_oauth_token(kind: TokenKind) -> String {
-    let mut bytes = [0u8; TOKEN_BYTES];
-    if let Err(error) = rand::rngs::SysRng.try_fill_bytes(&mut bytes) {
-        panic!("OS random number generator failed while generating OAuth token: {error}");
-    }
-    let encoded = URL_SAFE_NO_PAD.encode(bytes);
-    format!("{}{encoded}", kind.prefix())
+    super::generate_prefixed_token(kind.prefix(), TOKEN_BYTES)
 }
 
 /// Hash an opaque OAuth value with SHA-256, returning lowercase hex.
@@ -70,9 +64,7 @@ pub fn generate_oauth_token(kind: TokenKind) -> String {
 /// Deterministic, so a presented value is looked up by hashing it. Same shape
 /// as [`crate::auth::hash_session_token`].
 pub fn hash_oauth_token(token: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    hex::encode(hasher.finalize())
+    super::sha256_hex(token)
 }
 
 /// Verify a PKCE `code_verifier` against a stored `S256` `code_challenge`

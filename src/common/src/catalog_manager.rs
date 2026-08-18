@@ -167,14 +167,21 @@ impl CatalogManager {
         self.config.get_dataset_slug(tenant_id, dataset_id)
     }
 
+    /// Resolve both the tenant and dataset slugs in one call.
+    fn slugs(&self, tenant_id: &str, dataset_id: &str) -> (String, String) {
+        (
+            self.get_tenant_slug(tenant_id),
+            self.get_dataset_slug(tenant_id, dataset_id),
+        )
+    }
+
     /// Build an Iceberg namespace for a tenant and dataset.
     pub fn build_namespace(
         &self,
         tenant_id: &str,
         dataset_id: &str,
     ) -> Result<iceberg_rust::catalog::namespace::Namespace> {
-        let tenant_slug = self.get_tenant_slug(tenant_id);
-        let dataset_slug = self.get_dataset_slug(tenant_id, dataset_id);
+        let (tenant_slug, dataset_slug) = self.slugs(tenant_id, dataset_id);
         iceberg::names::build_namespace(&tenant_slug, &dataset_slug)
     }
 
@@ -185,8 +192,7 @@ impl CatalogManager {
         dataset_id: &str,
         table_name: &str,
     ) -> iceberg_rust::catalog::identifier::Identifier {
-        let tenant_slug = self.get_tenant_slug(tenant_id);
-        let dataset_slug = self.get_dataset_slug(tenant_id, dataset_id);
+        let (tenant_slug, dataset_slug) = self.slugs(tenant_id, dataset_id);
         iceberg::names::build_table_identifier(&tenant_slug, &dataset_slug, table_name)
     }
 
@@ -197,8 +203,7 @@ impl CatalogManager {
         dataset_id: &str,
         table_name: &str,
     ) -> String {
-        let tenant_slug = self.get_tenant_slug(tenant_id);
-        let dataset_slug = self.get_dataset_slug(tenant_id, dataset_id);
+        let (tenant_slug, dataset_slug) = self.slugs(tenant_id, dataset_id);
         iceberg::names::build_table_location(&tenant_slug, &dataset_slug, table_name)
     }
 
@@ -210,8 +215,7 @@ impl CatalogManager {
         dataset_id: &str,
         table_name: &str,
     ) -> Result<iceberg_rust::table::Table> {
-        let tenant_slug = self.get_tenant_slug(tenant_id);
-        let dataset_slug = self.get_dataset_slug(tenant_id, dataset_id);
+        let (tenant_slug, dataset_slug) = self.slugs(tenant_id, dataset_id);
         // Per-tenant materialized-label allowlists: a tenant schema
         // override replaces the global set wholesale.
         let labels = self

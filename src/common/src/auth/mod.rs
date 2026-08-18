@@ -21,6 +21,39 @@ pub use validation::{
     ValidationError, validate_dataset_id, validate_id, validate_scopes, validate_tenant_id,
 };
 
+/// Hash a high-entropy credential (API key, session token, OAuth token) with
+/// SHA-256, returning lowercase hex. Shared by [`Authenticator::hash_api_key`],
+/// [`password::hash_session_token`], and [`oauth::hash_oauth_token`], which
+/// all hash server-generated random values the same deterministic way so a
+/// presented credential can be looked up by hashing it.
+pub(crate) fn sha256_hex(credential: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(credential.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Mint a prefixed, high-entropy opaque credential: `prefix` followed by
+/// `n_bytes` of OS randomness, URL-safe base64 without padding. Shared by
+/// [`password::generate_session_token`] and [`oauth::generate_oauth_token`].
+///
+/// # Panics
+///
+/// Panics if the OS random number generator fails — a predictable credential
+/// would be a security vulnerability, and RNG failure is not recoverable here.
+pub(crate) fn generate_prefixed_token(prefix: &str, n_bytes: usize) -> String {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use rand::TryRng;
+
+    let mut bytes = vec![0u8; n_bytes];
+    if let Err(error) = rand::rngs::SysRng.try_fill_bytes(&mut bytes) {
+        panic!("OS random number generator failed while generating {prefix} token: {error}");
+    }
+    let encoded = URL_SAFE_NO_PAD.encode(bytes);
+    format!("{prefix}{encoded}")
+}
+
 /// Scope granting read access to the schema registry (registries, attribute /
 /// entity / metric lookups). A read scope: OAuth grants it by default.
 pub const SCHEMA_READ_SCOPE: &str = "schema:read";
@@ -216,10 +249,7 @@ impl TenantContext {
         if !self.can_write() {
             return false;
         }
-        let required = format!("{signal}:write");
-        self.api_key_scopes
-            .as_ref()
-            .is_none_or(|scopes| scopes.iter().any(|scope| scope == &required))
+        self.has_scope_or_unrestricted(&format!("{signal}:write"))
     }
 
     /// Whether this principal may read a particular telemetry signal.
@@ -229,10 +259,7 @@ impl TenantContext {
     /// matching `<signal>:read` scope is required — write scopes do not grant
     /// read. This mirrors [`can_ingest`](Self::can_ingest) on the query side.
     pub fn can_read(&self, signal: &str) -> bool {
-        let required = format!("{signal}:read");
-        self.api_key_scopes
-            .as_ref()
-            .is_none_or(|scopes| scopes.iter().any(|scope| scope == &required))
+        self.has_scope_or_unrestricted(&format!("{signal}:read"))
     }
 
     /// Whether this principal may read the schema registry.

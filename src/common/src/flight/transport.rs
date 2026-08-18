@@ -545,47 +545,13 @@ impl InMemoryFlightTransport {
         &self,
         capability: ServiceCapability,
     ) -> Result<FlightServiceClient<Channel>, Box<dyn std::error::Error + Send + Sync>> {
-        // Use the error-preserving path: a caller that turns this into an
-        // operator-facing failure needs to distinguish an unreachable catalog
-        // from a capability nobody registered.
-        let services = self
-            .discover_services_by_capability_checked(capability.clone())
-            .await?;
-
-        if services.is_empty() {
-            return Err("No services found with required capability".into());
-        }
-
-        let service = self.select_round_robin(services);
-        let first_err = match self.get_flight_client_for(&service).await {
-            Ok(client) => return Ok(client),
-            Err(e) => e,
-        };
-
-        // The address may have come from a stale cache entry: drop it,
-        // re-discover once, and retry before giving up.
-        tracing::warn!(
-            "Failed to connect to {} for capability {capability:?}, re-discovering: {first_err}",
-            service.endpoint
-        );
-        self.invalidate_discovery_cache(&capability).await;
-
-        let services = self
-            .discover_services_by_capability(capability.clone())
-            .await;
-        if services.is_empty() {
-            return Err(first_err);
-        }
-
-        let service = self.select_round_robin(services);
-        match self.get_flight_client_for(&service).await {
-            Ok(client) => Ok(client),
-            Err(e) => {
-                // Do not keep a discovery result we could not connect to.
-                self.invalidate_discovery_cache(&capability).await;
-                Err(e)
-            }
-        }
+        // Same discovery/retry/invalidate logic as
+        // `get_client_and_address_for_capability` (the error-preserving
+        // discovery path so a caller can distinguish an unreachable catalog
+        // from a capability nobody registered); this just drops the address.
+        self.get_client_and_address_for_capability(capability)
+            .await
+            .map(|(client, _address)| client)
     }
 
     /// Get all registered Flight services from catalog
