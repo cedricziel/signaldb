@@ -3,19 +3,23 @@
 ### Requirement: Catalog entity types come from the tenant's schema registries
 
 The catalog SHALL derive the set of entity types it can discover from the entity
-definitions visible to the authenticated tenant, using each definition's
-declared identifying attributes as that entity type's identity. An entity type
-SHALL NOT require a code change to become catalogable, and a tenant's own
-registry SHALL contribute its entity types alongside the bundled ones. Entity
-definitions carrying no identifying attribute SHALL be excluded, since there is
-nothing to identify an instance by.
+definitions visible to the authenticated tenant. An entity type SHALL NOT
+require a code change to become catalogable, and a tenant's own registry SHALL
+contribute its entity types alongside the bundled ones.
+
+An entity type's identity SHALL be its registry-declared identifying
+attributes, except where the catalog supplies its own identity for that entity
+type, which SHALL take precedence. A supplied identity is warranted where the
+registry declares none, and where the declared identity is unusable in
+practice; the catalog SHALL NOT be limited to entity types the registry
+identifies. An entity type with neither a declared nor a supplied identity SHALL
+be excluded, since nothing distinguishes one instance from another.
 
 Presentation detail that the registry does not express — display label,
 ordering, which secondary dimension to break down by, and any span-kind scoping
-— MAY be supplied by the UI per entity type. Such presentation detail SHALL NOT
-determine whether an entity type is discoverable: an entity type with no
-presentation entry SHALL still be discovered and listed, labelled from its
-registry name.
+— MAY be supplied per entity type. Such detail SHALL NOT determine whether an
+entity type is discoverable: an entity type with no supplied presentation SHALL
+still be discovered and listed, labelled from its registry name.
 
 #### Scenario: A registry-declared entity type is catalogable without code change
 
@@ -24,12 +28,34 @@ registry name.
 - **THEN** the catalog offers that entity type, identified by its declared
   identifying attributes, with no frontend change required
 
-#### Scenario: An entity type with no identifying attributes is excluded
+#### Scenario: An entity the registry leaves unidentified is still catalogable
 
 - **WHEN** a registry declares an entity type whose attributes are all
-  descriptive
-- **THEN** the catalog does not offer that entity type, because no attribute
-  distinguishes one instance from another
+  descriptive, and the catalog supplies an identity for it
+- **THEN** the catalog offers that entity type, identified by the supplied
+  attributes
+
+> Verification note: the OTel 1.43 registry declares `host` and `container`
+> with no identifying attributes — `host.name` and `container.name` are
+> descriptive. Excluding unidentified entity types therefore removes two of
+> the most useful pages in the catalog, which is why supplied identity exists.
+
+#### Scenario: An entity with no identity at all is excluded
+
+- **WHEN** a registry declares an entity type whose attributes are all
+  descriptive, and the catalog supplies no identity for it
+- **THEN** the catalog does not offer that entity type
+
+#### Scenario: A supplied identity takes precedence over the declared one
+
+- **WHEN** an entity type's registry-declared identity differs from the
+  identity the catalog supplies for it
+- **THEN** instances are identified by the supplied attributes
+
+> Verification note: a Kubernetes pod is declared as identified by
+> `k8s.pod.uid` — unique, since names repeat across namespaces and restarts,
+> but opaque to a reader and frequently absent from real telemetry. Precedence
+> is what lets the catalog key it by name and namespace instead.
 
 #### Scenario: A custom registry contributes entity types
 

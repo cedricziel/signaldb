@@ -24,19 +24,19 @@ user-visible change is RED honesty; everything else is internal shape.
 
 ## 2. Registry-derived entity types (PR 2)
 
-- [ ] 2.1 Test: entity types are built from a registry response, keeping only
+- [x] 2.1 Test: entity types are built from a registry response, keeping only
       definitions with ≥1 identifying attribute, primary = first declared
-- [ ] 2.2 Add a typed client call for `GET /api/v1/schema/entities` alongside the
+- [x] 2.2 Add a typed client call for `GET /api/v1/schema/entities` alongside the
       existing schema-feature API module
-- [ ] 2.3 Build the entity-type model from the registry response, replacing the
+- [x] 2.3 Build the entity-type model from the registry response, replacing the
       hand-written `ENTITY_TYPES` array
-- [ ] 2.4 Test: an entity type with no presentation-overlay entry is still
+- [x] 2.4 Test: an entity type with no presentation-overlay entry is still
       listed and is labelled from its registry name
-- [ ] 2.5 Add the presentation overlay (label, plural, ordering, `breakdown`,
+- [x] 2.5 Add the presentation overlay (label, plural, ordering, `breakdown`,
       `topValues`, `spanKindScope`) keyed by registry entity name, covering at
       minimum the eight types the current list covers so no existing detail-page
       behavior regresses
-- [ ] 2.6 Test: identity ordering and `spanKindScope` still produce the same
+- [x] 2.6 Test: identity ordering and `spanKindScope` still produce the same
       service query as before this change (regression guard on the one entity
       type with a kind scope)
 - [ ] 2.7 Verify against hive: the eight previously-listed types still render
@@ -44,20 +44,20 @@ user-visible change is RED honesty; everything else is internal shape.
 
 ## 3. All-signal detection (PR 3)
 
-- [ ] 3.1 Test: an entity type is present in a source when its primary
+- [x] 3.1 Test: an entity type is present in a source when its primary
       identifying attribute is present there, and absent when it is not
-- [ ] 3.2 Add a per-source field-descriptor fetch using
+- [x] 3.2 Add a per-source field-descriptor fetch using
       `describe { target: "fields" }` (irVersion 4), one call per source
-- [ ] 3.3 Implement tier-1 presence: intersect each source's field set with each
+- [x] 3.3 Implement tier-1 presence: intersect each source's field set with each
       entity type's identifying attributes, across every queryable source
 - [ ] 3.4 Test: identifying attributes absent from a source are dropped from the
       tuple; when the primary is absent the source contributes no instances
 - [ ] 3.5 Apply per-source identity degradation to the tier-2 listing queries
-- [ ] 3.6 Test: an entity type whose identity attributes have no covering
+- [x] 3.6 Test: an entity type whose identity attributes have no covering
       statistics is reported unanalyzed, distinctly from analyzed-and-absent
-- [ ] 3.7 Add the unanalyzed state and surface the statistics `as_of` stamp in
+- [x] 3.7 Add the unanalyzed state and surface the statistics `as_of` stamp in
       the UI
-- [ ] 3.8 Drive the nav from the observed set rather than the full registry list
+- [x] 3.8 Drive the nav from the observed set rather than the full registry list
 - [ ] 3.9 Verify against hive: Processes lists `process.pid` from metrics
       (currently empty), Services includes `otelcol-contrib` (currently absent),
       and containers / service instances appear
