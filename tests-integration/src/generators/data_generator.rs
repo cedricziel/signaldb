@@ -11,10 +11,15 @@ use writer::IcebergTableWriter;
 
 use crate::fixtures::{DataGeneratorConfig, PartitionInfo};
 
-/// Generates time-partitioned trace data
-pub async fn generate_traces(
+/// Shared body of `generate_traces`/`generate_logs`/`generate_metrics`/
+/// `generate_profiles`: write `config.partition_count` partitions of
+/// `config.files_per_partition` files each, building every file's batch with
+/// `create_batch` (one of the per-signal `create_*_batch` functions, which
+/// all share this exact signature).
+async fn generate_partitioned(
     writer: &mut IcebergTableWriter,
     config: &DataGeneratorConfig,
+    create_batch: fn(i64, i64, usize, usize, usize) -> Result<RecordBatch>,
 ) -> Result<Vec<PartitionInfo>> {
     let mut partitions = Vec::new();
     let partition_duration = config.partition_granularity.to_millis();
@@ -26,7 +31,7 @@ pub async fn generate_traces(
         let mut total_rows = 0;
 
         for file_idx in 0..config.files_per_partition {
-            let batch = create_trace_batch(
+            let batch = create_batch(
                 partition_start,
                 partition_end,
                 config.rows_per_file,
@@ -50,6 +55,14 @@ pub async fn generate_traces(
     }
 
     Ok(partitions)
+}
+
+/// Generates time-partitioned trace data
+pub async fn generate_traces(
+    writer: &mut IcebergTableWriter,
+    config: &DataGeneratorConfig,
+) -> Result<Vec<PartitionInfo>> {
+    generate_partitioned(writer, config, create_trace_batch).await
 }
 
 /// Writes one traces data file per entry in `files`, each carrying exactly
@@ -131,40 +144,7 @@ pub async fn generate_logs(
     writer: &mut IcebergTableWriter,
     config: &DataGeneratorConfig,
 ) -> Result<Vec<PartitionInfo>> {
-    let mut partitions = Vec::new();
-    let partition_duration = config.partition_granularity.to_millis();
-
-    for partition_idx in 0..config.partition_count {
-        let partition_start = config.base_timestamp + (partition_idx as i64 * partition_duration);
-        let partition_end = partition_start + partition_duration;
-
-        let mut total_rows = 0;
-
-        for file_idx in 0..config.files_per_partition {
-            let batch = create_log_batch(
-                partition_start,
-                partition_end,
-                config.rows_per_file,
-                partition_idx,
-                file_idx,
-            )?;
-
-            writer
-                .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
-                .await?;
-            total_rows += config.rows_per_file;
-        }
-
-        let partition_id = format_partition_id(partition_start, config.partition_granularity);
-        partitions.push(PartitionInfo {
-            partition_id,
-            timestamp_range: (partition_start, partition_end),
-            file_count: config.files_per_partition,
-            row_count: total_rows,
-        });
-    }
-
-    Ok(partitions)
+    generate_partitioned(writer, config, create_log_batch).await
 }
 
 /// Generates time-partitioned metrics data
@@ -172,40 +152,7 @@ pub async fn generate_metrics(
     writer: &mut IcebergTableWriter,
     config: &DataGeneratorConfig,
 ) -> Result<Vec<PartitionInfo>> {
-    let mut partitions = Vec::new();
-    let partition_duration = config.partition_granularity.to_millis();
-
-    for partition_idx in 0..config.partition_count {
-        let partition_start = config.base_timestamp + (partition_idx as i64 * partition_duration);
-        let partition_end = partition_start + partition_duration;
-
-        let mut total_rows = 0;
-
-        for file_idx in 0..config.files_per_partition {
-            let batch = create_metric_batch(
-                partition_start,
-                partition_end,
-                config.rows_per_file,
-                partition_idx,
-                file_idx,
-            )?;
-
-            writer
-                .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
-                .await?;
-            total_rows += config.rows_per_file;
-        }
-
-        let partition_id = format_partition_id(partition_start, config.partition_granularity);
-        partitions.push(PartitionInfo {
-            partition_id,
-            timestamp_range: (partition_start, partition_end),
-            file_count: config.files_per_partition,
-            row_count: total_rows,
-        });
-    }
-
-    Ok(partitions)
+    generate_partitioned(writer, config, create_metric_batch).await
 }
 
 /// Generates time-partitioned profile data
@@ -213,40 +160,7 @@ pub async fn generate_profiles(
     writer: &mut IcebergTableWriter,
     config: &DataGeneratorConfig,
 ) -> Result<Vec<PartitionInfo>> {
-    let mut partitions = Vec::new();
-    let partition_duration = config.partition_granularity.to_millis();
-
-    for partition_idx in 0..config.partition_count {
-        let partition_start = config.base_timestamp + (partition_idx as i64 * partition_duration);
-        let partition_end = partition_start + partition_duration;
-
-        let mut total_rows = 0;
-
-        for file_idx in 0..config.files_per_partition {
-            let batch = create_profile_batch(
-                partition_start,
-                partition_end,
-                config.rows_per_file,
-                partition_idx,
-                file_idx,
-            )?;
-
-            writer
-                .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
-                .await?;
-            total_rows += config.rows_per_file;
-        }
-
-        let partition_id = format_partition_id(partition_start, config.partition_granularity);
-        partitions.push(PartitionInfo {
-            partition_id,
-            timestamp_range: (partition_start, partition_end),
-            file_count: config.files_per_partition,
-            row_count: total_rows,
-        });
-    }
-
-    Ok(partitions)
+    generate_partitioned(writer, config, create_profile_batch).await
 }
 
 /// Creates a trace batch with specified parameters (v1 schema format).

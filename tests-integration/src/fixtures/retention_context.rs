@@ -79,28 +79,31 @@ pub struct TableInfo {
     pub partitions: Vec<PartitionInfo>,
 }
 
+/// The `PlannerConfig` shared by every in-memory `RetentionTestContext`
+/// constructor. Tests write data into recent hours and expect it to be
+/// compactable immediately; a production lateness allowance would defer
+/// every generated partition as still open.
+fn test_planner_config() -> PlannerConfig {
+    PlannerConfig {
+        file_count_threshold: 10,
+        max_input_file_size_bytes: 64 * 1024 * 1024,
+        target_file_size_bytes: 128 * 1024 * 1024,
+        partition_lateness: std::time::Duration::ZERO,
+        max_partition_input_bytes: 0,
+    }
+}
+
 impl RetentionTestContext {
     /// Creates a new retention test context with in-memory implementations
     pub async fn new_in_memory() -> Result<Self> {
         let catalog = CatalogTestContext::new_in_memory().await?;
         let storage = StorageTestContext::new_in_memory().await?;
-        let planner_config = PlannerConfig {
-            file_count_threshold: 10,
-            max_input_file_size_bytes: 64 * 1024 * 1024,
-            target_file_size_bytes: 128 * 1024 * 1024,
-            // Tests write data into recent hours and expect it to be
-            // compactable immediately; a production lateness allowance would
-            // defer every generated partition as still open.
-            partition_lateness: std::time::Duration::ZERO,
-            max_partition_input_bytes: 0,
-        };
-        let metrics = CompactionMetrics::new();
 
         Ok(Self {
             catalog,
             storage,
-            planner_config,
-            metrics,
+            planner_config: test_planner_config(),
+            metrics: CompactionMetrics::new(),
         })
     }
 
@@ -117,20 +120,12 @@ impl RetentionTestContext {
     pub async fn new_in_memory_with_tenant_source(tenant_source: Arc<Catalog>) -> Result<Self> {
         let catalog = CatalogTestContext::new_in_memory_with_tenant_source(tenant_source).await?;
         let storage = StorageTestContext::new_in_memory().await?;
-        let planner_config = PlannerConfig {
-            file_count_threshold: 10,
-            max_input_file_size_bytes: 64 * 1024 * 1024,
-            target_file_size_bytes: 128 * 1024 * 1024,
-            partition_lateness: std::time::Duration::ZERO,
-            max_partition_input_bytes: 0,
-        };
-        let metrics = CompactionMetrics::new();
 
         Ok(Self {
             catalog,
             storage,
-            planner_config,
-            metrics,
+            planner_config: test_planner_config(),
+            metrics: CompactionMetrics::new(),
         })
     }
 
