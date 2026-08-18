@@ -161,6 +161,8 @@ the services resolve their WAL directory from the TOML-level `[wal] wal_dir`
 3. **Processing**: WalProcessor reads unprocessed entries, writes to Iceberg, marks in `.index`
 4. **Cleanup**: Fully-processed segments deleted; partial segments compacted past `compaction_threshold`, keeping each survivor's original timestamp
 
+5. **Eviction**: after the sweep, a WAL idle for `WalManager::DEFAULT_IDLE_TIMEOUT` (15m) with no unprocessed entries is closed and dropped; the next write reopens it. `Wal::close` must _abort_ the flush task — it holds clones of the buffer/segments, so dropping the `Arc<Wal>` frees nothing. Eviction holds the same per-key init guard `get_wal` uses, so no second instance can open a directory still being closed (#883). A closed segment refuses appends rather than skipping the write while advancing offsets.
+
 Cleanup runs via `WalManager::cleanup_all_if_due` at a **pass boundary** — end of the writer's background drain, end of the acceptor's retry pass — throttled by the manager to the smallest per-signal `cleanup_interval_secs`. The boundary is load-bearing: compaction moves surviving entries to new offsets, so it must not run while a consumer holds entries it listed earlier in the pass (`Wal::read_entry_data` re-resolves entries from the segment's own index as the backstop). The writer's `do_action("flush")` deliberately does not sweep — it is deadline-bounded for the client. See `docs/architecture/storage-layout.md#segment-reclamation`.
 
 ## Iceberg Catalog
