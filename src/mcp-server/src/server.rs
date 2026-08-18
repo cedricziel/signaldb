@@ -924,7 +924,20 @@ impl McpServer {
             Err(_timeout) => return Err(concurrency_limit_error(self.max_concurrent_tool_calls)),
         };
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        Self::tool_router().call(tcc).await
+        Self::cached_tool_router().call(tcc).await
+    }
+
+    /// [`Self::tool_router`], built once and reused. The `#[tool_router]`
+    /// macro generates that method as a plain constructor, so calling it
+    /// directly reallocates the whole ~60-entry route map on every
+    /// `tools/call`, `tools/list`, and lookup; the router itself is
+    /// immutable once built, so it is safe to cache for the process
+    /// lifetime.
+    fn cached_tool_router() -> &'static rmcp::handler::server::router::tool::ToolRouter<Self> {
+        static ROUTER: std::sync::OnceLock<
+            rmcp::handler::server::router::tool::ToolRouter<McpServer>,
+        > = std::sync::OnceLock::new();
+        ROUTER.get_or_init(Self::tool_router)
     }
 
     /// Build the per-request forwarding client, surfacing a construction
@@ -2301,7 +2314,7 @@ impl McpServer {
     /// Whether a tool named `name` is registered. Exposed for cross-surface
     /// parity checks (see the `client-surface-parity` spec).
     pub fn has_tool(name: &str) -> bool {
-        Self::tool_router().has_route(name)
+        Self::cached_tool_router().has_route(name)
     }
 
     /// Argument autocompletion, forwarding to the router when `parts` carries
@@ -2508,7 +2521,7 @@ impl ServerHandler for McpServer {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let mut tools = Self::tool_router().list_all();
+        let mut tools = Self::cached_tool_router().list_all();
         if client_supports_ui(&context) {
             for tool in &mut tools {
                 if let Some(uri) = apps::tool_ui_uri(&tool.name) {
