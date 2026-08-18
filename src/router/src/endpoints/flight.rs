@@ -20,8 +20,6 @@ use crate::RouterState;
 /// Query result types for Flight operations
 #[derive(Debug)]
 enum QueryResult {
-    #[allow(dead_code)] // Will be used in full implementation
-    Traces(Vec<RecordBatch>, Schema),
     Empty(Schema),
 }
 
@@ -359,16 +357,10 @@ impl<S: RouterState> FlightService for SignalDBFlightService<S> {
         tracing::info!("Executing Flight query: {query}");
 
         match self.execute_query(&query).await {
-            Ok(query_result) => match query_result {
-                QueryResult::Traces(batches, schema) => {
-                    let stream = Self::create_flight_data_stream(batches, schema).await?;
-                    Ok(Response::new(stream))
-                }
-                QueryResult::Empty(schema) => {
-                    let stream = Self::create_flight_data_stream(vec![], schema).await?;
-                    Ok(Response::new(stream))
-                }
-            },
+            Ok(QueryResult::Empty(schema)) => {
+                let stream = Self::create_flight_data_stream(vec![], schema).await?;
+                Ok(Response::new(stream))
+            }
             Err(status) if status.code() == tonic::Code::NotFound => {
                 self.proxy_to_querier(&query, &incoming_metadata).await
             }

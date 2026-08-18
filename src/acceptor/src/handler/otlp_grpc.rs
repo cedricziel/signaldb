@@ -138,7 +138,7 @@ impl TraceHandler {
             record_batch_to_bytes(&record_batch).context("Failed to serialize record batch")?;
 
         let wal_entry_id = wal
-            .append(WalOperation::WriteTraces, batch_bytes, metadata_str)
+            .append(WalOperation::WriteTraces, batch_bytes, metadata_str.clone())
             .await
             .context("Failed to write traces to WAL")?;
 
@@ -151,7 +151,7 @@ impl TraceHandler {
         match forward_batch_to_writer(
             &self.flight_transport,
             record_batch,
-            Some(&metadata.to_string()),
+            metadata_str.as_deref(),
         )
         .await
         {

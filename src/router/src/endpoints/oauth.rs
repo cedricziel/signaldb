@@ -828,7 +828,6 @@ async fn token_authorization_code<S: RouterState>(
         &grant.tenant_id,
         &grant.scopes,
         grant.resource.as_deref(),
-        true,
     )
     .await
 }
@@ -879,13 +878,12 @@ async fn token_refresh<S: RouterState>(
         &grant.tenant_id,
         &grant.scopes,
         grant.resource.as_deref(),
-        true,
     )
     .await
 }
 
-/// Mint an access token (and, when `with_refresh`, a refresh token) for a
-/// grant and render the token response.
+/// Mint an access token and a refresh token for a grant and render the
+/// token response.
 async fn issue_tokens<S: RouterState>(
     state: &S,
     client_id: &str,
@@ -893,7 +891,6 @@ async fn issue_tokens<S: RouterState>(
     tenant_id: &str,
     scopes: &[String],
     resource: Option<&str>,
-    with_refresh: bool,
 ) -> Result<Response, OAuthError> {
     let oauth = &state.config().mcp.oauth;
     let now = chrono::Utc::now();
@@ -915,33 +912,28 @@ async fn issue_tokens<S: RouterState>(
         .await
         .map_err(|e| OAuthError::server_error(format!("failed to store access token: {e}")))?;
 
-    let refresh_raw = if with_refresh {
-        let refresh_ttl = chrono::Duration::from_std(oauth.refresh_token_ttl)
-            .map_err(|e| OAuthError::server_error(format!("invalid refresh_token_ttl: {e}")))?;
-        let raw = generate_oauth_token(TokenKind::Refresh);
-        state
-            .catalog()
-            .create_refresh_token(
-                &hash_oauth_token(&raw),
-                client_id,
-                user_id,
-                tenant_id,
-                scopes,
-                resource,
-                now + refresh_ttl,
-            )
-            .await
-            .map_err(|e| OAuthError::server_error(format!("failed to store refresh token: {e}")))?;
-        Some(raw)
-    } else {
-        None
-    };
+    let refresh_ttl = chrono::Duration::from_std(oauth.refresh_token_ttl)
+        .map_err(|e| OAuthError::server_error(format!("invalid refresh_token_ttl: {e}")))?;
+    let refresh_raw = generate_oauth_token(TokenKind::Refresh);
+    state
+        .catalog()
+        .create_refresh_token(
+            &hash_oauth_token(&refresh_raw),
+            client_id,
+            user_id,
+            tenant_id,
+            scopes,
+            resource,
+            now + refresh_ttl,
+        )
+        .await
+        .map_err(|e| OAuthError::server_error(format!("failed to store refresh token: {e}")))?;
 
     Ok(no_store(TokenResponse {
         access_token: access_raw,
         token_type: "Bearer",
         expires_in: oauth.access_token_ttl.as_secs(),
-        refresh_token: refresh_raw,
+        refresh_token: Some(refresh_raw),
         scope: scopes.join(" "),
     }))
 }

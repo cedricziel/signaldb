@@ -83,6 +83,22 @@ fn error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
+/// Whether `target_user_id` is the tenant's sole remaining administrator —
+/// used to block demoting or removing the last admin membership.
+fn is_last_remaining_admin(
+    members: &[common::catalog::TenantMembershipRecord],
+    target_user_id: &str,
+) -> bool {
+    let target_is_admin = members.iter().any(|membership| {
+        membership.user_id == target_user_id && membership.role == MembershipRole::Admin
+    });
+    let admin_count = members
+        .iter()
+        .filter(|membership| membership.role == MembershipRole::Admin)
+        .count();
+    target_is_admin && admin_count == 1
+}
+
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[schema(as = ManageCreateTenantRequest)]
 pub struct CreateTenantRequest {
@@ -826,14 +842,7 @@ pub(crate) async fn upsert_membership<S: RouterState>(
                 );
             }
         };
-        let target_is_admin = members.iter().any(|membership| {
-            membership.user_id == user.id && membership.role == MembershipRole::Admin
-        });
-        let admin_count = members
-            .iter()
-            .filter(|membership| membership.role == MembershipRole::Admin)
-            .count();
-        if target_is_admin && admin_count == 1 {
+        if is_last_remaining_admin(&members, &user.id) {
             return error(
                 StatusCode::CONFLICT,
                 "The last tenant administrator cannot be demoted",
@@ -906,14 +915,7 @@ pub(crate) async fn remove_membership<S: RouterState>(
             );
         }
     };
-    let target_is_admin = members.iter().any(|membership| {
-        membership.user_id == user_id && membership.role == MembershipRole::Admin
-    });
-    let admin_count = members
-        .iter()
-        .filter(|membership| membership.role == MembershipRole::Admin)
-        .count();
-    if target_is_admin && admin_count == 1 {
+    if is_last_remaining_admin(&members, &user_id) {
         return error(
             StatusCode::CONFLICT,
             "The last tenant administrator cannot be removed",
