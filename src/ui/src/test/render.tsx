@@ -1,17 +1,30 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, vi } from "vitest";
 import { client as generatedClient } from "../api/gen/client.gen";
 
-export function renderWithClient(ui: ReactElement) {
-  const client = new QueryClient({
+function testQueryClient() {
+  return new QueryClient({
     defaultOptions: {
       queries: { retry: false, refetchOnWindowFocus: false },
     },
   });
+}
+
+export function renderWithClient(ui: ReactElement) {
+  const client = testQueryClient();
   return render(
     <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+  );
+}
+
+/** The same provider as {@link renderWithClient}, as a `renderHook` wrapper —
+ * for testing a hook that issues queries without mounting a component. */
+export function clientWrapper() {
+  const client = testQueryClient();
+  return ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
 }
 

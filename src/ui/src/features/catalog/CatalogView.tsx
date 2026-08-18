@@ -26,10 +26,10 @@ import { formatDurationMs } from "../../lib/waterfall";
 import { EntityDetail } from "./EntityDetail";
 import {
   DEFAULT_ENTITY_TYPE,
-  ENTITY_TYPES,
   entityType,
   type EntityTypeDef,
 } from "./entityTypes";
+import { useCatalogEntityTypes } from "./useEntityTypes";
 import "./catalog.css";
 
 interface Props {
@@ -51,15 +51,25 @@ export function CatalogView({ state, update }: Props) {
 
   const range = resolveRange(state.range, Date.now());
   const rangeKey = rangeScopeKey(state);
+  const { types, analyzed, asOf } = useCatalogEntityTypes(range, rangeKey);
+  // Selection resolves against the observed set first so a registry-derived
+  // type is addressable by URL, then falls back to the curated list — a
+  // bookmarked entity type stays openable while its data is out of window.
   const selected =
-    entityType(state.catalogEntity) ?? entityType(DEFAULT_ENTITY_TYPE)!;
+    types.find((e) => e.id === state.catalogEntity) ??
+    entityType(state.catalogEntity) ??
+    types[0] ??
+    entityType(DEFAULT_ENTITY_TYPE)!;
 
   return (
     <div className="catalog">
       <CatalogNav
+        types={types}
         selectedId={selected.id}
         range={range}
         rangeKey={rangeKey}
+        analyzed={analyzed}
+        asOf={asOf}
         onSelect={(id) => update({ catalogEntity: id })}
       />
       <EntityTable
@@ -77,18 +87,24 @@ export function CatalogView({ state, update }: Props) {
 }
 
 function CatalogNav({
+  types,
   selectedId,
   range,
   rangeKey,
+  analyzed,
+  asOf,
   onSelect,
 }: {
+  types: EntityTypeDef[];
   selectedId: string;
   range: ResolvedRange;
   rangeKey: string;
+  analyzed: boolean;
+  asOf?: string;
   onSelect: (id: string) => void;
 }) {
   const results = useQueries({
-    queries: ENTITY_TYPES.map((e) => ({
+    queries: types.map((e) => ({
       queryKey: ["catalog-entities", e.id, rangeKey, "n", "desc"],
       queryFn: () => fetchCatalogEntities(e, range),
       staleTime: 30_000,
@@ -99,7 +115,7 @@ function CatalogNav({
     <aside className="sidebar" aria-label="Entity types">
       <div className="sidebar-head">Entities</div>
       <div className="fieldlist">
-        {ENTITY_TYPES.map((e, i) => {
+        {types.map((e, i) => {
           const result = results[i];
           const countLabel = result?.data
             ? result.data.truncated
@@ -118,6 +134,14 @@ function CatalogNav({
             </button>
           );
         })}
+      </div>
+      {/* Absence of an entity type is a claim about the data; absence of
+          metadata is a claim about what we know. Saying so keeps a
+          never-compacted deployment from reading as an empty one. */}
+      <div className="sidebar-note">
+        {analyzed
+          ? asOf && `Field metadata as of ${asOf}`
+          : "Not analyzed yet — entity types appear once compaction has run."}
       </div>
     </aside>
   );

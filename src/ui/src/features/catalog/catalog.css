@@ -118,6 +118,17 @@
   color: var(--err);
 }
 
+/* Provenance for the entity-type list: how fresh the metadata behind it is,
+   or that nothing has been analyzed yet. Quiet by design — it qualifies the
+   nav rather than competing with it. */
+.sidebar-note {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--faint);
+}
+
 /* Which signals cover an entity. Deliberately unquantified — see `Observed`
    in CatalogView.tsx — so these read as labels, not measurements, and are
    sized down from the numeric KPIs beside them. */
