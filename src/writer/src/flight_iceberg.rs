@@ -15,6 +15,7 @@
 //! bounded by [`FLUSH_TIMEOUT`].
 
 use crate::processor::{FlushScope, WalProcessor};
+use crate::routing::{self, RouteMetadata, RouteTarget};
 use crate::schema_transform::{
     FlightMetadata, determine_wal_operation, extract_flight_metadata, transform_for_signal,
 };
@@ -433,30 +434,31 @@ impl FlightService for IcebergWriterFlightService {
         //
         // These ids become path components of the WAL directory, and this
         // Flight surface can be configured without authentication, so they
-        // are validated here as well as inside `get_wal`. A malformed id is
-        // the sender's fault and recurs identically on every retry, so it
-        // must be `invalid_argument`; a WAL that fails to open for any other
-        // reason (a full or unwritable disk) is `internal` and retryable.
-        let wal_id = |label: &str, value: Option<&String>, fallback: &str| {
-            let id = value
-                .map(|v| v.trim())
-                .filter(|v| !v.is_empty())
-                .unwrap_or(fallback);
-            common::auth::validation::validate_id(id).map_err(|e| {
-                Status::invalid_argument(format!("Invalid {label} id in Flight metadata: {e}"))
-            })
-        };
+        // are validated (in `routing::route`) as well as inside `get_wal`. A
+        // malformed id is the sender's fault and recurs identically on every
+        // retry, so it must be `invalid_argument`; a WAL that fails to open
+        // for any other reason (a full or unwritable disk) is `internal` and
+        // retryable.
+        //
+        // Routing goes through the same function the commit path uses, so the
+        // WAL a batch lands in and the table it is later committed to cannot
+        // disagree about what its metadata meant (#1319).
         let metadata = flight_metadata.as_ref();
-        let wal_tenant = wal_id(
-            "tenant",
-            metadata.and_then(|m| m.tenant_id.as_ref()),
+        let RouteTarget {
+            tenant_id: wal_tenant,
+            dataset_id: wal_dataset,
+            ..
+        } = routing::route(
+            &wal_operation,
+            RouteMetadata {
+                tenant_id: metadata.and_then(|m| m.tenant_id.as_deref()),
+                dataset_id: metadata.and_then(|m| m.dataset_id.as_deref()),
+                target_table: metadata.and_then(|m| m.target_table.as_deref()),
+            },
             common::bootstrap::DEFAULT_TENANT_ID,
-        )?;
-        let wal_dataset = wal_id(
-            "dataset",
-            metadata.and_then(|m| m.dataset_id.as_ref()),
             common::bootstrap::DEFAULT_DATASET_ID,
-        )?;
+        )
+        .map_err(|e| Status::invalid_argument(format!("Flight metadata: {e}")))?;
         let wal = self
             .wal_manager
             .get_wal(&wal_tenant, &wal_dataset, wal_operation.signal())
