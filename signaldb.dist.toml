@@ -306,6 +306,23 @@ metadata_previous_versions_max = 100
 # every dataset registered at that point; datasets created afterwards then
 # appear on first write, on an on-demand request, or after a writer restart.
 table_reconcile_interval = "5m"
+#
+# How long a WAL idempotency marker left by ANOTHER writer id is kept on a
+# table before it is deleted. "0s" disables retirement.
+#
+# Each marker is a table property, and a new writer id appears whenever a WAL
+# directory is created or wiped (a redeploy on ephemeral storage, a WAL
+# quarantined after corruption, an operator clearing .data/wal). Without
+# retirement the property set grows forever, and every entry is paid for in
+# metadata.json on every read and every commit.
+#
+# A marker is live evidence that its writer committed rows it may not have
+# marked processed yet. Retiring one too early makes that writer re-insert
+# those rows as duplicates when it returns, so this must comfortably exceed
+# the longest a writer could be down while still holding undrained WAL
+# entries. Markers written before markers carried a commit time are only
+# retired once the writer process has itself been up longer than this window.
+wal_marker_retention = "30d"
 
 [compactor]
 # Compactor Service Configuration

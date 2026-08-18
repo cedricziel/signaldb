@@ -1321,6 +1321,21 @@ pub struct WriterConfig {
     /// per-tenant reconcile interval meaningless.
     #[serde(with = "humantime_serde")]
     pub table_reconcile_interval: Duration,
+    /// How long a WAL idempotency marker left by *another* writer id is kept
+    /// on a table before it is deleted. `0s` disables retirement.
+    ///
+    /// Each marker is a permanent table property, and a new writer id appears
+    /// whenever a WAL directory is created or wiped, so without retirement the
+    /// property set grows forever and every entry is paid for in
+    /// `metadata.json` on every read and commit (#1307).
+    ///
+    /// A marker is live evidence that its writer committed rows it may not
+    /// have marked processed yet, so this must comfortably exceed the longest
+    /// a writer could be down while still holding undrained WAL entries.
+    /// Retiring one too early makes that writer re-insert those rows as
+    /// duplicates when it returns.
+    #[serde(with = "humantime_serde")]
+    pub wal_marker_retention: Duration,
 }
 
 impl WriterConfig {
@@ -1338,6 +1353,11 @@ impl Default for WriterConfig {
             max_uncommitted_rows: 100_000,
             metadata_previous_versions_max: 100,
             table_reconcile_interval: Duration::from_secs(300),
+            // 30 days: long enough that a writer down that long with undrained
+            // entries is an operational incident rather than a retention
+            // question, short enough that a fleet recreating WAL directories
+            // does not carry an unbounded marker set.
+            wal_marker_retention: Duration::from_secs(30 * 24 * 3600),
         }
     }
 }

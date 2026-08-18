@@ -250,6 +250,7 @@ commit_interval = "5s"        # Max wait before a table's rows are committed (li
 max_uncommitted_rows = 100000 # Row ceiling that triggers an earlier commit for bursts (a cap, never a minimum)
 metadata_previous_versions_max = 100 # Previous metadata.json versions retained per table (older deleted on commit)
 table_reconcile_interval = "5m"      # How often to re-run the signal-table reconciler over the tenant registry; "0s" = startup pass only
+wal_marker_retention = "30d"         # How long ANOTHER writer id's WAL idempotency marker is kept on a table; "0s" disables retirement
 ```
 
 The writer commits ingested data to Iceberg asynchronously via its background
@@ -265,6 +266,18 @@ every `table_reconcile_interval`, ensuring every registered tenant/dataset holds
 a table for each signal type enabled for that tenant. `"0s"` keeps the startup
 pass and disables the periodic re-run. See
 `docs/operations/table-provisioning.md`.
+
+Each WAL→Iceberg commit records an idempotency marker as a table property keyed
+by the committing WAL's writer id, and a new writer id appears whenever a WAL
+directory is created or wiped — so without retirement the property set grows
+forever and every entry is paid for in `metadata.json` on every read and
+commit. `wal_marker_retention` is how long another writer id's marker is kept
+before it is deleted. A marker is live evidence that its writer committed rows
+it may not have marked processed yet, so this must comfortably exceed the
+longest a writer could be down while still holding undrained WAL entries;
+retiring one too early makes that writer re-insert those rows as duplicates.
+Markers written before markers carried a commit time are only retired once the
+writer process has itself been up longer than the window.
 
 ### MCP (Model Context Protocol server)
 

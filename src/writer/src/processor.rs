@@ -207,6 +207,15 @@ pub struct WalProcessor {
     entry_failures: tokio::sync::Mutex<HashMap<Uuid, u32>>,
     /// Commit-coalescing gate per `(tenant, dataset, table)`.
     coalescer: tokio::sync::Mutex<CommitCoalescer>,
+    /// How long another writer's idempotency marker is kept before it is
+    /// retired from a table. Zero disables retirement.
+    wal_marker_retention: Duration,
+    /// When this processor started, and when it last swept markers. Both are
+    /// needed: the sweep is throttled, and a marker with no recorded commit
+    /// time (written before markers were dated) may only be retired once this
+    /// process has itself outlived the retention window.
+    started_at: Instant,
+    last_marker_sweep: tokio::sync::Mutex<Option<Instant>>,
     /// Group commits currently in flight, and the high-water mark across the
     /// processor's life. Test-only: the point of the concurrent drain is that
     /// groups overlap, and overlap is a property of control flow that wall
@@ -247,11 +256,36 @@ impl WalProcessor {
             table_writers: tokio::sync::Mutex::new(HashMap::new()),
             entry_failures: tokio::sync::Mutex::new(HashMap::new()),
             coalescer: tokio::sync::Mutex::new(CommitCoalescer::new(writer_config)),
+            wal_marker_retention: writer_config.wal_marker_retention,
+            started_at: Instant::now(),
+            last_marker_sweep: tokio::sync::Mutex::new(None),
             #[cfg(test)]
             in_flight_commits: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             peak_concurrent_commits: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Every writer id this process owns — one per cached WAL directory.
+    ///
+    /// Markers are keyed per WAL directory, so all of them are live evidence
+    /// for commits this process is still making and none may be retired.
+    ///
+    /// This is the *cached* set, not every WAL directory on disk, and that is
+    /// only sound because of two invariants elsewhere:
+    /// `WalManager::discover_existing_wals` opens every on-disk WAL that still
+    /// has segments at startup, and `WalManager::evict_idle` never evicts a
+    /// WAL that holds unprocessed entries. An uncached WAL is therefore fully
+    /// drained, so its marker protects nothing. **If either invariant
+    /// changes, this exclusion set silently starts under-reporting and a live
+    /// writer's marker becomes retirable.**
+    async fn own_marker_writer_ids(&self) -> std::collections::HashSet<String> {
+        self.wal_manager
+            .all_wals()
+            .await
+            .iter()
+            .map(|(_, wal)| wal.writer_id().to_string())
+            .collect()
     }
 
     /// Process pending WAL entries subject to the commit-coalescing floor: a
@@ -273,8 +307,87 @@ impl WalProcessor {
         // pass already holds, so no other drain can be mid-pass. The manager
         // throttles how often a sweep actually runs.
         self.wal_manager.cleanup_all_if_due().await;
+        self.retire_stale_markers_if_due().await;
 
         drained
+    }
+
+    /// How often the marker sweep is allowed to run. Retirement is bounded by
+    /// a retention window measured in days, so checking hourly converges just
+    /// as fast while keeping the metadata-only commits rare.
+    const MARKER_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
+
+    /// Retire other writers' stale idempotency markers from the tables this
+    /// processor commits to, at most once per [`Self::MARKER_SWEEP_INTERVAL`].
+    ///
+    /// Only cached writers are swept: those are exactly the tables this writer
+    /// commits to, which is where its own markers live and where foreign ones
+    /// accumulate. Failures are logged, never fatal — an unretired marker
+    /// costs metadata size, and losing the guarded commit to a concurrent
+    /// writer is the guard working.
+    ///
+    /// Known scope limit: a table that no live writer commits to any more —
+    /// a tenant that stopped reporting entirely — is never swept by anyone,
+    /// so its markers stay. Growth is bounded for active tables, which is
+    /// where markers actually accumulate; sweeping the dormant remainder
+    /// needs a pass that iterates the whole table universe (the signal-table
+    /// reconciler already does), tracked separately.
+    async fn retire_stale_markers_if_due(&self) {
+        if self.wal_marker_retention.is_zero() {
+            return;
+        }
+        {
+            let mut last = self.last_marker_sweep.lock().await;
+            let due = last.is_none_or(|at| at.elapsed() >= Self::MARKER_SWEEP_INTERVAL);
+            if !due {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+
+        // An undated marker predates dated markers entirely, so it could
+        // belong to a writer that is healthy but has not committed since the
+        // deploy. Outliving the window proves otherwise: a live writer would
+        // have rewritten it with a dated one by now.
+        let process_outlived_retention = self.started_at.elapsed() >= self.wal_marker_retention;
+
+        let writers: Vec<(String, Arc<tokio::sync::Mutex<IcebergTableWriter>>)> = self
+            .table_writers
+            .lock()
+            .await
+            .iter()
+            .map(|(key, writer)| (key.clone(), writer.clone()))
+            .collect();
+
+        let own_writer_ids = self.own_marker_writer_ids().await;
+        let mut retired = 0usize;
+        for (writer_key, writer) in writers {
+            // The writer id is per WAL directory, and a table's markers are
+            // keyed by it; ours is whichever WAL last committed to this table.
+            let mut writer = writer.lock().await;
+            match writer
+                .retire_stale_markers(
+                    &own_writer_ids,
+                    self.wal_marker_retention,
+                    process_outlived_retention,
+                )
+                .await
+            {
+                Ok(count) => retired += count,
+                Err(e) => tracing::debug!(
+                    writer_key = %writer_key,
+                    error = %e,
+                    "Could not retire stale WAL markers this pass; they stay until the next one"
+                ),
+            }
+        }
+
+        if retired > 0 {
+            tracing::info!(
+                retired,
+                "Retired WAL idempotency markers left by writer ids past their retention window"
+            );
+        }
     }
 
     /// Immediately commit the pending groups covered by `scope`, ignoring the
