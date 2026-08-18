@@ -5066,9 +5066,14 @@
         "required": [
           "mode",
           "window_scoped",
-          "sampled"
+          "sampled",
+          "approximate"
         ],
         "properties": {
+          "approximate": {
+            "type": "boolean",
+            "description": "Whether the answer is approximate — a bounded sketch of the most\nfrequent values rather than the exact set. A declared value set is\nexact; a statistics- or scan-derived one is not, and saying so is the\ndifference between a suggestion and a claim."
+          },
           "as_of": {
             "type": [
               "string",

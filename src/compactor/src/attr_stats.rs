@@ -2,7 +2,8 @@
 //!
 //! Computes per-key statistics over a table's attribute columns while the
 //! compactor is already scanning the data for a rewrite: presence (how many
-//! rows carry the key) and an approximate distinct-value count. The
+//! rows carry the key), an approximate distinct-value count, and a bounded
+//! sketch of the key's most frequent values. The
 //! analyzer then *logs* which keys would be promoted to materialized
 //! `label_<key>` columns under a schema-width budget — it changes nothing.
 //!
@@ -12,7 +13,7 @@
 //! Persisting stats to a catalog table and folding in query-demand
 //! counters are follow-ups tracked on the issue.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use datafusion::arrow::array::{Array, MapArray, RecordBatch, StringArray};
 
@@ -49,6 +50,10 @@ const PROMOTION_BUDGET: usize = 32;
 /// promotion candidate.
 const MIN_PRESENCE: f64 = 0.005;
 
+/// The default number of values kept per key as a suggestion sketch. The
+/// compactor's `value_sketch_size` overrides it.
+pub const DEFAULT_VALUE_SKETCH_SIZE: usize = 100;
+
 /// Per-key statistics over the scanned rows.
 #[derive(Debug, Default, Clone)]
 pub struct AttrFieldStats {
@@ -59,6 +64,15 @@ pub struct AttrFieldStats {
     /// Whether the distinct tracking hit the cap (true cardinality is
     /// at least [`CARDINALITY_CAP`]).
     pub capped: bool,
+    /// The key's most frequent values with their counts, most frequent first,
+    /// bounded by the configured sketch size — what query discovery suggests
+    /// without reading data.
+    ///
+    /// Empty for a key that hit [`CARDINALITY_CAP`]: once value tracking
+    /// stops, the counts held are whatever happened to arrive first, and
+    /// suggesting those as "the top values" would be a confident wrong answer.
+    /// Discovery reports such a key as uncovered instead.
+    pub top_values: Vec<(String, u64)>,
 }
 
 /// Incremental accumulator for the attribute-statistics pass.
@@ -67,16 +81,35 @@ pub struct AttrFieldStats {
 /// stats pass has to fold over batches as they go by instead of taking a
 /// materialized slice. State is per-key and bounded by
 /// [`CARDINALITY_CAP`], so it does not grow with the partition's size.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AttrStatsAccumulator {
     stats: BTreeMap<String, AttrFieldStats>,
-    values: BTreeMap<String, BTreeSet<String>>,
+    /// Per-key value counts, bounded by [`CARDINALITY_CAP`] distinct values.
+    values: BTreeMap<String, BTreeMap<String, u64>>,
     total_rows: u64,
+    sketch_size: usize,
+}
+
+impl Default for AttrStatsAccumulator {
+    fn default() -> Self {
+        Self {
+            stats: BTreeMap::new(),
+            values: BTreeMap::new(),
+            total_rows: 0,
+            sketch_size: DEFAULT_VALUE_SKETCH_SIZE,
+        }
+    }
 }
 
 impl AttrStatsAccumulator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// How many values per key to keep as a suggestion sketch. `0` keeps none.
+    pub fn with_sketch_size(mut self, sketch_size: usize) -> Self {
+        self.sketch_size = sketch_size;
+        self
     }
 
     /// Fold one batch into the running statistics.
@@ -91,13 +124,21 @@ impl AttrStatsAccumulator {
                 for (key, value) in doc {
                     let entry = self.stats.entry(key.clone()).or_default();
                     entry.present_rows += 1;
-                    let set = self.values.entry(key).or_default();
+                    let counts = self.values.entry(key).or_default();
                     if entry.capped {
                         continue;
                     }
-                    set.insert(value);
-                    if set.len() >= CARDINALITY_CAP {
-                        entry.capped = true;
+                    // Count an existing value always; admit a new one only
+                    // while under the cap, so state stays bounded by
+                    // CARDINALITY_CAP per key regardless of partition size.
+                    match counts.get_mut(&value) {
+                        Some(count) => *count += 1,
+                        None => {
+                            counts.insert(value, 1);
+                            if counts.len() >= CARDINALITY_CAP {
+                                entry.capped = true;
+                            }
+                        }
                     }
                 }
             }
@@ -106,10 +147,20 @@ impl AttrStatsAccumulator {
 
     /// Finalize into per-key statistics plus the total row count scanned.
     pub fn finish(mut self) -> (BTreeMap<String, AttrFieldStats>, u64) {
-        for (key, set) in self.values {
-            if let Some(entry) = self.stats.get_mut(&key) {
-                entry.distinct = set.len();
+        for (key, counts) in self.values {
+            let Some(entry) = self.stats.get_mut(&key) else {
+                continue;
+            };
+            entry.distinct = counts.len();
+            if entry.capped || self.sketch_size == 0 {
+                continue;
             }
+            let mut ranked: Vec<(String, u64)> = counts.into_iter().collect();
+            // Frequency first, then name, so the sketch is deterministic for
+            // the same data rather than dependent on iteration order.
+            ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            ranked.truncate(self.sketch_size);
+            entry.top_values = ranked;
         }
         (self.stats, self.total_rows)
     }
@@ -243,6 +294,20 @@ pub async fn persist_stats(
         {
             tracing::warn!(error = %e, attr_key = %key, "Failed to persist attribute scan stats");
         }
+        // The sketch is replaced wholesale, including with nothing: a key
+        // that grew past the cardinality cap since the last pass must stop
+        // being suggested rather than keep serving a stale list.
+        let values: Vec<(String, i64)> = s
+            .top_values
+            .iter()
+            .map(|(value, count)| (value.clone(), *count as i64))
+            .collect();
+        if let Err(e) = catalog
+            .replace_attribute_value_stats(tenant_id, dataset_id, signal, key, &values)
+            .await
+        {
+            tracing::warn!(error = %e, attr_key = %key, "Failed to persist attribute value sketch");
+        }
     }
 }
 
@@ -251,6 +316,95 @@ mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
+
+    /// Build a batch whose single `log_attributes` column holds one JSON
+    /// document per row.
+    fn attr_batch(docs: &[&str]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "log_attributes",
+            DataType::Utf8,
+            true,
+        )]));
+        let column = datafusion::arrow::array::StringArray::from(
+            docs.iter().map(|d| Some(*d)).collect::<Vec<_>>(),
+        );
+        RecordBatch::try_new(schema, vec![Arc::new(column)]).unwrap()
+    }
+
+    #[test]
+    fn the_sketch_ranks_values_by_frequency_and_is_bounded() {
+        let mut acc = AttrStatsAccumulator::new().with_sketch_size(2);
+        acc.push_batch(&attr_batch(&[
+            r#"{"http.route":"/orders"}"#,
+            r#"{"http.route":"/orders"}"#,
+            r#"{"http.route":"/orders"}"#,
+            r#"{"http.route":"/users"}"#,
+            r#"{"http.route":"/users"}"#,
+            r#"{"http.route":"/health"}"#,
+        ]));
+        let (stats, rows) = acc.finish();
+        assert_eq!(rows, 6);
+        let route = &stats["http.route"];
+        assert_eq!(route.distinct, 3);
+        assert_eq!(
+            route.top_values,
+            vec![("/orders".to_string(), 3), ("/users".to_string(), 2)],
+            "most frequent first, bounded by the sketch size"
+        );
+    }
+
+    #[test]
+    fn the_sketch_is_deterministic_for_equal_counts() {
+        let mut acc = AttrStatsAccumulator::new();
+        acc.push_batch(&attr_batch(&[
+            r#"{"k":"b"}"#,
+            r#"{"k":"a"}"#,
+            r#"{"k":"c"}"#,
+        ]));
+        let (stats, _) = acc.finish();
+        let values: Vec<&str> = stats["k"]
+            .top_values
+            .iter()
+            .map(|(v, _)| v.as_str())
+            .collect();
+        assert_eq!(
+            values,
+            vec!["a", "b", "c"],
+            "ties break by value, not by insertion order"
+        );
+    }
+
+    #[test]
+    fn a_disabled_sketch_still_counts_presence_and_cardinality() {
+        let mut acc = AttrStatsAccumulator::new().with_sketch_size(0);
+        acc.push_batch(&attr_batch(&[r#"{"k":"a"}"#, r#"{"k":"b"}"#]));
+        let (stats, _) = acc.finish();
+        assert_eq!(stats["k"].present_rows, 2);
+        assert_eq!(stats["k"].distinct, 2);
+        assert!(
+            stats["k"].top_values.is_empty(),
+            "a disabled sketch keeps nothing"
+        );
+    }
+
+    #[test]
+    fn a_key_past_the_cardinality_cap_keeps_no_sketch() {
+        // Once value tracking stops, the counts held are whatever arrived
+        // first; presenting those as "the top values" would be a confident
+        // wrong answer, so the key must carry no sketch at all.
+        let mut acc = AttrStatsAccumulator::new();
+        let docs: Vec<String> = (0..CARDINALITY_CAP + 10)
+            .map(|i| format!(r#"{{"id":"v{i}"}}"#))
+            .collect();
+        let refs: Vec<&str> = docs.iter().map(String::as_str).collect();
+        acc.push_batch(&attr_batch(&refs));
+        let (stats, _) = acc.finish();
+        assert!(stats["id"].capped);
+        assert!(
+            stats["id"].top_values.is_empty(),
+            "a runaway key is reported as uncovered, not partially suggested"
+        );
+    }
 
     #[test]
     fn analyzer_computes_presence_and_cardinality_and_ranks_candidates() {
@@ -357,6 +511,7 @@ mod tests {
                 present_rows: 80,
                 distinct: 5,
                 capped: false,
+                top_values: vec![("prod".to_string(), 60), ("staging".to_string(), 20)],
             },
         );
         super::persist_stats(&catalog, "t", "d", "metrics_gauge", &stats, 100).await;

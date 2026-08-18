@@ -564,6 +564,7 @@ mod tests {
             target_file_size_mb: 128,
             file_count_threshold: 10,
             max_input_file_size_kb: 65536,
+            value_sketch_size: 100,
             partition_lateness: std::time::Duration::from_secs(600),
             memory_limit_mb: 512,
             target_partitions: 1,

@@ -657,15 +657,26 @@ coverage descending, so the first screen is the fields most records carry.
 Values are answered in tiers:
 
 1. **A declared value set** — a registry enumeration, or one SignalDB itself
-   writes (`span.kind`, `status.code`). Exact, and free.
-2. **Nothing covers it.** The response returns no values, `cost.mode: "none"`,
+   writes (`span.kind`, `status.code`). Exact, free, and `approximate: false`.
+2. **A maintained value sketch** — the most frequent values with their counts,
+   recorded by the compactor's analyzer while it was already reading the data
+   for compaction. Still free (no data is read to answer you), but bounded and
+   therefore `approximate: true`, with `cost.as_of` giving its age. Values come
+   back with `origin: "statistics"`.
+3. **Nothing covers it.** The response returns no values, `cost.mode: "none"`,
    and a `hint` naming the query that *would* compute the answer by reading
    data. It does not scan behind your back.
-3. **You asked for the data-derived answer** with `"sample": true`. SignalDB
+4. **You asked for the data-derived answer** with `"sample": true`. SignalDB
    then runs exactly the aggregation the hint names — bounded by your window
    and `limit` — and reports `cost.mode: "sampled_scan"` with
    `window_scoped: true` and `sampled: true`. Values come back with counts and
    `origin: "sampled"`.
+
+A field can land in tier 3 for two different reasons, and both are honest
+rather than empty: the analyzer has not run over this tenant's data yet, or the
+field has more distinct values than the analyzer tracks (a request id, a URL
+with an id in it). In the second case a partial list would be a confident wrong
+answer — the top of a list that was never ranked — so no sketch is kept at all.
 
 ### Reading the cost
 
@@ -677,7 +688,21 @@ its trustworthiness are part of the answer:
 | `mode` | `metadata` (no data read), `sampled_scan` (data read, on request), `none` (not answered) |
 | `window_scoped` | whether your `range` narrowed the answer. The maintained statistics carry no time dimension, so a metadata-tier answer says `false` rather than pretending it did |
 | `sampled` | whether the answer is sampled and therefore possibly incomplete |
+| `approximate` | whether the answer is a bounded sketch of the most frequent values rather than the exact set. A declared value set is exact; a statistics- or scan-derived one is not |
 | `as_of` | how recent the statistics behind it are. `null` means none exist yet — on a tenant whose compactor has not run, `describe: fields` returns the declared fields only |
+
+**`mode` and `approximate` are independent, and the combination that matters is
+`mode: "metadata"` with `approximate: true`.** That is a sketch answer: it cost
+nothing (no data was read) *and* it is not the exact value set — the most
+frequent values, bounded, as of `as_of`. Cheap does not imply exact here. Read
+the two fields together:
+
+| `mode` | `approximate` | what you have |
+|---|---|---|
+| `metadata` | `false` | a declared value set — free and complete |
+| `metadata` | `true` | a maintained sketch — free, bounded, and dated; suggest it, do not count on it |
+| `sampled_scan` | `true` | a bounded read of your window, run because you asked |
+| `none` | `false` | no answer, with a `hint` naming the query that would produce one |
 
 ### What discovery deliberately does not do
 

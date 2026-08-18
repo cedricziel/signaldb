@@ -22,7 +22,7 @@ use common::auth::TenantContextExtractor;
 use common::discovery::{
     DEFAULT_FIELD_LIMIT, DEFAULT_VALUE_LIMIT, DiscoveredSource, DiscoveredValue, DiscoveryCost,
     MetadataKind, MetadataResult, ValueOrigin, intrinsic_values, latest_observation, merge_fields,
-    registry_values, signal_for_source,
+    registry_values, signal_for_source, sketch_values,
 };
 use common::query_ir::{Describe, DescribeTarget, Document, SourceRegistry};
 use common::schema::logical::LogicalSchema;
@@ -269,10 +269,46 @@ async fn values<S: RouterState>(
         });
     }
 
-    // 2. Nothing declares this field's values, and no maintained value
-    // statistics exist yet (see the sketch task in the change). Say so, and
-    // name the query that computes the answer — never scan behind the
-    // client's back.
+    // 2. The analyzer's value sketch: still no data read, but a bounded list
+    // of the most frequent values rather than the exact set, so the answer is
+    // marked approximate and dated.
+    let signal = signal_for_source(source)
+        .ok_or_else(|| ApiError::bad_request(format!("unknown query source '{source}'")))?;
+    let sketch = state
+        .catalog()
+        .get_attribute_value_stats(
+            &ctx.tenant_slug,
+            &ctx.dataset_slug,
+            signal,
+            field,
+            limit as i64,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            // A missing sketch is a normal state, not a failure: fall through
+            // to the honest "nothing covers this" rather than 500 a picker.
+            tracing::warn!(?error, "failed to read the attribute value sketch");
+            Vec::new()
+        });
+    if !sketch.is_empty() {
+        let as_of = sketch.iter().map(|s| s.updated_at.clone()).max();
+        let values = sketch_values(&sketch, limit);
+        let truncated = values.len() >= limit;
+        return Ok(MetadataResult {
+            kind: MetadataKind::Values,
+            sources: Vec::new(),
+            fields: Vec::new(),
+            values,
+            truncated,
+            cost: DiscoveryCost::statistics(as_of),
+            hint: None,
+        });
+    }
+
+    // 3. Nothing declares this field's values and no sketch covers it — the
+    // analyzer has not run, or the key's cardinality exceeded its cap and a
+    // partial list would mislead. Say so, and name the query that computes the
+    // answer, rather than scanning behind the client's back.
     let hint = value_query_hint(source, field, window, limit);
     if !describe.sample {
         return Ok(MetadataResult {
@@ -286,7 +322,7 @@ async fn values<S: RouterState>(
         });
     }
 
-    // 3. The client asked for the data-derived answer: run exactly the query
+    // 4. The client asked for the data-derived answer: run exactly the query
     // the hint names, bounded by the window and the limit, and say that the
     // answer came from reading data.
     let values = sampled_values(state, ctx, source, field, window, limit, now_ns).await?;
@@ -612,6 +648,104 @@ mod tests {
             .collect();
         assert!(values.contains(&"Server"), "got {values:?}");
         assert_eq!(body["metadata"]["cost"]["mode"], "metadata");
+    }
+
+    #[tokio::test]
+    async fn a_sketched_field_answers_from_statistics_without_reading_data() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .replace_attribute_value_stats(
+                "acme",
+                "default",
+                "logs",
+                "http.route",
+                &[
+                    ("/api/orders".to_string(), 900),
+                    ("/api/users".to_string(), 100),
+                ],
+            )
+            .await
+            .unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "logs",
+                serde_json::json!({"target": "values", "field": "http.route"}),
+            ),
+        )
+        .await;
+
+        // No querier is registered, so 200 means the sketch answered it.
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let values = body["metadata"]["values"].as_array().unwrap();
+        assert_eq!(values[0]["value"], "/api/orders");
+        assert_eq!(values[0]["count"], 900);
+        assert_eq!(values[0]["origin"], "statistics");
+        assert_eq!(body["metadata"]["cost"]["mode"], "metadata");
+        assert_eq!(
+            body["metadata"]["cost"]["approximate"], true,
+            "a bounded sketch is a suggestion, not the exact value set"
+        );
+        assert!(
+            !body["metadata"]["cost"]["as_of"].is_null(),
+            "an approximate answer must say how old it is"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_tenants_sketch_is_never_suggested() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .replace_attribute_value_stats(
+                "other",
+                "default",
+                "logs",
+                "http.route",
+                &[("/secret".to_string(), 5)],
+            )
+            .await
+            .unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "logs",
+                serde_json::json!({"target": "values", "field": "http.route"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["metadata"]["cost"]["mode"], "none");
+        assert!(
+            body["metadata"]["values"]
+                .as_array()
+                .is_none_or(|v| v.is_empty()),
+            "the answer must not cross tenants: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declared_value_set_is_exact_not_approximate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (_, body) = post(
+            &app,
+            describe(
+                "traces",
+                serde_json::json!({"target": "values", "field": "span.kind"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            body["metadata"]["cost"]["approximate"], false,
+            "the kinds SignalDB itself writes are the complete set"
+        );
     }
 
     #[tokio::test]

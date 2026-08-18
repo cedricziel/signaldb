@@ -292,9 +292,10 @@ registries, and the catalog's `attribute_stats` — without a Querier round-trip
 generalizing the pattern `/prometheus/api/v1/label_stats` already uses. Field
 discovery therefore stays available when query execution is saturated. Value
 suggestions prefer declared value sets (registry enumerations, span kind, status
-code); where none covers a field the response returns no values plus the query
-that would compute the answer, and only an explicit `"sample": true` runs that
-query. `GET /api/v1/query/sources` lists the tenant's signal sources from the
+code), then the compactor analyzer's bounded per-key value sketch in
+`attribute_value_stats` (free, but marked `approximate` and dated); where
+neither covers a field the response returns no values plus the query that would
+compute the answer, and only an explicit `"sample": true` runs that query. `GET /api/v1/query/sources` lists the tenant's signal sources from the
 table listing. Every response carries a `cost` object naming which tier answered,
 whether the answer is window-scoped, and how stale the statistics behind it are.
 

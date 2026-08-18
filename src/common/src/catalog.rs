@@ -356,6 +356,22 @@ impl Catalog {
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
 
+                // Value sketches (change: query-field-discovery): the bounded
+                // top values per key the analyzer observed, so discovery can
+                // suggest values without reading signal data.
+                let create_attribute_value_stats = r#"
+                CREATE TABLE IF NOT EXISTS attribute_value_stats (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    count BIGINT NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, attr_key, value)
+                )"#;
+                query(create_attribute_value_stats).execute(pool).await?;
+
                 // Tenant custom schema registries (change: schema-registry).
                 // The uploaded Weaver-model document is the source of truth;
                 // `resolved` caches the flattened definitions the resolver
@@ -649,6 +665,21 @@ impl Catalog {
                     PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
+
+                // Value sketches (change: query-field-discovery): see the
+                // SQLite branch.
+                let create_attribute_value_stats = r#"
+                CREATE TABLE IF NOT EXISTS attribute_value_stats (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    count BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, attr_key, value)
+                )"#;
+                query(create_attribute_value_stats).execute(pool).await?;
 
                 // Tenant custom schema registries (change: schema-registry).
                 query(
@@ -1599,6 +1630,14 @@ pub struct AttributeStatsRecord {
     pub updated_at: String,
 }
 
+/// One value of an attribute key, with how often the analyzer saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributeValueStat {
+    pub value: String,
+    pub count: i64,
+    pub updated_at: String,
+}
+
 impl AttributeStatsRecord {
     /// The fraction of scanned rows carrying this key, or `None` when the
     /// analyzer has seen no rows — the one number every consumer of these
@@ -1839,6 +1878,147 @@ impl Catalog {
                 .await?
                 .iter()
                 .map(record)
+                .collect()),
+        }
+    }
+
+    /// Replace one key's value sketch with the analyzer's latest observation.
+    ///
+    /// The analyzer sees the whole rewritten partition, so the new sketch
+    /// supersedes the old one wholesale; replacing rather than merging keeps a
+    /// value that has stopped occurring from lingering as a suggestion
+    /// forever. Passing an empty `values` clears the sketch, which is how a
+    /// key that grew past the cardinality cap stops being suggested.
+    pub async fn replace_attribute_value_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        attr_key: &str,
+        values: &[(String, i64)],
+    ) -> Result<(), sqlx::Error> {
+        let delete_sqlite = "DELETE FROM attribute_value_stats \
+             WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND attr_key = ?";
+        let delete_pg = "DELETE FROM attribute_value_stats \
+             WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3 AND attr_key = $4";
+        let insert_sqlite = r#"
+            INSERT INTO attribute_value_stats
+                (tenant_id, dataset_id, signal, attr_key, value, count, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        "#;
+        let insert_pg = r#"
+            INSERT INTO attribute_value_stats
+                (tenant_id, dataset_id, signal, attr_key, value, count, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        "#;
+        match self {
+            Catalog::Sqlite(pool) => {
+                let mut tx = pool.begin().await?;
+                query(delete_sqlite)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(attr_key)
+                    .execute(&mut *tx)
+                    .await?;
+                for (value, count) in values {
+                    query(insert_sqlite)
+                        .bind(tenant_id)
+                        .bind(dataset_id)
+                        .bind(signal)
+                        .bind(attr_key)
+                        .bind(value)
+                        .bind(count)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                tx.commit().await?;
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                query(delete_pg)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(attr_key)
+                    .execute(&mut *tx)
+                    .await?;
+                for (value, count) in values {
+                    query(insert_pg)
+                        .bind(tenant_id)
+                        .bind(dataset_id)
+                        .bind(signal)
+                        .bind(attr_key)
+                        .bind(value)
+                        .bind(count)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                tx.commit().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// One key's value sketch, most frequent first. Empty when the analyzer
+    /// keeps no sketch for the key — which discovery reports as "nothing
+    /// covers this field" rather than as "this field has no values".
+    pub async fn get_attribute_value_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        attr_key: &str,
+        limit: i64,
+    ) -> Result<Vec<AttributeValueStat>, sqlx::Error> {
+        let sql_sqlite = r#"
+            SELECT value, count, CAST(updated_at AS TEXT) AS updated_at
+            FROM attribute_value_stats
+            WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND attr_key = ?
+            ORDER BY count DESC, value ASC
+            LIMIT ?
+        "#;
+        let sql_pg = r#"
+            SELECT value, count, CAST(updated_at AS TEXT) AS updated_at
+            FROM attribute_value_stats
+            WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3 AND attr_key = $4
+            ORDER BY count DESC, value ASC
+            LIMIT $5
+        "#;
+        fn stat<R: Row>(row: &R) -> AttributeValueStat
+        where
+            for<'a> &'a str: sqlx::ColumnIndex<R>,
+            for<'a> String: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+            for<'a> i64: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+        {
+            AttributeValueStat {
+                value: row.get("value"),
+                count: row.get("count"),
+                updated_at: row.get("updated_at"),
+            }
+        }
+        match self {
+            Catalog::Sqlite(pool) => Ok(query(sql_sqlite)
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(attr_key)
+                .bind(limit)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(stat)
+                .collect()),
+            Catalog::Postgres(pool) => Ok(query(sql_pg)
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(attr_key)
+                .bind(limit)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(stat)
                 .collect()),
         }
     }
@@ -4574,6 +4754,82 @@ mod multi_tenancy_tests {
         let fake_hash = "nonexistent_hash";
         let result = catalog.validate_api_key(fake_hash).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn attribute_value_sketch_replaces_wholesale() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .replace_attribute_value_stats(
+                "t",
+                "d",
+                "logs",
+                "http.route",
+                &[("/orders".to_string(), 9), ("/users".to_string(), 3)],
+            )
+            .await
+            .unwrap();
+
+        let sketch = catalog
+            .get_attribute_value_stats("t", "d", "logs", "http.route", 10)
+            .await
+            .unwrap();
+        assert_eq!(sketch.len(), 2);
+        assert_eq!(sketch[0].value, "/orders", "most frequent first");
+        assert_eq!(sketch[0].count, 9);
+        assert!(!sketch[0].updated_at.is_empty());
+
+        // A later pass supersedes the earlier one rather than merging: a
+        // value that stopped occurring must stop being suggested.
+        catalog
+            .replace_attribute_value_stats(
+                "t",
+                "d",
+                "logs",
+                "http.route",
+                &[("/new".to_string(), 1)],
+            )
+            .await
+            .unwrap();
+        let sketch = catalog
+            .get_attribute_value_stats("t", "d", "logs", "http.route", 10)
+            .await
+            .unwrap();
+        assert_eq!(sketch.len(), 1);
+        assert_eq!(sketch[0].value, "/new");
+
+        // Clearing it is how a key past the cardinality cap stops being
+        // suggested at all.
+        catalog
+            .replace_attribute_value_stats("t", "d", "logs", "http.route", &[])
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .get_attribute_value_stats("t", "d", "logs", "http.route", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Another tenant's sketch is never visible.
+        catalog
+            .replace_attribute_value_stats(
+                "other",
+                "d",
+                "logs",
+                "http.route",
+                &[("/secret".to_string(), 5)],
+            )
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .get_attribute_value_stats("t", "d", "logs", "http.route", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

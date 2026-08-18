@@ -231,6 +231,10 @@ fn default_compactor_target_partitions() -> usize {
     1
 }
 
+fn default_value_sketch_size() -> usize {
+    100
+}
+
 fn default_max_partition_input_mb() -> u64 {
     2048
 }
@@ -469,6 +473,23 @@ pub struct CompactorConfig {
     #[serde(default = "default_max_partition_input_mb")]
     pub max_partition_input_mb: u64,
 
+    /// How many values per attribute key the analyzer keeps as a suggestion
+    /// sketch, for query discovery to serve without reading data.
+    ///
+    /// The analyzer already walks every attribute value to compute presence
+    /// and cardinality, so counting them costs the pass nothing extra; this
+    /// bounds only what is *persisted* — the top N values by frequency per
+    /// key. A key whose distinct values exceed the analyzer's cardinality cap
+    /// keeps no sketch at all: a partial list of a runaway key would be a
+    /// misleading suggestion, and discovery says "nothing covers this" instead.
+    ///
+    /// `0` disables value sketches entirely.
+    ///
+    /// Default: 100.
+    /// Env: SIGNALDB__COMPACTOR__VALUE_SKETCH_SIZE
+    #[serde(default = "default_value_sketch_size")]
+    pub value_sketch_size: usize,
+
     /// Retention enforcement configuration (Phase 3)
     /// Env: SIGNALDB__COMPACTOR__RETENTION__*
     #[serde(default)]
@@ -542,6 +563,7 @@ impl Default for CompactorConfig {
             memory_limit_mb: default_compactor_memory_limit_mb(),
             target_partitions: default_compactor_target_partitions(),
             max_partition_input_mb: default_max_partition_input_mb(),
+            value_sketch_size: default_value_sketch_size(),
             retention: RetentionConfig::default(),
             orphan_cleanup: OrphanCleanupConfig::default(),
             attr_promotion: AttrPromotionConfig::default(),

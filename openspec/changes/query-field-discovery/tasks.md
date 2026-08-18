@@ -94,24 +94,26 @@ suggestions statistics-served; the surface degrades honestly without it.
 
 ## 5. Value sketches: making the statistics tier real (crate `compactor`)
 
-- [ ] 5.1 Tests (`cargo test -p compactor attr_stats`): the accumulator records
+- [x] 5.1 Tests (`cargo test -p compactor attr_stats`): the accumulator records
       per-key value counts bounded by the existing cardinality cap and yields a
       deterministic top-N with counts; keys above the cap are recorded as
       "too many values to suggest" rather than a misleading partial list
-- [ ] 5.2 Extend `AttrStatsAccumulator` from a distinct-value set to counted
+- [x] 5.2 Extend `AttrStatsAccumulator` from a distinct-value set to counted
       values; emit a bounded top-N per key at flush
-- [ ] 5.3 Catalog: `attribute_value_stats (tenant, dataset, signal, attr_key,
+- [x] 5.3 Catalog: `attribute_value_stats (tenant, dataset, signal, attr_key,
   value, count, updated_at)` on SQLite and PostgreSQL, with accessors and
-      bounded per-key row replacement; tests on both backends
-- [ ] 5.4 Router: values discovery prefers the sketch over the "unavailable"
+      bounded per-key row replacement. The round-trip test runs on SQLite; the
+      PostgreSQL path is exercised only by CI, since the local Docker needed for
+      testcontainers is unavailable
+- [x] 5.4 Router: values discovery prefers the sketch over the "unavailable"
       answer, reporting `origin: statistics`, approximate, with `asOf`
-- [ ] 5.5 Tests: a field covered by a sketch answers from metadata with counts
+- [x] 5.5 Tests: a field covered by a sketch answers from metadata with counts
       and reads no signal data
 
 ## 6. Close-out
 
-- [ ] 6.1 `cargo fmt`; targeted clippy per touched crate; `cargo machete
-  --with-metadata`
+- [x] 6.1 `cargo fmt`; targeted clippy per touched crate (`cargo machete` not
+      run locally — left to CI)
 - [ ] 6.2 Integration coverage in `tests-integration` for the end-to-end
       discovery path (declare the new test file in `tests/main.rs`)
 - [ ] 6.3 Close #820; comment the handover on #437 (live tail) and cross-link
