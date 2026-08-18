@@ -45,7 +45,6 @@ pub struct SelectorPopup {
     loading: bool,
 }
 
-#[allow(dead_code)]
 impl SelectorPopup {
     /// Create a new empty selector with the given title.
     pub fn new(title: &str) -> Self {

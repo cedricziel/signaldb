@@ -200,7 +200,7 @@ impl QueryArgs {
             request,
         )
         .await?;
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        crate::commands::print_json(&response)?;
         Ok(())
     }
 

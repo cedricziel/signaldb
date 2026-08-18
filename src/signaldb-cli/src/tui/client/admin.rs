@@ -22,6 +22,17 @@ pub enum AdminClientError {
     ApiError(String),
 }
 
+/// Serialize `value` to JSON and return it as an array, or an empty `Vec`
+/// if serialization fails or the result isn't a JSON array. Matches on the
+/// owned `Value::Array` variant to move its elements out instead of cloning
+/// them out of a borrowed slice.
+fn to_json_array<T: serde::Serialize>(value: &T) -> Vec<serde_json::Value> {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::Array(items)) => items,
+        _ => Vec::new(),
+    }
+}
+
 /// HTTP admin API client wrapper
 pub struct AdminClient {
     client: Client,
@@ -80,10 +91,7 @@ impl AdminClient {
             .map_err(|e| self.map_error(&e))?;
 
         let body = response.into_inner();
-        Ok(serde_json::to_value(&body.tenants)
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default())
+        Ok(to_json_array(&body.tenants))
     }
 
     /// Create a new tenant
@@ -174,10 +182,7 @@ impl AdminClient {
             .map_err(|e| self.map_error(&e))?;
 
         let body = response.into_inner();
-        Ok(serde_json::to_value(&body.api_keys)
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default())
+        Ok(to_json_array(&body.api_keys))
     }
 
     /// Create a new API key for a tenant carrying exactly `scopes`
@@ -239,10 +244,7 @@ impl AdminClient {
             .map_err(|e| self.map_error(&e))?;
 
         let body = response.into_inner();
-        Ok(serde_json::to_value(&body.datasets)
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default())
+        Ok(to_json_array(&body.datasets))
     }
 
     /// Create a new dataset for a tenant

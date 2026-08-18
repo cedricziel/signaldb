@@ -11,7 +11,6 @@ use crate::tui::widgets::text_input::{TextInput, TextInputAction};
 
 /// Commands that can be executed from the palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum PaletteCommand {
     SetTenant(String),
     SetDataset(String),
@@ -23,7 +22,6 @@ pub enum PaletteCommand {
 
 /// Actions produced by the command palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum PaletteAction {
     Execute(PaletteCommand),
     Cancelled,
@@ -31,7 +29,6 @@ pub enum PaletteAction {
 }
 
 /// Vim-style command palette with prefix matching and tab completion.
-#[allow(dead_code)]
 pub struct CommandPalette {
     input: TextInput,
     completions: Vec<String>,
@@ -42,7 +39,6 @@ pub struct CommandPalette {
 
 impl CommandPalette {
     /// Create a new command palette.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             input: TextInput::new(),
@@ -54,7 +50,6 @@ impl CommandPalette {
     }
 
     /// Clear input and completions.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.input.clear();
         self.completions.clear();
@@ -62,19 +57,16 @@ impl CommandPalette {
     }
 
     /// Set available tenants for completion.
-    #[allow(dead_code)]
     pub fn set_available_tenants(&mut self, tenants: Vec<String>) {
         self.available_tenants = tenants;
     }
 
     /// Set available datasets for completion.
-    #[allow(dead_code)]
     pub fn set_available_datasets(&mut self, datasets: Vec<String>) {
         self.available_datasets = datasets;
     }
 
     /// Handle key events and return action.
-    #[allow(dead_code)]
     pub fn handle_key(&mut self, key: KeyEvent) -> PaletteAction {
         match key.code {
             KeyCode::Enter => {
@@ -138,7 +130,6 @@ impl CommandPalette {
     }
 
     /// Render the command palette at the bottom of the area.
-    #[allow(dead_code)]
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         // Render completions popup above input if they exist
         if !self.completions.is_empty() {

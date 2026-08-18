@@ -503,7 +503,7 @@ impl TableAction {
                     .map_err(|e| anyhow::Error::new(e).context("list_tenant_tables failed"))?
                     .into_inner();
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    crate::commands::print_json(&v)?;
                 } else {
                     println!("{}", format_table_list(&v));
                 }

@@ -1,9 +1,8 @@
 //! Metrics tab: structured metric explorer with sparkline visualization.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use arrow::array::{Array, Float64Array, Int64Array, StringArray, UInt64Array};
+use arrow::array::StringArray;
 use arrow::record_batch::RecordBatch;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
@@ -19,6 +18,7 @@ use crate::tui::client::models::{MetricFilters, MetricGroupBy, MetricNameInfo, M
 use crate::tui::components::logs::log_table::{LogData, LogTable};
 use crate::tui::components::logs::query_bar::{QueryBar, QueryBarAction};
 use crate::tui::components::selector::{SelectorAction, SelectorItem, SelectorPopup};
+use crate::tui::format::extract_f64;
 use crate::tui::state::AppState;
 use crate::tui::widgets::json_viewer::render_json_tree;
 use crate::tui::widgets::sparkline::scale_to_u64;
@@ -1193,30 +1193,6 @@ fn extract_sparkline_data(batches: &[RecordBatch]) -> BTreeMap<String, Vec<f64>>
     }
 
     groups
-}
-
-fn extract_f64(col: &Arc<dyn Array>, row: usize) -> Option<f64> {
-    if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
-        if arr.is_null(row) {
-            None
-        } else {
-            Some(arr.value(row))
-        }
-    } else if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
-        if arr.is_null(row) {
-            None
-        } else {
-            Some(arr.value(row) as f64)
-        }
-    } else if let Some(arr) = col.as_any().downcast_ref::<UInt64Array>() {
-        if arr.is_null(row) {
-            None
-        } else {
-            Some(arr.value(row) as f64)
-        }
-    } else {
-        None
-    }
 }
 
 fn render_sparkline_panel(frame: &mut Frame, area: Rect, data: &BTreeMap<String, Vec<f64>>) {

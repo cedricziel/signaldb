@@ -281,12 +281,12 @@ impl AppState {
             Permission::Admin { .. } | Permission::Unknown => {}
         }
 
-        self.permission = permission.clone();
-        self.available_tabs = match permission {
+        self.available_tabs = match &permission {
             Permission::Admin { .. } => Tab::all(),
             Permission::Tenant { .. } => Tab::non_admin(),
             Permission::Unknown => Tab::non_admin(),
         };
+        self.permission = permission;
 
         // If current tab is not available, switch to Dashboard
         if !self.available_tabs.contains(&self.active_tab) {
