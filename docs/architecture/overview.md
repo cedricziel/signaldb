@@ -285,6 +285,19 @@ planning (#811/#813), which makes "absent from this window" indistinguishable
 from "not a field" until the attribute registry lands. See
 [the Query IR reference](../users/querying-ir.md).
 
+**Query discovery** (`src/router/src/endpoints/discovery.rs`): a document whose
+terminal stage is `describe` declares the `metadata` envelope and is answered in
+the Router — from `LogicalSchema::core()` (in process), the tenant's schema
+registries, and the catalog's `attribute_stats` — without a Querier round-trip,
+generalizing the pattern `/prometheus/api/v1/label_stats` already uses. Field
+discovery therefore stays available when query execution is saturated. Value
+suggestions prefer declared value sets (registry enumerations, span kind, status
+code); where none covers a field the response returns no values plus the query
+that would compute the answer, and only an explicit `"sample": true` runs that
+query. `GET /api/v1/query/sources` lists the tenant's signal sources from the
+table listing. Every response carries a `cost` object naming which tier answered,
+whether the answer is window-scoped, and how stale the statistics behind it are.
+
 **Admin API Endpoints** (requires `admin_api_key`):
 
 | Endpoint                              | Description            |

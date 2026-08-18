@@ -1594,6 +1594,9 @@ pub struct AttributeStatsRecord {
     /// Consecutive analyzer cycles this key scored above the promotion
     /// threshold (hysteresis state for auto-promotion, #734).
     pub promote_streak: i64,
+    /// When the analyzer last wrote this row. Discovery reports it so a
+    /// client can see how stale a statistics-derived answer is.
+    pub updated_at: String,
 }
 
 impl AttributeStatsRecord {
@@ -1784,7 +1787,7 @@ impl Catalog {
         let sql_sqlite = r#"
             SELECT tenant_id, dataset_id, signal, attr_key, present_rows,
                    total_rows, distinct_estimate, capped, query_hits,
-                   promote_streak
+                   promote_streak, CAST(updated_at AS TEXT) AS updated_at
             FROM attribute_stats
             WHERE tenant_id = ? AND dataset_id = ? AND signal = ?
             ORDER BY attr_key
@@ -1792,7 +1795,7 @@ impl Catalog {
         let sql_pg = r#"
             SELECT tenant_id, dataset_id, signal, attr_key, present_rows,
                    total_rows, distinct_estimate, capped, query_hits,
-                   promote_streak
+                   promote_streak, CAST(updated_at AS TEXT) AS updated_at
             FROM attribute_stats
             WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3
             ORDER BY attr_key
@@ -1815,6 +1818,7 @@ impl Catalog {
                 capped: row.get("capped"),
                 query_hits: row.get("query_hits"),
                 promote_streak: row.get("promote_streak"),
+                updated_at: row.get("updated_at"),
             }
         }
         match self {

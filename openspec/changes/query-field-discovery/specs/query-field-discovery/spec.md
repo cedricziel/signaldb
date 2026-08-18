@@ -59,6 +59,12 @@ dispatch a query for execution over stored signal data.
 - **THEN** the response is produced without executing a query over the source's
   stored signal data
 
+> Verification note: this scenario is checked against a deployment with **no
+> query executor reachable at all**, so a successful response is positive
+> evidence that no data was read — a request that tried would fail. Do not
+> "fix" that fixture by giving it a querier: a passing test would then no
+> longer distinguish "answered from metadata" from "quietly scanned".
+
 #### Scenario: Discovery survives a busy query path
 
 - **WHEN** query execution capacity is exhausted
@@ -175,6 +181,12 @@ data.
 
 - **WHEN** a client without the source's read scope opts into the sampled path
 - **THEN** the request is rejected before any data is read
+
+> Verification note: assert the rejection is the authorization outcome, not
+> merely a non-success — against a deployment with no reachable query executor,
+> a request that got past the scope check would fail as unavailable instead.
+> Distinguishing the two is the point of the scenario: "refused" and
+> "authorized, attempted, then failed" must not look alike.
 
 ### Requirement: Signal source discovery
 

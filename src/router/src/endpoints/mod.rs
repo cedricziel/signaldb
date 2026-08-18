@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod api_error;
+pub mod discovery;
 pub mod flight;
 mod flight_decode;
 pub mod logql;

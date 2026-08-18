@@ -102,6 +102,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::tempo::search_tag_values_v2,
         // Native Query IR
         crate::endpoints::query::query_ir,
+        crate::endpoints::discovery::query_sources,
         // Prometheus-compatible metrics query endpoints (PromQL)
         crate::endpoints::promql::query,
         crate::endpoints::promql::query_range,
@@ -208,6 +209,16 @@ impl Modify for SecurityAddon {
         crate::endpoints::query::QueryIrRequest,
         crate::endpoints::query::QueryRange,
         crate::endpoints::query::QueryIrResponse,
+        common::discovery::MetadataResult,
+        common::discovery::MetadataKind,
+        common::discovery::DiscoveredField,
+        common::discovery::DiscoveredValue,
+        common::discovery::DiscoveredSource,
+        common::discovery::DiscoveryCost,
+        common::discovery::CostMode,
+        common::discovery::FieldOrigin,
+        common::discovery::ValueOrigin,
+        common::discovery::CardinalityEstimate,
         crate::endpoints::query::ResolvedWindow,
         crate::endpoints::query::ResultColumn,
         crate::endpoints::query::ResultSeries,
@@ -363,6 +374,8 @@ mod tests {
         "/api/v1/schemas/available",
         // endpoints/query.rs, mounted at /api/v1
         "/api/v1/query",
+        // endpoints/discovery.rs, mounted alongside it
+        "/api/v1/query/sources",
         // endpoints/management.rs, mounted at /api/v1/manage
         "/api/v1/manage/tenants",
         "/api/v1/manage/tenants/{tenant_id}/datasets",
@@ -617,6 +630,7 @@ mod tests {
             ("/pyroscope/profile-types", "get"),
             ("/api/profiles/trace/{trace_id}", "get"),
             ("/api/v1/query", "post"),
+            ("/api/v1/query/sources", "get"),
             ("/api/v1/whoami", "get"),
             ("/api/v1/admin/tenants/{tenant_id}/api-keys", "post"),
             ("/api/v1/admin/tenants/{tenant_id}/datasets", "post"),

@@ -488,6 +488,96 @@ where
     }
 }
 
+/// Parameters for `discover_fields`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DiscoverFieldsParams {
+    /// Signal source: `logs` (default), `traces`, `profiles`, `metrics`, or
+    /// `metrics_histogram`.
+    #[serde(default = "default_discovery_source")]
+    source: String,
+    /// Range start: RFC3339, a relative anchor like `now-1h` (default), or
+    /// epoch nanoseconds.
+    #[serde(default = "default_discovery_from")]
+    from: String,
+    /// Range end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// Maximum fields to return.
+    #[serde(default)]
+    limit: Option<u64>,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+/// Parameters for `discover_field_values`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DiscoverFieldValuesParams {
+    /// Signal source the field belongs to. Defaults to `logs`.
+    #[serde(default = "default_discovery_source")]
+    source: String,
+    /// The logical field to suggest values for, as a dotted OTel name
+    /// (`http.route`, `span.kind`).
+    field: String,
+    /// Range start: RFC3339, `now-1h` (default), or epoch nanoseconds.
+    #[serde(default = "default_discovery_from")]
+    from: String,
+    /// Range end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// Maximum values to return.
+    #[serde(default)]
+    limit: Option<u64>,
+    /// Read data to answer when no declared value set or maintained statistics
+    /// cover the field. Leave false (the default) to be told what would answer
+    /// it instead of paying for a scan.
+    #[serde(default)]
+    sample: bool,
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+/// Parameters for `discover_sources`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DiscoverSourcesParams {
+    /// Dataset to query. Omit to use the session's default dataset.
+    #[serde(default)]
+    dataset: Option<String>,
+}
+
+fn default_discovery_source() -> String {
+    "logs".to_string()
+}
+
+fn default_discovery_from() -> String {
+    "now-1h".to_string()
+}
+
+fn default_discovery_to() -> String {
+    "now".to_string()
+}
+
+/// The IR document for one `describe` request, built exactly as the Query IR
+/// reference documents it.
+fn describe_document(
+    source: &str,
+    from: &str,
+    to: &str,
+    stage: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "irVersion": 4,
+        "from": source,
+        "range": { "from": from, "to": to },
+        "result": "metadata",
+        "pipeline": [ { "describe": stage } ]
+    })
+}
+
 /// Parameters for `resolve_attribute`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1366,6 +1456,85 @@ impl McpServer {
                 .map_err(|e| map_sdk_err(e, "search_logs"))?;
             json_result(&resp.into_inner())
         }
+    }
+
+    #[tool(
+        description = "List the queryable fields of a signal source, as logical dotted OTel names with their canonical type. Answered from the schema registry and maintained statistics — it reads no signal data — so call it freely before building a `query_ir` document. Each field carries `origin` (declared/registry/observed), and where statistics exist, `coverage` (the fraction of records carrying it) and an approximate `cardinality`. The response's `cost.as_of` says how recent those statistics are; `cost.window_scoped: false` means the range did not narrow the answer.",
+        annotations(read_only_hint = true)
+    )]
+    async fn discover_fields(
+        &self,
+        Parameters(p): Parameters<DiscoverFieldsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mut stage = serde_json::json!({ "target": "fields" });
+        if let Some(limit) = p.limit {
+            stage["limit"] = serde_json::json!(limit);
+        }
+        let document = describe_document(&p.source, &p.from, &p.to, stage);
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
+            .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let resp = client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "discover_fields"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Suggest values for one logical field. A declared value set (a registry enumeration, or span kind / status code) is returned exactly and reads no data. When nothing covers the field the result has no values, `cost.mode: \"none\"`, and a `hint` naming the query that would compute the answer — pass `sample: true` only if you want that query run, which reads data bounded by the range and limit and reports `cost.mode: \"sampled_scan\"`.",
+        annotations(read_only_hint = true)
+    )]
+    async fn discover_field_values(
+        &self,
+        Parameters(p): Parameters<DiscoverFieldValuesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if p.field.trim().is_empty() {
+            return Err(ErrorData::invalid_params(
+                "discover_field_values: `field` must name a logical field".to_string(),
+                None,
+            ));
+        }
+        let mut stage = serde_json::json!({ "target": "values", "field": p.field });
+        if let Some(limit) = p.limit {
+            stage["limit"] = serde_json::json!(limit);
+        }
+        if p.sample {
+            stage["sample"] = serde_json::json!(true);
+        }
+        let document = describe_document(&p.source, &p.from, &p.to, stage);
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
+            .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let resp = client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "discover_field_values"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "List the signal sources available to your tenant (`logs`, `traces`, `profiles`, `metrics`, `metrics_histogram`) with whether each is queryable. Use it to pick a valid `from` for a `query_ir` document or a `discover_fields` call.",
+        annotations(read_only_hint = true)
+    )]
+    async fn discover_sources(
+        &self,
+        Parameters(p): Parameters<DiscoverSourcesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let resp = client
+            .query_sources()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "discover_sources"))?;
+        json_result(&resp.into_inner())
     }
 
     #[tool(
@@ -3328,6 +3497,9 @@ mod tests {
             "get_trace",
             "discover_attributes",
             "discover_metrics",
+            "discover_fields",
+            "discover_field_values",
+            "discover_sources",
             "query_metrics",
             "search_logs",
             "query_ir",
@@ -3345,6 +3517,34 @@ mod tests {
         ] {
             assert!(router.has_route(name), "tool `{name}` must be registered");
         }
+    }
+
+    /// Discovery must not become a way to schedule scans by accident: the
+    /// value tool has to say that reading data is opt-in, and the field tool
+    /// has to say that it reads none.
+    #[test]
+    fn discovery_tool_descriptions_state_what_they_cost() {
+        let tools = McpServer::tool_router().list_all();
+        let describe = |name: &str| -> String {
+            tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("tool `{name}` is listed"))
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let fields = describe("discover_fields");
+        assert!(
+            fields.contains("reads no signal data"),
+            "`discover_fields` must say it is free: {fields}"
+        );
+        let values = describe("discover_field_values");
+        assert!(
+            values.contains("sample: true") && values.contains("reads data"),
+            "`discover_field_values` must say reading data is opt-in: {values}"
+        );
     }
 
     /// The schema tools exist so a model looks up meaning before querying;

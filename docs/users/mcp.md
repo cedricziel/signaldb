@@ -36,6 +36,9 @@ these:
 | `get_profile`              | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                                                  |
 | `discover_attributes`      | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels), `profiles` (Pyroscope labels). |
 | `discover_metrics`         | List the distinct metric names visible to your tenant.                                                                                                                                         |
+| `discover_fields`          | The queryable fields of a signal source, as logical dotted OTel names with type, `origin`, coverage and approximate cardinality. Answered from the schema registry and maintained statistics — reads no signal data. |
+| `discover_field_values`    | Value suggestions for one field. Exact and free for a declared value set; otherwise it names the query that would answer it, and only `sample: true` runs that query.                            |
+| `discover_sources`         | The signal sources available to your tenant, with whether each is queryable.                                                                                                                   |
 | `discover_profile_types`   | List the Pyroscope profile types with data for your tenant (e.g. CPU, heap).                                                                                                                   |
 | `query_metrics`            | PromQL query over your tenant's metrics (native Prometheus result); instant by default, or a range query when `start`/`end` (and optionally `step`) are given.                                 |
 | `search_logs`              | LogQL query over your tenant's logs (native Loki result); instant or range, same as `query_metrics`.                                                                                           |
@@ -475,11 +478,25 @@ The same discovery is available outside an agent session, via
 `signaldb-sdk` like every other CLI capability:
 
 ```bash
+# Native surface (Query IR, logical dotted names, no scan)
+signaldb-cli discover sources
+signaldb-cli discover fields --source logs
+signaldb-cli discover values --source traces --field span.kind
+signaldb-cli discover values --source traces --field http.route --sample
+
+# Compatibility-dialect view (Tempo tags, Loki/Prometheus labels)
 signaldb-cli discover attributes --signal traces --tag service.name
 signaldb-cli discover attributes --signal logs
 signaldb-cli discover attributes --signal metrics --tag job
 signaldb-cli discover metrics
 ```
+
+`discover fields`/`values`/`sources` are the native surface: they speak the same
+logical names as a Query IR document and are answered from metadata rather than
+by scanning. `discover values` reads data only when you pass `--sample`, and the
+response says so — without it you are told what would answer the question
+instead. `discover attributes` remains the dialect-shaped view, for parity with
+what Grafana sees. See [the Query IR reference](querying-ir.md#discovery-what-can-i-query).
 
 Schema-registry lookup and custom-registry management mirror the schema tools
 (reads need a key with `schema:read`, mutations `schema:write`):
