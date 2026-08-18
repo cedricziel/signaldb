@@ -164,7 +164,7 @@ async fn test_wal_processor_integration() -> Result<()> {
     wal.flush().await?;
 
     // Verify we can get stats from processor
-    let stats = processor.get_stats();
+    let stats = processor.get_stats().await;
     assert_eq!(stats.active_writers, 0);
 
     // Force-commit the pending entry (the read-your-writes drain) and require

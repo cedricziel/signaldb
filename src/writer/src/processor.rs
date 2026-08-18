@@ -22,6 +22,15 @@ const MAX_ENTRIES_PER_COMMIT: usize = 1024;
 /// marked processed so it stops blocking ingestion.
 const MAX_ENTRY_FAILURES: u32 = 10;
 
+/// How many groups commit at once in one drain cycle.
+///
+/// Each in-flight commit holds a Parquet write plus an Iceberg/catalog round
+/// trip, so this bounds concurrent object-store and catalog load rather than
+/// CPU. High enough that a few slow tenants cannot serialize the rest,
+/// low enough not to stampede the catalog — whose contention is what made
+/// commits slow in the first place (#959/#895).
+const COMMIT_CONCURRENCY: usize = 8;
+
 /// A WAL entry's W3C trace context (`traceparent`, `tracestate`) as carried
 /// from the originating ingest request.
 type EntryTraceContext = (Option<String>, Option<String>);
@@ -33,6 +42,19 @@ struct TableBatch {
     wal: Arc<Wal>,
     entries: Vec<(Uuid, RecordBatch)>,
     trace_contexts: Vec<EntryTraceContext>,
+}
+
+/// What one group's commit attempt did, collected from the concurrent fan-out
+/// so the cycle can report its aggregate without shared counters.
+#[derive(Debug)]
+enum GroupOutcome {
+    /// Committed, or failed in a way the background loop absorbs.
+    Committed,
+    /// Left for a later tick by the coalescing floor.
+    Deferred,
+    /// A group covered by a flush scope did not commit, so a read-your-writes
+    /// caller must be told its drain failed.
+    ForcedCommitFailed,
 }
 
 /// Grouping key for one processing cycle: which WAL the entries live in, then
@@ -168,16 +190,31 @@ pub struct WalProcessor {
     wal_manager: Arc<WalManager>,
     catalog_manager: Arc<CatalogManager>,
     object_store: Arc<dyn ObjectStore>,
-    // Cache of table writers per tenant/table combination
-    table_writers: HashMap<String, IcebergTableWriter>,
+    /// Cache of table writers per tenant/table combination.
+    ///
+    /// Two levels of locking, because groups commit concurrently (#1306): the
+    /// outer lock is held only to look a writer up or insert one, the inner
+    /// one for the length of that table's commit. Different tables therefore
+    /// commit in parallel while one table's commits stay serialized — which
+    /// they must be, since a commit reloads the table and rewrites the
+    /// idempotency marker.
+    table_writers: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<IcebergTableWriter>>>>,
     /// Consecutive processing failures per entry. Entries that keep
     /// failing are dead-lettered so one poison entry cannot wedge the
     /// processing loop forever (in-memory: a restart grants a fresh set
     /// of attempts, which is fine — dead-lettering only needs to happen
     /// eventually).
-    entry_failures: HashMap<Uuid, u32>,
+    entry_failures: tokio::sync::Mutex<HashMap<Uuid, u32>>,
     /// Commit-coalescing gate per `(tenant, dataset, table)`.
-    coalescer: CommitCoalescer,
+    coalescer: tokio::sync::Mutex<CommitCoalescer>,
+    /// Group commits currently in flight, and the high-water mark across the
+    /// processor's life. Test-only: the point of the concurrent drain is that
+    /// groups overlap, and overlap is a property of control flow that wall
+    /// clock can only hint at.
+    #[cfg(test)]
+    in_flight_commits: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    peak_concurrent_commits: std::sync::atomic::AtomicUsize,
 }
 
 impl WalProcessor {
@@ -207,9 +244,13 @@ impl WalProcessor {
             wal_manager,
             catalog_manager,
             object_store,
-            table_writers: HashMap::new(),
-            entry_failures: HashMap::new(),
-            coalescer: CommitCoalescer::new(writer_config),
+            table_writers: tokio::sync::Mutex::new(HashMap::new()),
+            entry_failures: tokio::sync::Mutex::new(HashMap::new()),
+            coalescer: tokio::sync::Mutex::new(CommitCoalescer::new(writer_config)),
+            #[cfg(test)]
+            in_flight_commits: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            peak_concurrent_commits: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -440,102 +481,168 @@ impl WalProcessor {
         // finished, which only biases toward committing marginally sooner next
         // cycle (never later) — harmless.
         let now = Instant::now();
-        let mut deferred_groups: u64 = 0;
-        // When this drain is forced (explicit force-commit or a Flush marker),
-        // a group that fails to commit must surface as an error so the caller
-        // does not believe its read-your-writes drain succeeded.
-        let mut forced_commit_failed = false;
-        for (
-            (_, tenant_id, dataset_id, table_name),
-            TableBatch {
-                wal,
-                entries,
-                trace_contexts,
-            },
-        ) in grouped_entries
-        {
-            let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 
-            // A group is force-committed only when a flush scope (explicit
-            // request or a Flush marker) covers its tenant/dataset; unrelated
-            // tenants keep normal coalescing so one flush can't amplify their
-            // commits.
-            let forced = flush_scopes
-                .iter()
-                .any(|s| s.matches(&tenant_id, &dataset_id));
-
-            // Coalescing floor: defer this group's commit unless forced, its
-            // rows have reached the ceiling, or its interval has elapsed. The
-            // entries stay unprocessed (durable in the WAL) and are revisited
-            // on a later tick — capping commit rate at ~1 per interval per
-            // table regardless of ingest rate (#888).
-            let pending_rows: usize = entries.iter().map(|(_, b)| b.num_rows()).sum();
-            if !forced && !self.coalescer.should_commit(&writer_key, pending_rows, now) {
-                deferred_groups += 1;
-                tracing::debug!(
-                    tenant_id = %tenant_id,
-                    table_name = %table_name,
-                    pending_rows,
-                    "Deferring commit: below coalescing floor"
-                );
-                continue;
-            }
-
-            let group_ids: Vec<Uuid> = entries.iter().map(|(id, _)| *id).collect();
-            // Anti-loop guard (#760): suppression is per group because the
-            // loop interleaves tenants — only the _system tenant's batches
-            // must not be re-instrumented.
-            let suppress = common::self_monitoring::is_self_monitoring_tenant(&tenant_id);
-            let committed = common::self_monitoring::maybe_suppress_self_telemetry(suppress, async {
-                match self
-                    .process_batch_for_table(
-                        &wal,
-                        &tenant_id,
-                        &dataset_id,
-                        &table_name,
+        // Groups commit concurrently. The per-tenant WAL fanout (#932)
+        // isolated failures but not latency: committing one group at a time
+        // meant a tenant whose Iceberg round trip took tens of seconds delayed
+        // every other tenant's commit in the same cycle (#1306). Groups are
+        // independent — separate WAL entries, separate tables, per-table
+        // writer locks — so the cycle now costs the slowest single group
+        // rather than the sum of all of them.
+        use futures::StreamExt as _;
+        // Shared reborrow: the closure is FnMut, so it cannot capture the
+        // `&mut self` this method holds. Every method it calls now takes
+        // `&self` and reaches its state through interior mutability.
+        let this = &*self;
+        let outcomes: Vec<GroupOutcome> = futures::stream::iter(grouped_entries)
+            .map(
+                |(
+                    (_, tenant_id, dataset_id, table_name),
+                    TableBatch {
+                        wal,
                         entries,
                         trace_contexts,
-                    )
-                    .await
-                {
-                    Ok(processed_ids) => {
-                        // Restart this group's coalescing interval only on a
-                        // real commit.
-                        self.coalescer.record_commit(&writer_key, now);
-                        for entry_id in &processed_ids {
-                            self.entry_failures.remove(entry_id);
+                    },
+                )| {
+                    let flush_scopes = &flush_scopes;
+                    async move {
+                        let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
+
+                        // A group is force-committed only when a flush scope
+                        // (explicit request or a Flush marker) covers its
+                        // tenant/dataset; unrelated tenants keep normal
+                        // coalescing so one flush can't amplify their commits.
+                        let forced = flush_scopes
+                            .iter()
+                            .any(|s| s.matches(&tenant_id, &dataset_id));
+
+                        // Coalescing floor: defer this group's commit unless
+                        // forced, its rows have reached the ceiling, or its
+                        // interval has elapsed. The entries stay unprocessed
+                        // (durable in the WAL) and are revisited on a later
+                        // tick — capping commit rate at ~1 per interval per
+                        // table regardless of ingest rate (#888).
+                        let pending_rows: usize = entries.iter().map(|(_, b)| b.num_rows()).sum();
+                        if !forced
+                            && !this
+                                .coalescer
+                                .lock()
+                                .await
+                                .should_commit(&writer_key, pending_rows, now)
+                        {
+                            tracing::debug!(
+                                tenant_id = %tenant_id,
+                                table_name = %table_name,
+                                pending_rows,
+                                "Deferring commit: below coalescing floor"
+                            );
+                            return GroupOutcome::Deferred;
                         }
-                        tracing::debug!(
-                            entry_count = processed_ids.len(),
-                            tenant_id = %tenant_id,
-                            table_name = %table_name,
-                            "Processed and marked entries for table"
-                        );
-                        true
-                    }
-                    Err(e) => {
-                        tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %e, "Failed to process batch for table");
-                        for entry_id in group_ids {
-                            self.record_entry_failure(
-                                &wal,
-                                entry_id,
-                                &tenant_id,
-                                &dataset_id,
-                                &table_name,
-                            )
-                            .await;
+
+                        let group_ids: Vec<Uuid> = entries.iter().map(|(id, _)| *id).collect();
+                        // Anti-loop guard (#760): suppression is per group
+                        // because groups interleave tenants — only the _system
+                        // tenant's batches must not be re-instrumented.
+                        let suppress =
+                            common::self_monitoring::is_self_monitoring_tenant(&tenant_id);
+                        let started = Instant::now();
+                        #[cfg(test)]
+                        {
+                            use std::sync::atomic::Ordering;
+                            let now = this.in_flight_commits.fetch_add(1, Ordering::SeqCst) + 1;
+                            this.peak_concurrent_commits.fetch_max(now, Ordering::SeqCst);
                         }
-                        false
+                        let committed = common::self_monitoring::maybe_suppress_self_telemetry(
+                            suppress,
+                            async {
+                                match this
+                                    .process_batch_for_table(
+                                        &wal,
+                                        &tenant_id,
+                                        &dataset_id,
+                                        &table_name,
+                                        entries,
+                                        trace_contexts,
+                                    )
+                                    .await
+                                {
+                                    Ok(processed_ids) => {
+                                        // Restart this group's coalescing
+                                        // interval only on a real commit.
+                                        this.coalescer
+                                            .lock()
+                                            .await
+                                            .record_commit(&writer_key, now);
+                                        {
+                                            let mut entry_failures =
+                                                this.entry_failures.lock().await;
+                                            for entry_id in &processed_ids {
+                                                entry_failures.remove(entry_id);
+                                            }
+                                        }
+                                        tracing::debug!(
+                                            entry_count = processed_ids.len(),
+                                            tenant_id = %tenant_id,
+                                            table_name = %table_name,
+                                            "Processed and marked entries for table"
+                                        );
+                                        true
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %e, "Failed to process batch for table");
+                                        for entry_id in group_ids {
+                                            this.record_entry_failure(
+                                                &wal,
+                                                entry_id,
+                                                &tenant_id,
+                                                &dataset_id,
+                                                &table_name,
+                                            )
+                                            .await;
+                                        }
+                                        false
+                                    }
+                                }
+                            },
+                        )
+                        .await;
+                        #[cfg(test)]
+                        this.in_flight_commits
+                            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+
+                        // Per-tenant commit latency, so the coupling this
+                        // change removes stays measurable: a tenant whose
+                        // commits are slow is now visible as that tenant's
+                        // latency instead of as everyone's.
+                        common::self_monitoring::app_metrics()
+                            .writer_commit_duration
+                            .record(
+                                started.elapsed().as_secs_f64(),
+                                &[opentelemetry::KeyValue::new("tenant", tenant_id.clone())],
+                            );
+
+                        // Only a *forced* group's failure fails the drain; a
+                        // background group failing is best-effort (already
+                        // dead-lettered/retried).
+                        if forced && !committed {
+                            GroupOutcome::ForcedCommitFailed
+                        } else {
+                            GroupOutcome::Committed
+                        }
                     }
-                }
-            })
+                },
+            )
+            .buffer_unordered(COMMIT_CONCURRENCY)
+            .collect()
             .await;
-            // Only a *forced* group's failure fails the drain; a background
-            // group failing is best-effort (already dead-lettered/retried).
-            if forced && !committed {
-                forced_commit_failed = true;
-            }
-        }
+
+        let deferred_groups = outcomes
+            .iter()
+            .filter(|o| matches!(o, GroupOutcome::Deferred))
+            .count() as u64;
+        let forced_commit_failed = outcomes
+            .iter()
+            .any(|o| matches!(o, GroupOutcome::ForcedCommitFailed));
 
         // Retire the Flush markers only once their requested drain fully
         // succeeded — otherwise leave them so the next cycle retries the
@@ -581,7 +688,7 @@ impl WalProcessor {
         )
     )]
     async fn process_batch_for_table(
-        &mut self,
+        &self,
         wal: &Arc<Wal>,
         tenant_id: &str,
         dataset_id: &str,
@@ -597,24 +704,43 @@ impl WalProcessor {
 
         let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 
-        // Get or create table writer
-        if !self.table_writers.contains_key(&writer_key) {
-            let writer = IcebergTableWriter::new(
-                &self.catalog_manager,
-                self.object_store.clone(),
-                tenant_id.to_string(),
-                dataset_id.to_string(),
-                table_name.to_string(),
-            )
-            .await?;
-            self.table_writers.insert(writer_key.clone(), writer);
-        }
+        // Get or create this table's writer. The cache lock is released
+        // before the commit so other tables proceed in parallel; the writer's
+        // own lock then serializes this table's commits, which is required —
+        // a commit reloads the table and replaces its idempotency marker.
+        let cached = self.table_writers.lock().await.get(&writer_key).cloned();
+        let shared_writer = match cached {
+            Some(writer) => writer,
+            None => {
+                // Created with the cache lock RELEASED. Creation is a catalog
+                // round trip, and the outer lock covers every table — holding
+                // it here would make a burst of first-time tenants serialize
+                // behind each other, and block even groups whose writer is
+                // already cached, which is exactly the coupling this fan-out
+                // removes. `or_insert` settles a race by keeping the first
+                // writer in; a table appears in only one group per cycle, so
+                // that race is not reachable today anyway.
+                let writer = Arc::new(tokio::sync::Mutex::new(
+                    IcebergTableWriter::new(
+                        &self.catalog_manager,
+                        self.object_store.clone(),
+                        tenant_id.to_string(),
+                        dataset_id.to_string(),
+                        table_name.to_string(),
+                    )
+                    .await?,
+                ));
+                self.table_writers
+                    .lock()
+                    .await
+                    .entry(writer_key.clone())
+                    .or_insert(writer)
+                    .clone()
+            }
+        };
 
         let wal_writer_id = wal.writer_id().to_string();
-        let writer = self
-            .table_writers
-            .get_mut(&writer_key)
-            .ok_or_else(|| anyhow::anyhow!("Failed to get table writer for {}", writer_key))?;
+        let writer = &mut *shared_writer.lock().await;
 
         // Step 1: dedupe against the idempotency marker. Ids recorded
         // there were committed to Iceberg but never marked processed
@@ -687,16 +813,20 @@ impl WalProcessor {
     /// Record a processing failure for an entry, dead-lettering it once
     /// it exhausts its attempts.
     async fn record_entry_failure(
-        &mut self,
+        &self,
         wal: &Wal,
         entry_id: Uuid,
         tenant_id: &str,
         dataset_id: &str,
         signal: &str,
     ) {
-        let failures = self.entry_failures.entry(entry_id).or_insert(0);
-        *failures += 1;
-        if *failures < MAX_ENTRY_FAILURES {
+        let failures = {
+            let mut entry_failures = self.entry_failures.lock().await;
+            let failures = entry_failures.entry(entry_id).or_insert(0);
+            *failures += 1;
+            *failures
+        };
+        if failures < MAX_ENTRY_FAILURES {
             return;
         }
         match wal.dead_letter(entry_id).await {
@@ -706,11 +836,11 @@ impl WalProcessor {
                     tenant_id = %tenant_id,
                     dataset_id = %dataset_id,
                     signal = %signal,
-                    failures = *failures,
+                    failures,
                     path = %path.display(),
                     "WAL entry exhausted its retries; payload preserved in the dead-letter directory and entry marked processed"
                 );
-                self.entry_failures.remove(&entry_id);
+                self.entry_failures.lock().await.remove(&entry_id);
             }
             Err(e) => {
                 tracing::error!(
@@ -734,7 +864,7 @@ impl WalProcessor {
     /// WAL has already quarantined whatever bytes it could and logged the
     /// tenant/dataset/signal/offset; this records the marker and marks the
     /// entry processed so the neighbours keep flowing.
-    async fn record_unreadable_entry(&mut self, wal: &Wal, entry: &WalEntry, reason: &str) {
+    async fn record_unreadable_entry(&self, wal: &Wal, entry: &WalEntry, reason: &str) {
         match wal.dead_letter_unreadable(entry.id, reason).await {
             Ok(path) => {
                 tracing::error!(
@@ -747,7 +877,7 @@ impl WalProcessor {
                     path = %path.display(),
                     "WAL entry payload is unreadable; marker recorded in the dead-letter directory and entry marked processed"
                 );
-                self.entry_failures.remove(&entry.id);
+                self.entry_failures.lock().await.remove(&entry.id);
             }
             Err(e) => {
                 tracing::error!(
@@ -805,22 +935,20 @@ impl WalProcessor {
     }
 
     /// Get statistics about the processor
-    pub fn get_stats(&self) -> ProcessorStats {
+    pub async fn get_stats(&self) -> ProcessorStats {
+        let writers = self.table_writers.lock().await;
         ProcessorStats {
-            active_writers: self.table_writers.len(),
-            writer_keys: self.table_writers.keys().cloned().collect(),
+            active_writers: writers.len(),
+            writer_keys: writers.keys().cloned().collect(),
         }
     }
 
     /// Close all table writers and clean up resources
     pub async fn shutdown(&mut self) -> Result<()> {
-        tracing::info!(
-            writer_count = self.table_writers.len(),
-            "Shutting down WAL processor"
-        );
-
         // Clear all writers (they should handle cleanup automatically when dropped)
-        self.table_writers.clear();
+        let mut writers = self.table_writers.lock().await;
+        tracing::info!(writer_count = writers.len(), "Shutting down WAL processor");
+        writers.clear();
 
         Ok(())
     }
@@ -874,6 +1002,71 @@ mod tests {
             .await;
         assert!(displaced.is_none(), "fresh manager holds no WAL under key");
         Arc::new(manager)
+    }
+
+    #[tokio::test]
+    async fn tenants_commit_concurrently_rather_than_one_after_another() {
+        // The per-tenant WAL fanout (#932) isolates *failures* — one tenant's
+        // poison is skipped and the others still drain — but not *latency*:
+        // the drain committed one group at a time, so a tenant whose Iceberg
+        // round trip takes tens of seconds (the condition seen on hive in
+        // #959/#895) delayed every other tenant's commit in the same cycle
+        // (#1306).
+        //
+        // Asserted against the drain's own control flow rather than wall
+        // clock: the processor records how many group commits were ever in
+        // flight at once. A sequential drain can never exceed one.
+        let temp_dir = tempdir().unwrap();
+        let mut base = WalConfig::with_defaults(temp_dir.path().to_path_buf());
+        base.max_buffer_entries = 1000;
+        base.flush_interval_secs = 60;
+        let manager = Arc::new(WalManager::uniform(base));
+
+        // Four tenants, each with one healthy entry, so the cycle has four
+        // independent groups to commit.
+        let tenants = ["acme", "globex", "initech", "umbrella"];
+        for tenant in tenants {
+            let wal = manager
+                .get_wal(tenant, "production", "metrics")
+                .await
+                .unwrap();
+            wal.append(
+                WalOperation::WriteMetrics,
+                metrics_gauge_bytes(3),
+                Some(format!(
+                    r#"{{"tenant_id":"{tenant}","dataset_id":"production"}}"#
+                )),
+            )
+            .await
+            .unwrap();
+            wal.flush().await.unwrap();
+        }
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let mut processor = WalProcessor::new(manager.clone(), catalog_manager, object_store);
+
+        processor.process_pending_entries().await.unwrap();
+
+        for tenant in tenants {
+            let wal = manager
+                .get_wal(tenant, "production", "metrics")
+                .await
+                .unwrap();
+            assert!(
+                wal.get_unprocessed_entries().await.unwrap().is_empty(),
+                "{tenant}'s entry must be committed"
+            );
+        }
+
+        let peak = processor
+            .peak_concurrent_commits
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            peak > 1,
+            "group commits never overlapped (peak concurrent commits = {peak}), so one slow \
+             tenant still delays every other tenant in the cycle"
+        );
     }
 
     #[tokio::test]
@@ -1194,7 +1387,7 @@ mod tests {
 
         let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
 
-        let stats = processor.get_stats();
+        let stats = processor.get_stats().await;
         assert_eq!(stats.active_writers, 0);
     }
 
