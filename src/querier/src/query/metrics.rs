@@ -40,7 +40,9 @@ use super::promql::{
 };
 use super::{
     error::QuerierError,
-    table_lookup::{distinct_non_empty, optional_table, string_column, time_window},
+    table_lookup::{
+        LABEL_SCAN_LIMIT, distinct_non_empty, optional_table, string_column, time_window,
+    },
 };
 use common::schema::materialized_column_name;
 
@@ -60,9 +62,6 @@ const SCAN_COLUMNS: &[&str] = &[
 
 const LOG_ATTRIBUTES: &str = "attributes";
 const RESOURCE_ATTRIBUTES: &str = "resource_attributes";
-
-/// Upper bound on distinct attribute documents scanned for discovery.
-const LABEL_SCAN_LIMIT: usize = 1000;
 
 /// Upper bound on distinct groups (e.g. `(bucket, series)` keys) that the
 /// row-wise, post-`collect()` PromQL evaluation paths — vector-to-vector
@@ -794,10 +793,16 @@ impl MetricsService {
 
         // Replicate across the output grid.
         let first = start.div_euclid(step) * step;
-        let mut ts = Vec::new();
-        let mut names = Vec::new();
-        let mut services = Vec::new();
-        let mut values = Vec::new();
+        let num_buckets = if first <= end {
+            ((end - first) / step) as usize + 1
+        } else {
+            0
+        };
+        let capacity = num_buckets * series.len();
+        let mut ts = Vec::with_capacity(capacity);
+        let mut names = Vec::with_capacity(capacity);
+        let mut services = Vec::with_capacity(capacity);
+        let mut values = Vec::with_capacity(capacity);
         let mut bucket = first;
         while bucket <= end {
             for (svc, (_b, metric, value)) in &series {
@@ -870,10 +875,18 @@ impl MetricsService {
         }
 
         let first = start.div_euclid(step) * step;
-        let mut ts = Vec::new();
-        let mut names = Vec::new();
-        let mut services = Vec::new();
-        let mut values = Vec::new();
+        // Upper bound: not every (bucket, service) pair yields a non-empty
+        // window, but this avoids reallocation in the common case.
+        let num_buckets = if first <= end {
+            ((end - first) / step) as usize + 1
+        } else {
+            0
+        };
+        let capacity = num_buckets * samples.len();
+        let mut ts = Vec::with_capacity(capacity);
+        let mut names = Vec::with_capacity(capacity);
+        let mut services = Vec::with_capacity(capacity);
+        let mut values = Vec::with_capacity(capacity);
         let mut bucket = first;
         while bucket <= end {
             for (service, pts) in &samples {
@@ -1174,7 +1187,10 @@ impl MetricsService {
         let groups: Vec<HistGroup> = if rate_mode {
             rated
                 .into_iter()
-                .map(|(k, acc)| (k, acc.bounds.clone(), acc.delta()))
+                .map(|(k, acc)| {
+                    let delta = acc.delta();
+                    (k, acc.bounds, delta)
+                })
                 .collect()
         } else {
             merged
@@ -1795,6 +1811,19 @@ fn apply_label_ops(
             None => String::new(),
         }
     };
+    // Precompile each `Replace` op's regex once — `ops` is the same for
+    // every batch, so recompiling inside the batch loop below would repeat
+    // identical compilation work per batch.
+    let compiled_regex: Vec<Option<regex::Regex>> = ops
+        .iter()
+        .map(|op| match op {
+            LabelOp::Replace { regex, .. } => regex::Regex::new(&format!("^(?:{regex})$"))
+                .map(Some)
+                .map_err(|e| QuerierError::InvalidInput(format!("bad regex: {e}"))),
+            LabelOp::Join { .. } => Ok(None),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let mut out = Vec::with_capacity(batches.len());
     for batch in batches {
         let n = batch.num_rows();
@@ -1815,16 +1844,17 @@ fn apply_label_ops(
                     .unwrap_or_default()
             })
             .collect();
-        for op in ops {
+        for (op, re) in ops.iter().zip(compiled_regex.iter()) {
             match op {
                 LabelOp::Replace {
                     dst,
                     replacement,
                     src,
-                    regex,
+                    ..
                 } => {
-                    let re = regex::Regex::new(&format!("^(?:{regex})$"))
-                        .map_err(|e| QuerierError::InvalidInput(format!("bad regex: {e}")))?;
+                    let re = re
+                        .as_ref()
+                        .expect("compiled_regex has a Some entry for every Replace op");
                     let dst_col = output_column_for_label(dst);
                     for i in 0..n {
                         let src_val = read(&batch, src, i);
@@ -2401,7 +2431,7 @@ fn apply_topk(batches: Vec<RecordBatch>, spec: TopKSpec) -> Result<Vec<RecordBat
         service: String,
         value: f64,
     }
-    let mut rows: Vec<Row> = Vec::new();
+    let mut rows: Vec<Row> = Vec::with_capacity(batches.iter().map(|b| b.num_rows()).sum());
     for batch in &batches {
         let bucket = batch
             .column_by_name("bucket")
@@ -2456,8 +2486,8 @@ fn apply_topk(batches: Vec<RecordBatch>, spec: TopKSpec) -> Result<Vec<RecordBat
     let mut values = Vec::with_capacity(keep.len());
     for &i in &keep {
         ts.push(rows[i].bucket);
-        names.push(rows[i].name.clone());
-        services.push(rows[i].service.clone());
+        names.push(std::mem::take(&mut rows[i].name));
+        services.push(std::mem::take(&mut rows[i].service));
         values.push(rows[i].value);
     }
     let columns: Vec<ArrayRef> = vec![

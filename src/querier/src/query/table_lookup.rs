@@ -32,6 +32,11 @@ use std::sync::Arc;
 use super::error::QuerierError;
 use super::table_ref::build_table_reference;
 
+/// Upper bound on rows/distinct attribute documents sampled for label/tag
+/// discovery (label names, label values, tag names, tag values). Shared by
+/// every signal's discovery path so they scan the same-sized sample.
+pub(super) const LABEL_SCAN_LIMIT: usize = 1000;
+
 /// Inclusive nanosecond time-window filter on a `timestamp` column.
 pub(super) fn time_window(df: DataFrame, start: i64, end: i64) -> Result<DataFrame, QuerierError> {
     df.filter(
@@ -68,8 +73,9 @@ pub(super) fn distinct_non_empty(
     for batch in batches {
         let col = string_column(batch, column)?;
         for i in 0..batch.num_rows() {
-            if !col.is_null(i) && !col.value(i).is_empty() {
-                values.insert(col.value(i).to_string());
+            let value = col.value(i);
+            if !col.is_null(i) && !value.is_empty() {
+                values.insert(value.to_string());
             }
         }
     }

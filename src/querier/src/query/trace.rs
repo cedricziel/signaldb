@@ -23,7 +23,9 @@ use super::{
     FindTraceByIdParams, SearchQueryParams, TraceTagNames, TraceTagsParams,
     error::QuerierError,
     search_filter,
-    table_lookup::{distinct_non_empty, optional_table, time_window},
+    table_lookup::{
+        LABEL_SCAN_LIMIT, distinct_non_empty, optional_table, string_column, time_window,
+    },
 };
 
 /// Fixed intrinsic tag names: fields Tempo derives per-span/per-trace
@@ -44,9 +46,9 @@ const STATUS_VALUES: &[&str] = &["ok", "error", "unset"];
 /// accepted by [`search_filter`]'s `kind` selector.
 const KIND_VALUES: &[&str] = &["internal", "server", "client", "producer", "consumer"];
 
-/// Upper bound on rows sampled for tag/tag-value discovery, mirroring
-/// `LogsService`'s `LABEL_SCAN_LIMIT`.
-const TAG_SCAN_LIMIT: usize = 1000;
+/// Upper bound on rows sampled for tag/tag-value discovery — shares
+/// `table_lookup::LABEL_SCAN_LIMIT` with the other signals' discovery paths.
+const TAG_SCAN_LIMIT: usize = LABEL_SCAN_LIMIT;
 
 pub struct TraceService {
     // skip debug on session_context
@@ -241,14 +243,14 @@ impl TraceService {
             // Downcast every column consumed by this batch's row loop once,
             // instead of re-resolving `column_by_name` + `downcast_ref` on
             // every row (previously ~13 downcasts per row).
-            let trace_ids = required_string_column(&batch, "trace_id")?;
-            let span_ids = required_string_column(&batch, "span_id")?;
-            let parent_span_ids = required_string_column(&batch, "parent_span_id")?;
-            let status_codes = required_string_column(&batch, "status_code")?;
+            let trace_ids = string_column(&batch, "trace_id")?;
+            let span_ids = string_column(&batch, "span_id")?;
+            let parent_span_ids = string_column(&batch, "parent_span_id")?;
+            let status_codes = string_column(&batch, "status_code")?;
             let is_roots = required_bool_column(&batch, "is_root")?;
-            let span_names = required_string_column(&batch, "span_name")?;
-            let service_names = required_string_column(&batch, "service_name")?;
-            let span_kinds = required_string_column(&batch, "span_kind")?;
+            let span_names = string_column(&batch, "span_name")?;
+            let service_names = string_column(&batch, "service_name")?;
+            let span_kinds = string_column(&batch, "span_kind")?;
             let start_times = required_i64_column(&batch, "start_time_unix_nano")?;
             let durations = required_i64_column(&batch, "duration_nanos")?;
             let span_attrs = resolve_attribute_column(&batch, "span_attributes");
@@ -257,10 +259,8 @@ impl TraceService {
 
             for row_index in 0..batch.num_rows() {
                 // Use named column access instead of positions
-                let current_trace_id = trace_ids.value(row_index).to_string();
-
                 if trace_id.is_empty() {
-                    trace_id = current_trace_id.clone();
+                    trace_id = trace_ids.value(row_index).to_string();
                 }
 
                 let span_id = span_ids.value(row_index).to_string();
@@ -271,7 +271,7 @@ impl TraceService {
 
                 let span = Span {
                     span_id: span_id.clone(),
-                    parent_span_id: parent_span_id.clone(),
+                    parent_span_id,
                     children: Vec::new(),
                     events,
                     trace_id: trace_id.clone(),
@@ -344,14 +344,14 @@ impl TraceService {
             // Downcast every column consumed by this batch's row loop once,
             // instead of re-resolving `column_by_name` + `downcast_ref` on
             // every row (previously ~12 downcasts per row).
-            let trace_ids = required_string_column(&batch, "trace_id")?;
-            let span_ids = required_string_column(&batch, "span_id")?;
-            let parent_span_ids = required_string_column(&batch, "parent_span_id")?;
-            let status_codes = required_string_column(&batch, "status_code")?;
+            let trace_ids = string_column(&batch, "trace_id")?;
+            let span_ids = string_column(&batch, "span_id")?;
+            let parent_span_ids = string_column(&batch, "parent_span_id")?;
+            let status_codes = string_column(&batch, "status_code")?;
             let is_roots = required_bool_column(&batch, "is_root")?;
-            let span_names = required_string_column(&batch, "span_name")?;
-            let service_names = required_string_column(&batch, "service_name")?;
-            let span_kinds = required_string_column(&batch, "span_kind")?;
+            let span_names = string_column(&batch, "span_name")?;
+            let service_names = string_column(&batch, "service_name")?;
+            let span_kinds = string_column(&batch, "span_kind")?;
             let start_times = required_i64_column(&batch, "start_time_unix_nano")?;
             let durations = required_i64_column(&batch, "duration_nanos")?;
             let span_attrs = resolve_attribute_column(&batch, "span_attributes");
@@ -366,7 +366,7 @@ impl TraceService {
 
                 let span = Span {
                     span_id: span_id.clone(),
-                    parent_span_id: parent_span_id.clone(),
+                    parent_span_id,
                     children: Vec::new(),
                     events: Vec::new(),
                     trace_id: current_trace_id.clone(),
@@ -517,20 +517,8 @@ impl TraceService {
         }
 
         let attr_ctx = super::logql::AttrContext {
-            materialized: df
-                .schema()
-                .fields()
-                .iter()
-                .map(|f| f.name().to_string())
-                .filter(|n| n.starts_with("label_"))
-                .collect(),
-            map_attrs: df.schema().fields().iter().any(|f| {
-                f.name() == "span_attributes"
-                    && matches!(
-                        f.data_type(),
-                        datafusion::arrow::datatypes::DataType::Map(_, _)
-                    )
-            }),
+            materialized: super::logs::materialized_columns_of(&df),
+            map_attrs: is_map_column(&df, "span_attributes"),
             // Traces tables carry no derived token column (logs only).
             attr_tokens: false,
         };
@@ -986,23 +974,10 @@ fn clamped_limits(
     Ok((limit, span_limit))
 }
 
-/// Fetch a required `Utf8` column by name. Resolving this once per batch
-/// (outside the row loop) avoids re-running `column_by_name` +
-/// `downcast_ref` on every row.
-fn required_string_column<'a>(
-    batch: &'a RecordBatch,
-    name: &str,
-) -> Result<&'a StringArray, QuerierError> {
-    let column = batch
-        .column_by_name(name)
-        .ok_or_else(|| QuerierError::InvalidInput(format!("Missing required column '{name}'")))?;
-    column
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| QuerierError::InvalidInput(format!("Column '{name}' has wrong type")))
-}
-
-/// Fetch a required `Boolean` column by name; see [`required_string_column`].
+/// Fetch a required `Boolean` column by name; mirrors `table_lookup::string_column`
+/// (imported above as `string_column`) for the `Utf8` case — resolving a
+/// column once per batch, outside the row loop, avoids re-running
+/// `column_by_name` + `downcast_ref` on every row.
 fn required_bool_column<'a>(
     batch: &'a RecordBatch,
     name: &str,
@@ -1016,7 +991,7 @@ fn required_bool_column<'a>(
         .ok_or_else(|| QuerierError::InvalidInput(format!("Column '{name}' has wrong type")))
 }
 
-/// Fetch a required `Int64` column by name; see [`required_string_column`].
+/// Fetch a required `Int64` column by name; see [`required_bool_column`].
 fn required_i64_column<'a>(
     batch: &'a RecordBatch,
     name: &str,

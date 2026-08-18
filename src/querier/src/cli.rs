@@ -159,12 +159,10 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     // Flight, so a Tempo query-frontend can use SignalDB as a querier.
     let tempo_querier = flight_service.tempo_querier();
     let flight_handle = tokio::spawn(async move {
-        let builder = Server::builder();
         let serve = match flight_auth {
             Some(interceptor) => {
                 let tempo_interceptor = interceptor.clone();
-                let mut builder = builder;
-                builder
+                Server::builder()
                     .add_service(common::flight::flight_service_server_with_interceptor(
                         flight_service,
                         move |req| interceptor.intercept(req),
@@ -176,8 +174,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
                     .await
             }
             None => {
-                let mut builder = builder;
-                builder
+                Server::builder()
                     .add_service(common::flight::flight_service_server(flight_service))
                     .add_service(QuerierServer::new(tempo_querier))
                     .serve(flight_addr)

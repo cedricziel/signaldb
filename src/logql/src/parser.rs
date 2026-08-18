@@ -452,13 +452,8 @@ impl Parser {
         let name = self.expect_ident("a label name")?;
         let matcher = match self.peek().map(|t| &t.token) {
             Some(Token::Eq | Token::Neq | Token::Re | Token::Nre) => {
-                let op = match self.next().expect("peeked").token {
-                    Token::Eq => MatchOp::Eq,
-                    Token::Neq => MatchOp::Neq,
-                    Token::Re => MatchOp::Re,
-                    Token::Nre => MatchOp::Nre,
-                    _ => unreachable!(),
-                };
+                let tok = self.next().expect("peeked");
+                let op = token_to_match_op(&tok.token).expect("peeked matcher token");
                 let value = self.expect_string("a quoted matcher value")?;
                 Some((op, value))
             }
@@ -661,14 +656,14 @@ impl Parser {
         let name = self.expect_ident("label name")?;
 
         let op = match self.next() {
-            Some(t) => match t.token {
-                Token::Eq => MatchOp::Eq,
-                Token::Neq => MatchOp::Neq,
-                Token::Re => MatchOp::Re,
-                Token::Nre => MatchOp::Nre,
-                ref other => {
+            Some(t) => match token_to_match_op(&t.token) {
+                Some(op) => op,
+                None => {
                     return Err(self.error_at(
-                        format!("expected matcher operator (=, !=, =~, !~), found '{other}'"),
+                        format!(
+                            "expected matcher operator (=, !=, =~, !~), found '{}'",
+                            t.token
+                        ),
                         Some(&t),
                     ));
                 }
@@ -1095,6 +1090,18 @@ impl Parser {
         let p = self.parse_number("a scalar parameter")?;
         self.expect(&Token::Comma, &format!("',' after {what} parameter"))?;
         Ok(Some(p))
+    }
+}
+
+/// Maps a matcher-operator token (`=`, `!=`, `=~`, `!~`) to its `MatchOp`,
+/// or `None` if `token` isn't a matcher operator.
+fn token_to_match_op(token: &Token) -> Option<MatchOp> {
+    match token {
+        Token::Eq => Some(MatchOp::Eq),
+        Token::Neq => Some(MatchOp::Neq),
+        Token::Re => Some(MatchOp::Re),
+        Token::Nre => Some(MatchOp::Nre),
+        _ => None,
     }
 }
 
