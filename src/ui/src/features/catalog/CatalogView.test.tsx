@@ -7,7 +7,7 @@ import { CatalogView, drillFilters, isDrillable } from "./CatalogView";
 import { compositeKey } from "../../lib/traceGroups";
 import type { EntityTypeDef } from "./entityTypes";
 import * as catalogApi from "../../api/catalog";
-import type { TraceGroup } from "../../api/traceGroups";
+import type { CatalogEntity, EntityObservation } from "../../api/catalog";
 
 // The entity table is a server-side aggregate (see api/catalog) — mocked at
 // the module boundary, the same way TracesView.test.tsx mocks
@@ -26,19 +26,35 @@ afterEach(() => {
 
 beforeEach(() => {
   fetchCatalogEntities.mockReset();
-  fetchCatalogEntities.mockResolvedValue({ groups: [], truncated: false });
+  fetchCatalogEntities.mockResolvedValue({ entities: [], truncated: false });
 });
 
+/** An entity traces observed, optionally also seen in other signals. */
 function group(
   values: (string | null)[],
-  count: number,
+  traces: number,
   errors: number,
   p50Ms: number,
   p95Ms: number,
   lastNs: string,
-  traceCount?: number,
-): TraceGroup {
-  return { values, count, errors, p50Ms, p95Ms, lastNs, traceCount };
+  alsoSeenIn: EntityObservation[] = [],
+): CatalogEntity {
+  return {
+    values,
+    observations: [{ source: "traces", count: traces }, ...alsoSeenIn],
+    lastNs,
+    red: { traces, errors, p50Ms, p95Ms },
+  };
+}
+
+/** An entity no trace ever carried — discovered through another signal only,
+ * so it has no RED at all. */
+function unmeasured(
+  values: (string | null)[],
+  observations: EntityObservation[],
+  lastNs: string,
+): CatalogEntity {
+  return { values, observations, lastNs };
 }
 
 function renderView(state: Partial<ExploreState> = {}) {
@@ -73,7 +89,7 @@ describe("CatalogView", () => {
 
   it("renders discovered entities with RED metrics", async () => {
     fetchCatalogEntities.mockResolvedValue({
-      groups: [
+      entities: [
         group(["gateway", "edge"], 1240, 5, 12, 48, "1700000000000000000"),
       ],
       truncated: false,
@@ -81,7 +97,8 @@ describe("CatalogView", () => {
     renderView();
     expect(await screen.findByText("gateway")).toBeInTheDocument();
     expect(screen.getByText("edge")).toBeInTheDocument();
-    expect(screen.getByText("1240")).toBeInTheDocument();
+    expect(screen.getByText("12 ms")).toBeInTheDocument();
+    expect(screen.getByText("48 ms")).toBeInTheDocument();
   });
 
   it("dispatches to the entity detail page once catalogPrimary is set", async () => {
@@ -102,7 +119,7 @@ describe("CatalogView", () => {
 
   it("opens a service row's own detail page rather than jumping to Traces", async () => {
     fetchCatalogEntities.mockResolvedValue({
-      groups: [
+      entities: [
         group(["gateway", "edge"], 1240, 5, 12, 48, "1700000000000000000"),
       ],
       truncated: false,
@@ -121,14 +138,58 @@ describe("CatalogView", () => {
     // entity: the merged count is 100, but the error is a rate of the 10
     // traces it actually happened among — 10%, not 1%.
     fetchCatalogEntities.mockResolvedValue({
-      groups: [
-        group(["gateway", "edge"], 100, 1, 12, 48, "1700000000000000000", 10),
+      entities: [
+        group(["gateway", "edge"], 10, 1, 12, 48, "1700000000000000000", [
+          { source: "logs", count: 90 },
+        ]),
       ],
       truncated: false,
     });
     renderView();
     expect(await screen.findByText("10%")).toBeInTheDocument();
     expect(screen.queryByText("1%")).not.toBeInTheDocument();
+  });
+
+  it("lists entities without any sample counts", async () => {
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        group(["gateway", "edge"], 400, 0, 12, 48, "1700000000000000000", [
+          { source: "logs", count: 2000 },
+        ]),
+      ],
+      truncated: false,
+    });
+    renderView();
+    const row = (await screen.findByText("gateway")).closest("tr")!;
+    // How many spans or log lines back an entity is a fact about our storage,
+    // not about the service. The list answers "which entities are there",
+    // and 400 + 2000 is not "2400 requests" either.
+    expect(within(row).queryByText("400")).not.toBeInTheDocument();
+    expect(within(row).queryByText("2000")).not.toBeInTheDocument();
+    expect(within(row).queryByText("2400")).not.toBeInTheDocument();
+  });
+
+  it("reports measurements as unavailable for an entity no trace carried", async () => {
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        unmeasured(
+          ["batch-worker", "jobs"],
+          [{ source: "metrics", count: 833 }],
+          "1700000000000000000",
+        ),
+      ],
+      truncated: false,
+    });
+    renderView();
+    const row = (await screen.findByText("batch-worker")).closest("tr")!;
+    // Rate, Errors, P50 and P95 are all trace-derived: an entity seen only
+    // in metrics has no span status and no span duration, so each reads as
+    // unavailable. A zeroed row would report it as a flawless, instant
+    // service.
+    expect(within(row).getAllByText("–")).toHaveLength(4);
+    expect(within(row).getByText("batch-worker")).toBeInTheDocument();
+    expect(within(row).queryByText("0%")).not.toBeInTheDocument();
+    expect(within(row).queryByText("0 ms")).not.toBeInTheDocument();
   });
 });
 

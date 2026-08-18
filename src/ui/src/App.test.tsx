@@ -237,14 +237,12 @@ describe("App", () => {
       { match: "/labels?", body: emptyLabels },
     ]);
     vi.mocked(catalogApi.fetchCatalogEntities).mockResolvedValue({
-      groups: [
+      entities: [
         {
           values: ["gateway", "edge"],
-          count: 12,
-          errors: 0,
-          p50Ms: 1,
-          p95Ms: 2,
+          observations: [{ source: "traces", count: 12 }],
           lastNs: "1700000000000000000",
+          red: { traces: 12, errors: 0, p50Ms: 1, p95Ms: 2 },
         },
       ],
       truncated: false,

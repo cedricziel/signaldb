@@ -143,12 +143,23 @@ string.
 
 An entity keyed by a _resource_ attribute (service, host, Kubernetes
 pod/node, container, process — anything an SDK's `Resource` carries, not
-just spans) is discovered from both traces **and** logs, and its Count and
-Last-seen columns are the merge of both: a process that only ever logs,
-never traced, still shows up. Error rate and P50/P95 latency stay
-trace-only — a log line has no span status or duration to measure — so a
-row whose count came entirely from logs shows "–" there rather than a
-misleading "0ms". An entity keyed by a _span_ attribute (database, message
+just spans) is discovered from both traces **and** logs, and its Last-seen
+column is the merge of both: a process that only ever logs, never traced,
+still shows up.
+
+The list answers "which entities are there", so it carries no sample
+counts — how many spans or log lines back an entity is a fact about
+SignalDB's storage, not about the thing being observed, and volume from
+different signals is not comparable anyway (400 spans plus 2,000 log lines
+is not "2,400 requests"). Request rate, error rate and P50/P95 latency are
+all derived from traces — a log line has no span status or duration to
+measure — so an entity no trace ever carried shows "–" in all four rather
+than a misleading "0%" and "0ms" that would report an uninstrumented
+service as a flawless one. Which signals cover an entity is shown on its
+detail page, under **Signals**; that is what tells you whether a missing
+latency number means "healthy" or "not instrumented for tracing".
+
+An entity keyed by a _span_ attribute (database, message
 destination — these describe one client call, not the process that made
 it) is discovered from traces only. The subtitle under each entity type's
 heading ("discovered from ... across traces, logs") names exactly which

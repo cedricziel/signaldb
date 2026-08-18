@@ -6,6 +6,31 @@ afterEach(() => {
   cleanup();
 });
 
+// The app formats numbers in the viewer's own locale — `Intl.NumberFormat()`
+// and `toLocaleString()` with no explicit locale — which is right for users
+// and non-deterministic for tests: `2018` renders "2,018" under en-US and
+// "2.018" under de-DE, so assertions pass or fail according to the developer's
+// shell rather than the code. Pin the default for the test process only. Tests
+// that pass an explicit locale are untouched, and production behavior is
+// unchanged: this shim exists nowhere but here.
+const TEST_LOCALE = "en-US";
+
+const RealNumberFormat = Intl.NumberFormat;
+Intl.NumberFormat = new Proxy(RealNumberFormat, {
+  apply: (target, _this, args: Parameters<typeof Intl.NumberFormat>) =>
+    target(args[0] ?? TEST_LOCALE, args[1]),
+  construct: (target, args: Parameters<typeof Intl.NumberFormat>) =>
+    new target(args[0] ?? TEST_LOCALE, args[1]),
+});
+
+const realNumberToLocaleString = Number.prototype.toLocaleString;
+Number.prototype.toLocaleString = function (
+  locales?: Intl.LocalesArgument,
+  options?: Intl.NumberFormatOptions,
+) {
+  return realNumberToLocaleString.call(this, locales ?? TEST_LOCALE, options);
+};
+
 // jsdom reports zero layout sizes, which makes @tanstack/react-virtual render
 // an empty window. Give scroll containers a plausible size so virtualized
 // lists materialize rows in component tests.

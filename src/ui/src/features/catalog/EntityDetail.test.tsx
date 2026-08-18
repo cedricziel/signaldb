@@ -8,7 +8,7 @@ import { EntityDetail } from "./EntityDetail";
 import * as catalogApi from "../../api/catalog";
 import * as membersApi from "../../api/traceGroupMembers";
 import * as dependencyBreakdownApi from "../../api/dependencyBreakdown";
-import type { TraceGroup } from "../../api/traceGroups";
+import type { CatalogEntity } from "../../api/catalog";
 import type { TraceGroupMember } from "../../api/traceGroupMembers";
 
 vi.mock("../../api/catalog", async (importOriginal) => {
@@ -40,20 +40,25 @@ beforeEach(() => {
   fetchCatalogEntities.mockReset();
   fetchTraceGroupMembers.mockReset();
   fetchDependencyBreakdown.mockReset();
-  fetchCatalogEntities.mockResolvedValue({ groups: [], truncated: false });
+  fetchCatalogEntities.mockResolvedValue({ entities: [], truncated: false });
   fetchTraceGroupMembers.mockResolvedValue([]);
   fetchDependencyBreakdown.mockResolvedValue([]);
 });
 
 function group(
   values: (string | null)[],
-  count: number,
+  traces: number,
   errors: number,
   p50Ms: number,
   p95Ms: number,
   lastNs: string,
-): TraceGroup {
-  return { values, count, errors, p50Ms, p95Ms, lastNs };
+): CatalogEntity {
+  return {
+    values,
+    observations: [{ source: "traces", count: traces }],
+    lastNs,
+    red: { traces, errors, p50Ms, p95Ms },
+  };
 }
 
 function member(
@@ -115,27 +120,60 @@ describe("EntityDetail", () => {
     fetchCatalogEntities.mockImplementation(async (entityType) => {
       if (entityType.id === "service") {
         return {
-          groups: [
+          entities: [
             group(["gateway", "edge"], 1240, 5, 12, 48, "1700000000000000000"),
           ],
           truncated: false,
         };
       }
-      return { groups: [], truncated: false };
+      return { entities: [], truncated: false };
     });
     renderView();
-    expect(await screen.findByText("1240")).toBeInTheDocument();
+    expect(await screen.findByText("12 ms")).toBeInTheDocument();
+    expect(screen.getByText("48 ms")).toBeInTheDocument();
+  });
+
+  it("names the signals covering the entity, without sample counts", async () => {
+    fetchCatalogEntities.mockImplementation(async (entityType) => {
+      if (entityType.id === "service") {
+        return {
+          entities: [
+            {
+              values: ["gateway", "edge"],
+              observations: [
+                { source: "traces", count: 400 },
+                { source: "logs", count: 2000 },
+              ],
+              lastNs: "1700000000000000000",
+              red: { traces: 400, errors: 0, p50Ms: 12, p95Ms: 48 },
+            },
+          ],
+          truncated: false,
+        };
+      }
+      return { entities: [], truncated: false };
+    });
+    renderView();
+    // Which signals see this entity is worth knowing — it is what explains a
+    // missing RED measurement. How many samples each carries is not.
+    const kpis = (await screen.findByText("Signals")).closest("div")!;
+    expect(within(kpis).getByText("traces")).toBeInTheDocument();
+    expect(within(kpis).getByText("logs")).toBeInTheDocument();
+    expect(within(kpis).queryByText("400")).not.toBeInTheDocument();
+    expect(within(kpis).queryByText("2000")).not.toBeInTheDocument();
   });
 
   it("shows the breakdown table for an entity type that defines one", async () => {
     fetchCatalogEntities.mockImplementation(async (entityType) => {
       if (entityType.identity[0] === "span.name") {
         return {
-          groups: [group(["GET /health"], 400, 0, 5, 9, "1700000000000000000")],
+          entities: [
+            group(["GET /health"], 400, 0, 5, 9, "1700000000000000000"),
+          ],
           truncated: false,
         };
       }
-      return { groups: [], truncated: false };
+      return { entities: [], truncated: false };
     });
     renderView();
     expect(await screen.findByText("Operations")).toBeInTheDocument();
@@ -146,11 +184,13 @@ describe("EntityDetail", () => {
     fetchCatalogEntities.mockImplementation(async (entityType) => {
       if (entityType.identity[0] === "span.name") {
         return {
-          groups: [group(["GET /health"], 400, 0, 5, 9, "1700000000000000000")],
+          entities: [
+            group(["GET /health"], 400, 0, 5, 9, "1700000000000000000"),
+          ],
           truncated: false,
         };
       }
-      return { groups: [], truncated: false };
+      return { entities: [], truncated: false };
     });
     const update = renderView();
     const user = userEvent.setup();
@@ -202,7 +242,7 @@ describe("EntityDetail", () => {
     fetchCatalogEntities.mockImplementation(async (entityType) => {
       if (entityType.identity[0] === "db.query.text") {
         return {
-          groups: [
+          entities: [
             group(
               ["SELECT * FROM users WHERE id = ?"],
               300,
@@ -215,7 +255,7 @@ describe("EntityDetail", () => {
           truncated: false,
         };
       }
-      return { groups: [], truncated: false };
+      return { entities: [], truncated: false };
     });
     const update = renderView({
       catalogEntity: "database",
@@ -277,13 +317,13 @@ describe("EntityDetail", () => {
       fetchCatalogEntities.mockImplementation(async (entityType) => {
         if (entityType.identity[0] === "span.name") {
           return {
-            groups: [
+            entities: [
               group(["GET /health"], 400, 0, 5, 9, "1700000000000000000"),
             ],
             truncated: false,
           };
         }
-        return { groups: [], truncated: false };
+        return { entities: [], truncated: false };
       });
       renderView({ catalogSecondary: "GET /health" });
 

@@ -16,18 +16,20 @@ import {
 } from "../../lib/time";
 import {
   compositeKey,
-  formatRate,
   groupLabel,
   parseCompositeKey,
 } from "../../lib/traceGroups";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { formatDurationMsOrDash } from "../../lib/waterfall";
 import { MemberTable } from "../traces/MemberTable";
 import {
   catalogRangeSeconds,
   drillFilters,
   EntityTable,
   isDrillable,
+  Observed,
+  redDuration,
+  redErrorRate,
+  redRate,
 } from "./CatalogView";
 import {
   DEFAULT_ENTITY_TYPE,
@@ -104,7 +106,7 @@ export function EntityDetail({ state, update }: Props) {
     queryFn: () =>
       fetchCatalogEntities(current, range, undefined, currentPinned),
   });
-  const kpiRow = kpiQuery.data?.groups[0];
+  const kpiRow = kpiQuery.data?.entities[0];
 
   const memberDims =
     atSecondary && breakdownEntity
@@ -192,28 +194,30 @@ export function EntityDetail({ state, update }: Props) {
       ) : kpiRow ? (
         <dl className="entity-kpis">
           <div>
-            <dt>Count</dt>
-            <dd>{kpiRow.count}</dd>
+            <dt>Signals</dt>
+            <dd>
+              <Observed observations={kpiRow.observations} />
+            </dd>
           </div>
           <div>
             <dt>Rate</dt>
-            <dd>{formatRate(kpiRow.count, rangeSeconds)}</dd>
+            <dd>{redRate(kpiRow.red, rangeSeconds)}</dd>
           </div>
           <div>
             <dt>Errors</dt>
-            <dd className={kpiRow.errors > 0 ? "err-rate" : undefined}>
-              {kpiRow.errors > 0
-                ? `${Math.round((100 * kpiRow.errors) / (kpiRow.traceCount ?? kpiRow.count))}%`
-                : "–"}
+            <dd
+              className={(kpiRow.red?.errors ?? 0) > 0 ? "err-rate" : undefined}
+            >
+              {redErrorRate(kpiRow.red)}
             </dd>
           </div>
           <div>
             <dt>P50</dt>
-            <dd>{formatDurationMsOrDash(kpiRow.traceCount, kpiRow.p50Ms)}</dd>
+            <dd>{redDuration(kpiRow.red, kpiRow.red?.p50Ms)}</dd>
           </div>
           <div>
             <dt>P95</dt>
-            <dd>{formatDurationMsOrDash(kpiRow.traceCount, kpiRow.p95Ms)}</dd>
+            <dd>{redDuration(kpiRow.red, kpiRow.red?.p95Ms)}</dd>
           </div>
           <div>
             <dt>Last seen</dt>
