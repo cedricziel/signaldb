@@ -61,6 +61,43 @@ fn max_field_id(schema: &Schema) -> i32 {
     max
 }
 
+/// The schema id for a newly-added schema version: one past the highest id
+/// already known to `metadata` (falling back to `current`'s id for a table
+/// with only its original schema). Shared by [`add_label_columns`],
+/// [`remove_label_columns`], and [`apply_schema_migration`], which each
+/// commit their change as a new schema version via `AddSchema` +
+/// `SetCurrentSchema`.
+fn next_schema_id(
+    metadata: &iceberg_rust::spec::table_metadata::TableMetadata,
+    current: &Schema,
+) -> i32 {
+    metadata
+        .schemas
+        .keys()
+        .max()
+        .copied()
+        .unwrap_or(*current.schema_id())
+        + 1
+}
+
+/// Reload `identifier` and resolve its current schema, for the post-commit
+/// verification every schema-change function below performs. `what` names
+/// the change in the error context (e.g. "evolution", "demotion",
+/// "migration").
+async fn reload_current_schema(
+    catalog: &Arc<dyn Catalog>,
+    identifier: &Identifier,
+    what: &str,
+) -> Result<Schema> {
+    let reloaded = load_table(catalog, identifier)
+        .await
+        .with_context(|| format!("Failed to reload table for post-{what} verification"))?;
+    let schema = reloaded.current_schema().map_err(|e| {
+        anyhow::anyhow!("Failed to resolve current schema after {what} of {identifier}: {e}")
+    })?;
+    Ok(schema.clone())
+}
+
 /// Load a table (never a view) from the catalog.
 async fn load_table(catalog: &Arc<dyn Catalog>, identifier: &Identifier) -> Result<Table> {
     let tabular = catalog
@@ -140,13 +177,7 @@ pub async fn add_label_columns(
     }
     let last_column_id = next_id - 1;
 
-    let new_schema_id = metadata
-        .schemas
-        .keys()
-        .max()
-        .copied()
-        .unwrap_or(*current.schema_id())
-        + 1;
+    let new_schema_id = next_schema_id(metadata, current);
     let evolved = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
 
     catalog
@@ -169,12 +200,7 @@ pub async fn add_label_columns(
 
     // Post-commit verification: reload and confirm the evolved schema is
     // current and carries every requested column.
-    let reloaded = load_table(&catalog, identifier)
-        .await
-        .context("Failed to reload table for post-evolution verification")?;
-    let verified = reloaded.current_schema().map_err(|e| {
-        anyhow::anyhow!("Failed to resolve current schema after evolution of {identifier}: {e}")
-    })?;
+    let verified = reload_current_schema(&catalog, identifier, "evolution").await?;
     for (key, column) in &new_columns {
         anyhow::ensure!(
             verified.fields().iter().any(|f| &f.name == column),
@@ -246,13 +272,7 @@ pub async fn remove_label_columns(
         .cloned()
         .collect();
     let metadata = table.metadata();
-    let new_schema_id = metadata
-        .schemas
-        .keys()
-        .max()
-        .copied()
-        .unwrap_or(*current.schema_id())
-        + 1;
+    let new_schema_id = next_schema_id(metadata, current);
     let pruned = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
 
     catalog
@@ -277,12 +297,7 @@ pub async fn remove_label_columns(
 
     // Post-commit verification: reload and confirm the pruned schema is
     // current and every named column is gone.
-    let reloaded = load_table(&catalog, identifier)
-        .await
-        .context("Failed to reload table for post-demotion verification")?;
-    let verified = reloaded.current_schema().map_err(|e| {
-        anyhow::anyhow!("Failed to resolve current schema after demotion of {identifier}: {e}")
-    })?;
+    let verified = reload_current_schema(&catalog, identifier, "demotion").await?;
     for column in &drop_columns {
         anyhow::ensure!(
             !verified.fields().iter().any(|f| &f.name == column),
@@ -519,13 +534,7 @@ pub async fn apply_schema_migration(
         Some(next_id + diff.additions.len() as i32 - 1)
     };
 
-    let new_schema_id = metadata
-        .schemas
-        .keys()
-        .max()
-        .copied()
-        .unwrap_or(*current.schema_id())
-        + 1;
+    let new_schema_id = next_schema_id(metadata, current);
     let evolved = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
 
     let mut properties = HashMap::new();
@@ -559,6 +568,10 @@ pub async fn apply_schema_migration(
             )
         })?;
 
+    // This verification also checks `SCHEMA_VERSION_PROPERTY` below, so it
+    // needs the reloaded `Table` itself, not just its schema (unlike
+    // `add_label_columns`/`remove_label_columns`, which only need the schema
+    // and so share [`reload_current_schema`]).
     let reloaded = load_table(&catalog, identifier)
         .await
         .context("Failed to reload table for post-migration verification")?;
