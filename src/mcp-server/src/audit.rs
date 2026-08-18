@@ -95,12 +95,10 @@ pub fn deadline_exceeded_error(deadline: Duration) -> ErrorData {
 /// wrapper can classify it (`denied`, `throttled`) without matching message
 /// text.
 pub fn with_http_status(mut err: ErrorData, status: u16) -> ErrorData {
-    let data = err
-        .data
-        .take()
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    let mut data = data;
+    let mut data = match err.data.take() {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
     data.insert(HTTP_STATUS_DATA_KEY.to_string(), status.into());
     err.data = Some(serde_json::Value::Object(data));
     err

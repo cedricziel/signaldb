@@ -667,10 +667,11 @@ struct DeleteSchemaRegistryParams {
     version: String,
 }
 
-/// Advertises a nested-document parameter as a JSON object (see
-/// [`query_ir_document_schema`]).
-fn json_object_schema(_generator: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
-    rmcp::schemars::json_schema!({ "type": "object" })
+/// Advertises a nested-document parameter as a JSON object; identical to
+/// [`query_ir_document_schema`], kept as its own name for readability at the
+/// `#[schemars(schema_with = ...)]` call sites.
+fn json_object_schema(generator: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
+    query_ir_document_schema(generator)
 }
 
 /// Accepts a nested document as a native JSON object, or — for clients that
@@ -703,6 +704,33 @@ fn require_confirm(confirm: &str, expected: &str, what: &str) -> Result<(), Erro
     if confirm != expected {
         return Err(ErrorData::invalid_params(
             format!("`confirm` must equal the {what} being deleted/revoked (\"{expected}\")"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an empty `scopes` list on API-key creation (platform-admin and
+/// tenant-management variants share this validation).
+fn require_nonempty_scopes(scopes: &[String]) -> Result<(), ErrorData> {
+    if scopes.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "at least one scope is required",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an API-key update with neither `scopes` nor `dataset_id` set
+/// (platform-admin and tenant-management variants share this validation).
+fn require_any_update(
+    scopes: &Option<Vec<String>>,
+    dataset_id: &Option<String>,
+) -> Result<(), ErrorData> {
+    if scopes.is_none() && dataset_id.is_none() {
+        return Err(ErrorData::invalid_params(
+            "nothing to update: pass `scopes` and/or `dataset_id`",
             None,
         ));
     }
@@ -1014,7 +1042,20 @@ impl McpServer {
             Err(_timeout) => return Err(concurrency_limit_error(self.max_concurrent_tool_calls)),
         };
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        Self::tool_router().call(tcc).await
+        Self::cached_tool_router().call(tcc).await
+    }
+
+    /// [`Self::tool_router`], built once and reused. The `#[tool_router]`
+    /// macro generates that method as a plain constructor, so calling it
+    /// directly reallocates the whole ~60-entry route map on every
+    /// `tools/call`, `tools/list`, and lookup; the router itself is
+    /// immutable once built, so it is safe to cache for the process
+    /// lifetime.
+    fn cached_tool_router() -> &'static rmcp::handler::server::router::tool::ToolRouter<Self> {
+        static ROUTER: std::sync::OnceLock<
+            rmcp::handler::server::router::tool::ToolRouter<McpServer>,
+        > = std::sync::OnceLock::new();
+        ROUTER.get_or_init(Self::tool_router)
     }
 
     /// Build the per-request forwarding client, surfacing a construction
@@ -1632,12 +1673,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
         Parameters(p): Parameters<CreateApiKeyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        if p.scopes.is_empty() {
-            return Err(ErrorData::invalid_params(
-                "at least one scope is required",
-                None,
-            ));
-        }
+        require_nonempty_scopes(&p.scopes)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .create_api_key()
@@ -1661,12 +1697,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
         Parameters(p): Parameters<UpdateApiKeyScopesParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        if p.scopes.is_none() && p.dataset_id.is_none() {
-            return Err(ErrorData::invalid_params(
-                "nothing to update: pass `scopes` and/or `dataset_id`",
-                None,
-            ));
-        }
+        require_any_update(&p.scopes, &p.dataset_id)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .update_api_key()
@@ -1996,12 +2027,7 @@ impl McpServer {
         Parameters(p): Parameters<TenantCreateApiKeyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        if p.scopes.is_empty() {
-            return Err(ErrorData::invalid_params(
-                "at least one scope is required",
-                None,
-            ));
-        }
+        require_nonempty_scopes(&p.scopes)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .manage_create_api_key()
@@ -2046,12 +2072,7 @@ impl McpServer {
         Parameters(p): Parameters<TenantUpdateApiKeyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        if p.scopes.is_none() && p.dataset_id.is_none() {
-            return Err(ErrorData::invalid_params(
-                "nothing to update: pass `scopes` and/or `dataset_id`",
-                None,
-            ));
-        }
+        require_any_update(&p.scopes, &p.dataset_id)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .manage_update_api_key()
@@ -2470,7 +2491,7 @@ impl McpServer {
     /// Whether a tool named `name` is registered. Exposed for cross-surface
     /// parity checks (see the `client-surface-parity` spec).
     pub fn has_tool(name: &str) -> bool {
-        Self::tool_router().has_route(name)
+        Self::cached_tool_router().has_route(name)
     }
 
     /// Argument autocompletion, forwarding to the router when `parts` carries
@@ -2677,7 +2698,7 @@ impl ServerHandler for McpServer {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let mut tools = Self::tool_router().list_all();
+        let mut tools = Self::cached_tool_router().list_all();
         if client_supports_ui(&context) {
             for tool in &mut tools {
                 if let Some(uri) = apps::tool_ui_uri(&tool.name) {

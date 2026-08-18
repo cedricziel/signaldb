@@ -633,8 +633,9 @@ fn attr_tokens_column(batch: &RecordBatch, num_rows: usize) -> Result<(Field, Ar
             for (key, value) in map {
                 if let Some(s) = attr_value_to_string(value) {
                     let token = format!("{key}={s}");
-                    if seen.insert(token.clone()) {
-                        builder.values().append_value(token);
+                    if !seen.contains(token.as_str()) {
+                        builder.values().append_value(&token);
+                        seen.insert(token);
                     }
                 }
             }

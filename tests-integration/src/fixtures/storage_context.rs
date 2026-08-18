@@ -43,33 +43,21 @@ impl StorageTestContext {
 
     /// Lists all objects in storage (for verification)
     pub async fn list_all_objects(&self) -> Result<Vec<String>> {
-        let mut paths = Vec::new();
-        let list_result = self.object_store.list(None);
-
-        use futures::StreamExt;
-        let mut stream = Box::pin(list_result);
-        while let Some(meta_result) = stream.next().await {
-            let meta = meta_result?;
-            paths.push(meta.location.to_string());
-        }
-
-        Ok(paths)
+        use futures::TryStreamExt;
+        let metas: Vec<_> = self.object_store.list(None).try_collect().await?;
+        Ok(metas.into_iter().map(|m| m.location.to_string()).collect())
     }
 
     /// Gets object count for a specific prefix
     pub async fn count_objects(&self, prefix: &str) -> Result<usize> {
+        use futures::TryStreamExt;
         let prefix_path = object_store::path::Path::from(prefix);
-        let list_result = self.object_store.list(Some(&prefix_path));
-
-        use futures::StreamExt;
-        let mut stream = Box::pin(list_result);
-        let mut count = 0;
-        while let Some(meta_result) = stream.next().await {
-            meta_result?;
-            count += 1;
-        }
-
-        Ok(count)
+        let metas: Vec<_> = self
+            .object_store
+            .list(Some(&prefix_path))
+            .try_collect()
+            .await?;
+        Ok(metas.len())
     }
 }
 
