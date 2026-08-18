@@ -421,6 +421,16 @@ impl WalSegment {
         Ok(path)
     }
 
+    /// This segment's own copy of `entry_id`, resolved through `entry_index`
+    /// (O(1), the lookup #1112 introduced) rather than by scanning entries.
+    ///
+    /// This is the authoritative copy: compaction rewrites a segment and
+    /// moves surviving entries to new offsets, so a caller's older clone of
+    /// the same entry can carry a stale `data_offset`.
+    fn entry_by_id(&self, entry_id: &Uuid) -> Option<&WalEntry> {
+        self.entries.get(*self.entry_index.get(entry_id)?)
+    }
+
     /// Append an entry to the WAL segment
     pub async fn append(
         &mut self,
@@ -437,7 +447,30 @@ impl WalSegment {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        self.append_at(
+            entry_id, timestamp, operation, data, tenant_id, dataset_id, metadata,
+        )
+        .await
+    }
 
+    /// Append an entry carrying an explicit creation `timestamp`.
+    ///
+    /// Only compaction ([`Wal::cleanup`]) uses this: a rewritten segment must
+    /// re-append its surviving entries with the timestamps they were first
+    /// written with. Stamping them "now" would reset the entry age the
+    /// acceptor's retry loop gates on, so every cleanup pass would postpone
+    /// the retry of the entries it just rewrote.
+    #[allow(clippy::too_many_arguments)]
+    async fn append_at(
+        &mut self,
+        entry_id: Uuid,
+        timestamp: u64,
+        operation: WalOperation,
+        data: &[u8],
+        tenant_id: &str,
+        dataset_id: &str,
+        metadata: Option<String>,
+    ) -> Result<Uuid> {
         // Write the payload to the data file at its authoritative offset.
         //
         // `data_offset` is recorded on the entry and later drives the read
@@ -784,6 +817,12 @@ pub struct WalConfig {
     /// How long to keep processed entries before cleanup (in seconds)
     pub retention_secs: u64,
     /// Interval for running cleanup operations (in seconds)
+    ///
+    /// A [`crate::wal::manager::WalManager`] sweep covers every cached WAL at
+    /// once, so it paces itself by the **smallest** `cleanup_interval_secs`
+    /// among its four per-signal configs. Raising this for one signal alone
+    /// therefore has no effect; lowering it speeds up the sweep for all of
+    /// them.
     pub cleanup_interval_secs: u64,
     /// Threshold percentage (0.0-1.0) of processed entries before compacting a segment
     pub compaction_threshold: f64,
@@ -855,7 +894,6 @@ pub struct Wal {
     next_segment_id: Arc<Mutex<u64>>,
     buffer: WalBuffer,
     flush_handle: Option<tokio::task::JoinHandle<()>>,
-    cleanup_handle: Option<tokio::task::JoinHandle<()>>,
     /// All segments including current (for cleanup operations)
     segments: Arc<Mutex<Vec<Arc<Mutex<WalSegment>>>>>,
     /// Stable identity of this WAL directory, persisted in `writer.id`.
@@ -987,7 +1025,6 @@ impl Wal {
             next_segment_id: Arc::new(Mutex::new(next_id)),
             buffer: Arc::new(RwLock::new(VecDeque::new())),
             flush_handle: None,
-            cleanup_handle: None,
             segments: Arc::new(Mutex::new(all_segments)),
             writer_id,
         };
@@ -1391,6 +1428,14 @@ impl Wal {
         result
     }
 
+    /// Number of segments this WAL currently holds, including the open one.
+    ///
+    /// Sealed segments are only reclaimed by [`Self::cleanup`], so this is the
+    /// direct read on whether reclamation is keeping up.
+    pub async fn segment_count(&self) -> usize {
+        self.segments.lock().await.len()
+    }
+
     /// Get all entries from WAL for recovery, across all segments
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn get_entries(&self) -> Result<Vec<WalEntry>> {
@@ -1407,12 +1452,19 @@ impl Wal {
     ///
     /// Locates the segment that contains the entry (offsets are relative to
     /// each segment's own data file) and reads from there.
+    ///
+    /// The read uses the segment's **own** copy of the entry, not the caller's:
+    /// [`Self::cleanup`] compacts sealed segments, which moves surviving
+    /// entries to new offsets, so a consumer that listed entries before a
+    /// compaction still holds stale offsets. Honouring those verbatim would
+    /// read another entry's bytes — the offset-desync class behind the hive
+    /// WAL corruption (#865/#883). Only the id is taken from the caller.
     pub async fn read_entry_data(&self, entry: &WalEntry) -> Result<Vec<u8>> {
         let segments = self.segments.lock().await;
         for segment_arc in segments.iter() {
             let segment = segment_arc.lock().await;
-            if segment.entry_index.contains_key(&entry.id) {
-                return segment.read_entry_data(entry).await;
+            if let Some(authoritative) = segment.entry_by_id(&entry.id) {
+                return segment.read_entry_data(authoritative).await;
             }
         }
         anyhow::bail!(
@@ -1426,9 +1478,6 @@ impl Wal {
     pub async fn shutdown(mut self) -> Result<()> {
         // Stop background tasks
         if let Some(handle) = self.flush_handle.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.cleanup_handle.take() {
             handle.abort();
         }
 
@@ -1649,11 +1698,13 @@ impl Wal {
         // Create new compacted segment
         let mut new_segment = WalSegment::new(&config.wal_dir, temp_segment_id).await?;
 
-        // Write unprocessed entries to new segment
+        // Write unprocessed entries to new segment, each keeping the
+        // timestamp it was originally written with.
         for (entry, data) in entries_with_data {
             new_segment
-                .append(
+                .append_at(
                     entry.id,
+                    entry.timestamp,
                     entry.operation,
                     &data,
                     &entry.tenant_id,
@@ -1678,8 +1729,17 @@ impl Wal {
         Ok(true)
     }
 
-    /// Run cleanup: delete fully-processed segments and compact others
-    async fn cleanup(&self) -> Result<()> {
+    /// Reclaim WAL disk: delete sealed segments whose entries are all
+    /// processed, and compact the rest past `compaction_threshold`.
+    ///
+    /// **Call this from the same task that drains the WAL, between passes.**
+    /// Compaction rewrites a segment and moves its surviving entries to new
+    /// offsets. [`Self::read_entry_data`] re-resolves offsets so a stale entry
+    /// copy still reads correctly, but running cleanup concurrently with a
+    /// drain would still have it rewriting segments under a consumer that is
+    /// mid-pass. [`crate::wal::manager::WalManager::cleanup_all`] is the
+    /// sweep both services call at the end of a pass.
+    pub async fn cleanup(&self) -> Result<()> {
         // Delete fully-processed old segments
         self.delete_fully_processed_segments().await?;
 
@@ -1696,43 +1756,23 @@ impl Wal {
 
         Ok(())
     }
+}
 
-    /// Start background cleanup task
-    pub fn start_background_cleanup(&mut self) {
-        let config = self.config.clone();
-        let buffer = self.buffer.clone();
-        let current_segment = self.current_segment.clone();
-        let next_segment_id = self.next_segment_id.clone();
-        let segments = self.segments.clone();
-        let writer_id = self.writer_id.clone();
+/// Fixtures shared by the WAL tests in this module and in
+/// [`crate::wal::manager`], which exercise the same seal-a-few-segments setup.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::WalConfig;
+    use std::path::Path;
 
-        let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
-                config.cleanup_interval_secs,
-            ));
-
-            loop {
-                interval.tick().await;
-
-                // Create a temporary Wal instance for cleanup (reuses existing segments)
-                let wal = Wal {
-                    config: config.clone(),
-                    current_segment: current_segment.clone(),
-                    next_segment_id: next_segment_id.clone(),
-                    buffer: buffer.clone(),
-                    flush_handle: None,
-                    cleanup_handle: None,
-                    segments: segments.clone(),
-                    writer_id: writer_id.clone(),
-                };
-
-                if let Err(e) = wal.cleanup().await {
-                    tracing::error!("Failed to run WAL cleanup: {e}");
-                }
-            }
-        });
-
-        self.cleanup_handle = Some(handle);
+    /// A WAL config tuned so a handful of small appends seal several segments,
+    /// which is what makes segment reclamation observable in a fast test.
+    pub(crate) fn rotating_config(dir: &Path) -> WalConfig {
+        let mut config = WalConfig::with_defaults(dir.to_path_buf());
+        config.max_segment_size = 1024;
+        config.max_buffer_entries = 1;
+        config.flush_interval_secs = 3600;
+        config
     }
 }
 
@@ -1774,6 +1814,7 @@ pub fn bytes_to_record_batch(bytes: &[u8]) -> Result<RecordBatch> {
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::rotating_config;
     use super::*;
     use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -3170,5 +3211,158 @@ mod tests {
             compressed.len(),
             uncompressed.len()
         );
+    }
+
+    /// Append `count` Arrow payloads, flushing each so segments seal as the
+    /// size cap is crossed. Returns the entry ids in append order.
+    async fn append_rotating(wal: &Wal, count: usize) -> Vec<Uuid> {
+        let mut ids = Vec::new();
+        for i in 0..count {
+            let bytes = record_batch_to_bytes(&make_batch_val(i as i64)).unwrap();
+            ids.push(
+                wal.append(WalOperation::WriteTraces, bytes, None)
+                    .await
+                    .unwrap(),
+            );
+            wal.flush().await.unwrap();
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn cleanup_deletes_sealed_segments_whose_entries_are_all_processed() {
+        // `Wal::cleanup` is the only path that reclaims WAL disk, and it had
+        // no caller in any service (#1305): sealed segments accumulated
+        // forever and were re-read into memory at every start.
+        let temp_dir = TempDir::new().unwrap();
+        let wal = Wal::new(rotating_config(temp_dir.path())).await.unwrap();
+
+        let ids = append_rotating(&wal, 12).await;
+        let sealed_before = wal.segment_count().await;
+        assert!(
+            sealed_before > 1,
+            "test needs several segments, got {sealed_before}"
+        );
+
+        // Everything is processed, so every sealed segment is reclaimable.
+        for id in &ids {
+            wal.mark_processed(*id).await.unwrap();
+        }
+
+        wal.cleanup().await.unwrap();
+
+        assert_eq!(
+            wal.segment_count().await,
+            1,
+            "only the current segment should survive a full cleanup"
+        );
+        let on_disk = std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|ext| ext == "log" || ext == "data" || ext == "index")
+            })
+            .count();
+        assert_eq!(
+            on_disk, 3,
+            "deleted segments must not leave .log/.data/.index files behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_preserves_unprocessed_payloads_and_their_timestamps() {
+        // Compaction rewrites a sealed segment without its processed entries.
+        // The survivors must read back byte-identical, and keep their original
+        // timestamps: the acceptor's retry loop gates on entry age, so a
+        // refreshed timestamp would silently postpone a retry every time
+        // cleanup ran.
+        let temp_dir = TempDir::new().unwrap();
+        let wal = Wal::new(rotating_config(temp_dir.path())).await.unwrap();
+
+        let ids = append_rotating(&wal, 12).await;
+        let before = wal.get_entries().await.unwrap();
+        let mut payloads: std::collections::HashMap<Uuid, Vec<u8>> = Default::default();
+        for entry in &before {
+            payloads.insert(entry.id, wal.read_entry_data(entry).await.unwrap());
+        }
+        let timestamps: std::collections::HashMap<Uuid, u64> =
+            before.iter().map(|e| (e.id, e.timestamp)).collect();
+
+        // Process every second entry: sealed segments cross the 50% threshold
+        // without becoming fully reclaimable.
+        for id in ids.iter().step_by(2) {
+            wal.mark_processed(*id).await.unwrap();
+        }
+
+        // WAL timestamps have second granularity, so a compaction that ran in
+        // the same wall-clock second as the appends would re-stamp entries
+        // without the assertion below noticing. Cross a second boundary so a
+        // re-stamped entry is provably distinguishable from a preserved one.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        wal.cleanup().await.unwrap();
+
+        let survivors = wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(
+            survivors.len(),
+            ids.len() - ids.iter().step_by(2).count(),
+            "compaction must keep every unprocessed entry"
+        );
+        for entry in &survivors {
+            assert_eq!(
+                wal.read_entry_data(entry).await.unwrap(),
+                payloads[&entry.id],
+                "payload for {} changed across compaction",
+                entry.id
+            );
+            assert_eq!(
+                entry.timestamp, timestamps[&entry.id],
+                "compaction reset the timestamp of {}",
+                entry.id
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn read_entry_data_resolves_offsets_against_the_live_segment() {
+        // Compaction moves surviving entries to new offsets. A consumer that
+        // listed entries before the compaction still holds the old offsets —
+        // reading those verbatim is the offset-desync class that corrupted
+        // hive's WAL (#865/#883), so the read must resolve the entry's
+        // location from the segment itself, not from the caller's copy.
+        let temp_dir = TempDir::new().unwrap();
+        let wal = Wal::new(rotating_config(temp_dir.path())).await.unwrap();
+
+        let ids = append_rotating(&wal, 12).await;
+        let stale: Vec<WalEntry> = wal.get_entries().await.unwrap();
+        let mut payloads: std::collections::HashMap<Uuid, Vec<u8>> = Default::default();
+        for entry in &stale {
+            payloads.insert(entry.id, wal.read_entry_data(entry).await.unwrap());
+        }
+
+        for id in ids.iter().step_by(2) {
+            wal.mark_processed(*id).await.unwrap();
+        }
+        wal.cleanup().await.unwrap();
+
+        let survivors: std::collections::HashSet<Uuid> = wal
+            .get_unprocessed_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+
+        // Read using the PRE-compaction entry copies.
+        for entry in stale.iter().filter(|e| survivors.contains(&e.id)) {
+            assert_eq!(
+                wal.read_entry_data(entry).await.unwrap(),
+                payloads[&entry.id],
+                "stale entry copy for {} read the wrong bytes after compaction",
+                entry.id
+            );
+        }
     }
 }

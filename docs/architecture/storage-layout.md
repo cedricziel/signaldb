@@ -772,6 +772,33 @@ pub struct WalConfig {
 
 The WAL enforces non-empty `tenant_id` and `dataset_id` at construction time.
 
+### Segment Reclamation
+
+Segments are reclaimed by a sweep over every WAL the manager holds
+(`WalManager::cleanup_all_if_due`), which per WAL deletes sealed segments whose
+entries are all processed and compacts the rest once more than
+`compaction_threshold` of their entries are processed. The open segment is
+never touched, and compaction keeps each surviving entry's original timestamp
+so the acceptor's age-gated retry is unaffected.
+
+Each service calls the sweep at a **pass boundary** — the end of the writer's
+background drain, the end of the acceptor's retry pass — and the manager
+throttles it to the smallest `cleanup_interval_secs` among its per-signal
+configs. The boundary is load-bearing, not stylistic: compaction rewrites a
+sealed segment and moves surviving entries to new offsets, so a consumer that
+listed entries earlier in the pass would be reading against a rewritten file.
+For the same reason `Wal::read_entry_data` resolves each entry from the
+segment's own index rather than trusting the caller's copy, which keeps a stale
+copy from reading another entry's bytes.
+
+The writer's client-facing `do_action("flush")` deliberately does **not**
+sweep: it is bounded by a flush timeout so slow storage cannot hang a caller,
+and a deployment-wide compaction pass would spend that budget on unrelated
+tenants' WALs.
+
+Disk that is not being reclaimed therefore means entries are not being
+processed, not that cleanup is disabled — read the WAL backlog gauge first.
+
 ### Segment Files
 
 Each WAL segment consists of three files:

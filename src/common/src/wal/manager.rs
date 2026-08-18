@@ -16,6 +16,15 @@ use tokio::sync::Mutex;
 /// Key for WAL cache: (tenant_id, dataset_id, signal_type)
 pub type WalKey = (String, String, String);
 
+/// Outcome of one [`WalManager::cleanup_all`] sweep.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupStats {
+    /// WALs whose cleanup completed.
+    pub swept: usize,
+    /// WALs whose cleanup returned an error and kept their segments.
+    pub failed: usize,
+}
+
 /// Manager for creating and caching per-tenant/dataset WAL instances
 ///
 /// The WalManager ensures that each unique combination of tenant_id, dataset_id,
@@ -28,6 +37,9 @@ pub struct WalManager {
     wals: Arc<Mutex<HashMap<WalKey, Arc<Wal>>>>,
     /// Per-key initialization guards to prevent duplicate WAL creation
     init_guards: Arc<Mutex<HashMap<WalKey, Arc<Mutex<()>>>>>,
+    /// When [`Self::cleanup_all_if_due`] last let a sweep through; `None`
+    /// until the first one.
+    last_cleanup: Arc<Mutex<Option<std::time::Instant>>>,
     /// Base configuration template for trace WALs
     traces_config: WalConfig,
     /// Base configuration template for log WALs
@@ -59,6 +71,7 @@ impl WalManager {
         Self {
             wals: Arc::new(Mutex::new(HashMap::new())),
             init_guards: Arc::new(Mutex::new(HashMap::new())),
+            last_cleanup: Arc::new(Mutex::new(None)),
             traces_config,
             logs_config,
             metrics_config,
@@ -121,9 +134,10 @@ impl WalManager {
     /// `default`/`default` even though the cache key does not. New writes
     /// never go there: `get_wal` always resolves to the per-tenant tree.
     ///
-    /// The segment files are **not** deleted once drained — `Wal`'s segment
-    /// cleanup has no caller in any service today — so the adoption (and its
-    /// warning) repeats on every restart until an operator removes them. See
+    /// Once every adopted entry is drained the segments are reclaimed by the
+    /// regular [`Self::cleanup_all_if_due`] sweep, so the adoption (and its
+    /// warning) stops on the next restart. A warning that keeps repeating
+    /// means entries are still undrained. See
     /// `docs/operations/wal-persistence.md`.
     ///
     /// Only `traces_config.wal_dir` is scanned, which covers every manager
@@ -400,6 +414,119 @@ impl WalManager {
         self.flush_all_within(std::time::Duration::from_secs(10))
             .await
     }
+
+    /// Run [`Self::cleanup_all`] if at least [`Self::cleanup_interval`] has
+    /// passed since the last sweep, otherwise do nothing and report zeros.
+    ///
+    /// Callers invoke this at every pass boundary — the end of the writer's
+    /// drain, the end of the acceptor's retry pass — and the throttle decides
+    /// whether the sweep actually runs. Keeping the schedule here rather than
+    /// in each loop is what lets a caller ask for cleanup at the only moment
+    /// it is safe (no listed entries in flight) without pacing it itself.
+    pub async fn cleanup_all_if_due(&self) -> CleanupStats {
+        {
+            let mut last = self.last_cleanup.lock().await;
+            let due = match *last {
+                Some(at) => at.elapsed() >= self.cleanup_interval(),
+                // Never swept: a process that restarts more often than the
+                // interval would otherwise never reclaim anything.
+                None => true,
+            };
+            if !due {
+                return CleanupStats::default();
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        self.cleanup_all().await
+    }
+
+    /// How often [`Self::cleanup_all_if_due`] lets a sweep through.
+    ///
+    /// The smallest `cleanup_interval_secs` across this manager's per-signal
+    /// configs: a sweep covers every WAL at once, so it must run as often as
+    /// the most eager signal asks for.
+    pub fn cleanup_interval(&self) -> std::time::Duration {
+        let secs = [
+            &self.traces_config,
+            &self.logs_config,
+            &self.metrics_config,
+            &self.profiles_config,
+        ]
+        .iter()
+        .map(|c| c.cleanup_interval_secs)
+        .min()
+        .unwrap_or(300);
+        std::time::Duration::from_secs(secs)
+    }
+
+    /// Run [`Wal::cleanup`] over every cached WAL: delete sealed segments
+    /// whose entries are all processed, compact the rest.
+    ///
+    /// Until #1305 nothing called `Wal::cleanup` in any service, so processed
+    /// segments were never reclaimed — they accumulated on disk and were
+    /// re-read into memory at every start.
+    ///
+    /// **Call this from the task that drains these WALs, between passes.**
+    /// Compaction rewrites sealed segments, and running it alongside a drain
+    /// would have it moving entries under a consumer that is mid-pass.
+    ///
+    /// Different WALs share no state, so the sweep runs them concurrently:
+    /// its cost is the slowest single WAL rather than the sum of all of them,
+    /// which matters once a deployment has a few hundred tenants.
+    ///
+    /// One WAL's failure never skips the others. Failures are logged once per
+    /// sweep, not once per WAL: at a few hundred tenants a failing disk would
+    /// otherwise emit a log flood that self-monitoring re-ingests, which is
+    /// the export-churn loop of the #865 incident.
+    pub async fn cleanup_all(&self) -> CleanupStats {
+        use futures::StreamExt;
+
+        let wals = self.all_wals().await;
+        if wals.is_empty() {
+            return CleanupStats::default();
+        }
+
+        let failures = Arc::new(Mutex::new(Vec::new()));
+        let swept = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        futures::stream::iter(wals)
+            .for_each_concurrent(Self::CLEANUP_ALL_CONCURRENCY, |(key, wal)| {
+                let failures = failures.clone();
+                let swept = swept.clone();
+                async move {
+                    match wal.cleanup().await {
+                        Ok(()) => {
+                            swept.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            let (tenant, dataset, signal) = &key;
+                            failures
+                                .lock()
+                                .await
+                                .push(format!("{tenant}/{dataset}/{signal}: {e}"));
+                        }
+                    }
+                }
+            })
+            .await;
+
+        let failures = std::mem::take(&mut *failures.lock().await);
+        if !failures.is_empty() {
+            tracing::warn!(
+                failed = failures.len(),
+                wals = %failures.join("; "),
+                "WAL cleanup failed for some WALs; their segments stay until the next pass"
+            );
+        }
+        CleanupStats {
+            swept: swept.load(std::sync::atomic::Ordering::Relaxed),
+            failed: failures.len(),
+        }
+    }
+
+    /// How many WAL cleanups [`Self::cleanup_all`] runs at once. Matches
+    /// [`Self::FLUSH_ALL_CONCURRENCY`]: the same per-WAL file I/O, bounded so
+    /// a large tenant count cannot swamp the runtime's blocking pool.
+    const CLEANUP_ALL_CONCURRENCY: usize = 32;
 
     /// Get the number of cached WAL instances
     ///
@@ -928,5 +1055,106 @@ mod tests {
 
         // Verify only 1 WAL was created
         assert_eq!(manager.wal_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn cleanup_all_reclaims_every_cached_wal() {
+        // Cleanup had no caller in any service (#1305). The sweep is what the
+        // writer and acceptor call at the end of a pass, so it must reach
+        // every cached WAL, not just the first.
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+        let manager = WalManager::new(
+            crate::wal::test_support::rotating_config(&base_path),
+            crate::wal::test_support::rotating_config(&base_path),
+            crate::wal::test_support::rotating_config(&base_path),
+            crate::wal::test_support::rotating_config(&base_path),
+        );
+
+        for signal in ["traces", "logs"] {
+            let wal = manager.get_wal("acme", "production", signal).await.unwrap();
+            for i in 0..12u64 {
+                let id = wal
+                    .append(
+                        crate::wal::WalOperation::WriteTraces,
+                        vec![b'x'; 200 + i as usize],
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                wal.flush().await.unwrap();
+                wal.mark_processed(id).await.unwrap();
+            }
+            assert!(
+                wal.segment_count().await > 1,
+                "{signal} WAL should have sealed segments before cleanup"
+            );
+        }
+
+        let stats = manager.cleanup_all().await;
+        assert_eq!(stats.swept, 2, "both cached WALs must be swept");
+        assert_eq!(stats.failed, 0, "no WAL should fail cleanup here");
+        assert_eq!(
+            manager.cleanup_interval(),
+            std::time::Duration::from_secs(300),
+            "the sweep cadence is the smallest per-signal cleanup interval"
+        );
+
+        for signal in ["traces", "logs"] {
+            let wal = manager.get_wal("acme", "production", signal).await.unwrap();
+            assert_eq!(
+                wal.segment_count().await,
+                1,
+                "{signal} WAL kept sealed segments whose entries were all processed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_all_if_due_sweeps_once_then_throttles() {
+        // The services call this at every pass boundary — many times a minute
+        // — and the throttle is what keeps that from compacting segments on
+        // every tick. The first call must still sweep: a process restarting
+        // more often than the interval would otherwise never reclaim anything.
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+        let manager = WalManager::new(
+            crate::wal::test_support::rotating_config(&base_path),
+            crate::wal::test_support::rotating_config(&base_path),
+            crate::wal::test_support::rotating_config(&base_path),
+            crate::wal::test_support::rotating_config(&base_path),
+        );
+
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        for i in 0..12u64 {
+            let id = wal
+                .append(
+                    crate::wal::WalOperation::WriteTraces,
+                    vec![b'x'; 200 + i as usize],
+                    None,
+                )
+                .await
+                .unwrap();
+            wal.flush().await.unwrap();
+            wal.mark_processed(id).await.unwrap();
+        }
+
+        let first = manager.cleanup_all_if_due().await;
+        assert_eq!(first.swept, 1, "the first call must sweep");
+        assert_eq!(
+            wal.segment_count().await,
+            1,
+            "the swept WAL should have kept only its open segment"
+        );
+
+        let second = manager.cleanup_all_if_due().await;
+        assert_eq!(
+            second,
+            CleanupStats::default(),
+            "a call inside the interval must not sweep again"
+        );
     }
 }
