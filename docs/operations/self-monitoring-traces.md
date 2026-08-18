@@ -28,6 +28,17 @@ in `src/common/src/self_monitoring/app_metrics.rs`; WAL-specific ones are
 documented alongside their recovery behavior in
 [WAL Persistence](wal-persistence.md#monitoring-and-alerting).
 
+Two writer instruments are worth naming here because they are read together:
+`signaldb.writer.commit_duration` (histogram, `tenant` attribute) is how long
+one group's Iceberg commit took, and `signaldb.writer.groups_deferred` (gauge)
+is how many groups the commit-coalescing floor held back on the last cycle.
+Groups commit concurrently, so one tenant's slow commits appear as that
+tenant's latency rather than as everyone's — a p99 that rises for a single
+`tenant` value is that tenant's catalog or object store, while one that rises
+across all of them is shared infrastructure. A sustained non-zero
+`groups_deferred` alongside rising `signaldb.wal.entries_pending` means commits
+are not keeping up regardless of which.
+
 ## Resource identity
 
 Every service exports with:
