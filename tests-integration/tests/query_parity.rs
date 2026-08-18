@@ -302,6 +302,17 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "search_logs",
     ),
     ("query_ir", CliSurface::QueryFlag("ir"), "query_ir"),
+    // `query_sources` is the discovery surface's only GET: an IR document must
+    // name a `from`, and "which sources exist" has none. Fields and values ride
+    // the `query_ir` operation above as `describe` documents, so this is the one
+    // discovery operation with a manifest row of its own. The Explore UI's
+    // adoption is deferred to #769; this manifest covers CLI and MCP, which is
+    // where the parity rule bites.
+    (
+        "query_sources",
+        CliSurface::Path(&["discover", "sources"]),
+        "discover_sources",
+    ),
     (
         "query_single_trace",
         CliSurface::QueryFlag("trace_id"),
