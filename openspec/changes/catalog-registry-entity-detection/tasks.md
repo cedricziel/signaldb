@@ -8,15 +8,15 @@ directly rather than through the components.
 Keeps the existing fixed entity-type list. No registry, no new sources. The
 user-visible change is RED honesty; everything else is internal shape.
 
-- [ ] 1.1 Test: a group whose observations come only from a non-trace source
+- [x] 1.1 Test: a group whose observations come only from a non-trace source
       reports its error rate and percentiles as unavailable, not `0`/`0ms`
-- [ ] 1.2 Introduce an explicit "measurement unavailable" state in the catalog
+- [x] 1.2 Introduce an explicit "measurement unavailable" state in the catalog
       row model, distinct from a zero measurement
-- [ ] 1.3 Split `buildEntitySourceDoc` into an instance-listing aggregate
+- [x] 1.3 Split `buildEntitySourceDoc` into an instance-listing aggregate
       (identity tuple + last-seen) and a trace-only RED aggregate
-- [ ] 1.4 Test: merging sources does not sum volume from different signals into
+- [x] 1.4 Test: merging sources does not sum volume from different signals into
       one figure presented as request volume
-- [ ] 1.5 Render unavailable measurements as such in `CatalogView` and
+- [x] 1.5 Render unavailable measurements as such in `CatalogView` and
       `EntityDetail`; drop the summed-count column from the list view
 - [ ] 1.6 Verify against hive: a service observed in traces still shows p50/p95;
       one observed only outside traces shows neither, and shows no fabricated
