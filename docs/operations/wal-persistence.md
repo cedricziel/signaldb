@@ -273,6 +273,26 @@ against a rewritten file.
 Disk that is not reclaimed therefore means entries are not being processed, not
 that cleanup is off. Read the WAL backlog gauge first.
 
+### Idle WAL eviction
+
+The same sweep then closes and drops any WAL that has taken no append for 15
+minutes **and** holds no unprocessed entries. The next write for that
+tenant/dataset/signal reopens it.
+
+This bounds resource use. One WAL per `(tenant, dataset, signal)` holds three
+open file descriptors and one flush timer, and before this nothing ever
+released them: 200 tenants × 2 datasets × 4 signals is ~4800 descriptors in the
+writer alone, doubled in monolithic mode. Past `RLIMIT_NOFILE`, new WALs fail
+to open inside `do_put` and existing ones fail segment rotation mid-flush —
+a write-path failure on data whose durability was already acknowledged.
+
+A WAL with unprocessed entries is never evicted: the cached instance is what
+the drain loops iterate, so dropping it early would stall that tenant until new
+traffic arrived.
+
+`signaldb.wal.instances` is the gauge to watch; it now goes down as well as up.
+A count that keeps climbing with no traffic growth means WALs are not draining.
+
 ### Data Flow with WAL
 
 1. **Acceptor receives OTLP data**

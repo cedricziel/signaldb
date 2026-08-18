@@ -441,14 +441,14 @@ impl WalSegment {
         dataset_id: &str,
         metadata: Option<String>,
     ) -> Result<Uuid> {
-        // A clock before the epoch yields timestamp 0 rather than a panic
-        // on the hot write path.
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
         self.append_at(
-            entry_id, timestamp, operation, data, tenant_id, dataset_id, metadata,
+            entry_id,
+            unix_now_secs(),
+            operation,
+            data,
+            tenant_id,
+            dataset_id,
+            metadata,
         )
         .await
     }
@@ -485,6 +485,18 @@ impl WalSegment {
         if self.format != SegmentFormat::V1 {
             anyhow::bail!(
                 "WAL segment {} uses the legacy unframed format and is read-only",
+                self.id
+            );
+        }
+        // A closed segment has had its handles taken. Writing through the
+        // `if let Some(..)` arms below would then skip the bytes but still
+        // advance the offsets and record the entry — durability claimed for
+        // data never written, and every later offset pointing past a hole.
+        // Refuse instead: the caller (rotation, compaction, idle eviction)
+        // must open a fresh segment.
+        if self.file.is_none() || self.data_file.is_none() {
+            anyhow::bail!(
+                "WAL segment {} is closed and cannot accept appends",
                 self.id
             );
         }
@@ -879,6 +891,15 @@ impl Default for WalConfig {
 /// Type alias for WAL buffer entries (entry_id, operation, data, optional_metadata)
 type WalBuffer = Arc<RwLock<VecDeque<(Uuid, WalOperation, Vec<u8>, Option<String>)>>>;
 
+/// Seconds since the Unix epoch. A clock before the epoch yields 0 rather
+/// than a panic — this is called on the write path.
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// WAL directory identities (`writer.id`) whose recovered backlog has already
 /// been seeded into `signaldb.wal.entries_pending` by this process.
 ///
@@ -893,9 +914,20 @@ pub struct Wal {
     current_segment: Arc<Mutex<WalSegment>>,
     next_segment_id: Arc<Mutex<u64>>,
     buffer: WalBuffer,
-    flush_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Handle to the background flush task, behind a lock because
+    /// [`Wal::close`] must stop it through a shared `Arc<Wal>` — the only
+    /// shape the manager ever hands out.
+    ///
+    /// Aborting is not optional: the task holds clones of `buffer`,
+    /// `current_segment` and `segments`, so dropping the `Arc<Wal>` alone
+    /// neither stops the timer nor releases the segments' file descriptors.
+    flush_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// All segments including current (for cleanup operations)
     segments: Arc<Mutex<Vec<Arc<Mutex<WalSegment>>>>>,
+    /// Unix seconds of the last append, for idle eviction. Monotonic clocks
+    /// are not used because the value is only ever compared against `now` on
+    /// the same process.
+    last_append: std::sync::atomic::AtomicU64,
     /// Stable identity of this WAL directory, persisted in `writer.id`.
     /// Survives restarts so downstream consumers can key idempotency
     /// markers to the WAL whose entries they process.
@@ -1024,8 +1056,9 @@ impl Wal {
             current_segment,
             next_segment_id: Arc::new(Mutex::new(next_id)),
             buffer: Arc::new(RwLock::new(VecDeque::new())),
-            flush_handle: None,
+            flush_handle: std::sync::Mutex::new(None),
             segments: Arc::new(Mutex::new(all_segments)),
+            last_append: std::sync::atomic::AtomicU64::new(unix_now_secs()),
             writer_id,
         };
 
@@ -1261,7 +1294,10 @@ impl Wal {
             }
         });
 
-        self.flush_handle = Some(handle);
+        *self
+            .flush_handle
+            .lock()
+            .expect("flush handle mutex poisoned") = Some(handle);
     }
 
     /// Add an entry to the WAL
@@ -1282,6 +1318,8 @@ impl Wal {
         metadata: Option<String>,
     ) -> Result<Uuid> {
         let entry_id = Uuid::new_v4();
+        self.last_append
+            .store(unix_now_secs(), std::sync::atomic::Ordering::Relaxed);
 
         {
             let metrics = crate::self_monitoring::app_metrics();
@@ -1428,6 +1466,16 @@ impl Wal {
         result
     }
 
+    /// How long since this WAL last accepted an append.
+    ///
+    /// Drives idle eviction. A WAL created and never written to counts as idle
+    /// from its creation, which is what makes a discovered-but-quiet WAL from a
+    /// previous run evictable once its backlog is drained.
+    pub fn idle_for(&self) -> std::time::Duration {
+        let last = self.last_append.load(std::sync::atomic::Ordering::Relaxed);
+        std::time::Duration::from_secs(unix_now_secs().saturating_sub(last))
+    }
+
     /// Number of segments this WAL currently holds, including the open one.
     ///
     /// Sealed segments are only reclaimed by [`Self::cleanup`], so this is the
@@ -1474,17 +1522,33 @@ impl Wal {
         )
     }
 
-    /// Shutdown the WAL and cleanup resources
-    pub async fn shutdown(mut self) -> Result<()> {
-        // Stop background tasks
-        if let Some(handle) = self.flush_handle.take() {
+    /// Stop this WAL's background flush task, flush what is buffered, and
+    /// close every segment's file handles.
+    ///
+    /// Takes `&self` so it is callable through the `Arc<Wal>` the manager
+    /// hands out — that is the whole point. Aborting the flush task is what
+    /// actually releases the resources: it holds clones of `buffer`,
+    /// `current_segment` and `segments`, so dropping the last `Arc<Wal>`
+    /// without this leaves the timer running and the descriptors open.
+    ///
+    /// After this the WAL is inert: its segments refuse appends
+    /// ([`WalSegment::append`] fails rather than silently dropping bytes), so
+    /// a caller holding a stale clone gets an error, never silent data loss.
+    /// Reads still work.
+    pub async fn close(&self) -> Result<()> {
+        if let Some(handle) = self
+            .flush_handle
+            .lock()
+            .expect("flush handle mutex poisoned")
+            .take()
+        {
             handle.abort();
         }
 
-        // Flush any remaining entries
+        // Flush after aborting, so the abort cannot land mid-write and the
+        // buffered entries are made durable exactly once, here.
         self.flush().await?;
 
-        // Close all segments
         let segments = self.segments.lock().await;
         for segment_arc in segments.iter() {
             let mut segment = segment_arc.lock().await;
@@ -1492,6 +1556,11 @@ impl Wal {
         }
 
         Ok(())
+    }
+
+    /// Shutdown the WAL and cleanup resources
+    pub async fn shutdown(self) -> Result<()> {
+        self.close().await
     }
 
     /// Mark a WAL entry as processed and persist the state to disk
@@ -1881,6 +1950,56 @@ mod tests {
         };
         let data = segment.read_entry_data(&good).await.unwrap();
         assert_eq!(data, payload);
+    }
+
+    #[tokio::test]
+    async fn a_closed_segment_refuses_appends_instead_of_dropping_them() {
+        // `close()` takes the file handles out of the segment. Appending after
+        // that used to be silently lossy: the write was skipped because the
+        // handle was `None`, but the offsets still advanced and the entry was
+        // still recorded — so the WAL claimed durability for bytes that were
+        // never written, and every later offset pointed past a hole. Idle
+        // eviction closes segments while the manager may still hand out the
+        // instance, so this has to fail loudly.
+        let temp_dir = TempDir::new().unwrap();
+        let mut segment = WalSegment::new(temp_dir.path(), 0).await.unwrap();
+
+        let payload = record_batch_to_bytes(&make_batch()).unwrap();
+        segment
+            .append(
+                Uuid::new_v4(),
+                WalOperation::WriteTraces,
+                &payload,
+                "t",
+                "d",
+                None,
+            )
+            .await
+            .unwrap();
+        let entries_before = segment.entries.len();
+
+        segment.close().await.unwrap();
+
+        let err = segment
+            .append(
+                Uuid::new_v4(),
+                WalOperation::WriteTraces,
+                &payload,
+                "t",
+                "d",
+                None,
+            )
+            .await
+            .expect_err("appending to a closed segment must fail, not silently drop the payload");
+        assert!(
+            err.to_string().contains("closed"),
+            "expected a closed-segment error, got: {err}"
+        );
+        assert_eq!(
+            segment.entries.len(),
+            entries_before,
+            "a refused append must not record an entry"
+        );
     }
 
     #[tokio::test]

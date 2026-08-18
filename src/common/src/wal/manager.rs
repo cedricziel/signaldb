@@ -40,6 +40,9 @@ pub struct WalManager {
     /// When [`Self::cleanup_all_if_due`] last let a sweep through; `None`
     /// until the first one.
     last_cleanup: Arc<Mutex<Option<std::time::Instant>>>,
+    /// How long a WAL may go without an append before [`Self::evict_idle`]
+    /// closes and drops it. Zero disables eviction.
+    idle_timeout: std::time::Duration,
     /// Base configuration template for trace WALs
     traces_config: WalConfig,
     /// Base configuration template for log WALs
@@ -72,6 +75,7 @@ impl WalManager {
             wals: Arc::new(Mutex::new(HashMap::new())),
             init_guards: Arc::new(Mutex::new(HashMap::new())),
             last_cleanup: Arc::new(Mutex::new(None)),
+            idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
             traces_config,
             logs_config,
             metrics_config,
@@ -84,6 +88,22 @@ impl WalManager {
     /// `{tenant}/{dataset}/{signal}` tree is created.
     pub fn uniform(base: WalConfig) -> Self {
         Self::new(base.clone(), base.clone(), base.clone(), base)
+    }
+
+    /// How long a WAL may go without an append before [`Self::evict_idle`]
+    /// gives it up.
+    ///
+    /// Long enough that a tenant reporting on a slow interval keeps its WAL
+    /// across cycles, short enough that a tenant that stopped reporting stops
+    /// costing descriptors within the hour. Reopening costs one directory
+    /// scan, so the penalty for evicting too eagerly is small and the penalty
+    /// for never evicting is `RLIMIT_NOFILE` (#1305).
+    pub const DEFAULT_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+    /// Override [`Self::DEFAULT_IDLE_TIMEOUT`]. Zero disables idle eviction.
+    pub fn with_idle_timeout(mut self, idle_timeout: std::time::Duration) -> Self {
+        self.idle_timeout = idle_timeout;
+        self
     }
 
     /// Cache key under which [`Self::adopt_root_segments`] registers a
@@ -121,6 +141,17 @@ impl WalManager {
         crate::self_monitoring::app_metrics()
             .wal_instances
             .add(1, &[]);
+    }
+
+    /// The counterpart to [`Self::record_instance_opened`], for WALs the
+    /// manager closes and drops (idle eviction, cache clear). The gauge only
+    /// tells the truth if both halves stay in step.
+    fn record_instances_closed(count: usize) {
+        if count > 0 {
+            crate::self_monitoring::app_metrics()
+                .wal_instances
+                .add(-(count as i64), &[]);
+        }
     }
 
     /// Adopt segments left directly in the base directory by a pre-#932
@@ -239,13 +270,7 @@ impl WalManager {
         }
 
         // Get or create per-key initialization guard
-        let init_guard = {
-            let mut guards = self.init_guards.lock().await;
-            guards
-                .entry(key.clone())
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
-        };
+        let init_guard = self.init_guard_for(&key).await;
 
         // Acquire per-key lock to serialize initialization for this specific key
         let _guard = init_guard.lock().await;
@@ -273,8 +298,6 @@ impl WalManager {
             "metrics" => &self.metrics_config,
             "profiles" => &self.profiles_config,
             _ => {
-                // Remove guard on failure
-                self.init_guards.lock().await.remove(&key);
                 return Err(anyhow::anyhow!(
                     "Unknown signal type: {signal_type}. Must be 'traces', 'logs', 'metrics', or 'profiles'"
                 ));
@@ -287,11 +310,7 @@ impl WalManager {
         // Initialize WAL
         let mut wal = match Wal::new(wal_config).await {
             Ok(wal) => wal,
-            Err(e) => {
-                // Remove guard on failure
-                self.init_guards.lock().await.remove(&key);
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         };
 
         // Start background flush for this WAL
@@ -305,8 +324,13 @@ impl WalManager {
             wals.insert(key.clone(), wal.clone());
         }
 
-        // Clean up the per-key guard (optional, but prevents unbounded growth)
-        self.init_guards.lock().await.remove(&key);
+        // The per-key guard stays resident. It used to be removed here to
+        // bound growth, but it is keyed exactly like the WAL cache, so it
+        // grows no faster than that. Keeping it is what lets [`Self::evict_idle`]
+        // contend with a concurrent `get_wal` on the *same* mutex — a guard
+        // recreated between the two would let a fresh WAL open a directory an
+        // eviction is still closing, which is two live instances over one
+        // directory (#883).
 
         Self::record_instance_opened();
 
@@ -424,7 +448,7 @@ impl WalManager {
     /// in each loop is what lets a caller ask for cleanup at the only moment
     /// it is safe (no listed entries in flight) without pacing it itself.
     pub async fn cleanup_all_if_due(&self) -> CleanupStats {
-        {
+        let due = {
             let mut last = self.last_cleanup.lock().await;
             let due = match *last {
                 Some(at) => at.elapsed() >= self.cleanup_interval(),
@@ -432,12 +456,29 @@ impl WalManager {
                 // interval would otherwise never reclaim anything.
                 None => true,
             };
-            if !due {
-                return CleanupStats::default();
+            if due {
+                *last = Some(std::time::Instant::now());
             }
-            *last = Some(std::time::Instant::now());
+            due
+        };
+        let stats = if due {
+            self.cleanup_all().await
+        } else {
+            CleanupStats::default()
+        };
+
+        // Eviction runs at every pass boundary, not on the cleanup throttle.
+        // The boundary is what makes closing segments safe (no consumer is
+        // mid-pass), but the *decision* is `idle_for` against the idle
+        // timeout, so the scan is its own gate — and it is cheap, allocating
+        // only for WALs that are actually idle. Pacing it with
+        // `cleanup_interval_secs` instead would tie descriptor reclamation to
+        // a disk-cleanup knob and delay it past `idle_timeout` whenever an
+        // operator raised that knob.
+        if !self.idle_timeout.is_zero() {
+            self.evict_idle(self.idle_timeout).await;
         }
-        self.cleanup_all().await
+        stats
     }
 
     /// How often [`Self::cleanup_all_if_due`] lets a sweep through.
@@ -521,6 +562,126 @@ impl WalManager {
             swept: swept.load(std::sync::atomic::Ordering::Relaxed),
             failed: failures.len(),
         }
+    }
+
+    /// Close and drop every cached WAL that has taken no append for
+    /// `idle_after` and holds no unprocessed entries. Returns how many were
+    /// evicted.
+    ///
+    /// One `Wal` per `(tenant, dataset, signal)` costs three open file
+    /// descriptors and one flush timer, and nothing ever released them: the
+    /// count grew with the tenant count until the process hit `RLIMIT_NOFILE`,
+    /// at which point `Wal::new` starts failing inside `do_put` and existing
+    /// WALs fail segment rotation mid-flush — a write-path failure on data
+    /// whose durability was already acknowledged (#1305).
+    ///
+    /// An idle WAL costs nothing to give up: the next write reopens it, and
+    /// the entries are on disk either way.
+    ///
+    /// Two safety properties this relies on:
+    ///
+    /// - A WAL with unprocessed entries is **never** evicted. Reopening would
+    ///   re-read them, but the cached instance is also what the drain loops
+    ///   iterate, so evicting early would stall that tenant until new traffic
+    ///   arrived.
+    /// - Eviction takes the same per-key init guard `get_wal` takes, and closes
+    ///   the instance while holding it. Two live `Wal` values over one
+    ///   directory keep independent offset state — the desync class #883 fixed
+    ///   — so the old instance must be inert before a new one can be created.
+    pub async fn evict_idle(&self, idle_after: std::time::Duration) -> usize {
+        // Scan under the map lock and clone only the keys that are actually
+        // idle — usually none. Cloning every key on every pass would allocate
+        // three strings per cached WAL just to discard them.
+        let candidates: Vec<WalKey> = {
+            let wals = self.wals.lock().await;
+            wals.iter()
+                .filter(|(_, wal)| wal.idle_for() >= idle_after)
+                .map(|(key, _)| key.clone())
+                .collect()
+        };
+        if candidates.is_empty() {
+            return 0;
+        }
+
+        let mut evicted = 0;
+        for key in candidates {
+            // Serialize against `get_wal` for this key for the whole
+            // check-remove-close sequence.
+            let guard = self.init_guard_for(&key).await;
+            let _guard = guard.lock().await;
+
+            let Some(wal) = self.wals.lock().await.get(&key).cloned() else {
+                continue;
+            };
+            // Re-check under the guard: a write may have landed since the scan.
+            if wal.idle_for() < idle_after {
+                continue;
+            }
+            match wal.get_unprocessed_entries().await {
+                Ok(entries) if entries.is_empty() => {}
+                Ok(_) => continue,
+                Err(e) => {
+                    let (tenant, dataset, signal) = &key;
+                    tracing::debug!(
+                        tenant_id = %tenant,
+                        dataset_id = %dataset,
+                        signal = %signal,
+                        error = %e,
+                        "Could not check WAL backlog before eviction; keeping it"
+                    );
+                    continue;
+                }
+            }
+
+            self.wals.lock().await.remove(&key);
+            if let Err(e) = wal.close().await {
+                let (tenant, dataset, signal) = &key;
+                tracing::warn!(
+                    tenant_id = %tenant,
+                    dataset_id = %dataset,
+                    signal = %signal,
+                    error = %e,
+                    "Failed to close an evicted WAL; its descriptors may leak until exit"
+                );
+            }
+            Self::record_instances_closed(1);
+            evicted += 1;
+
+            // Retire the guard too, or `init_guards` becomes the same
+            // unbounded-growth shape this method exists to fix — one resident
+            // entry per `(tenant, dataset, signal)` ever seen, including
+            // tenants that never come back.
+            //
+            // Only safe while no one else holds a clone: a `get_wal` blocked
+            // on this guard would otherwise proceed against a mutex no longer
+            // in the map, while the next caller creates a *different* one —
+            // two creators for one directory. Both the map and this scope hold
+            // a clone, so a count of exactly two means nobody is waiting, and
+            // the `init_guards` lock is what a new waiter would have to take
+            // to clone it.
+            let mut guards = self.init_guards.lock().await;
+            if Arc::strong_count(&guard) == 2 {
+                guards.remove(&key);
+            }
+        }
+
+        if evicted > 0 {
+            tracing::info!(evicted, "Evicted idle WALs");
+        }
+        evicted
+    }
+
+    /// The per-key initialization guard, creating it if absent. Guards are
+    /// kept for the manager's lifetime so creation and eviction of the same
+    /// key always contend on the *same* mutex; a guard dropped between the two
+    /// would let a fresh WAL open a directory an eviction is still closing.
+    async fn init_guard_for(&self, key: &WalKey) -> Arc<Mutex<()>> {
+        self.init_guards
+            .lock()
+            .await
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// How many WAL cleanups [`Self::cleanup_all`] runs at once. Matches
@@ -658,14 +819,29 @@ impl WalManager {
         Ok(found)
     }
 
-    /// Clear all cached WAL instances
+    /// Close and drop all cached WAL instances. They are recreated on next
+    /// access; the files on disk are untouched.
     ///
-    /// This will drop all WAL references. WALs will be recreated on next access.
-    /// Note: This doesn't delete WAL files on disk, just clears the in-memory cache.
+    /// Each instance is closed rather than merely dropped: its flush task
+    /// holds clones of the WAL's internals, so dropping the `Arc` alone leaves
+    /// the timer running and the segments' descriptors open — the leak #1305
+    /// is about.
     pub async fn clear_cache(&self) {
-        let mut wals = self.wals.lock().await;
-        wals.clear();
-        tracing::info!("Cleared all cached WAL instances");
+        let drained: Vec<(WalKey, Arc<Wal>)> = self.wals.lock().await.drain().collect();
+        for (key, wal) in &drained {
+            if let Err(e) = wal.close().await {
+                let (tenant, dataset, signal) = key;
+                tracing::warn!(
+                    tenant_id = %tenant,
+                    dataset_id = %dataset,
+                    signal = %signal,
+                    error = %e,
+                    "Failed to close a WAL while clearing the cache"
+                );
+            }
+        }
+        Self::record_instances_closed(drained.len());
+        tracing::info!(cleared = drained.len(), "Cleared all cached WAL instances");
     }
 }
 
@@ -673,6 +849,7 @@ impl WalManager {
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn create_test_config(base_dir: &Path) -> WalConfig {
@@ -1155,6 +1332,179 @@ mod tests {
             second,
             CleanupStats::default(),
             "a call inside the interval must not sweep again"
+        );
+    }
+
+    /// A manager whose four signal configs all point at `base_dir`.
+    fn uniform_manager(base_dir: &Path) -> WalManager {
+        WalManager::uniform(create_test_config(base_dir))
+    }
+
+    /// Append `payload`, make it durable, and mark it processed — i.e. leave
+    /// the WAL with an empty backlog, which is the state eviction requires.
+    async fn write_and_drain(wal: &Wal, payload: &[u8]) {
+        let id = wal
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                payload.to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        wal.mark_processed(id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_drained_wals_are_evicted_and_their_files_closed() {
+        // One WAL per (tenant, dataset, signal) and nothing ever closed them:
+        // three file descriptors and one flush timer each, growing with the
+        // tenant count until the process hits RLIMIT_NOFILE (#1305). An idle,
+        // fully-drained WAL is reopened on the next write, so holding it costs
+        // resources for nothing.
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path());
+
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        write_and_drain(&wal, b"payload").await;
+        assert_eq!(manager.wal_count().await, 1);
+
+        // Idle threshold of zero: everything drained is immediately evictable.
+        let evicted = manager.evict_idle(Duration::from_secs(0)).await;
+        assert_eq!(evicted, 1, "a drained, idle WAL must be evicted");
+        assert_eq!(manager.wal_count().await, 0, "the cache must drop it");
+
+        // The evicted instance is inert: its segments are closed, so a caller
+        // still holding this clone gets an error rather than silently losing
+        // the payload.
+        // The append itself only buffers, so the error surfaces at the flush
+        // that would otherwise report those bytes as durable.
+        let err = match wal
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"after".to_vec(),
+                None,
+            )
+            .await
+        {
+            Ok(_) => wal
+                .flush()
+                .await
+                .expect_err("an evicted WAL must not accept further writes as durable"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("closed"),
+            "expected a closed-WAL error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn eviction_retires_the_per_key_init_guard_too() {
+        // Guards are kept resident so eviction and `get_wal` contend on the
+        // same mutex. That is only sound if eviction also retires the guard:
+        // otherwise `init_guards` grows with every tenant ever seen and
+        // becomes the same unbounded-growth shape eviction exists to fix,
+        // just cheaper per entry.
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path());
+
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        write_and_drain(&wal, b"payload").await;
+        assert_eq!(manager.init_guards.lock().await.len(), 1);
+
+        assert_eq!(manager.evict_idle(Duration::from_secs(0)).await, 1);
+        assert!(
+            manager.init_guards.lock().await.is_empty(),
+            "an evicted key must not leave its init guard behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wal_with_undrained_entries_is_never_evicted() {
+        // Eviction must never discard a WAL whose entries have not been
+        // committed downstream: reopening re-reads them from disk, but the
+        // instance is also what the drain loop iterates, so dropping it early
+        // would stall that tenant until new traffic arrived.
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path());
+
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        wal.append(
+            crate::wal::WalOperation::WriteTraces,
+            b"pending".to_vec(),
+            None,
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        let evicted = manager.evict_idle(Duration::from_secs(0)).await;
+        assert_eq!(evicted, 0, "a WAL with unprocessed entries must be kept");
+        assert_eq!(manager.wal_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_recently_written_wal_is_not_evicted() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path());
+
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        write_and_drain(&wal, b"payload").await;
+
+        let evicted = manager.evict_idle(Duration::from_secs(3600)).await;
+        assert_eq!(evicted, 0, "a WAL written to just now is not idle");
+        assert_eq!(manager.wal_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn reopening_an_evicted_wal_serves_a_fresh_instance() {
+        // Eviction is only safe if the next write gets a *new* instance over
+        // the same directory. Two live `Wal` values sharing a directory keep
+        // independent offset state, which is the desync class #883 fixed.
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path());
+
+        let first = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        write_and_drain(&first, b"one").await;
+
+        assert_eq!(manager.evict_idle(Duration::from_secs(0)).await, 1);
+
+        let second = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "reopening must not hand back the evicted instance"
+        );
+
+        // The fresh instance writes at correct offsets over the same directory.
+        let id = second
+            .append(crate::wal::WalOperation::WriteTraces, b"two".to_vec(), None)
+            .await
+            .unwrap();
+        second.flush().await.unwrap();
+        let entries = second.get_entries().await.unwrap();
+        let entry = entries.iter().find(|e| e.id == id).expect("entry present");
+        assert_eq!(
+            second.read_entry_data(entry).await.unwrap(),
+            b"two".to_vec()
         );
     }
 }

@@ -799,6 +799,26 @@ tenants' WALs.
 Disk that is not being reclaimed therefore means entries are not being
 processed, not that cleanup is disabled — read the WAL backlog gauge first.
 
+### Idle WAL Eviction
+
+The same sweep then closes and drops any cached WAL idle for
+`WalManager::DEFAULT_IDLE_TIMEOUT` (15m) that holds no unprocessed entries; the
+next write reopens it. Each cached WAL costs three descriptors and a flush
+timer, and the instance count scales with tenant × dataset × signal, so without
+this the process walks into `RLIMIT_NOFILE` — where `Wal::new` starts failing
+inside `do_put` and live WALs fail segment rotation mid-flush.
+
+Closing is what actually frees the resources: the flush task holds clones of
+the WAL's buffer and segments, so dropping the `Arc<Wal>` alone stops nothing.
+`Wal::close` aborts the task, flushes once, and closes the segment files.
+
+Eviction takes the same per-key init guard `get_wal` takes and holds it across
+check-remove-close, so a concurrent write cannot open a second instance over a
+directory still being closed — two live `Wal` values sharing a directory keep
+independent offset state, the desync class #883 fixed. For the same reason a
+closed segment _refuses_ appends instead of skipping the write while advancing
+offsets.
+
 ### Segment Files
 
 Each WAL segment consists of three files:
