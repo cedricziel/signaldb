@@ -15,11 +15,11 @@ against the code; corrected after expert review):
   Entries deferred by the coalescing floor are re-decoded each tick
   (in-code NOTE in `drain_pending`).
 - `Wal::get_unprocessed_entries` walks every entry of every segment,
-  processed ones included. No service calls `Wal::start_background_cleanup`
-  (#1305), so segments are never deleted or compacted and that per-tick
-  listing grows with the total number of entries ever written to the WAL.
-  This change does not address it: the memtable removes payload reads and
-  decodes, not the metadata scan.
+  processed ones included. Since #1305 both services sweep their WALs
+  between passes, so that per-tick listing is bounded by the live backlog
+  rather than by every entry ever written. This change does not address the
+  remaining scan: the memtable removes payload reads and decodes, not the
+  metadata scan.
 - The writer holds **one WAL per (tenant, dataset, signal)** (#1299), not a
   global WAL. `IcebergWriterFlightService::do_put` resolves the WAL through
   `WalManager` on every call, and `drain_pending` groups by (WAL identity,
@@ -60,7 +60,7 @@ against the code; corrected after expert review):
   observable.
 - Preserve today's failure semantics exactly: failed commits retry, poison
   entries dead-letter after the same failure budget, and WAL entries still
-  become fully processed. Segment *reclamation* is not among the semantics
+  become fully processed. Segment _reclamation_ is not among the semantics
   to preserve: it does not happen today (#1305) and this change neither
   restores nor further blocks it.
 - Bounded memory under every condition: steady state, bursts, catalog
@@ -136,9 +136,9 @@ directly to the WAL and expect a drain keep passing. Alternative rejected:
 pure drain-from-memory ("WAL recovery-only"), which silently strands data
 on any commit failure and loses the failure-budget accounting that
 dead-letters poison entries. (An earlier revision also justified this by
-segment reclamation. That leg is void: `Wal::start_background_cleanup` has
-no caller in any service, so no segment is ever reclaimed either way,
-#1305.)
+segment reclamation. That leg was void when written — nothing called
+`Wal::cleanup` — and is now moot: since #1305 both services reclaim
+segments regardless of which drain shape this change picks.)
 
 ### D4: Soft budget signals the loop; hard ceiling backpressures ingest
 
@@ -264,7 +264,7 @@ production code has ever appended a `Flush` marker to the writer WAL —
   approximate; document headroom guidance in ops docs.
 - [Reconciliation diff cost on huge backlogs] → metadata-only listing (no
   payload reads); the id-set diff is linear in the unprocessed count. The
-  *listing* it diffs against is not — see Context: it is linear in the total
+  _listing_ it diffs against is not — see Context: it is linear in the total
   entries ever written (#1305). That cost is unchanged by this change,
   today's loop already pays it every tick, but this change does not fix it
   and the ops docs must not imply that it does.

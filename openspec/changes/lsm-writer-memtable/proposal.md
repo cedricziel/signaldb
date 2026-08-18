@@ -16,13 +16,14 @@ is the prerequisite for a follow-up change (`unflushed-data-visibility`)
 that decouples query visibility from commit cadence so the commit interval
 can later be raised for larger files and fewer snapshots.
 
-What this change does NOT remove is the per-tick *metadata* scan.
+What this change does NOT remove is the per-tick _metadata_ scan.
 `Wal::get_unprocessed_entries` walks every entry of every segment,
-processed ones included, and no service calls
-`Wal::start_background_cleanup` today (#1305), so segments are never
-reclaimed and that scan stays linear in the total number of entries ever
-written to the WAL. The memtable removes payload reads and decodes; the
-metadata scan is untouched until #1305 lands.
+processed ones included, so that scan stays linear in the number of entries
+the WAL still holds. Since #1305 both services sweep their WALs between
+passes, so fully-processed segments are reclaimed and the scan no longer
+grows with every entry ever written — but it is still linear in the live
+backlog. The memtable removes payload reads and decodes; the metadata scan
+is untouched.
 
 Note this change does NOT claim query traffic currently forces small
 Parquet files: the writer's `do_action("flush")` has no production caller

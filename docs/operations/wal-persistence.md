@@ -239,12 +239,11 @@ metadata is routed by it, and one that does not falls back to `default` /
 `default`, which is where a pre-upgrade writer put it. New writes always go to
 the per-tenant tree, so nothing is ever added to the legacy directory.
 
-**The drained files are not deleted automatically.** WAL segment cleanup
-(`Wal::start_background_cleanup`) has no caller in any service today, so the
-segments stay, are re-read into memory at every writer start, and the `WARN`
-above repeats on every restart. Once the writer logs no unprocessed entries
-for them — the writer's WAL backlog gauge is at zero and no
-`dead-letter/` markers are being added — the files are safe to remove by hand:
+Once every adopted entry has been drained, the segments are reclaimed by the
+regular WAL cleanup sweep (below) and the `WARN` stops on the next restart. A
+segment holding even one undrained entry stays, so a repeating warning means
+those entries are not being processed — check the writer's WAL backlog gauge
+and `dead-letter/` before removing anything by hand:
 
 ```bash
 # With the writer stopped, after its last shutdown flush completed cleanly:
@@ -254,6 +253,25 @@ rm -f /data/wal/writer/wal-*.log /data/wal/writer/wal-*.data /data/wal/writer/wa
 Leave the per-tenant subdirectories (`/data/wal/writer/{tenant}/…`) alone —
 only the segment files sitting _directly_ in the writer's WAL directory belong
 to the legacy layout.
+
+### Segment cleanup
+
+Both the acceptor and the writer sweep their WALs at the end of every
+processing pass, at most once per `cleanup_interval_secs` (default 300s). A
+sweep does two things per WAL:
+
+- deletes sealed segments whose entries are **all** processed;
+- rewrites (compacts) a sealed segment once more than `compaction_threshold`
+  (default 50%) of its entries are processed, keeping the survivors and their
+  original timestamps.
+
+The open segment is never touched. Cleanup runs only between passes, never
+during one: compaction moves surviving entries to new offsets, so a consumer
+holding entries it listed earlier in the pass would otherwise be reading
+against a rewritten file.
+
+Disk that is not reclaimed therefore means entries are not being processed, not
+that cleanup is off. Read the WAL backlog gauge first.
 
 ### Data Flow with WAL
 

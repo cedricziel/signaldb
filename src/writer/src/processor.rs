@@ -10,7 +10,7 @@ use object_store::ObjectStore;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::time::{Duration, interval};
+use tokio::time::Duration;
 use uuid::Uuid;
 
 /// Maximum WAL entries committed per Iceberg transaction. Bounds the size
@@ -213,28 +213,27 @@ impl WalProcessor {
         }
     }
 
-    /// Start the WAL processing loop
-    /// This will continuously process unprocessed WAL entries
-    pub async fn start_processing_loop(&mut self) -> Result<()> {
-        let mut interval = interval(Duration::from_secs(1)); // Process every second
-
-        loop {
-            interval.tick().await;
-
-            if let Err(e) = self.process_pending_entries().await {
-                tracing::error!(error = %e, "Error processing WAL entries");
-                // Continue processing despite errors
-            }
-        }
-    }
-
     /// Process pending WAL entries subject to the commit-coalescing floor: a
     /// group is committed only once its rows reach `max_uncommitted_rows` or
     /// `commit_interval` has elapsed since its last commit. Sub-floor groups
     /// are left unprocessed for a later tick.
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn process_pending_entries(&mut self) -> Result<()> {
-        self.drain_pending(Vec::new()).await
+        let drained = self.drain_pending(Vec::new()).await;
+
+        // Reclaim WAL disk here and NOT in `drain_pending`, so the sweep never
+        // lands inside `do_action("flush")`: that RPC is bounded by
+        // `FLUSH_TIMEOUT` precisely so a slow catalog cannot hang a client, and
+        // a compaction sweep over every tenant's WAL would spend that budget on
+        // work the caller did not ask for. This background pass has no deadline.
+        //
+        // Cleanup runs *between* drains, never during one — compaction moves
+        // surviving entries to new offsets — and under the processor lock this
+        // pass already holds, so no other drain can be mid-pass. The manager
+        // throttles how often a sweep actually runs.
+        self.wal_manager.cleanup_all_if_due().await;
+
+        drained
     }
 
     /// Immediately commit the pending groups covered by `scope`, ignoring the
@@ -1130,6 +1129,49 @@ mod tests {
         let (traceparent, _) =
             trace_context_from_metadata(&Some(r#"{"tracestate":"vendor=abc"}"#.to_string()));
         assert!(traceparent.is_none());
+    }
+
+    #[tokio::test]
+    async fn draining_reclaims_processed_wal_segments() {
+        // `Wal::cleanup` had no caller in any service (#1305), so processed
+        // segments were never reclaimed. The writer's drain is one of the two
+        // places that now sweeps — at the pass boundary, where no listed
+        // entries are in flight. This guards the wiring, not the sweep.
+        let temp_dir = tempdir().unwrap();
+        let mut wal_config = WalConfig::with_defaults(temp_dir.path().to_path_buf());
+        wal_config.max_segment_size = 1024; // small: a few appends seal a segment
+        wal_config.max_buffer_entries = 1;
+        wal_config.flush_interval_secs = 3600;
+        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        for i in 0..12u64 {
+            let id = wal
+                .append(
+                    WalOperation::WriteTraces,
+                    vec![b'x'; 200 + i as usize],
+                    None,
+                )
+                .await
+                .unwrap();
+            wal.flush().await.unwrap();
+            wal.mark_processed(id).await.unwrap();
+        }
+        assert!(
+            wal.segment_count().await > 1,
+            "test needs sealed segments to reclaim"
+        );
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+
+        processor.process_pending_entries().await.unwrap();
+
+        assert_eq!(
+            wal.segment_count().await,
+            1,
+            "a drain pass must reclaim sealed segments whose entries are all processed"
+        );
     }
 
     #[tokio::test]

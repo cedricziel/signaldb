@@ -225,6 +225,14 @@ impl WalRetryConsumer {
             }
         }
 
+        // Reclaim WAL disk now that the pass is over and no listed entries are
+        // in flight. Cleanup compacts sealed segments, which moves surviving
+        // entries to new offsets, so it must not run *inside* a pass (#1305).
+        // This consumer is the acceptor's only WAL reader, so the end of a
+        // pass is the safe point. The manager throttles the actual sweep and
+        // logs any failures.
+        self.wal_manager.cleanup_all_if_due().await;
+
         Ok(stats)
     }
 
@@ -561,5 +569,55 @@ mod tests {
         assert_eq!(dataset, "production");
         assert_eq!(signal, "traces");
         assert_eq!(wal.get_unprocessed_entries().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_retry_pass_reclaims_processed_wal_segments() {
+        // `Wal::cleanup` had no caller in any service (#1305), so processed
+        // segments accumulated and were re-read at every start. The retry pass
+        // is the acceptor's only WAL consumer, so its end is the one point
+        // where compaction cannot move entries under a reader. This guards the
+        // wiring, not the sweep itself.
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config(temp_dir.path());
+        config.max_segment_size = 1024; // small: a few appends seal a segment
+        config.max_buffer_entries = 1;
+        let manager = Arc::new(WalManager::new(
+            config.clone(),
+            config.clone(),
+            config.clone(),
+            config,
+        ));
+
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        for i in 0..12u64 {
+            let id = wal
+                .append(
+                    WalOperation::WriteTraces,
+                    vec![b'x'; 200 + i as usize],
+                    None,
+                )
+                .await
+                .unwrap();
+            wal.flush().await.unwrap();
+            wal.mark_processed(id).await.unwrap();
+        }
+        assert!(
+            wal.segment_count().await > 1,
+            "test needs sealed segments to reclaim"
+        );
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), test_transport().await)
+            .with_timing(Duration::from_secs(1), Duration::from_secs(0));
+        consumer.run_once().await.unwrap();
+
+        assert_eq!(
+            wal.segment_count().await,
+            1,
+            "a retry pass must reclaim sealed segments whose entries are all processed"
+        );
     }
 }
