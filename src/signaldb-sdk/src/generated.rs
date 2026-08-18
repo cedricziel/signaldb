@@ -1582,11 +1582,16 @@ pub mod types {
     ///  "description": "What a discovery answer cost and how far it can be trusted.",
     ///  "type": "object",
     ///  "required": [
+    ///    "approximate",
     ///    "mode",
     ///    "sampled",
     ///    "window_scoped"
     ///  ],
     ///  "properties": {
+    ///    "approximate": {
+    ///      "description": "Whether the answer is approximate — a bounded sketch of the most\nfrequent values rather than the exact set. A declared value set is\nexact; a statistics- or scan-derived one is not, and saying so is the\ndifference between a suggestion and a claim.",
+    ///      "type": "boolean"
+    ///    },
     ///    "as_of": {
     ///      "description": "How recent the statistics behind the answer are (as the catalog stores\nit). `null` means no statistics exist yet.",
     ///      "type": [
@@ -1611,6 +1616,11 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DiscoveryCost {
+        /**Whether the answer is approximate — a bounded sketch of the most
+        frequent values rather than the exact set. A declared value set is
+        exact; a statistics- or scan-derived one is not, and saying so is the
+        difference between a suggestion and a claim.*/
+        pub approximate: bool,
         /**How recent the statistics behind the answer are (as the catalog stores
         it). `null` means no statistics exist yet.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -8634,6 +8644,7 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct DiscoveryCost {
+            approximate: ::std::result::Result<bool, ::std::string::String>,
             as_of: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
@@ -8645,6 +8656,7 @@ pub mod types {
         impl ::std::default::Default for DiscoveryCost {
             fn default() -> Self {
                 Self {
+                    approximate: Err("no value supplied for approximate".to_string()),
                     as_of: Ok(Default::default()),
                     mode: Err("no value supplied for mode".to_string()),
                     sampled: Err("no value supplied for sampled".to_string()),
@@ -8653,6 +8665,16 @@ pub mod types {
             }
         }
         impl DiscoveryCost {
+            pub fn approximate<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.approximate = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for approximate: {e}"));
+                self
+            }
             pub fn as_of<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
@@ -8700,6 +8722,7 @@ pub mod types {
                 value: DiscoveryCost,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    approximate: value.approximate?,
                     as_of: value.as_of?,
                     mode: value.mode?,
                     sampled: value.sampled?,
@@ -8710,6 +8733,7 @@ pub mod types {
         impl ::std::convert::From<super::DiscoveryCost> for DiscoveryCost {
             fn from(value: super::DiscoveryCost) -> Self {
                 Self {
+                    approximate: Ok(value.approximate),
                     as_of: Ok(value.as_of),
                     mode: Ok(value.mode),
                     sampled: Ok(value.sampled),

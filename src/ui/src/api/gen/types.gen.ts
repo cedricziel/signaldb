@@ -488,6 +488,13 @@ export type DiscoveredValue = {
  */
 export type DiscoveryCost = {
     /**
+     * Whether the answer is approximate — a bounded sketch of the most
+     * frequent values rather than the exact set. A declared value set is
+     * exact; a statistics- or scan-derived one is not, and saying so is the
+     * difference between a suggestion and a claim.
+     */
+    approximate: boolean;
+    /**
      * How recent the statistics behind the answer are (as the catalog stores
      * it). `null` means no statistics exist yet.
      */
