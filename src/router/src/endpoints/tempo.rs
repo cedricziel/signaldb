@@ -348,52 +348,22 @@ fn internal_trace_to_tempo(
 
             // Add span attributes
             for (key, value) in &span.attributes {
-                let tempo_value = match value {
-                    serde_json::Value::String(s) => tempo_api::Value::StringValue(s.clone()),
-                    serde_json::Value::Number(n) => {
-                        if let Some(i) = n.as_i64() {
-                            tempo_api::Value::IntValue(i)
-                        } else if let Some(f) = n.as_f64() {
-                            tempo_api::Value::DoubleValue(f)
-                        } else {
-                            tempo_api::Value::StringValue(n.to_string())
-                        }
-                    }
-                    serde_json::Value::Bool(b) => tempo_api::Value::BoolValue(*b),
-                    _ => tempo_api::Value::StringValue(value.to_string()),
-                };
-
                 attributes.insert(
                     key.clone(),
                     tempo_api::Attribute {
                         key: key.clone(),
-                        value: tempo_value,
+                        value: json_to_tempo_value(value),
                     },
                 );
             }
 
             // Add resource attributes
             for (key, value) in &span.resource {
-                let tempo_value = match value {
-                    serde_json::Value::String(s) => tempo_api::Value::StringValue(s.clone()),
-                    serde_json::Value::Number(n) => {
-                        if let Some(i) = n.as_i64() {
-                            tempo_api::Value::IntValue(i)
-                        } else if let Some(f) = n.as_f64() {
-                            tempo_api::Value::DoubleValue(f)
-                        } else {
-                            tempo_api::Value::StringValue(n.to_string())
-                        }
-                    }
-                    serde_json::Value::Bool(b) => tempo_api::Value::BoolValue(*b),
-                    _ => tempo_api::Value::StringValue(value.to_string()),
-                };
-
                 attributes.insert(
                     format!("resource.{key}"),
                     tempo_api::Attribute {
                         key: format!("resource.{key}"),
-                        value: tempo_value,
+                        value: json_to_tempo_value(value),
                     },
                 );
             }
