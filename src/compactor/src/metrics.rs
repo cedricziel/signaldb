@@ -331,11 +331,6 @@ pub struct MetricsSummary {
 }
 
 impl MetricsSummary {
-    /// Format bytes as MB with 2 decimal places
-    fn format_mb(bytes: u64) -> String {
-        format!("{:.2}", bytes as f64 / (1024.0 * 1024.0))
-    }
-
     /// Log the metrics summary
     pub fn log(&self) {
         tracing::info!("=== Compaction Metrics Summary ===");
@@ -358,8 +353,8 @@ impl MetricsSummary {
         );
         tracing::info!(
             "Storage: {} MB → {} MB ({:.2}x compression)",
-            Self::format_mb(self.bytes_before_compaction),
-            Self::format_mb(self.bytes_after_compaction),
+            crate::planner::format_mb(self.bytes_before_compaction),
+            crate::planner::format_mb(self.bytes_after_compaction),
             self.compression_ratio
         );
         tracing::info!("Average job duration: {:.2}ms", self.avg_duration_ms);

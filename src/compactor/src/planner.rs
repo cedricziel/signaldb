@@ -45,7 +45,7 @@ pub struct CompactionCandidate {
 }
 
 /// Format bytes as MB with 2 decimal places
-fn format_mb(bytes: u64) -> String {
+pub(crate) fn format_mb(bytes: u64) -> String {
     format!("{:.2}", bytes as f64 / (1024.0 * 1024.0))
 }
 
