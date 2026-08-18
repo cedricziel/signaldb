@@ -1,3 +1,4 @@
+use crate::routing::{self, RouteMetadata, RouteTarget};
 use crate::storage::IcebergTableWriter;
 use anyhow::{Context, Result};
 use common::CatalogManager;
@@ -42,6 +43,14 @@ struct TableBatch {
 /// WAL is identified by the address of the cached `Arc<Wal>`, which the
 /// manager keeps alive for the whole cycle — cheaper and more direct than
 /// re-deriving its `writer_id` string for every entry.
+///
+/// That pointer identity is sound **only** for a value confined to one cycle.
+/// A key that outlives the cycle (a resident memtable group, a cache entry)
+/// must identify the WAL by [`Wal::writer_id`] instead: the manager may evict
+/// a WAL and create another, and the allocator is free to hand the new one the
+/// freed address (ABA). Two WALs' entries would then merge into one group,
+/// which writes one WAL's idempotency marker over another's entries — visible
+/// as duplicated rows on the retry path, never as an error.
 type GroupKey = (usize, String, String, String);
 
 /// Why a WAL entry's payload could not be turned into a batch. The two are
@@ -356,7 +365,11 @@ impl WalProcessor {
                     continue;
                 }
             };
-            let (tenant_id, dataset_id, table_name) = routed;
+            let RouteTarget {
+                tenant_id,
+                dataset_id,
+                table_name,
+            } = routed;
             // Anti-loop guard (#760): processing the _system tenant's own
             // telemetry must not emit logs/spans that get exported and
             // re-ingested as _system telemetry.
@@ -750,69 +763,30 @@ impl WalProcessor {
         }
     }
 
-    /// Determine which tenant, dataset, and table an entry should go to
-    /// Extracts tenant_id and dataset_id from the WalEntry, but prefers metadata-provided
-    /// values (from Flight metadata) when available for proper tenant isolation.
-    /// For metrics, uses target_table from metadata if available, enabling routing to
-    /// metrics_exponential_histogram, metrics_summary, etc.
-    fn determine_target_table(&self, entry: &WalEntry) -> Result<(String, String, String)> {
-        let mut tenant_id = entry.tenant_id.clone();
-        let mut dataset_id = entry.dataset_id.clone();
-
-        // Parse metadata JSON once and reuse for both tenant/dataset and target_table
-        let parsed_metadata = entry
+    /// Determine which tenant, dataset, and table an entry should go to.
+    ///
+    /// The entry's own tenant/dataset (those of the WAL it lives in) are the
+    /// fallback; the metadata the sender supplied takes precedence, exactly as
+    /// on the ingest path. Both paths share [`routing::route`] so a batch
+    /// committed live and the same batch replayed after a restart cannot reach
+    /// different tables (#1319).
+    fn determine_target_table(&self, entry: &WalEntry) -> Result<RouteTarget> {
+        let metadata = entry
             .metadata
             .as_deref()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+        let field = |key: &str| -> Option<&str> { metadata.as_ref()?.get(key)?.as_str() };
 
-        // Override with metadata-provided tenant/dataset (from Flight metadata)
-        if let Some(ref metadata) = parsed_metadata {
-            if let Some(tid) = metadata.get("tenant_id").and_then(|v| v.as_str()) {
-                tenant_id = tid.to_string();
-            }
-            if let Some(did) = metadata.get("dataset_id").and_then(|v| v.as_str()) {
-                dataset_id = did.to_string();
-            }
-        }
-
-        // Map operation types to appropriate table
-        let table_name = match entry.operation {
-            common::wal::WalOperation::WriteTraces => "traces".to_string(),
-            common::wal::WalOperation::WriteLogs => "logs".to_string(),
-            common::wal::WalOperation::WriteMetrics => {
-                // Try to extract target_table from the already-parsed metadata
-                parsed_metadata
-                    .as_ref()
-                    .and_then(|m| m.get("target_table"))
-                    .map(|target_table| {
-                        if let Some(table_str) = target_table.as_str() {
-                            tracing::debug!(
-                                target_table = %table_str,
-                                entry_id = %entry.id,
-                                "Using target_table from metadata"
-                            );
-                            table_str.to_string()
-                        } else {
-                            tracing::warn!(
-                                "target_table in metadata is not a string, defaulting to metrics_gauge"
-                            );
-                            "metrics_gauge".to_string()
-                        }
-                    })
-                    .unwrap_or_else(|| {
-                        tracing::debug!("No target_table in metadata, defaulting to metrics_gauge");
-                        "metrics_gauge".to_string()
-                    })
-            }
-            common::wal::WalOperation::WriteProfiles => "profiles".to_string(),
-            common::wal::WalOperation::Flush => {
-                return Err(anyhow::anyhow!(
-                    "Flush operations should not be processed as table writes"
-                ));
-            }
-        };
-
-        Ok((tenant_id, dataset_id, table_name))
+        Ok(routing::route(
+            &entry.operation,
+            RouteMetadata {
+                tenant_id: field("tenant_id"),
+                dataset_id: field("dataset_id"),
+                target_table: field("target_table"),
+            },
+            &entry.tenant_id,
+            &entry.dataset_id,
+        )?)
     }
 
     /// Deserialize WAL entry data back to RecordBatch
@@ -1218,10 +1192,10 @@ mod tests {
             metadata: None,
         };
 
-        let (tenant, dataset, table) = processor.determine_target_table(&entry).unwrap();
-        assert_eq!(tenant, "acme");
-        assert_eq!(dataset, "production");
-        assert_eq!(table, "traces");
+        let routed = processor.determine_target_table(&entry).unwrap();
+        assert_eq!(routed.tenant_id, "acme");
+        assert_eq!(routed.dataset_id, "production");
+        assert_eq!(routed.table_name, "traces");
 
         let entry = WalEntry {
             id: uuid::Uuid::new_v4(),
@@ -1238,10 +1212,58 @@ mod tests {
             metadata: None,
         };
 
-        let (tenant, dataset, table) = processor.determine_target_table(&entry).unwrap();
-        assert_eq!(tenant, "globex");
-        assert_eq!(dataset, "staging");
-        assert_eq!(table, "logs");
+        let routed = processor.determine_target_table(&entry).unwrap();
+        assert_eq!(routed.tenant_id, "globex");
+        assert_eq!(routed.dataset_id, "staging");
+        assert_eq!(routed.table_name, "logs");
+    }
+
+    /// #1319: the ingest path normalizes the metadata tenant/dataset (trim,
+    /// and fall back to the default id when blank) before choosing a WAL, so
+    /// replay must apply the same rule to the same metadata. Otherwise a batch
+    /// lands in the `acme` WAL but commits to Iceberg tenant `" acme "`, and
+    /// where a row ends up depends on whether it was committed live or
+    /// replayed after a restart.
+    #[tokio::test]
+    async fn replay_normalizes_metadata_ids_the_way_ingest_does() {
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(WalConfig::with_defaults(temp_dir.path().to_path_buf()))
+                .await
+                .unwrap(),
+        );
+        let processor = WalProcessor::new(
+            manager_for(&wal).await,
+            Arc::new(CatalogManager::new_in_memory().await.unwrap()),
+            Arc::new(InMemory::new()),
+        );
+
+        // The entry ids are what the ingest path derived: `" acme "` trimmed,
+        // and an empty dataset replaced by the default.
+        let entry = WalEntry {
+            id: uuid::Uuid::new_v4(),
+            operation: WalOperation::WriteTraces,
+            data_size: 0,
+            data_offset: 0,
+            timestamp: 0,
+            processed: false,
+            tenant_id: "acme".to_string(),
+            dataset_id: common::bootstrap::DEFAULT_DATASET_ID.to_string(),
+            // The metadata is what the sender supplied, verbatim.
+            metadata: Some(r#"{"tenant_id":" acme ","dataset_id":""}"#.to_string()),
+        };
+
+        let routed = processor.determine_target_table(&entry).unwrap();
+        assert_eq!(
+            routed.tenant_id, "acme",
+            "replay must trim the metadata tenant id"
+        );
+        assert_eq!(
+            routed.dataset_id,
+            common::bootstrap::DEFAULT_DATASET_ID,
+            "replay must fall back to the default dataset for a blank id"
+        );
+        assert_eq!(routed.table_name, "traces");
     }
 
     #[tokio::test]

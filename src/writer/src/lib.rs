@@ -11,6 +11,10 @@ pub use flight_iceberg::IcebergWriterFlightService;
 pub mod reconcile;
 pub use reconcile::{ReconcilePassSummary, TableReconciler};
 
+/// Internal to the writer: both of its paths (Flight ingest, WAL commit) route
+/// through it, nothing outside the crate does.
+pub(crate) mod routing;
+
 pub mod schema_transform;
 
 /// Shared test helpers for the writer crate.

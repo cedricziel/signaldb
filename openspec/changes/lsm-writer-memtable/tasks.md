@@ -2,7 +2,7 @@
 
 ## 1. Foundations
 
-- [ ] 1.1 Extract one shared routing function computing
+- [x] 1.1 Extract one shared routing function computing
       `(tenant, dataset, table)` from batch metadata, used by both the
       `do_put` path and WAL replay (covers the metadata tenant override and
       `metrics_gauge` fallback from `determine_target_table`); unit tests

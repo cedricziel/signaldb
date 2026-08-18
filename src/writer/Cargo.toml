@@ -35,6 +35,7 @@ tempfile.workspace = true
 chrono.workspace = true
 hex.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 
 # Optional dependencies for benchmarks
 criterion = { workspace = true, optional = true }
