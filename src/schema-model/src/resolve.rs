@@ -622,11 +622,8 @@ fn attribute_def(
             ));
         }
     };
-    if let Some(role) = attr.role
-        && group.r#type != "entity"
-    {
-        let _ = role; // roles are only meaningful on entity groups; tolerated elsewhere
-    }
+    // `attr.role` is only meaningful on entity groups; tolerated (silently
+    // ignored) elsewhere.
     let enum_members = match r#type {
         AttributeType::Enum { members, .. } => members.clone(),
         AttributeType::Named(_) => Vec::new(),
