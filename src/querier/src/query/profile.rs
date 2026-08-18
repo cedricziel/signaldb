@@ -25,7 +25,10 @@ use common::profile::{
     aggregate_profiles_to_flamegraph,
 };
 
-use super::{error::QuerierError, table_lookup::optional_table};
+use super::{
+    error::QuerierError,
+    table_lookup::{LABEL_SCAN_LIMIT, distinct_non_empty, optional_table, string_column},
+};
 
 /// Parameters for single-profile lookup.
 #[derive(Debug)]
@@ -68,10 +71,7 @@ pub struct ProfileDiffParams {
     pub comparison: ProfileSearchParams,
 }
 
-/// Upper bound on distinct attribute documents scanned when deriving
-/// label names/values from the JSON attribute columns.
-const LABEL_SCAN_LIMIT: usize = 1000;
-
+#[derive(Clone)]
 pub struct ProfileService {
     session_context: Arc<SessionContext>,
     /// Upper bound for the client-supplied `limit` on search.
@@ -84,15 +84,6 @@ impl Debug for ProfileService {
             .field("session_context", &"set")
             .field("max_search_limit", &self.max_search_limit)
             .finish()
-    }
-}
-
-impl Clone for ProfileService {
-    fn clone(&self) -> Self {
-        Self {
-            session_context: Arc::clone(&self.session_context),
-            max_search_limit: self.max_search_limit,
-        }
     }
 }
 
@@ -347,16 +338,7 @@ impl ProfileService {
                 .collect()
                 .await
                 .map_err(QuerierError::QueryFailed)?;
-            let mut values = BTreeSet::new();
-            for batch in &batches {
-                let services = string_column(batch, "service_name")?;
-                for i in 0..batch.num_rows() {
-                    if !services.is_null(i) && !services.value(i).is_empty() {
-                        values.insert(services.value(i).to_string());
-                    }
-                }
-            }
-            return Ok(values.into_iter().collect());
+            return distinct_non_empty(&batches, "service_name");
         }
 
         let df = df
@@ -654,15 +636,6 @@ pub(crate) fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
 /// for profile/trace/span IDs.
 fn is_hex_id(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, QuerierError> {
-    batch
-        .column_by_name(name)
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| {
-            QuerierError::InvalidInput(format!("column '{name}' missing or not a string column"))
-        })
 }
 
 #[cfg(test)]

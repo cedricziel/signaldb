@@ -65,12 +65,11 @@ impl SignalDBQuerier {
 }
 
 fn querier_error_to_status(e: QuerierError) -> Status {
-    match e {
-        QuerierError::TraceNotFound => Status::not_found(e.to_string()),
-        QuerierError::InvalidInput(msg) => Status::invalid_argument(msg),
-        QuerierError::Unsupported(msg) => Status::unimplemented(msg),
-        other => Status::internal(format!("Query failed: {other:?}")),
+    if matches!(e, QuerierError::TraceNotFound) {
+        return Status::not_found(e.to_string());
     }
+    crate::flight::common_error_status(e)
+        .unwrap_or_else(|other| Status::internal(format!("Query failed: {other:?}")))
 }
 
 /// Collect a trace's spans depth-first, flattening the child hierarchy.

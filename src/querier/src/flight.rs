@@ -1170,12 +1170,14 @@ impl QuerierFlightService {
         let schema = create_span_batch_schema();
 
         // Collect all spans from the trace (including nested children),
-        // iteratively so deep hierarchies cannot overflow the stack.
-        let mut all_spans = Vec::new();
+        // iteratively so deep hierarchies cannot overflow the stack. Kept as
+        // borrows: nothing here needs an owned, child-stripped copy of each
+        // span, only read access to its fields.
+        let mut all_spans: Vec<&common::model::span::Span> = Vec::new();
         let mut stack: Vec<&common::model::span::Span> = trace.spans.iter().rev().collect();
         while let Some(span) = stack.pop() {
             stack.extend(span.children.iter().rev());
-            all_spans.push(span.clone_without_children());
+            all_spans.push(span);
         }
 
         if all_spans.is_empty() {
@@ -1183,19 +1185,20 @@ impl QuerierFlightService {
         }
 
         // Build arrays for each column (order must match create_span_batch_schema)
-        let mut trace_ids = Vec::new();
-        let mut span_ids = Vec::new();
-        let mut parent_span_ids = Vec::new();
-        let mut statuses = Vec::new();
-        let mut is_roots = Vec::new();
-        let mut names = Vec::new();
-        let mut service_names = Vec::new();
-        let mut span_kinds = Vec::new();
-        let mut start_times = Vec::new();
-        let mut duration_nanos = Vec::new();
-        let mut span_attributes_json = Vec::new();
-        let mut resource_json = Vec::new();
-        let mut events_json = Vec::new();
+        let span_count = all_spans.len();
+        let mut trace_ids = Vec::with_capacity(span_count);
+        let mut span_ids = Vec::with_capacity(span_count);
+        let mut parent_span_ids = Vec::with_capacity(span_count);
+        let mut statuses = Vec::with_capacity(span_count);
+        let mut is_roots = Vec::with_capacity(span_count);
+        let mut names = Vec::with_capacity(span_count);
+        let mut service_names = Vec::with_capacity(span_count);
+        let mut span_kinds = Vec::with_capacity(span_count);
+        let mut start_times = Vec::with_capacity(span_count);
+        let mut duration_nanos = Vec::with_capacity(span_count);
+        let mut span_attributes_json = Vec::with_capacity(span_count);
+        let mut resource_json = Vec::with_capacity(span_count);
+        let mut events_json = Vec::with_capacity(span_count);
 
         for span in &all_spans {
             trace_ids.push(span.trace_id.clone());
@@ -2351,19 +2354,33 @@ const SIGNAL_METRICS: &str = "Metrics";
 const SIGNAL_PROFILES: &str = "Profile";
 const SIGNAL_QUERY_IR: &str = "Query IR";
 
+/// Map the caller-error variants every signal's error-to-status conversion
+/// agrees on (`InvalidInput`/`Unsupported`); a variant this doesn't cover
+/// comes back via `Err` un-consumed so the caller can add its own arms
+/// without cloning.
+pub(crate) fn common_error_status(
+    err: crate::query::error::QuerierError,
+) -> Result<Status, crate::query::error::QuerierError> {
+    match err {
+        crate::query::error::QuerierError::InvalidInput(msg) => Ok(Status::invalid_argument(msg)),
+        crate::query::error::QuerierError::Unsupported(msg) => Ok(Status::unimplemented(msg)),
+        other => Err(other),
+    }
+}
+
 /// Map one signal's querier errors onto gRPC statuses: caller errors surface
 /// as INVALID_ARGUMENT/UNIMPLEMENTED instead of a blanket internal error, and
 /// server errors name `signal` as their origin.
 fn querier_error_to_status(
     signal: &'static str,
 ) -> impl Fn(crate::query::error::QuerierError) -> Status {
-    move |e| match e {
-        crate::query::error::QuerierError::InvalidInput(msg) => Status::invalid_argument(msg),
-        crate::query::error::QuerierError::Unsupported(msg) => Status::unimplemented(msg),
-        too_many @ crate::query::error::QuerierError::TooManyGroups { .. } => {
-            Status::invalid_argument(too_many.to_string())
-        }
-        other => Status::internal(format!("{signal} query failed: {other:?}")),
+    move |e| {
+        common_error_status(e).unwrap_or_else(|e| match e {
+            too_many @ crate::query::error::QuerierError::TooManyGroups { .. } => {
+                Status::invalid_argument(too_many.to_string())
+            }
+            other => Status::internal(format!("{signal} query failed: {other:?}")),
+        })
     }
 }
 
@@ -2373,10 +2390,9 @@ fn querier_error_to_status(
 fn trace_error_to_status(
     context: &'static str,
 ) -> impl Fn(crate::query::error::QuerierError) -> Status {
-    move |e| match e {
-        crate::query::error::QuerierError::InvalidInput(msg) => Status::invalid_argument(msg),
-        crate::query::error::QuerierError::Unsupported(msg) => Status::unimplemented(msg),
-        other => Status::internal(format!("{context} failed: {other:?}")),
+    move |e| {
+        common_error_status(e)
+            .unwrap_or_else(|other| Status::internal(format!("{context} failed: {other:?}")))
     }
 }
 

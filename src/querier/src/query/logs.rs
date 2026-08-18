@@ -42,7 +42,9 @@ use super::logql_metric::{
 use super::{
     DetectedField, DetectedFieldsParams, LogQueryParams, MetricQueryParams,
     error::QuerierError,
-    table_lookup::{distinct_non_empty, optional_table, string_column, time_window},
+    table_lookup::{
+        LABEL_SCAN_LIMIT, distinct_non_empty, optional_table, string_column, time_window,
+    },
 };
 
 /// Columns projected for a log-line query, in wire order. The Flight
@@ -69,9 +71,6 @@ const KNOWN_LABELS: &[&str] = &[
 
 /// Columns whose distinct values define a series' identity.
 const SERIES_COLUMNS: &[&str] = &["service_name", "severity_text"];
-
-/// Upper bound on distinct attribute documents scanned for discovery.
-const LABEL_SCAN_LIMIT: usize = 1000;
 
 /// Scan direction for a log query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

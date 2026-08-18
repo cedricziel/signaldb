@@ -67,7 +67,7 @@ use super::histogram::{
     HistogramAcc, RateHistAcc, histogram_quantile, parse_bounds_cached, parse_f64_array,
 };
 use super::profile::batch_to_models;
-use super::table_lookup::{optional_table_provider, scan_provider};
+use super::table_lookup::{optional_table_provider, scan_provider, string_column};
 
 /// Upper bound on profile rows aggregated into one `flamegraph` result.
 /// Matches `QuerierConfig::max_search_limit`'s default — the same cap the
@@ -809,16 +809,9 @@ fn logical_to_value_type(value_type: LogicalType) -> ValueType {
 
 /// The IR query service. Mirrors the other single-signal services: constructed
 /// with a shared [`SessionContext`], one method per ticket.
+#[derive(Clone)]
 pub struct IrService {
     session_context: Arc<SessionContext>,
-}
-
-impl Clone for IrService {
-    fn clone(&self) -> Self {
-        Self {
-            session_context: Arc::clone(&self.session_context),
-        }
-    }
 }
 
 /// The resolved absolute time window `[t0, t1]` (unix epoch nanoseconds),
@@ -1372,9 +1365,9 @@ impl Lowering<'_> {
         );
         // Every column the Rust-side row walk parses gets an explicit Utf8
         // cast: a Parquet-backed scan under DataFusion 54 can yield `Utf8View`
-        // for string columns (a zero-copy optimization), which `downcast_string`
-        // below — deliberately narrow, see its doc comment — would otherwise
-        // reject. `by` aliases already go through `value_expr` + this same cast.
+        // for string columns (a zero-copy optimization), which `string_column`
+        // would otherwise reject. `by` aliases already go through `value_expr`
+        // + this same cast.
         let utf8 = |e: Expr| cast(e, DataType::Utf8);
         let mut projection = vec![
             date_bin(stride, ts_ns, origin).alias("bucket"),
@@ -1434,14 +1427,14 @@ impl Lowering<'_> {
                 .ok_or_else(|| {
                     QuerierError::InvalidInput("bucket column is not a timestamp".to_string())
                 })?;
-            let metric = downcast_string(batch, "metric_name")?;
-            let raw_service = downcast_string(batch, "__raw_service")?;
+            let metric = string_column(batch, "metric_name")?;
+            let raw_service = string_column(batch, "__raw_service")?;
             let by_cols: Vec<&StringArray> = by_aliases
                 .iter()
-                .map(|alias| downcast_string(batch, alias))
+                .map(|alias| string_column(batch, alias))
                 .collect::<Result<_, _>>()?;
-            let counts = downcast_string(batch, "bucket_counts")?;
-            let bounds = downcast_string(batch, "explicit_bounds")?;
+            let counts = string_column(batch, "bucket_counts")?;
+            let bounds = string_column(batch, "explicit_bounds")?;
             let ts = batch
                 .column_by_name("__ts")
                 .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
@@ -1694,20 +1687,24 @@ impl Lowering<'_> {
             Predicate::Leaf(leaf) => self.lower_leaf(leaf),
             Predicate::Not(p) => Ok(not(self.lower_predicate(p)?)),
             Predicate::And(preds) => {
-                let mut acc = lit(true);
-                for (i, p) in preds.iter().enumerate() {
-                    let e = self.lower_predicate(p)?;
-                    acc = if i == 0 { e } else { acc.and(e) };
-                }
-                Ok(acc)
+                let exprs = preds
+                    .iter()
+                    .map(|p| self.lower_predicate(p))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(exprs
+                    .into_iter()
+                    .reduce(Expr::and)
+                    .unwrap_or_else(|| lit(true)))
             }
             Predicate::Or(preds) => {
-                let mut acc = lit(false);
-                for (i, p) in preds.iter().enumerate() {
-                    let e = self.lower_predicate(p)?;
-                    acc = if i == 0 { e } else { acc.or(e) };
-                }
-                Ok(acc)
+                let exprs = preds
+                    .iter()
+                    .map(|p| self.lower_predicate(p))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(exprs
+                    .into_iter()
+                    .reduce(Expr::or)
+                    .unwrap_or_else(|| lit(false)))
             }
         }
     }
@@ -2286,18 +2283,6 @@ fn literal_as_f64(literal: &Literal) -> f64 {
         Literal::Timestamp(TimestampLiteral::Absolute(ns)) => *ns as f64,
         _ => 0.0,
     }
-}
-
-/// Downcast a named `RecordBatch` column to `StringArray`, or a clear error —
-/// used by `lower_histogram_quantile`'s post-collect row walk.
-fn downcast_string<'a>(
-    batch: &'a RecordBatch,
-    name: &str,
-) -> Result<&'a StringArray, QuerierError> {
-    batch
-        .column_by_name(name)
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| QuerierError::InvalidInput(format!("{name} column is not a string")))
 }
 
 /// The string form of a coerced literal (for `Utf8` attribute comparison).
@@ -3367,7 +3352,7 @@ mod tests {
 
     /// A Parquet-backed scan under DataFusion 54 can yield `Utf8View` for
     /// string columns (a zero-copy optimization) rather than plain `Utf8`.
-    /// `downcast_string` only accepts `StringArray`, so `metric_name`/
+    /// `string_column` only accepts `StringArray`, so `metric_name`/
     /// `bucket_counts`/`explicit_bounds`/`service_name` must be cast to
     /// `Utf8` in the projection before `.collect()` — this fixture proves
     /// that cast makes the stage source-encoding-agnostic.
