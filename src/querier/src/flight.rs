@@ -297,6 +297,75 @@ enum TicketRequest {
     },
 }
 
+impl TicketRequest {
+    /// The tenant this ticket names, or `None` for raw SQL tickets, which
+    /// carry their tenant out of band.
+    ///
+    /// Exhaustive by construction: a new variant must be classified here,
+    /// next to the enum, rather than in the middle of `do_get`.
+    fn tenant_slug(&self) -> Option<&str> {
+        match self {
+            TicketRequest::FindTrace { tenant_slug, .. }
+            | TicketRequest::SearchTraces { tenant_slug, .. }
+            | TicketRequest::FindProfile { tenant_slug, .. }
+            | TicketRequest::SearchProfiles { tenant_slug, .. }
+            | TicketRequest::ProfileTypes { tenant_slug, .. }
+            | TicketRequest::ProfileLabelNames { tenant_slug, .. }
+            | TicketRequest::ProfileLabelValues { tenant_slug, .. }
+            | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
+            | TicketRequest::ProfileDiff { tenant_slug, .. }
+            | TicketRequest::SqlProfiles { tenant_slug, .. }
+            | TicketRequest::ProfilesByTrace { tenant_slug, .. }
+            | TicketRequest::QueryLogs { tenant_slug, .. }
+            | TicketRequest::QueryIr { tenant_slug, .. }
+            | TicketRequest::QueryLogsLabels { tenant_slug, .. }
+            | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
+            | TicketRequest::QueryLogsSeries { tenant_slug, .. }
+            | TicketRequest::QueryLogsDetectedFields { tenant_slug, .. }
+            | TicketRequest::QueryMetric { tenant_slug, .. }
+            | TicketRequest::QueryPromql { tenant_slug, .. }
+            | TicketRequest::QueryMetricLabels { tenant_slug, .. }
+            | TicketRequest::QueryMetricLabelValues { tenant_slug, .. }
+            | TicketRequest::QueryMetricSeries { tenant_slug, .. }
+            | TicketRequest::TraceTags { tenant_slug, .. }
+            | TicketRequest::TraceTagValues { tenant_slug, .. } => Some(tenant_slug),
+            TicketRequest::SqlQuery { .. } => None,
+        }
+    }
+
+    /// The stable label this ticket reports as `query_type` in metrics and
+    /// spans. Kept beside the enum for the same reason as [`Self::tenant_slug`].
+    fn query_type(&self) -> &'static str {
+        match self {
+            TicketRequest::FindTrace { .. } => "trace_by_id",
+            TicketRequest::SearchTraces { .. } => "trace_search",
+            TicketRequest::FindProfile { .. } => "profile_by_id",
+            TicketRequest::SearchProfiles { .. } => "profile_search",
+            TicketRequest::ProfileTypes { .. } => "profile_types",
+            TicketRequest::ProfileLabelNames { .. } => "profile_label_names",
+            TicketRequest::ProfileLabelValues { .. } => "profile_label_values",
+            TicketRequest::ProfileFlamegraph { .. } => "profile_flamegraph",
+            TicketRequest::ProfileDiff { .. } => "profile_diff",
+            TicketRequest::SqlProfiles { .. } => "sql_profiles",
+            TicketRequest::ProfilesByTrace { .. } => "profiles_by_trace",
+            TicketRequest::QueryLogs { .. } => "query_logs",
+            TicketRequest::QueryIr { .. } => "query_ir",
+            TicketRequest::QueryLogsLabels { .. } => "query_logs_labels",
+            TicketRequest::QueryLogsLabelValues { .. } => "query_logs_label_values",
+            TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
+            TicketRequest::QueryLogsDetectedFields { .. } => "query_logs_detected_fields",
+            TicketRequest::QueryMetric { .. } => "query_metric",
+            TicketRequest::QueryPromql { .. } => "query_promql",
+            TicketRequest::QueryMetricLabels { .. } => "query_metric_labels",
+            TicketRequest::QueryMetricLabelValues { .. } => "query_metric_label_values",
+            TicketRequest::QueryMetricSeries { .. } => "query_metric_series",
+            TicketRequest::TraceTags { .. } => "trace_tags",
+            TicketRequest::TraceTagValues { .. } => "trace_tag_values",
+            TicketRequest::SqlQuery { .. } => "sql",
+        }
+    }
+}
+
 /// Flight service for query execution against stored data
 pub struct QuerierFlightService {
     _flight_transport: Arc<InMemoryFlightTransport>,
@@ -1548,35 +1617,8 @@ impl FlightService for QuerierFlightService {
 
                         // The tenant named in the ticket, when it names one (raw
                         // SQL tickets carry the tenant out of band).
-                        let ticket_tenant_slug: Option<String> = match &ticket_request {
-                            TicketRequest::FindTrace { tenant_slug, .. }
-                            | TicketRequest::SearchTraces { tenant_slug, .. }
-                            | TicketRequest::FindProfile { tenant_slug, .. }
-                            | TicketRequest::SearchProfiles { tenant_slug, .. }
-                            | TicketRequest::ProfileTypes { tenant_slug, .. }
-                            | TicketRequest::ProfileLabelNames { tenant_slug, .. }
-                            | TicketRequest::ProfileLabelValues { tenant_slug, .. }
-                            | TicketRequest::ProfileFlamegraph { tenant_slug, .. }
-                            | TicketRequest::ProfileDiff { tenant_slug, .. }
-                            | TicketRequest::SqlProfiles { tenant_slug, .. }
-                            | TicketRequest::ProfilesByTrace { tenant_slug, .. }
-                            | TicketRequest::QueryLogs { tenant_slug, .. }
-                            | TicketRequest::QueryIr { tenant_slug, .. }
-                            | TicketRequest::QueryLogsLabels { tenant_slug, .. }
-                            | TicketRequest::QueryLogsLabelValues { tenant_slug, .. }
-                            | TicketRequest::QueryLogsSeries { tenant_slug, .. }
-                            | TicketRequest::QueryLogsDetectedFields { tenant_slug, .. }
-                            | TicketRequest::QueryMetric { tenant_slug, .. }
-                            | TicketRequest::QueryPromql { tenant_slug, .. }
-                            | TicketRequest::QueryMetricLabels { tenant_slug, .. }
-                            | TicketRequest::QueryMetricLabelValues { tenant_slug, .. }
-                            | TicketRequest::QueryMetricSeries { tenant_slug, .. }
-                            | TicketRequest::TraceTags { tenant_slug, .. }
-                            | TicketRequest::TraceTagValues { tenant_slug, .. } => {
-                                Some(tenant_slug.clone())
-                            }
-                            TicketRequest::SqlQuery { .. } => None,
-                        };
+                        let ticket_tenant_slug: Option<String> =
+                            ticket_request.tenant_slug().map(str::to_owned);
 
                         // Tenant-scoped callers may only touch their own tenant's data,
                         // regardless of what the ticket claims.
@@ -1613,37 +1655,7 @@ impl FlightService for QuerierFlightService {
                             })?;
                         }
 
-                        let query_type = match &ticket_request {
-                            TicketRequest::FindTrace { .. } => "trace_by_id",
-                            TicketRequest::SearchTraces { .. } => "trace_search",
-                            TicketRequest::FindProfile { .. } => "profile_by_id",
-                            TicketRequest::SearchProfiles { .. } => "profile_search",
-                            TicketRequest::ProfileTypes { .. } => "profile_types",
-                            TicketRequest::ProfileLabelNames { .. } => "profile_label_names",
-                            TicketRequest::ProfileLabelValues { .. } => "profile_label_values",
-                            TicketRequest::ProfileFlamegraph { .. } => "profile_flamegraph",
-                            TicketRequest::ProfileDiff { .. } => "profile_diff",
-                            TicketRequest::SqlProfiles { .. } => "sql_profiles",
-                            TicketRequest::ProfilesByTrace { .. } => "profiles_by_trace",
-                            TicketRequest::QueryLogs { .. } => "query_logs",
-                            TicketRequest::QueryIr { .. } => "query_ir",
-                            TicketRequest::QueryLogsLabels { .. } => "query_logs_labels",
-                            TicketRequest::QueryLogsLabelValues { .. } => "query_logs_label_values",
-                            TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
-                            TicketRequest::QueryLogsDetectedFields { .. } => {
-                                "query_logs_detected_fields"
-                            }
-                            TicketRequest::QueryMetric { .. } => "query_metric",
-                            TicketRequest::QueryPromql { .. } => "query_promql",
-                            TicketRequest::QueryMetricLabels { .. } => "query_metric_labels",
-                            TicketRequest::QueryMetricLabelValues { .. } => {
-                                "query_metric_label_values"
-                            }
-                            TicketRequest::QueryMetricSeries { .. } => "query_metric_series",
-                            TicketRequest::TraceTags { .. } => "trace_tags",
-                            TicketRequest::TraceTagValues { .. } => "trace_tag_values",
-                            TicketRequest::SqlQuery { .. } => "sql",
-                        };
+                        let query_type = ticket_request.query_type();
 
                         // Per-tenant concurrent-query cap. The tenant is the
                         // authenticated caller when present, else the tenant named in
@@ -2399,6 +2411,43 @@ fn trace_error_to_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tenant_slug_names_the_ticket_tenant_and_is_none_for_raw_sql() {
+        let ticket = TicketRequest::FindTrace {
+            tenant_slug: "acme".to_string(),
+            dataset_slug: "production".to_string(),
+            trace_id: "abc123".to_string(),
+            start: None,
+            end: None,
+        };
+        assert_eq!(ticket.tenant_slug(), Some("acme"));
+
+        // Raw SQL tickets carry their tenant out of band, so they name none.
+        let sql = TicketRequest::SqlQuery {
+            sql: "SELECT 1".to_string(),
+        };
+        assert_eq!(sql.tenant_slug(), None);
+    }
+
+    #[test]
+    fn query_type_labels_the_ticket_variant() {
+        let ticket = TicketRequest::FindTrace {
+            tenant_slug: "acme".to_string(),
+            dataset_slug: "production".to_string(),
+            trace_id: "abc123".to_string(),
+            start: None,
+            end: None,
+        };
+        assert_eq!(ticket.query_type(), "trace_by_id");
+        assert_eq!(
+            TicketRequest::SqlQuery {
+                sql: "SELECT 1".to_string()
+            }
+            .query_type(),
+            "sql"
+        );
+    }
     use common::config::{Configuration, DatabaseConfig, DiscoveryConfig};
     use common::service_bootstrap::{ServiceBootstrap, ServiceType};
     use object_store::memory::InMemory;
