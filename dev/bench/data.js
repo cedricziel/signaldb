@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786941283479,
+  "lastUpdate": 1787026747085,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -421,6 +421,244 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1106059,
             "range": "± 16444",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "54cf2a8b3bfc5f8c7211818c449f184e4e1ba9a3",
+          "message": "refactor(querier): dedupe query-path helpers and cut avoidable allocations (#1325)\n\n* refactor(querier): dedupe query-path helpers and cut avoidable allocations\n\nApplies a simplify pass over the querier and logql crates' query-execution\npaths: no intended behavior change, only reuse/simplification/efficiency\ncleanups.\n\nReuse:\n- Consolidate three near-identical QuerierError-to-Status mappers (flight.rs\n  x2, services/tempo.rs) around one shared common_error_status helper.\n- Replace duplicated column-downcast/dedup helpers (ir_planner::downcast_string,\n  trace::required_string_column, profile::string_column, profile's inline\n  distinct-service scan, trace's inline is_map_column/label_ column scan)\n  with the existing table_lookup/logs helpers they duplicated.\n- Consolidate four independently-declared LABEL_SCAN_LIMIT/TAG_SCAN_LIMIT\n  constants (logs, metrics, profile, trace) into one table_lookup constant.\n- Share a single token_to_match_op mapping between LogQL's two matcher-token\n  parsing sites instead of two copies (one panicking, one erroring).\n\nSimplification:\n- IrService/ProfileService: derive(Clone) instead of a hand-written impl.\n- cli.rs: drop needless `let mut builder = builder` rebindings.\n- ir_planner: fold Predicate::And/Or via Iterator::reduce instead of an\n  index-tracked accumulator loop.\n\nEfficiency:\n- flight.rs trace_to_record_batches: walk spans by reference instead of\n  deep-cloning each one, and pre-size the per-column output Vecs.\n- trace.rs: avoid a per-row String allocation for the trace_id once it's\n  already been captured; stop cloning parent_span_id where it's used once.\n- metrics.rs: precompile each label_replace regex once per call instead of\n  once per RecordBatch; move rather than clone HistogramAcc bounds/apply_topk\n  row fields where they're read once; pre-size output Vecs where the size is\n  known or well bounded.\n- table_lookup::distinct_non_empty: read each array value once per row\n  instead of twice.\n\nVerification: cargo fmt clean; logql (cargo clippy + cargo test, 84 tests)\nclean. Local querier clippy/test could not complete — the shared build\nenvironment repeatedly reclaimed this worktree's target/ mid-compile under\ndisk pressure (unrelated to this diff, confirmed by identical failures deep\nin third-party dependency compilation before reaching querier's own code).\nRelying on CI to verify querier/tempo/loki/prometheus/pyroscope-api.\n\n* docs(querier): trim a noisy parenthetical in the string_column comments",
+          "timestamp": "2026-08-18T03:03:03Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/54cf2a8b3bfc5f8c7211818c449f184e4e1ba9a3"
+        },
+        "date": 1787026741172,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1275513,
+            "range": "± 36655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 838750,
+            "range": "± 23884",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 509776,
+            "range": "± 19494",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1028873,
+            "range": "± 56926",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 559146,
+            "range": "± 15534",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1376524,
+            "range": "± 53754",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 896117,
+            "range": "± 46446",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1305627,
+            "range": "± 15077",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2035986,
+            "range": "± 11974",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 7793264,
+            "range": "± 60045",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 77007959,
+            "range": "± 1908907",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 2949354,
+            "range": "± 14613",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 5485251,
+            "range": "± 24247",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 9651320,
+            "range": "± 31027",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 18975082,
+            "range": "± 145448",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 1052739,
+            "range": "± 61400",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2035523,
+            "range": "± 72539",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 2869921,
+            "range": "± 109967",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 4921950,
+            "range": "± 109584",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 601723,
+            "range": "± 17657",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 16917678,
+            "range": "± 374844",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 21141573,
+            "range": "± 1124606",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 20095475,
+            "range": "± 1078129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 20432951,
+            "range": "± 913814",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 19996288,
+            "range": "± 667951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 5544358,
+            "range": "± 261572",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 12262042,
+            "range": "± 351696",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 26358705,
+            "range": "± 982509",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 21824118,
+            "range": "± 1088803",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 5731316,
+            "range": "± 249605",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 55448519,
+            "range": "± 1941481",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 103604086,
+            "range": "± 2902892",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 109901159,
+            "range": "± 3163857",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1053452,
+            "range": "± 47427",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1069011,
+            "range": "± 44376",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1136620,
+            "range": "± 27495",
             "unit": "ns/iter"
           }
         ]
