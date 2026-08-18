@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::catalog::AttributeStatsRecord;
+use crate::catalog::{AttributeStatsRecord, AttributeValueStat};
 use crate::model::span::{SpanKind, SpanStatus};
 use crate::schema::logical::{AttributeLevel, Filterability, LogicalSchema, LogicalType};
 use crate::schema_registry::AttributeHit;
@@ -140,6 +140,11 @@ pub struct DiscoveryCost {
     pub window_scoped: bool,
     /// Whether the answer is sampled, and therefore possibly incomplete.
     pub sampled: bool,
+    /// Whether the answer is approximate — a bounded sketch of the most
+    /// frequent values rather than the exact set. A declared value set is
+    /// exact; a statistics- or scan-derived one is not, and saying so is the
+    /// difference between a suggestion and a claim.
+    pub approximate: bool,
     /// How recent the statistics behind the answer are (as the catalog stores
     /// it). `null` means no statistics exist yet.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -147,12 +152,25 @@ pub struct DiscoveryCost {
 }
 
 impl DiscoveryCost {
-    /// A free answer from declared schema, registries and statistics.
+    /// A free, exact answer from declared schema and registries.
     pub fn metadata(as_of: Option<String>) -> Self {
         DiscoveryCost {
             mode: CostMode::Metadata,
             window_scoped: false,
             sampled: false,
+            approximate: false,
+            as_of,
+        }
+    }
+
+    /// A free answer from maintained statistics: no data read, but a bounded
+    /// sketch rather than the exact set.
+    pub fn statistics(as_of: Option<String>) -> Self {
+        DiscoveryCost {
+            mode: CostMode::Metadata,
+            window_scoped: false,
+            sampled: false,
+            approximate: true,
             as_of,
         }
     }
@@ -163,6 +181,7 @@ impl DiscoveryCost {
             mode: CostMode::None,
             window_scoped: false,
             sampled: false,
+            approximate: false,
             as_of: None,
         }
     }
@@ -174,6 +193,7 @@ impl DiscoveryCost {
             mode: CostMode::SampledScan,
             window_scoped: true,
             sampled: true,
+            approximate: true,
             as_of: None,
         }
     }
@@ -282,6 +302,24 @@ pub fn registry_values(hit: &AttributeHit) -> Option<Vec<DiscoveredValue>> {
         })
         .collect();
     Some(values)
+}
+
+/// The value sketch for a field, if the analyzer maintains one.
+///
+/// An empty sketch is not an empty value set: it means no sketch covers the
+/// key — because the analyzer has not run, or because the key's cardinality
+/// exceeded the cap and a partial list would mislead. The caller reports that
+/// as "nothing covers this field", never as "this field has no values".
+pub fn sketch_values(stats: &[AttributeValueStat], limit: usize) -> Vec<DiscoveredValue> {
+    stats
+        .iter()
+        .take(limit)
+        .map(|stat| DiscoveredValue {
+            value: stat.value.clone(),
+            count: Some(stat.count),
+            origin: ValueOrigin::Statistics,
+        })
+        .collect()
 }
 
 /// Map a registry's canonical type name onto the IR's client-visible type.
@@ -607,6 +645,38 @@ mod tests {
         }
         assert_eq!(signal_for_source("metrics_histogram"), Some("metrics"));
         assert_eq!(signal_for_source("nope"), None);
+    }
+
+    #[test]
+    fn a_sketch_answer_is_labelled_approximate_and_a_declared_one_is_not() {
+        assert!(!DiscoveryCost::metadata(None).approximate);
+        assert!(DiscoveryCost::statistics(None).approximate);
+        assert!(DiscoveryCost::sampled_scan().approximate);
+        // Both statistics and declared answers are free; only the flag differs.
+        assert_eq!(DiscoveryCost::statistics(None).mode, CostMode::Metadata);
+    }
+
+    #[test]
+    fn sketch_values_carry_their_counts_and_respect_the_limit() {
+        let stats = vec![
+            AttributeValueStat {
+                value: "/api/orders".to_string(),
+                count: 900,
+                updated_at: "2026-08-17 09:00:00".to_string(),
+            },
+            AttributeValueStat {
+                value: "/api/users".to_string(),
+                count: 100,
+                updated_at: "2026-08-17 09:00:00".to_string(),
+            },
+        ];
+        let values = sketch_values(&stats, 10);
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0].value, "/api/orders");
+        assert_eq!(values[0].count, Some(900));
+        assert!(values.iter().all(|v| v.origin == ValueOrigin::Statistics));
+        assert_eq!(sketch_values(&stats, 1).len(), 1);
+        assert!(sketch_values(&[], 10).is_empty());
     }
 
     #[test]

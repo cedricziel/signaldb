@@ -69,6 +69,9 @@ pub struct ParquetRewriter {
     /// (epic #737, #733). `None` (e.g. in tests) keeps the analyzer
     /// log-only.
     service_catalog: Option<Arc<common::catalog::Catalog>>,
+    /// How many values per attribute key the analyzer keeps as a suggestion
+    /// sketch for query discovery (`compactor.value_sketch_size`).
+    value_sketch_size: usize,
 }
 
 impl ParquetRewriter {
@@ -77,7 +80,13 @@ impl ParquetRewriter {
         Self {
             catalog_manager,
             service_catalog: None,
+            value_sketch_size: crate::attr_stats::DEFAULT_VALUE_SKETCH_SIZE,
         }
+    }
+
+    /// Bound the per-key value sketch the analyzer keeps.
+    pub fn set_value_sketch_size(&mut self, size: usize) {
+        self.value_sketch_size = size;
     }
 
     /// Persist the advisory attribute statistics to this service catalog.
@@ -163,7 +172,8 @@ impl ParquetRewriter {
 
         // Pass 1: fold the advisory attribute statistics over an unsorted
         // stream (epic #737 L4a).
-        let mut stats_acc = crate::attr_stats::AttrStatsAccumulator::new();
+        let mut stats_acc =
+            crate::attr_stats::AttrStatsAccumulator::new().with_sketch_size(self.value_sketch_size);
         {
             let mut stream = self
                 .partition_stream(table, partition_hours, SortRows::No)

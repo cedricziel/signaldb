@@ -255,7 +255,9 @@ impl CompactionExecutor {
         ParquetRewriter::warn_on_incoherent_memory_config(&catalog_manager.config().compactor);
 
         let committer = IcebergCommitter::new(catalog_manager.clone());
-        let rewriter = ParquetRewriter::new(catalog_manager);
+        let value_sketch_size = catalog_manager.config().compactor.value_sketch_size;
+        let mut rewriter = ParquetRewriter::new(catalog_manager);
+        rewriter.set_value_sketch_size(value_sketch_size);
 
         Self {
             committer,
