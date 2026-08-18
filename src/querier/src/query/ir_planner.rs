@@ -1365,9 +1365,9 @@ impl Lowering<'_> {
         );
         // Every column the Rust-side row walk parses gets an explicit Utf8
         // cast: a Parquet-backed scan under DataFusion 54 can yield `Utf8View`
-        // for string columns (a zero-copy optimization), which `table_lookup::string_column`
-        // (imported as `string_column`) — deliberately narrow, see its doc comment — would otherwise
-        // reject. `by` aliases already go through `value_expr` + this same cast.
+        // for string columns (a zero-copy optimization), which `string_column`
+        // would otherwise reject. `by` aliases already go through `value_expr`
+        // + this same cast.
         let utf8 = |e: Expr| cast(e, DataType::Utf8);
         let mut projection = vec![
             date_bin(stride, ts_ns, origin).alias("bucket"),
@@ -3352,7 +3352,7 @@ mod tests {
 
     /// A Parquet-backed scan under DataFusion 54 can yield `Utf8View` for
     /// string columns (a zero-copy optimization) rather than plain `Utf8`.
-    /// `table_lookup::string_column` only accepts `StringArray`, so `metric_name`/
+    /// `string_column` only accepts `StringArray`, so `metric_name`/
     /// `bucket_counts`/`explicit_bounds`/`service_name` must be cast to
     /// `Utf8` in the projection before `.collect()` — this fixture proves
     /// that cast makes the stage source-encoding-agnostic.
