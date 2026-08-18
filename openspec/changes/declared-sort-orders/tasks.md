@@ -37,5 +37,5 @@ Fork work first (everything downstream pins it), then declaration, producers, en
 
 ## 7. Close-out
 
-- [ ] 7.1 Full workspace lint/format/machete; integration suites green
+- [x] 7.1 Full workspace lint/format/machete; integration suites green — verified by #1313's CI run (`Check & Lint` = workspace clippy `--all-targets --all-features` plus `cargo fmt --check` and `cargo machete`, `Check (macOS)`, `Test Suite (stable)`, `Generated code up-to-date`, `Semconv live-check`, docs freshness). Recorded against CI rather than local runs: the fleet's disk constraint ruled out a workspace build on the build host, and a `-p <crate> --lib` run does not compile the integration test targets — which is exactly how a clippy lint in a new test reached CI
 - [x] 7.2 Update GitHub: fork-delta rationale corrected on #950 and #955 (the whole carried delta had merged upstream; branch rebased, delta is now exactly JanKaul/iceberg-rust#391); plan-shape results cross-linked on epic #953. #936 stays open until 6.4 lands
