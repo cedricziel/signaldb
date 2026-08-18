@@ -21,6 +21,7 @@ Comprehensive troubleshooting guide for SignalDB Compactor retention and lifecyc
 - [Debug Procedures](#debug-procedures)
 - [Common Error Messages](#common-error-messages)
 - [Attribute Promotion](#attribute-promotion)
+- [Value Sketches for Query Discovery](#value-sketches-for-query-discovery)
 
 ## Quick Diagnosis
 
@@ -1140,6 +1141,34 @@ files are attested. A partition holding even one unattested file cannot have its
 sort elided, so `ORDER BY timestamp … LIMIT n` falls back to sorting the range.
 Compacting the partition again once the table declares an order converges it.
 
+## Value Sketches for Query Discovery
+
+**Query discovery suggests no values for a key, only "no metadata covers this":**
+expected in three cases, all by design. The key's distinct values exceeded the
+analyzer's cardinality cap, so no sketch is kept at all — a partial list of a
+runaway key would be a confident wrong answer, and discovery reports it as
+uncovered instead. Or no compaction pass has yet covered that tenant's data (a
+fresh tenant, or a key first seen since the last pass), so nothing has been
+recorded to suggest from. Or `[compactor].value_sketch_size = 0`, which disables
+sketch storage while still counting presence.
+
+**How to tell which:** check whether the key has a row in the service catalog's
+`attribute_value_stats` table. No row plus a row in `attribute_stats` means the
+key was seen but its sketch was withheld (cap exceeded, or sketching disabled);
+no row in either means no pass has covered it yet.
+
+**Suggested values are stale or list values that no longer occur:** each pass
+replaces a key's sketch wholesale rather than merging into it, so suggestions
+follow the data — but only as of the last compaction pass over that data. The
+response's `cost.as_of` reports that timestamp, and `cost.approximate` is `true`
+for any sketch-derived answer. If suggestions lag further than expected, the
+compaction cycle covering that partition is the thing to check, not the sketch.
+
+**Suggestions appear for a tenant that should not see them:** sketches are stored
+per tenant and discovery never reads another tenant's rows. If this is ever
+observed, treat it as an isolation defect rather than a discovery bug and report
+it — there is a regression test asserting exactly this
+(`another_tenants_sketch_is_never_suggested`).
 ## Additional Resources
 
 - [Operations Guide](operations.md)
