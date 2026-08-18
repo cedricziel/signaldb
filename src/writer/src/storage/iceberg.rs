@@ -15,11 +15,13 @@ use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use iceberg_rust::arrow::write::{write_parquet_partitioned, write_sorted_parquet_partitioned};
 use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
+use iceberg_rust::catalog::commit::{CommitTable, TableRequirement, TableUpdate};
 use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
+use iceberg_rust::spec::table_metadata::MAIN_BRANCH;
 use iceberg_rust::table::Table;
 use object_store::ObjectStore;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid;
@@ -239,6 +241,78 @@ impl IcebergTableWriter {
             .get(&wal_marker_key(wal_writer_id))
             .map(|value| decode_marker_ids(value))
             .unwrap_or_default()
+    }
+
+    /// Delete idempotency markers left by writer ids that have not committed
+    /// to this table within `retention`. Returns how many were retired.
+    ///
+    /// Every marker is a permanent table property, and a new writer id appears
+    /// whenever a WAL directory is created or wiped — a redeploy on ephemeral
+    /// storage, a WAL quarantined and recreated after corruption (#883), an
+    /// operator clearing `.data/wal`. Multiplied by the per-tenant WAL fanout
+    /// (#932), the property set grew without bound, and every property is paid
+    /// for in `metadata.json` on every read and every commit — the file #959
+    /// fought down from 11.9 MB to 28.5 KB (#1307).
+    ///
+    /// `process_outlived_retention` says whether this process has itself been
+    /// running longer than `retention`; see [`stale_marker_keys`] for why
+    /// undated markers wait for that.
+    ///
+    /// The delete is guarded by an assertion on the branch's current snapshot,
+    /// so a marker written between the read and the delete makes this commit
+    /// fail rather than discard fresh idempotency evidence. A failure here is
+    /// never fatal: the markers simply stay until the next pass.
+    pub async fn retire_stale_markers(
+        &mut self,
+        own_writer_ids: &HashSet<String>,
+        retention: Duration,
+        process_outlived_retention: bool,
+    ) -> Result<usize> {
+        let now_secs = common::wal::unix_now_secs();
+        let removals = stale_marker_keys(
+            &self.table.metadata().properties,
+            own_writer_ids,
+            now_secs,
+            retention,
+            process_outlived_retention,
+        );
+        if removals.is_empty() {
+            return Ok(0);
+        }
+
+        let retired = removals.len();
+        let requirements = match self.table.metadata().current_snapshot_id {
+            Some(snapshot_id) => vec![TableRequirement::AssertRefSnapshotId {
+                r#ref: MAIN_BRANCH.to_string(),
+                snapshot_id,
+            }],
+            // A table with no snapshot has never been committed to, so no
+            // marker can be racing us.
+            None => Vec::new(),
+        };
+
+        self.catalog
+            .clone()
+            .update_table(CommitTable {
+                identifier: self.table.identifier().clone(),
+                requirements,
+                updates: vec![TableUpdate::RemoveProperties { removals }],
+            })
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to retire stale WAL markers on {}: {e}",
+                    self.table.identifier()
+                )
+            })?;
+        self.reload_table().await?;
+
+        tracing::info!(
+            table = %self.table.identifier(),
+            retired,
+            "Retired WAL idempotency markers from writers that have not committed within retention"
+        );
+        Ok(retired)
     }
 
     /// Reload the table and return the WAL entry ids recorded by the most
@@ -475,17 +549,101 @@ fn wal_marker_key(wal_writer_id: &str) -> String {
     format!("{WAL_MARKER_PREFIX}{wal_writer_id}")
 }
 
+/// Prefix of the commit-time field a marker value leads with.
+///
+/// Without it nothing could date a marker, so nothing could retire one, and
+/// the property set grew by one entry per writer id ever seen (#1307). Values
+/// written before this existed have no such field and are handled explicitly
+/// wherever age matters.
+const MARKER_TIME_FIELD: &str = "t=";
+
 fn encode_marker_ids(ids: &[uuid::Uuid]) -> String {
-    ids.iter()
+    let now = common::wal::unix_now_secs();
+    let ids = ids
+        .iter()
         .map(|id| id.simple().to_string())
         .collect::<Vec<_>>()
-        .join(",")
+        .join(",");
+    format!("{MARKER_TIME_FIELD}{now}:{ids}")
 }
 
 fn decode_marker_ids(value: &str) -> HashSet<uuid::Uuid> {
-    value
-        .split(',')
+    // The id list is everything after the leading `t=<secs>:` field, if
+    // present. Parsing is tolerant either way — a marker that decoded to
+    // nothing would silently re-insert already-committed rows, so this must
+    // never be stricter than it has to be.
+    let (_committed_at, ids) = parse_marker(value);
+    ids.split(',')
         .filter_map(|part| uuid::Uuid::parse_str(part.trim()).ok())
+        .collect()
+}
+
+/// Split a marker value into its commit time (absent for values written
+/// before markers were dated) and its id list.
+///
+/// One parser for both halves so their edge cases cannot drift: a value that
+/// looks dated to one and undated to the other would either hide ids from
+/// dedupe or make an undated marker look retirable.
+fn parse_marker(value: &str) -> (Option<u64>, &str) {
+    let Some(rest) = value.strip_prefix(MARKER_TIME_FIELD) else {
+        return (None, value);
+    };
+    match rest.split_once(':') {
+        Some((secs, ids)) => (secs.parse::<u64>().ok(), ids),
+        // `t=` with no separator: not a shape we write. Treat the whole value
+        // as ids and let uuid parsing discard what it cannot read, rather
+        // than silently dropping evidence.
+        None => (None, value),
+    }
+}
+
+/// When this marker was committed, or `None` for a value written before
+/// markers carried a commit time.
+fn marker_committed_at(value: &str) -> Option<u64> {
+    parse_marker(value).0
+}
+
+/// Which marker properties in `properties` are safe to delete.
+///
+/// A marker is live evidence that its writer committed rows it may not yet
+/// have marked processed, so deleting one that is still needed re-inserts
+/// those rows as duplicates on that writer's next replay. Three rules keep
+/// that from happening:
+///
+/// - **Never our own.** It is the evidence for the commit being made now.
+/// - **Only past `retention`.** A writer that committed within the window may
+///   still be alive and mid-recovery.
+/// - **Undated markers only once this process has itself been up longer than
+///   the window** (`process_outlived_retention`). An undated marker predates
+///   #1307 and could belong to a writer that is perfectly healthy but has not
+///   committed since the deploy; waiting out the window proves otherwise,
+///   because a live writer would have rewritten it with a dated one by then.
+///
+///   This uses the *sweeping* process's uptime as a proxy for "long enough
+///   since dated markers shipped", which leaves one narrow window: a sweeper
+///   up past the retention window, and a different writer that has just
+///   returned from an outage longer than the window and has not made its
+///   first post-restart commit yet. Its undated marker is retirable for those
+///   few seconds. The precondition is the same one the dated path already
+///   accepts — a writer holding undrained entries that has not committed in
+///   `retention` — and it applies only to markers written before this shipped,
+///   so it cannot recur once they are gone.
+fn stale_marker_keys(
+    properties: &HashMap<String, String>,
+    own_writer_ids: &HashSet<String>,
+    now_secs: u64,
+    retention: Duration,
+    process_outlived_retention: bool,
+) -> Vec<String> {
+    let own_keys: HashSet<String> = own_writer_ids.iter().map(|id| wal_marker_key(id)).collect();
+    properties
+        .iter()
+        .filter(|(key, _)| key.starts_with(WAL_MARKER_PREFIX) && !own_keys.contains(*key))
+        .filter(|(_, value)| match marker_committed_at(value) {
+            Some(committed_at) => now_secs.saturating_sub(committed_at) >= retention.as_secs(),
+            None => process_outlived_retention,
+        })
+        .map(|(key, _)| key.clone())
         .collect()
 }
 
@@ -717,6 +875,86 @@ mod tests {
         assert_ne!(wal_marker_key("writer-a"), wal_marker_key("writer-b"));
     }
 
+    #[test]
+    fn marker_carries_the_commit_time_and_still_decodes_legacy_values() {
+        // Markers accumulate one property per writer id, forever (#1307), and
+        // nothing could date them — so nothing could retire them. The value
+        // now leads with the commit time. Values written before this change
+        // have no timestamp and must still decode: they are live idempotency
+        // evidence for whichever writer wrote them.
+        let ids = vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()];
+        let encoded = encode_marker_ids(&ids);
+        assert!(
+            encoded.starts_with("t="),
+            "a marker must record when it was written, got: {encoded}"
+        );
+        assert_eq!(
+            decode_marker_ids(&encoded),
+            ids.iter().copied().collect::<HashSet<_>>()
+        );
+        assert!(marker_committed_at(&encoded).is_some());
+
+        let legacy = ids
+            .iter()
+            .map(|id| id.simple().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            decode_marker_ids(&legacy),
+            ids.iter().copied().collect::<HashSet<_>>(),
+            "a pre-#1307 marker must still be readable"
+        );
+        assert!(
+            marker_committed_at(&legacy).is_none(),
+            "an undated marker must report no commit time rather than a fabricated one"
+        );
+    }
+
+    #[test]
+    fn only_other_writers_stale_markers_are_selected_for_removal() {
+        let now = 1_800_000_000u64;
+        let retention = Duration::from_secs(30 * 24 * 3600);
+        let fresh = now - 60;
+        let stale = now - 40 * 24 * 3600;
+
+        let properties = HashMap::from([
+            // Ours: never removed, however old — it is the evidence for the
+            // commit we are about to make.
+            (wal_marker_key("me"), format!("t={stale}:")),
+            (wal_marker_key("other-fresh"), format!("t={fresh}:")),
+            (wal_marker_key("other-stale"), format!("t={stale}:")),
+            // Undated (pre-#1307): only retirable once this process has been
+            // up longer than the window, so it can never be deleted out from
+            // under a live writer that simply has not committed since deploy.
+            (wal_marker_key("other-legacy"), "deadbeef".to_string()),
+            // Not a marker at all.
+            (
+                "write.metadata.previous-versions-max".to_string(),
+                "100".to_string(),
+            ),
+        ]);
+
+        let own = HashSet::from(["me".to_string()]);
+        let young_process = stale_marker_keys(&properties, &own, now, retention, false);
+        assert_eq!(
+            young_process,
+            vec![wal_marker_key("other-stale")],
+            "a young process must retire only markers it can date"
+        );
+
+        let old_process = stale_marker_keys(&properties, &own, now, retention, true);
+        let mut old_process = old_process;
+        old_process.sort();
+        assert_eq!(
+            old_process,
+            vec![
+                wal_marker_key("other-legacy"),
+                wal_marker_key("other-stale")
+            ],
+            "once the process outlives the window, undated markers are retirable too"
+        );
+    }
+
     #[tokio::test]
     async fn test_iceberg_writer_with_memory_catalog() {
         let catalog_manager = create_test_catalog_manager().await;
@@ -736,5 +974,81 @@ mod tests {
         .expect("IcebergTableWriter::new should succeed against an in-memory SQL catalog");
 
         assert_eq!(writer.table_identifier().name(), "traces");
+    }
+
+    #[tokio::test]
+    async fn retiring_stale_markers_removes_them_from_the_table_and_keeps_the_live_one() {
+        // Markers accumulated one property per writer id, forever, and every
+        // property is paid for in metadata.json on every read and commit
+        // (#1307). Retirement has to actually delete the property, not just
+        // shrink its value — and must never touch a marker that is still
+        // idempotency evidence.
+        let catalog_manager = create_test_catalog_manager().await;
+        let mut writer = IcebergTableWriter::new(
+            &catalog_manager,
+            Arc::new(InMemory::new()),
+            "test-tenant".to_string(),
+            "local".to_string(),
+            "traces".to_string(),
+        )
+        .await
+        .unwrap();
+
+        // Seed three foreign markers: one committed long ago, one committed
+        // just now, and one undated (as written before #1307).
+        let now = common::wal::unix_now_secs();
+        let ancient = now - 60 * 24 * 3600;
+        let identifier = writer.table_identifier().clone();
+        catalog_manager
+            .catalog()
+            .update_table(CommitTable {
+                identifier: identifier.clone(),
+                requirements: Vec::new(),
+                updates: vec![TableUpdate::SetProperties {
+                    updates: HashMap::from([
+                        (wal_marker_key("gone"), format!("t={ancient}:")),
+                        (wal_marker_key("live"), format!("t={now}:")),
+                        (wal_marker_key("undated"), "deadbeef".to_string()),
+                    ]),
+                }],
+            })
+            .await
+            .unwrap();
+        writer.reload_table().await.unwrap();
+
+        let retention = Duration::from_secs(30 * 24 * 3600);
+        let retired = writer
+            .retire_stale_markers(&HashSet::from(["me".to_string()]), retention, false)
+            .await
+            .unwrap();
+        assert_eq!(retired, 1, "only the datably-stale marker is retirable");
+
+        let properties = &writer.table.metadata().properties;
+        assert!(
+            !properties.contains_key(&wal_marker_key("gone")),
+            "a stale marker must be removed from the table, not just emptied"
+        );
+        assert!(
+            properties.contains_key(&wal_marker_key("live")),
+            "a marker committed within the window is still idempotency evidence"
+        );
+        assert!(
+            properties.contains_key(&wal_marker_key("undated")),
+            "an undated marker must survive a process younger than the window"
+        );
+
+        // Once the process has outlived the window, the undated one goes too.
+        let retired = writer
+            .retire_stale_markers(&HashSet::from(["me".to_string()]), retention, true)
+            .await
+            .unwrap();
+        assert_eq!(retired, 1);
+        assert!(
+            !writer
+                .table
+                .metadata()
+                .properties
+                .contains_key(&wal_marker_key("undated"))
+        );
     }
 }

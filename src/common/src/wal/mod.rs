@@ -893,7 +893,7 @@ type WalBuffer = Arc<RwLock<VecDeque<(Uuid, WalOperation, Vec<u8>, Option<String
 
 /// Seconds since the Unix epoch. A clock before the epoch yields 0 rather
 /// than a panic — this is called on the write path.
-fn unix_now_secs() -> u64 {
+pub fn unix_now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
