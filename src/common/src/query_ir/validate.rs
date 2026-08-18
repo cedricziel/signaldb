@@ -590,7 +590,7 @@ impl InferCtx<'_> {
         let mut output_idents: std::collections::HashSet<String> =
             std::collections::HashSet::from(["bucket".to_string()]);
         for by in &hq.by {
-            let alias = histogram_by_ident(by);
+            let alias = super::alias::safe_ident(by);
             if !output_idents.insert(alias.clone()) {
                 return Err(IrError::Invalid(format!(
                     "histogram_quantile by fields collide after normalization: '{alias}'"
@@ -755,22 +755,6 @@ fn check_range(range: &Range) -> Result<(), IrError> {
     coerce_for("range.from", &range.from, &ValueType::TimestampNs)?;
     coerce_for("range.to", &range.to, &ValueType::TimestampNs)?;
     Ok(())
-}
-
-/// Mirrors `ir_planner.rs`'s `safe_ident`: the identifier a `histogram_quantile`
-/// `by` field is aliased to in the lowerer's reinjected output schema (no
-/// dots, which DataFusion would read as a table qualifier). Duplicated here
-/// rather than shared because `common` doesn't depend on `querier`.
-fn histogram_by_ident(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 fn is_numeric(t: &ValueType) -> bool {

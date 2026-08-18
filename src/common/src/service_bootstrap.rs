@@ -151,13 +151,14 @@ impl ServiceBootstrap {
             .register_ingester(service_id, &address, service_type, &capabilities)
             .await?;
 
-        // Start heartbeat if discovery config is available
-        let heartbeat_handle = if let Some(discovery_config) = &config.discovery {
-            Some(catalog.spawn_ingester_heartbeat(service_id, discovery_config.heartbeat_interval))
-        } else {
-            // Use default heartbeat interval
-            Some(catalog.spawn_ingester_heartbeat(service_id, Duration::from_secs(30)))
-        };
+        // Start heartbeat, using the configured interval or a default.
+        let heartbeat_interval = config
+            .discovery
+            .as_ref()
+            .map(|d| d.heartbeat_interval)
+            .unwrap_or(Duration::from_secs(30));
+        let heartbeat_handle =
+            Some(catalog.spawn_ingester_heartbeat(service_id, heartbeat_interval));
 
         // Reap registrations whose heartbeat stopped: crashed services
         // never deregister, so without this the catalog leaks a row per

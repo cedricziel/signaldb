@@ -1409,19 +1409,7 @@ impl Error for Configuration {}
 
 impl Configuration {
     pub fn load() -> Result<Self, Box<figment::Error>> {
-        let mut config: Configuration =
-            Figment::from(Serialized::defaults(Configuration::default()))
-                .merge(Toml::file("signaldb.toml"))
-                // Support both single-underscore (legacy) and double-underscore (new) env vars
-                // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
-                .merge(Env::prefixed("SIGNALDB_").split("_"))
-                // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
-                .merge(Env::prefixed("SIGNALDB__").split("__"))
-                .extract()
-                .map_err(Box::new)?;
-
-        config.ensure_self_monitoring_tenant();
-        Ok(config)
+        Self::load_from_path(std::path::Path::new("signaldb.toml"))
     }
 
     pub fn load_from_path(path: &std::path::Path) -> Result<Self, Box<figment::Error>> {

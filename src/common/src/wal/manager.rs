@@ -137,18 +137,7 @@ impl WalManager {
         if !base_dir.is_dir() {
             return Ok(false);
         }
-        let mut has_segments = false;
-        let mut files = tokio::fs::read_dir(&base_dir).await?;
-        while let Some(file) = files.next_entry().await? {
-            if let Some(name) = file.file_name().to_str()
-                && name.starts_with("wal-")
-                && name.ends_with(".log")
-            {
-                has_segments = true;
-                break;
-            }
-        }
-        if !has_segments {
+        if !Self::dir_has_wal_segments(&base_dir).await? {
             return Ok(false);
         }
 
@@ -486,6 +475,20 @@ impl WalManager {
         Ok(opened)
     }
 
+    /// Whether `dir` directly contains any `wal-*.log` segment files.
+    async fn dir_has_wal_segments(dir: &std::path::Path) -> Result<bool, anyhow::Error> {
+        let mut files = tokio::fs::read_dir(dir).await?;
+        while let Some(file) = files.next_entry().await? {
+            if let Some(name) = file.file_name().to_str()
+                && name.starts_with("wal-")
+                && name.ends_with(".log")
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Scan a base WAL directory for `{tenant}/{dataset}/{signal}` triples
     /// that contain WAL segment files.
     async fn scan_wal_layout(
@@ -518,18 +521,7 @@ impl WalManager {
                         continue;
                     }
                     // Only open directories that actually contain WAL segments
-                    let mut has_segments = false;
-                    let mut files = tokio::fs::read_dir(&signal_dir).await?;
-                    while let Some(file) = files.next_entry().await? {
-                        if let Some(name) = file.file_name().to_str()
-                            && name.starts_with("wal-")
-                            && name.ends_with(".log")
-                        {
-                            has_segments = true;
-                            break;
-                        }
-                    }
-                    if has_segments {
+                    if Self::dir_has_wal_segments(&signal_dir).await? {
                         found.push((tenant.clone(), dataset.clone(), signal.to_string()));
                     }
                 }

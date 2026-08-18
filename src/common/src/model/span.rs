@@ -288,6 +288,14 @@ impl Span {
 pub fn build_span_hierarchy(span_map: HashMap<String, Span>) -> Vec<Span> {
     use std::collections::HashSet;
 
+    // Deterministic sibling/root order: earliest start time, span id as the
+    // tie-break.
+    fn by_start_then_id(a: &&Span, b: &&Span) -> std::cmp::Ordering {
+        a.start_time_unix_nano
+            .cmp(&b.start_time_unix_nano)
+            .then_with(|| a.span_id.cmp(&b.span_id))
+    }
+
     // Adjacency list: parent span id -> child span ids, siblings ordered by
     // start time (span id as the tie-break) so the output is deterministic.
     let mut children_ids: HashMap<&str, Vec<&Span>> = HashMap::new();
@@ -300,11 +308,7 @@ pub fn build_span_hierarchy(span_map: HashMap<String, Span>) -> Vec<Span> {
         }
     }
     for children in children_ids.values_mut() {
-        children.sort_by(|a, b| {
-            a.start_time_unix_nano
-                .cmp(&b.start_time_unix_nano)
-                .then_with(|| a.span_id.cmp(&b.span_id))
-        });
+        children.sort_by(by_start_then_id);
     }
 
     // Copy a span with its whole descendant subtree attached, using an
@@ -368,11 +372,7 @@ pub fn build_span_hierarchy(span_map: HashMap<String, Span>) -> Vec<Span> {
                 || !span_map.contains_key(&span.parent_span_id)
         })
         .collect();
-    root_spans.sort_by(|a, b| {
-        a.start_time_unix_nano
-            .cmp(&b.start_time_unix_nano)
-            .then_with(|| a.span_id.cmp(&b.span_id))
-    });
+    root_spans.sort_by(by_start_then_id);
 
     let mut visited: HashSet<&str> = HashSet::new();
     let mut roots: Vec<Span> = root_spans
@@ -390,11 +390,7 @@ pub fn build_span_hierarchy(span_map: HashMap<String, Span>) -> Vec<Span> {
         .values()
         .filter(|span| !visited.contains(span.span_id.as_str()))
         .collect();
-    unvisited.sort_by(|a, b| {
-        a.start_time_unix_nano
-            .cmp(&b.start_time_unix_nano)
-            .then_with(|| a.span_id.cmp(&b.span_id))
-    });
+    unvisited.sort_by(by_start_then_id);
     let unvisited_ids: HashSet<&str> = unvisited.iter().map(|s| s.span_id.as_str()).collect();
     let mut cycle_roots: Vec<&Span> = Vec::new();
     let mut walked: HashSet<&str> = HashSet::new();
@@ -416,11 +412,7 @@ pub fn build_span_hierarchy(span_map: HashMap<String, Span>) -> Vec<Span> {
                     .iter()
                     .skip_while(|s| s.span_id != current.span_id)
                     .copied();
-                if let Some(root) = members.min_by(|a, b| {
-                    a.start_time_unix_nano
-                        .cmp(&b.start_time_unix_nano)
-                        .then_with(|| a.span_id.cmp(&b.span_id))
-                }) {
+                if let Some(root) = members.min_by(by_start_then_id) {
                     cycle_roots.push(root);
                 }
                 break;
@@ -437,11 +429,7 @@ pub fn build_span_hierarchy(span_map: HashMap<String, Span>) -> Vec<Span> {
             walked.insert(&s.span_id);
         }
     }
-    cycle_roots.sort_by(|a, b| {
-        a.start_time_unix_nano
-            .cmp(&b.start_time_unix_nano)
-            .then_with(|| a.span_id.cmp(&b.span_id))
-    });
+    cycle_roots.sort_by(by_start_then_id);
     for span in cycle_roots {
         if let Some(root) = build_subtree(span, &children_ids, &mut visited) {
             roots.push(root);

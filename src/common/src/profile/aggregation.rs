@@ -78,15 +78,7 @@ pub fn aggregate_profiles_to_flamegraph(profiles: &[Profile]) -> Flamegraph {
             // Stack frames are stored leaf-first; walk root-first.
             let mut node = &mut root;
             for frame in stacktrace.frames.iter().rev() {
-                let name = if frame.function_name.is_empty() {
-                    if frame.address != 0 {
-                        format!("{:#x}", frame.address)
-                    } else {
-                        "<unknown>".to_string()
-                    }
-                } else {
-                    frame.function_name.clone()
-                };
+                let name = frame_name(frame);
                 node = node.child_mut(&name);
                 node.total += value;
             }
@@ -109,21 +101,12 @@ pub fn aggregate_profiles_to_flamegraph(profiles: &[Profile]) -> Flamegraph {
 fn flatten(root: &Node) -> Flamegraph {
     let mut names = Vec::new();
     let mut name_indices: HashMap<String, usize> = HashMap::new();
-    let mut intern = |name: &str, names: &mut Vec<String>| -> i64 {
-        if let Some(&index) = name_indices.get(name) {
-            return index as i64;
-        }
-        let index = names.len();
-        names.push(name.to_string());
-        name_indices.insert(name.to_string(), index);
-        index as i64
-    };
 
     let mut levels: Vec<Vec<i64>> = Vec::new();
     let mut max_self = root.self_value;
 
     // Blocks to lay out at the current level: (absolute x offset, name, node).
-    let root_index = intern("total", &mut names);
+    let root_index = intern_name("total", &mut names, &mut name_indices);
     levels.push(vec![0, root.total, root.self_value, root_index]);
     let mut current: Vec<(i64, &Node)> = vec![(0, root)];
 
@@ -137,7 +120,7 @@ fn flatten(root: &Node) -> Flamegraph {
             // value occupies the tail of its extent.
             let mut x = *offset;
             for (name, child) in &node.children {
-                let name_index = intern(name, &mut names);
+                let name_index = intern_name(name, &mut names, &mut name_indices);
                 level.extend_from_slice(&[
                     x - previous_end,
                     child.total,
@@ -208,6 +191,22 @@ impl DiffNode {
             .expect("children cannot be empty after push")
             .1
     }
+}
+
+/// Intern `name` into `names`, returning its (possibly newly-assigned)
+/// index. Shared by [`flatten`] and [`flatten_diff`]'s name tables.
+fn intern_name(
+    name: &str,
+    names: &mut Vec<String>,
+    name_indices: &mut HashMap<String, usize>,
+) -> i64 {
+    if let Some(&index) = name_indices.get(name) {
+        return index as i64;
+    }
+    let index = names.len();
+    names.push(name.to_string());
+    name_indices.insert(name.to_string(), index);
+    index as i64
 }
 
 fn frame_name(frame: &crate::model::profile::Frame) -> String {
@@ -286,18 +285,9 @@ pub fn aggregate_profiles_to_diff_flamegraph(
 fn flatten_diff(root: &DiffNode) -> DiffFlamegraph {
     let mut names = Vec::new();
     let mut name_indices: HashMap<String, usize> = HashMap::new();
-    let mut intern = |name: &str, names: &mut Vec<String>| -> i64 {
-        if let Some(&index) = name_indices.get(name) {
-            return index as i64;
-        }
-        let index = names.len();
-        names.push(name.to_string());
-        name_indices.insert(name.to_string(), index);
-        index as i64
-    };
 
     let mut max_self = root.left_self.max(root.right_self);
-    let root_index = intern("total", &mut names);
+    let root_index = intern_name("total", &mut names, &mut name_indices);
     let mut levels: Vec<Vec<i64>> = vec![vec![
         0,
         root.left_total,
@@ -321,7 +311,7 @@ fn flatten_diff(root: &DiffNode) -> DiffFlamegraph {
             let mut left_x = *left_offset;
             let mut right_x = *right_offset;
             for (name, child) in &node.children {
-                let name_index = intern(name, &mut names);
+                let name_index = intern_name(name, &mut names, &mut name_indices);
                 level.extend_from_slice(&[
                     left_x - previous_left_end,
                     child.left_total,

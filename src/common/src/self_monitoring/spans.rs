@@ -34,6 +34,22 @@ pub fn ticket_verb(ticket: &str) -> Option<&str> {
     })
 }
 
+/// Record `otel.name` (and, when present, `signaldb.flight.ticket_verb`) on a
+/// freshly-created RPC span: `{rpc_method} {detail}` when a low-cardinality
+/// detail (e.g. the Flight ticket verb) is available, else `rpc_method`
+/// alone. Shared by [`rpc_server_span`] and [`rpc_client_span`].
+fn record_span_name(span: &Span, rpc_method: &str, detail: Option<&str>) {
+    match detail {
+        Some(detail) => {
+            span.record("otel.name", format!("{rpc_method} {detail}").as_str());
+            span.record("signaldb.flight.ticket_verb", detail);
+        }
+        None => {
+            span.record("otel.name", rpc_method);
+        }
+    }
+}
+
 /// Which side of an RPC a span describes — determines the status mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RpcBoundary {
@@ -67,15 +83,7 @@ pub fn rpc_server_span(rpc_method: &str, detail: Option<&str>) -> Span {
         network.peer.port = Empty,
         signaldb.flight.ticket_verb = Empty,
     );
-    match detail {
-        Some(detail) => {
-            span.record("otel.name", format!("{rpc_method} {detail}").as_str());
-            span.record("signaldb.flight.ticket_verb", detail);
-        }
-        None => {
-            span.record("otel.name", rpc_method);
-        }
-    }
+    record_span_name(&span, rpc_method, detail);
     span
 }
 
@@ -105,15 +113,7 @@ pub fn rpc_client_span(
         server.port = Empty,
         signaldb.flight.ticket_verb = Empty,
     );
-    match detail {
-        Some(detail) => {
-            span.record("otel.name", format!("{rpc_method} {detail}").as_str());
-            span.record("signaldb.flight.ticket_verb", detail);
-        }
-        None => {
-            span.record("otel.name", rpc_method);
-        }
-    }
+    record_span_name(&span, rpc_method, detail);
     if let Some(addr) = server_address {
         match addr.rsplit_once(':') {
             Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => {

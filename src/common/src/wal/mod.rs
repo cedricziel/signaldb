@@ -110,13 +110,20 @@ pub struct WalSegment {
 }
 
 impl WalSegment {
+    /// The `.log`/`.data`/`.index` file paths for a segment id in `wal_dir`.
+    fn segment_paths(wal_dir: &Path, segment_id: u64) -> (PathBuf, PathBuf, PathBuf) {
+        (
+            wal_dir.join(format!("wal-{segment_id:010}.log")),
+            wal_dir.join(format!("wal-{segment_id:010}.data")),
+            wal_dir.join(format!("wal-{segment_id:010}.index")),
+        )
+    }
+
     /// Create a new WAL segment
     pub async fn new(wal_dir: &Path, segment_id: u64) -> Result<Self> {
         create_dir_all(wal_dir).await?;
 
-        let path = wal_dir.join(format!("wal-{segment_id:010}.log"));
-        let data_path = wal_dir.join(format!("wal-{segment_id:010}.data"));
-        let index_path = wal_dir.join(format!("wal-{segment_id:010}.index"));
+        let (path, data_path, index_path) = Self::segment_paths(wal_dir, segment_id);
 
         // Opened for writing without O_APPEND: `append` seeks to the entry's
         // authoritative offset before writing (see `append`), so O_APPEND —
@@ -167,9 +174,7 @@ impl WalSegment {
 
     /// Load an existing WAL segment from disk
     pub async fn load(wal_dir: &Path, segment_id: u64) -> Result<Self> {
-        let path = wal_dir.join(format!("wal-{segment_id:010}.log"));
-        let data_path = wal_dir.join(format!("wal-{segment_id:010}.data"));
-        let index_path = wal_dir.join(format!("wal-{segment_id:010}.index"));
+        let (path, data_path, index_path) = Self::segment_paths(wal_dir, segment_id);
 
         if !path.exists() {
             return Self::new(wal_dir, segment_id).await;
@@ -819,14 +824,9 @@ impl WalConfig {
     pub fn for_tenant_dataset(&self, tenant: &str, dataset: &str, signal_type: &str) -> WalConfig {
         WalConfig {
             wal_dir: self.get_wal_path(tenant, dataset, signal_type),
-            max_segment_size: self.max_segment_size,
-            max_buffer_entries: self.max_buffer_entries,
-            flush_interval_secs: self.flush_interval_secs,
             tenant_id: tenant.to_string(),
             dataset_id: dataset.to_string(),
-            retention_secs: self.retention_secs,
-            cleanup_interval_secs: self.cleanup_interval_secs,
-            compaction_threshold: self.compaction_threshold,
+            ..self.clone()
         }
     }
 }
@@ -1048,15 +1048,9 @@ impl Wal {
     ///
     /// Returns the marker file path.
     pub async fn dead_letter_unreadable(&self, entry_id: Uuid, reason: &str) -> Result<PathBuf> {
-        let entry = self
-            .get_entries()
-            .await?
-            .into_iter()
-            .find(|e| e.id == entry_id)
-            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))?;
+        let entry = self.find_entry(entry_id).await?;
 
-        let dir = self.config.wal_dir.join("dead-letter");
-        create_dir_all(&dir).await?;
+        let dir = self.dead_letter_dir().await?;
         let path = dir.join(format!("{}.unreadable.json", entry_id.simple()));
 
         let marker = serde_json::json!({
@@ -1071,18 +1065,7 @@ impl Wal {
             "note": "payload was unreadable; no bytes could be preserved",
         });
         let body = serde_json::to_vec_pretty(&marker)?;
-
-        let mut file = File::create(&path).await.with_context(|| {
-            format!(
-                "Failed to create unreadable-entry marker {}",
-                path.display()
-            )
-        })?;
-        file.write_all(&body).await?;
-        file.flush().await?;
-        file.sync_all()
-            .await
-            .context("Failed to fsync unreadable-entry marker")?;
+        Self::write_fsynced(&path, &body, "unreadable-entry marker").await?;
 
         self.mark_processed(entry_id).await?;
         Ok(path)
@@ -1095,25 +1078,12 @@ impl Wal {
     ///
     /// Returns the dead-letter file path.
     pub async fn dead_letter(&self, entry_id: Uuid) -> Result<PathBuf> {
-        let entry = self
-            .get_entries()
-            .await?
-            .into_iter()
-            .find(|e| e.id == entry_id)
-            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))?;
+        let entry = self.find_entry(entry_id).await?;
         let data = self.read_entry_data(&entry).await?;
 
-        let dir = self.config.wal_dir.join("dead-letter");
-        create_dir_all(&dir).await?;
+        let dir = self.dead_letter_dir().await?;
         let path = dir.join(format!("{}.bin", entry_id.simple()));
-        let mut file = File::create(&path)
-            .await
-            .with_context(|| format!("Failed to create dead-letter file {}", path.display()))?;
-        file.write_all(&data).await?;
-        file.flush().await?;
-        file.sync_all()
-            .await
-            .context("Failed to fsync dead-letter file")?;
+        Self::write_fsynced(&path, &data, "dead-letter file").await?;
 
         self.mark_processed(entry_id).await?;
         Ok(path)
@@ -1132,26 +1102,12 @@ impl Wal {
     ///
     /// Returns the path of the preserved payload.
     pub async fn dead_letter_rejected(&self, entry_id: Uuid, reason: &str) -> Result<PathBuf> {
-        let entry = self
-            .get_entries()
-            .await?
-            .into_iter()
-            .find(|e| e.id == entry_id)
-            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))?;
+        let entry = self.find_entry(entry_id).await?;
         let data = self.read_entry_data(&entry).await?;
 
-        let dir = self.config.wal_dir.join("dead-letter");
-        create_dir_all(&dir).await?;
-
+        let dir = self.dead_letter_dir().await?;
         let path = dir.join(format!("{}.bin", entry_id.simple()));
-        let mut file = File::create(&path)
-            .await
-            .with_context(|| format!("Failed to create dead-letter file {}", path.display()))?;
-        file.write_all(&data).await?;
-        file.flush().await?;
-        file.sync_all()
-            .await
-            .context("Failed to fsync dead-letter file")?;
+        Self::write_fsynced(&path, &data, "dead-letter file").await?;
 
         let marker_path = path.with_extension("rejected.json");
         let marker = serde_json::json!({
@@ -1164,21 +1120,41 @@ impl Wal {
             "note": "writer rejected this batch; payload is intact and replayable once the cause is fixed",
         });
         let body = serde_json::to_vec_pretty(&marker)?;
-        let mut marker_file = File::create(&marker_path).await.with_context(|| {
-            format!(
-                "Failed to create rejection marker {}",
-                marker_path.display()
-            )
-        })?;
-        marker_file.write_all(&body).await?;
-        marker_file.flush().await?;
-        marker_file
-            .sync_all()
-            .await
-            .context("Failed to fsync rejection marker")?;
+        Self::write_fsynced(&marker_path, &body, "rejection marker").await?;
 
         self.mark_processed(entry_id).await?;
         Ok(path)
+    }
+
+    /// Look up a WAL entry by id, for the dead-letter paths above.
+    async fn find_entry(&self, entry_id: Uuid) -> Result<WalEntry> {
+        self.get_entries()
+            .await?
+            .into_iter()
+            .find(|e| e.id == entry_id)
+            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))
+    }
+
+    /// The dead-letter directory, created if missing.
+    async fn dead_letter_dir(&self) -> Result<PathBuf> {
+        let dir = self.config.wal_dir.join("dead-letter");
+        create_dir_all(&dir).await?;
+        Ok(dir)
+    }
+
+    /// Write `data` to `path`, flushing and fsyncing before returning.
+    /// `what` names the file in the create/fsync error context (e.g.
+    /// "dead-letter file", "rejection marker").
+    async fn write_fsynced(path: &Path, data: &[u8], what: &str) -> Result<()> {
+        let mut file = File::create(path)
+            .await
+            .with_context(|| format!("Failed to create {what} {}", path.display()))?;
+        file.write_all(data).await?;
+        file.flush().await?;
+        file.sync_all()
+            .await
+            .with_context(|| format!("Failed to fsync {what}"))?;
+        Ok(())
     }
 
     /// Load the persisted writer id from `writer.id`, creating (and

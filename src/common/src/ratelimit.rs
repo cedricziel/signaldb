@@ -146,6 +146,32 @@ impl std::fmt::Display for RateLimitExceeded {
 
 impl std::error::Error for RateLimitExceeded {}
 
+/// Acquire `cost` tokens from `bucket` (a no-op when the dimension has no
+/// configured limit, i.e. `bucket` is `None`), mapping a rejection to
+/// [`RateLimitExceeded`] for `kind`. Shared by every per-dimension check in
+/// [`TenantRateLimiter::check_ingest_at`] and
+/// [`TenantRateLimiter::check_query_at`].
+fn try_acquire(
+    bucket: Option<&mut TokenBucket>,
+    cost: f64,
+    now: Instant,
+    tenant_id: &str,
+    kind: RateLimitKind,
+) -> Result<(), RateLimitExceeded> {
+    let Some(bucket) = bucket else {
+        return Ok(());
+    };
+    bucket
+        .try_acquire(cost, now)
+        .map_err(|retry_after| RateLimitExceeded {
+            tenant_id: tenant_id.to_string(),
+            kind,
+            retry_after,
+            limit: bucket.rate,
+            burst: bucket.burst,
+        })
+}
+
 /// The `Retry-After` / `X-RateLimit-Limit` / `X-RateLimit-Burst` header trio
 /// every SignalDB 429 carries, computed from the rejected bucket's actual
 /// state. Shared by the router and the acceptor so both surfaces answer with
@@ -240,28 +266,20 @@ impl TenantRateLimiter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        if let Some(bucket) = buckets.requests.as_mut()
-            && let Err(retry_after) = bucket.try_acquire(1.0, now)
-        {
-            return Err(RateLimitExceeded {
-                tenant_id: tenant_id.to_string(),
-                kind: RateLimitKind::Requests,
-                retry_after,
-                limit: bucket.rate,
-                burst: bucket.burst,
-            });
-        }
-        if let Some(bucket) = buckets.bytes.as_mut()
-            && let Err(retry_after) = bucket.try_acquire(bytes as f64, now)
-        {
-            return Err(RateLimitExceeded {
-                tenant_id: tenant_id.to_string(),
-                kind: RateLimitKind::Bytes,
-                retry_after,
-                limit: bucket.rate,
-                burst: bucket.burst,
-            });
-        }
+        try_acquire(
+            buckets.requests.as_mut(),
+            1.0,
+            now,
+            tenant_id,
+            RateLimitKind::Requests,
+        )?;
+        try_acquire(
+            buckets.bytes.as_mut(),
+            bytes as f64,
+            now,
+            tenant_id,
+            RateLimitKind::Bytes,
+        )?;
         Ok(())
     }
 
@@ -283,17 +301,13 @@ impl TenantRateLimiter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        if let Some(bucket) = buckets.query_requests.as_mut()
-            && let Err(retry_after) = bucket.try_acquire(1.0, now)
-        {
-            return Err(RateLimitExceeded {
-                tenant_id: tenant_id.to_string(),
-                kind: RateLimitKind::QueryRequests,
-                retry_after,
-                limit: bucket.rate,
-                burst: bucket.burst,
-            });
-        }
+        try_acquire(
+            buckets.query_requests.as_mut(),
+            1.0,
+            now,
+            tenant_id,
+            RateLimitKind::QueryRequests,
+        )?;
         Ok(())
     }
 

@@ -187,31 +187,18 @@ pub async fn auth_middleware(
     // Anti-loop guard: processing the _system tenant's own telemetry must not
     // generate more self-monitoring telemetry (infinite feedback loop). The
     // suppression scope covers everything from here through the handler.
-    if crate::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
-        crate::self_monitoring::suppress_self_telemetry(async move {
-            tracing::debug!(
-                "Authenticated request for tenant '{}', dataset '{}' (source: {})",
-                tenant_context.tenant_id,
-                tenant_context.dataset_id,
-                tenant_context.source
-            );
-            request.extensions_mut().insert(tenant_context);
-            next.run(request).await
-        })
-        .await
-    } else {
+    let suppress = crate::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id);
+    crate::self_monitoring::maybe_suppress_self_telemetry(suppress, async move {
         tracing::debug!(
             "Authenticated request for tenant '{}', dataset '{}' (source: {})",
             tenant_context.tenant_id,
             tenant_context.dataset_id,
             tenant_context.source
         );
-        // Insert TenantContext into request extensions
         request.extensions_mut().insert(tenant_context);
-
-        // Continue to next middleware/handler
         next.run(request).await
-    }
+    })
+    .await
 }
 
 /// Axum middleware function for admin API authentication
