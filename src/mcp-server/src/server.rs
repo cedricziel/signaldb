@@ -577,10 +577,11 @@ struct DeleteSchemaRegistryParams {
     version: String,
 }
 
-/// Advertises a nested-document parameter as a JSON object (see
-/// [`query_ir_document_schema`]).
-fn json_object_schema(_generator: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
-    rmcp::schemars::json_schema!({ "type": "object" })
+/// Advertises a nested-document parameter as a JSON object; identical to
+/// [`query_ir_document_schema`], kept as its own name for readability at the
+/// `#[schemars(schema_with = ...)]` call sites.
+fn json_object_schema(generator: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
+    query_ir_document_schema(generator)
 }
 
 /// Accepts a nested document as a native JSON object, or — for clients that
@@ -613,6 +614,33 @@ fn require_confirm(confirm: &str, expected: &str, what: &str) -> Result<(), Erro
     if confirm != expected {
         return Err(ErrorData::invalid_params(
             format!("`confirm` must equal the {what} being deleted/revoked (\"{expected}\")"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an empty `scopes` list on API-key creation (platform-admin and
+/// tenant-management variants share this validation).
+fn require_nonempty_scopes(scopes: &[String]) -> Result<(), ErrorData> {
+    if scopes.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "at least one scope is required",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an API-key update with neither `scopes` nor `dataset_id` set
+/// (platform-admin and tenant-management variants share this validation).
+fn require_any_update(
+    scopes: &Option<Vec<String>>,
+    dataset_id: &Option<String>,
+) -> Result<(), ErrorData> {
+    if scopes.is_none() && dataset_id.is_none() {
+        return Err(ErrorData::invalid_params(
+            "nothing to update: pass `scopes` and/or `dataset_id`",
             None,
         ));
     }
@@ -1476,12 +1504,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
         Parameters(p): Parameters<CreateApiKeyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        if p.scopes.is_empty() {
-            return Err(ErrorData::invalid_params(
-                "at least one scope is required",
-                None,
-            ));
-        }
+        require_nonempty_scopes(&p.scopes)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .create_api_key()
@@ -1505,12 +1528,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
         Parameters(p): Parameters<UpdateApiKeyScopesParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        if p.scopes.is_none() && p.dataset_id.is_none() {
-            return Err(ErrorData::invalid_params(
-                "nothing to update: pass `scopes` and/or `dataset_id`",
-                None,
-            ));
-        }
+        require_any_update(&p.scopes, &p.dataset_id)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .update_api_key()
@@ -1840,12 +1858,7 @@ impl McpServer {
         Parameters(p): Parameters<TenantCreateApiKeyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        if p.scopes.is_empty() {
-            return Err(ErrorData::invalid_params(
-                "at least one scope is required",
-                None,
-            ));
-        }
+        require_nonempty_scopes(&p.scopes)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .manage_create_api_key()
@@ -1890,12 +1903,7 @@ impl McpServer {
         Parameters(p): Parameters<TenantUpdateApiKeyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        if p.scopes.is_none() && p.dataset_id.is_none() {
-            return Err(ErrorData::invalid_params(
-                "nothing to update: pass `scopes` and/or `dataset_id`",
-                None,
-            ));
-        }
+        require_any_update(&p.scopes, &p.dataset_id)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .manage_update_api_key()
