@@ -317,6 +317,8 @@ sequenceDiagram
 6. Writer confirms after its WAL flush (it does **not** block the confirm on the Iceberg commit); Acceptor marks its WAL entry as processed
 7. Writer's `WalProcessor` asynchronously commits WAL entries to Iceberg (Parquet in the object store), **coalescing** pending entries per `(tenant, dataset, table)` — a group commits when `[writer].commit_interval` elapses or its rows reach `[writer].max_uncommitted_rows`. This caps the Iceberg snapshot / catalog-metadata write rate independent of ingest rate.
 
+Steps 5 and 7 route the same batch at different times — once to pick its WAL, once to pick its Iceberg table — so both call the writer's single `routing::route`. It trims the metadata tenant/dataset ids, substitutes the deployment default for a blank or absent one, and validates the result; the commit path falls back to the ids of the WAL the entry lives in, which are what routing already returned on ingest. Before this was shared (#1319), a padded or empty metadata tenant landed in one WAL and committed under a different Iceberg tenant, so a row's destination depended on whether it was committed live or replayed after a restart. Signal-to-table mapping lives in the same function: one table per signal, except metrics, which honour the metadata's `target_table` and otherwise fall back to `metrics_gauge`.
+
 Because the commit is asynchronous, ingested data is queryable only once committed (bounded by `commit_interval`). A caller needing read-your-writes forces an immediate commit with the Writer Flight `do_action("flush")` (advertised via `list_actions`). The action is **tenant-scoped**: the scope is taken from the request's `x-tenant-id` (required) and `x-dataset-id` (optional) gRPC metadata — the same tenant identity the ingest path carries — and it force-commits only that tenant's (optionally that dataset's) pending groups. A request without `x-tenant-id` is rejected, so a caller can neither flush every tenant nor a tenant it names only in the payload. Tests use `common::testing::flush_storage_writers(transport, tenant, dataset)` for a deterministic barrier.
 
 #### Query Flow:
@@ -340,7 +342,7 @@ sequenceDiagram
 3. Querier executes query using DataFusion against Parquet files
 4. Results streamed back to client via Flight → HTTP
 
-**Parquet footer caching.** Step 3 is dominated by *opening* candidate Parquet
+**Parquet footer caching.** Step 3 is dominated by _opening_ candidate Parquet
 files rather than by reading them: pruning (partition, statistics, bloom)
 already reduces a point lookup to a handful of bytes, while every candidate
 file's footer still has to be fetched and decoded, one object-store round-trip
