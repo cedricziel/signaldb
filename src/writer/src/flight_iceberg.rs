@@ -747,7 +747,16 @@ mod tests {
         );
 
         // Verify service was created successfully
-        assert!(service.processor.lock().await.get_stats().active_writers == 0);
+        assert!(
+            service
+                .processor
+                .lock()
+                .await
+                .get_stats()
+                .await
+                .active_writers
+                == 0
+        );
     }
 
     #[tokio::test]
