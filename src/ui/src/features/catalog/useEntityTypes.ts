@@ -39,12 +39,14 @@ export interface CatalogEntityTypes {
 interface EntityHitLike {
   name: string;
   identifying?: { key: string }[];
+  descriptive?: { key: string }[];
 }
 
 export function toRegistryEntities(hits: EntityHitLike[]): RegistryEntity[] {
   return hits.map((h) => ({
     name: h.name,
     identifying: (h.identifying ?? []).map((a) => a.key),
+    descriptive: (h.descriptive ?? []).map((a) => a.key),
   }));
 }
 

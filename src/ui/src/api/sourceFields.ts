@@ -81,6 +81,75 @@ export async function fetchSourceFields(
   }
 }
 
+/**
+ * What the maintained value sketch knows about one field.
+ *
+ * Deliberately narrow. The sketch is **not window-scoped** — its `cost`
+ * reports `window_scoped: false`, because it describes what compaction last
+ * saw, not the range under inspection. So it can never answer "which entities
+ * are in this window", and using it to list instances would show entities last
+ * seen days ago to someone who narrowed to fifteen minutes.
+ *
+ * What it can answer is the question an empty result cannot: whether this
+ * entity type has *ever* been seen. "No hosts in this window" and "no host has
+ * ever reported" are different findings, and only one of them is a reason to
+ * go looking at your instrumentation.
+ */
+export interface FieldValueSketch {
+  /** How many distinct values the sketch holds. Approximate and bounded. */
+  distinct: number;
+  /** A few of them, most frequent first — enough to recognise, not to list. */
+  examples: string[];
+  /** When the statistics behind this were last computed. */
+  asOf?: string;
+}
+
+export function buildFieldValuesDoc(
+  source: string,
+  field: string,
+  range: ResolvedRange,
+  limit = 5,
+): QueryIrRequest {
+  return {
+    irVersion: 4,
+    from: source,
+    range: {
+      from: String(msToNanos(range.fromMs)),
+      to: String(msToNanos(range.toMs)),
+    },
+    result: "metadata",
+    pipeline: [{ describe: { target: "values", field, limit } }],
+  };
+}
+
+/**
+ * The sketch for one field, or `undefined` when nothing covers it.
+ *
+ * `undefined` is the common case and not an error: a field with no declared
+ * value set and no maintained statistics is simply unknown, which the caller
+ * must render as "we have not looked", never as "there is nothing".
+ */
+export async function fetchFieldValueSketch(
+  source: string,
+  field: string,
+  range: ResolvedRange,
+): Promise<FieldValueSketch | undefined> {
+  try {
+    const res = await runIrQuery(buildFieldValuesDoc(source, field, range));
+    const values = res.metadata?.values ?? [];
+    if (values.length === 0) return undefined;
+    return {
+      distinct: values.length,
+      examples: values
+        .map((v) => v.value)
+        .filter((v): v is string => typeof v === "string"),
+      asOf: res.metadata?.cost?.as_of ?? undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Every catalog source's field set, fetched concurrently. */
 export async function fetchAllSourceFields(
   range: ResolvedRange,

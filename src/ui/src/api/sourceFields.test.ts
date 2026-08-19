@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildFieldValuesDoc,
   buildSourceFieldsDoc,
   fetchAllSourceFields,
+  fetchFieldValueSketch,
   fetchSourceFields,
 } from "./sourceFields";
 import { runIrQuery } from "./queryIr";
@@ -92,5 +94,86 @@ describe("fetchAllSourceFields", () => {
     expect([...result.keys()]).toEqual(["traces", "metrics"]);
     expect([...result.get("metrics")!.fields]).toEqual(["process.pid"]);
     expect([...result.get("traces")!.fields]).toEqual(["service.name"]);
+  });
+});
+
+function valuesResponse(
+  values: { value: string; count: number }[],
+  asOf?: string,
+) {
+  return {
+    result: "metadata",
+    window: { start_ns: 1, end_ns: 2 },
+    metadata: {
+      kind: "values",
+      values: values.map((v) => ({ ...v, origin: "statistics" })),
+      cost: {
+        mode: "metadata",
+        // The sketch describes what compaction last saw, not the queried
+        // window. Everything this module claims about it rests on this.
+        window_scoped: false,
+        approximate: true,
+        ...(asOf ? { as_of: asOf } : {}),
+      },
+    },
+  };
+}
+
+describe("buildFieldValuesDoc", () => {
+  it("asks for a field's values, bounded", () => {
+    expect(buildFieldValuesDoc("metrics", "container.name", range)).toEqual({
+      irVersion: 4,
+      from: "metrics",
+      range: { from: "1000000000000", to: "4600000000000" },
+      result: "metadata",
+      pipeline: [
+        { describe: { target: "values", field: "container.name", limit: 5 } },
+      ],
+    });
+  });
+});
+
+describe("fetchFieldValueSketch", () => {
+  it("reports what the sketch knows, with its age", async () => {
+    vi.mocked(runIrQuery).mockResolvedValue(
+      valuesResponse(
+        [
+          { value: "ix-signaldb-otelcol-1", count: 2400 },
+          { value: "ix-signaldb-mcp-1", count: 2160 },
+        ],
+        "2026-08-19 07:13:57",
+      ) as never,
+    );
+
+    const sketch = await fetchFieldValueSketch(
+      "metrics",
+      "container.name",
+      range,
+    );
+
+    expect(sketch).toEqual({
+      distinct: 2,
+      examples: ["ix-signaldb-otelcol-1", "ix-signaldb-mcp-1"],
+      asOf: "2026-08-19 07:13:57",
+    });
+  });
+
+  it("is undefined when nothing covers the field", async () => {
+    // The common case: no declared value set and no maintained statistics.
+    // Callers must render this as "we have not looked", never as "there is
+    // nothing here" — the distinction is the entire reason to consult it.
+    vi.mocked(runIrQuery).mockResolvedValue(valuesResponse([]) as never);
+
+    expect(
+      await fetchFieldValueSketch("metrics", "container.name", range),
+    ).toBeUndefined();
+  });
+
+  it("is undefined when the lookup fails, rather than propagating", async () => {
+    vi.mocked(runIrQuery).mockRejectedValue(new Error("boom"));
+
+    expect(
+      await fetchFieldValueSketch("metrics", "container.name", range),
+    ).toBeUndefined();
   });
 });

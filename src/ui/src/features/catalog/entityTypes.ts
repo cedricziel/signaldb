@@ -72,6 +72,14 @@ export interface EntityTypeDef {
    * metric point.
    */
   sources?: string[];
+  /**
+   * Identity to fall back to when the registry-declared one is absent from
+   * the data, in registry-declared order — the entity's descriptive
+   * attributes. Present only on a registry-derived type: where the catalog
+   * names an identity it is deliberate (see `resolveIdentity`) and is never
+   * substituted.
+   */
+  identityFallback?: string[];
 }
 
 /**

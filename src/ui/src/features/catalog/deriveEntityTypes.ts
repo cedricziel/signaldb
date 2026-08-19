@@ -57,6 +57,16 @@ export interface RegistryEntity {
   name: string;
   /** Attributes the registry declares as identifying, in declared order. */
   identifying: string[];
+  /**
+   * Attributes the registry declares as descriptive, in declared order.
+   *
+   * These are the fallback identity. OTel 1.43 declares 28 entity types with
+   * no identifying attribute at all — `host` and `container` among them,
+   * where `host.name` and `container.name` are merely descriptive — so
+   * without a fallback those types cannot be catalogued from the registry
+   * and each needs a hand-written identity instead.
+   */
+  descriptive: string[];
 }
 
 /** Route ids are underscored; registry names are dotted. */
@@ -96,11 +106,16 @@ export function deriveEntityTypes(
   for (const entity of registry) {
     const id = idOf(entity.name);
     if (byId.has(id)) continue;
-    if (entity.identifying.length === 0) continue;
+    const candidates = [...entity.identifying, ...entity.descriptive];
+    if (candidates.length === 0) continue;
     derived.push({
       id,
       ...labelOf(entity.name),
+      // Declared identity first, descriptive as fallback. Which of these the
+      // data actually carries is not knowable here — `observedEntityTypes`
+      // resolves it against the field metadata.
       identity: entity.identifying,
+      identityFallback: entity.descriptive,
       // A registry entity is a resource entity: its identifying attributes
       // ride on every signal the SDK emits, so it is discoverable from all
       // of them. `observedEntityTypes` narrows this to the sources that
@@ -110,6 +125,37 @@ export function deriveEntityTypes(
   }
 
   return derived;
+}
+
+/**
+ * The identity to group this entity type by, given what the data carries.
+ *
+ * Declared identity wins where the data carries it, dropping any declared
+ * attribute that is absent — a source with `process.pid` but no
+ * `process.creation.time` still knows about processes, just more coarsely,
+ * and grouping by the absent one would put every instance in a single null
+ * bucket.
+ *
+ * When *no* declared attribute is carried, the first carried descriptive
+ * attribute stands in. That is what makes `host` and `container` catalogable
+ * at all — OTel declares neither with an identifying attribute — and what
+ * keeps a type whose declared identity is a uid nobody sends (a pod's
+ * `k8s.pod.uid`) usable rather than dropped.
+ *
+ * A catalog-supplied identity is never rewritten: where the catalog names one
+ * it is adding a scoping attribute the registry cannot express — a pid is
+ * unique only within a host, a service name only within a namespace — and
+ * that is a correctness fix, not a preference.
+ */
+function resolveIdentity(
+  type: EntityTypeDef,
+  carried: (field: string) => boolean,
+): string[] {
+  if (type.identityFallback === undefined) return type.identity;
+  const declared = type.identity.filter(carried);
+  if (declared.length > 0) return declared;
+  const fallback = type.identityFallback.find(carried);
+  return fallback === undefined ? [] : [fallback];
 }
 
 /**
@@ -131,16 +177,19 @@ export function observedEntityTypes(
   fieldsBySource: Map<string, Set<string>>,
 ): EntityTypeDef[] {
   const observed: EntityTypeDef[] = [];
+  const anySourceCarries = (field: string) =>
+    [...fieldsBySource.values()].some((fields) => fields.has(field));
 
   for (const type of types) {
-    const primary = type.identity[0];
+    const identity = resolveIdentity(type, anySourceCarries);
+    const primary = identity[0];
     if (primary === undefined) continue;
     const declared = type.sources ?? ["traces"];
     const carrying = declared.filter((source) =>
       fieldsBySource.get(source)?.has(primary),
     );
     if (carrying.length === 0) continue;
-    observed.push({ ...type, sources: carrying });
+    observed.push({ ...type, identity, sources: carrying });
   }
 
   // Curated types lead the list, so truncation drops the registry-derived
