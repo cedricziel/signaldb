@@ -349,8 +349,13 @@ async fn scan_source_tables(
             let targets = union_target_types(&providers, source.row_defaults);
             let mut union: Option<DataFrame> = None;
             for (table_ref, provider) in providers {
-                let provider = CoercedTableProvider::wrap(provider, source.row_defaults, &targets);
+                let provider = CoercedTableProvider::wrap(provider, source.row_defaults, &targets)?;
                 let df = scan_provider(ctx, table_ref, provider)?;
+                // Now an identity projection — the provider above already
+                // presents exactly `row_defaults`, in order. Kept so the two
+                // branches carry the same unqualified column names into the
+                // union regardless of their table qualifiers, not because it
+                // selects or reorders anything.
                 let proj: Vec<Expr> = source.row_defaults.iter().map(|c| col(*c)).collect();
                 let projected = df.select(proj).map_err(QuerierError::QueryFailed)?;
                 union = Some(match union {
@@ -393,60 +398,106 @@ fn union_target_types(
         .collect()
 }
 
-/// A [`TableProvider`] that presents `inner` with some columns coerced to a
-/// different type: a legacy JSON-string attribute container becomes a typed
-/// `Map<Utf8,Utf8>` (via [`JsonToMapUdf`]), anything else is cast. Used to
-/// give the tables of a multi-table source identical schemas before they are
-/// unioned. Filters that only touch un-coerced columns are still offered to
-/// the inner provider (so time-range pruning survives); projections and
-/// limits pass straight through.
+/// A [`TableProvider`] that presents `inner` as exactly the union's common
+/// columns: the requested column list, in that order, with any column coerced
+/// to the union's target type — a legacy JSON-string attribute container
+/// becomes a typed `Map<Utf8,Utf8>` (via [`JsonToMapUdf`]), anything else is
+/// cast.
+///
+/// Presenting the *shape*, not just the types, is what makes a multi-table
+/// source safe to union. The tables of one source disagree on column order and
+/// count as well as on type — `metrics_sum` carries `aggregation_temporality`
+/// and `is_monotonic` in the middle, so every column after them sits at a
+/// different index than in `metrics_gauge`, and both end with the `date_day`
+/// / `hour` partition helpers. If each branch's scan exposed its own full
+/// schema, the branches would agree only because a projection above them
+/// picked the same names; `optimize_projections` rebuilds those projections
+/// from sorted column indices, and the moment anything is pushed between the
+/// projection and the scan — a predicate pushed below the UNION, say — the two
+/// branches are rebuilt against different index spaces and stop lining up.
+/// That produced "UNION field 0 have different type in inputs: left has Utf8
+/// whereas right has Date32" for any filter on an attribute-map column
+/// (#1348), while grouping by the same column worked, because grouping adds no
+/// node between the two.
+///
+/// Making the scan itself present the common columns removes the mismatch at
+/// the source: every branch's `TableScan` has an identical schema, so no
+/// optimizer rewrite can misalign them. Coercing types alone (#1206) was the
+/// same idea one step short of this.
+///
+/// Filters that only touch un-coerced columns are still offered to the inner
+/// provider, so time-range and partition pruning survive.
 #[derive(Debug)]
 struct CoercedTableProvider {
     inner: Arc<dyn TableProvider>,
+    /// The columns this provider presents: the union's common list, in order.
     schema: SchemaRef,
-    /// Column index → target type, for the columns that differ from `inner`.
+    /// Our column index → the inner schema's index for the same column.
+    inner_index: Vec<usize>,
+    /// Our column index → target type, for columns that differ from `inner`.
     coerced: Vec<(usize, DataType)>,
 }
 
 impl CoercedTableProvider {
-    /// Wrap `inner` if any of `columns` needs coercion to its target type;
-    /// return `inner` untouched otherwise.
+    /// Present `inner` as `columns`, coerced to `targets`.
+    ///
+    /// Returns `inner` untouched only when it already *is* that schema: same
+    /// columns, same order, same types. In practice no real table matches —
+    /// `row_defaults` is a strict subset of a physical schema, which also
+    /// carries `date_day`/`hour` and the rest — so this is an identity check
+    /// rather than an optimization for any known caller. (A single-table
+    /// source never reaches here at all: `scan_source_tables` returns before
+    /// the union branch.)
     fn wrap(
         inner: Arc<dyn TableProvider>,
         columns: &[&str],
         targets: &[Option<DataType>],
-    ) -> Arc<dyn TableProvider> {
+    ) -> Result<Arc<dyn TableProvider>, QuerierError> {
         let inner_schema = inner.schema();
+        let mut fields = Vec::with_capacity(columns.len());
+        let mut inner_index = Vec::with_capacity(columns.len());
         let mut coerced = Vec::new();
-        for (name, target) in columns.iter().zip(targets) {
-            let (Some(target), Ok(idx)) = (target, inner_schema.index_of(name)) else {
-                continue;
-            };
-            if inner_schema.field(idx).data_type() != target {
-                coerced.push((idx, target.clone()));
+
+        for (our_idx, (name, target)) in columns.iter().zip(targets).enumerate() {
+            // Every column of the common list must exist on every table of
+            // the source, or the union has nothing to align. Failing here
+            // names the column; letting it through would silently produce a
+            // branch of the wrong width.
+            let idx = inner_schema.index_of(name).map_err(|_| {
+                QuerierError::QueryFailed(datafusion::error::DataFusionError::Plan(format!(
+                    "table is missing column '{name}' required to union this source"
+                )))
+            })?;
+            let inner_field = inner_schema.field(idx);
+            match target {
+                Some(target) if inner_field.data_type() != target => {
+                    coerced.push((our_idx, target.clone()));
+                    fields.push(Field::new(*name, target.clone(), true));
+                }
+                _ => fields.push(inner_field.clone()),
             }
+            inner_index.push(idx);
         }
-        if coerced.is_empty() {
-            return inner;
+
+        let already_identical = coerced.is_empty()
+            && inner_index
+                .iter()
+                .copied()
+                .eq(0..inner_schema.fields().len());
+        if already_identical {
+            return Ok(inner);
         }
-        let fields: Vec<Field> = inner_schema
-            .fields()
-            .iter()
-            .enumerate()
-            .map(|(i, f)| match coerced.iter().find(|(idx, _)| *idx == i) {
-                Some((_, target)) => Field::new(f.name(), target.clone(), true),
-                None => f.as_ref().clone(),
-            })
-            .collect();
+
         let schema = Arc::new(Schema::new_with_metadata(
             fields,
             inner_schema.metadata().clone(),
         ));
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             inner,
             schema,
+            inner_index,
             coerced,
-        })
+        }))
     }
 
     fn is_coerced(&self, idx: usize) -> bool {
@@ -497,14 +548,22 @@ impl TableProvider for CoercedTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        // The inner scan sees the same indices (we never reorder columns)
-        // and only the filters that survived `supports_filters_pushdown`.
-        let inner_plan = self.inner.scan(state, projection, filters, limit).await?;
-        let inner_schema = inner_plan.schema();
+        // `projection` indexes into *our* schema (the union's common
+        // columns); the inner table has its own column order, so translate
+        // before handing the scan down. Filters are only those that survived
+        // `supports_filters_pushdown`.
         let selected: Vec<usize> = match projection {
             Some(p) => p.clone(),
             None => (0..self.schema.fields().len()).collect(),
         };
+        let inner_projection: Vec<usize> = selected.iter().map(|i| self.inner_index[*i]).collect();
+        let inner_plan = self
+            .inner
+            .scan(state, Some(&inner_projection), filters, limit)
+            .await?;
+        let inner_schema = inner_plan.schema();
+        // The inner plan already yields the selected columns in the selected
+        // order; a cast is only needed where the type still differs.
         if !selected.iter().any(|i| self.is_coerced(*i)) {
             return Ok(inner_plan);
         }
@@ -2945,6 +3004,268 @@ mod tests {
         assert_eq!(groups, vec![("hive".into(), 2), ("other".into(), 1)]);
     }
 
+    /// The real persisted gauge/sum schemas as of physical-v1: the sum table
+    /// carries two extra columns (`aggregation_temporality`, `is_monotonic`)
+    /// in the middle, so every later column sits at a different index than in
+    /// the gauge table, and both end with the computed `date_day: Date32` /
+    /// `hour: Int32` partition helpers. That index skew between the union
+    /// branches is what #1348's "Utf8 vs Date32" mismatch needs to reproduce;
+    /// a fixture whose branches share a column order cannot show the bug.
+    fn realistic_metrics_ctx() -> SessionContext {
+        fn schema(with_sum_columns: bool) -> Arc<Schema> {
+            let mut fields = vec![
+                Field::new(
+                    "timestamp",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(
+                    "start_timestamp",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    true,
+                ),
+                Field::new("service_name", DataType::Utf8, false),
+                Field::new("metric_name", DataType::Utf8, false),
+                Field::new("metric_description", DataType::Utf8, true),
+                Field::new("metric_unit", DataType::Utf8, true),
+                Field::new("value", DataType::Float64, false),
+                Field::new("flags", DataType::Int32, true),
+            ];
+            if with_sum_columns {
+                fields.push(Field::new(
+                    "aggregation_temporality",
+                    DataType::Int32,
+                    false,
+                ));
+                fields.push(Field::new("is_monotonic", DataType::Boolean, false));
+            }
+            fields.extend([
+                Field::new("resource_schema_url", DataType::Utf8, true),
+                map_field_named("resource_attributes"),
+                Field::new("scope_name", DataType::Utf8, true),
+                Field::new("scope_version", DataType::Utf8, true),
+                Field::new("scope_schema_url", DataType::Utf8, true),
+                map_field_named("scope_attributes"),
+                Field::new("scope_dropped_attr_count", DataType::Int32, true),
+                map_field_named("attributes"),
+                Field::new("exemplars", DataType::Utf8, true),
+                Field::new("date_day", DataType::Date32, false),
+                Field::new("hour", DataType::Int32, false),
+            ]);
+            Arc::new(Schema::new(fields))
+        }
+
+        fn batch(schema: &Arc<Schema>, with_sum_columns: bool, n: usize) -> RecordBatch {
+            use datafusion::arrow::array::{BooleanArray, Date32Array, Int32Array};
+            let containers = vec![&[("container.name", "ix-signaldb-mcp-1")] as &[_]; n];
+            let empty = vec![&[] as &[(&str, &str)]; n];
+            let mut cols: Vec<ArrayRef> = vec![
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64; n])),
+                Arc::new(TimestampNanosecondArray::from(vec![0_i64; n])),
+                Arc::new(StringArray::from(vec!["signaldb"; n])),
+                Arc::new(StringArray::from(vec!["m"; n])),
+                Arc::new(StringArray::from(vec![""; n])),
+                Arc::new(StringArray::from(vec![""; n])),
+                Arc::new(Float64Array::from(vec![5.0; n])),
+                Arc::new(Int32Array::from(vec![0; n])),
+            ];
+            if with_sum_columns {
+                cols.push(Arc::new(Int32Array::from(vec![2; n])));
+                cols.push(Arc::new(BooleanArray::from(vec![true; n])));
+            }
+            cols.extend([
+                Arc::new(StringArray::from(vec![""; n])) as ArrayRef,
+                build_map(&containers),
+                Arc::new(StringArray::from(vec![""; n])),
+                Arc::new(StringArray::from(vec![""; n])),
+                Arc::new(StringArray::from(vec![""; n])),
+                build_map(&empty),
+                Arc::new(Int32Array::from(vec![0; n])),
+                build_map(&empty),
+                Arc::new(StringArray::from(vec![""; n])),
+                Arc::new(Date32Array::from(vec![0; n])),
+                Arc::new(Int32Array::from(vec![0; n])),
+            ]);
+            RecordBatch::try_new(schema.clone(), cols).unwrap()
+        }
+
+        let gauge_schema = schema(false);
+        let sum_schema = schema(true);
+        let gauge_batch = batch(&gauge_schema, false, 2);
+        let sum_batch = batch(&sum_schema, true, 1);
+
+        let ctx = SessionContext::new();
+        let gauge = MemTable::try_new(gauge_schema, vec![vec![gauge_batch]]).unwrap();
+        let sum = MemTable::try_new(sum_schema, vec![vec![sum_batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_gauge".to_string(), Arc::new(gauge))
+            .unwrap();
+        sp.register_table("metrics_sum".to_string(), Arc::new(sum))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    /// #1348: a `where` predicate on a resource attribute served from the
+    /// attribute map (not a materialized column) against the gauge+sum union
+    /// failed in `optimize_projections` with "UNION field 0 have different
+    /// type in inputs: left has Utf8 whereas right has Date32". Grouping by
+    /// the same attribute without the predicate worked — only the filter
+    /// tripped it, which is why #1206's grouping fix did not cover this.
+    #[tokio::test]
+    async fn metrics_union_filters_by_a_fallback_resource_attribute() {
+        let svc = IrService::new(realistic_metrics_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "where": { "field": "container.name", "op": "eq",
+                             "value": "ix-signaldb-mcp-1" } },
+                { "aggregate": { "by": ["container.name"],
+                                 "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("both metrics tables are registered");
+        let batches = df
+            .collect()
+            .await
+            .expect("union filtered by a fallback attribute executes");
+        let n: i64 = batches
+            .iter()
+            .map(|b| {
+                b.column_by_name("n")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .sum::<i64>()
+            })
+            .sum();
+        // All three rows (2 gauge + 1 sum) carry the matching container.name.
+        assert_eq!(n, 3);
+    }
+
+    /// #1348 was never about one operator: it was the union branches' scans
+    /// exposing different index spaces, which *any* node pushed between the
+    /// projection and the scan reveals. So every predicate shape the resolver
+    /// can put on an attribute-map column has to survive it, not just the
+    /// `eq` the bug happened to be reported with. Each case below plans over
+    /// the gauge+sum union and must match all three fixture rows.
+    ///
+    /// This is every member of `ComparisonOp` that is meaningful on a string
+    /// attribute. The ordered comparisons (`gt`/`gte`/`lt`/`lte`) are left
+    /// out as their own leaves because `between` already exercises that
+    /// lowering — it compiles to `>= lo AND <= hi` over the same field
+    /// expression.
+    #[tokio::test]
+    async fn metrics_union_filters_by_a_fallback_attribute_with_every_operator() {
+        let cases: Vec<(&str, Option<serde_json::Value>)> = vec![
+            ("eq", Some(serde_json::json!("ix-signaldb-mcp-1"))),
+            ("ne", Some(serde_json::json!("something-else"))),
+            ("contains", Some(serde_json::json!("signaldb"))),
+            ("regex", Some(serde_json::json!("(?i)^ix-signaldb"))),
+            ("exists", None),
+            // `in` takes a list; the non-matching member must not change the
+            // count, or the predicate is not being applied at all.
+            (
+                "in",
+                Some(serde_json::json!(["ix-signaldb-mcp-1", "not-this-one"])),
+            ),
+            // `between` on a string is a lexicographic range, lowered to
+            // `>= lo AND <= hi` — two comparisons over one field expression,
+            // which is a different shape again from the single-comparison
+            // leaves above.
+            ("between", Some(serde_json::json!(["ix-a", "ix-z"]))),
+        ];
+        for (op, value) in cases {
+            let mut predicate = serde_json::json!({ "field": "container.name", "op": op });
+            if let Some(v) = value {
+                predicate["value"] = v;
+            }
+            let svc = IrService::new(realistic_metrics_ctx());
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [
+                    { "where": predicate },
+                    { "aggregate": { "by": ["container.name"],
+                                     "aggs": [{ "fn": "count", "as": "n" }] } }
+                ]
+            }));
+            let (df, _) = svc
+                .plan(&d, "t", "d", 0)
+                .await
+                .unwrap()
+                .expect("both metrics tables are registered");
+            let batches = df
+                .collect()
+                .await
+                .unwrap_or_else(|e| panic!("op '{op}' must plan over the union: {e}"));
+            let n: i64 = batches
+                .iter()
+                .map(|b| {
+                    b.column_by_name("n")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .values()
+                        .iter()
+                        .sum::<i64>()
+                })
+                .sum();
+            assert_eq!(n, 3, "op '{op}' matched the wrong number of rows");
+        }
+    }
+
+    /// Planning is not the whole claim: a predicate that plans but matches
+    /// everything would pass the test above while silently ignoring the
+    /// filter. These cases must exclude all three rows, proving the
+    /// predicate is evaluated against the union's real values rather than
+    /// dropped somewhere in the rewrite.
+    #[tokio::test]
+    async fn metrics_union_filter_by_a_fallback_attribute_excludes_as_well_as_matches() {
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            ("eq", serde_json::json!("not-a-container")),
+            ("ne", serde_json::json!("ix-signaldb-mcp-1")),
+            ("contains", serde_json::json!("nothing-like-this")),
+            ("regex", serde_json::json!("^zzz")),
+            ("in", serde_json::json!(["neither", "nor"])),
+            ("between", serde_json::json!(["aa", "ab"])),
+        ];
+        for (op, value) in cases {
+            let svc = IrService::new(realistic_metrics_ctx());
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [
+                    { "where": { "field": "container.name", "op": op, "value": value } },
+                    { "aggregate": { "by": ["container.name"],
+                                     "aggs": [{ "fn": "count", "as": "n" }] } }
+                ]
+            }));
+            let (df, _) = svc
+                .plan(&d, "t", "d", 0)
+                .await
+                .unwrap()
+                .expect("both metrics tables are registered");
+            let batches = df
+                .collect()
+                .await
+                .unwrap_or_else(|e| panic!("op '{op}' must plan over the union: {e}"));
+            let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            assert_eq!(rows, 0, "op '{op}' should have excluded every row");
+        }
+    }
+
     /// The coercing wrapper must keep offering filters over un-coerced
     /// columns to the inner provider (that is what keeps timestamp partition
     /// pruning alive), while a filter over a coerced column stays above it —
@@ -3006,7 +3327,8 @@ mod tests {
                 Some(DataType::Timestamp(TimeUnit::Nanosecond, None)),
                 Some(map_type.clone()),
             ],
-        );
+        )
+        .expect("both columns exist on the inner table");
         assert_eq!(
             wrapped
                 .schema()
