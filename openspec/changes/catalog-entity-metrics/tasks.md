@@ -4,15 +4,25 @@ that satisfies it. Groups 1–4 are PR 1 (the detail-page panel); group 5 is PR 
 
 ## 1. Registry association lookup
 
-- [ ] 1.1 Add a failing test for an API function that, given an entity type,
-      returns the registry metric definitions associated with it (name,
-      instrument, unit) — including the case of an entity type with no
-      associations returning an empty list
-- [ ] 1.2 Implement it over `GET /api/v1/schema/metrics`, matching the entity
-      type back to its registry entity name (the dots-to-underscores mapping
-      `deriveEntityTypes` applies), paging the endpoint's 200-hit cap
-- [ ] 1.3 Add a failing test that the lookup is cached across time-range
-      changes — a registry does not move — then key the query accordingly
+The registry cannot be asked which metrics describe an entity, so the join runs
+from the data toward the registry — see design.md, Selection.
+
+- [ ] 1.1 Add a failing test for discovering the window's observed metric names
+      through one IR query (`aggregate by ["metric.name"]`), including the
+      empty-window case
+- [ ] 1.2 Implement that discovery call
+- [ ] 1.3 Add a failing test for collecting definitions for a set of observed
+      names: one prefix search per distinct first name segment, not one per
+      metric
+- [ ] 1.4 Implement it over `GET /api/v1/schema/metrics`
+- [ ] 1.5 Add a failing test for filtering those definitions to one entity
+      type — matching the entity type back to its registry entity name (the
+      dots-to-underscores mapping `deriveEntityTypes` applies), and returning
+      an empty list for an entity type nothing associates with
+- [ ] 1.6 Implement the filter
+- [ ] 1.7 Add a failing test that the definition lookup is cached across
+      time-range changes — a registry does not move — while the observed-name
+      discovery is keyed by window, then key both queries accordingly
 
 ## 2. Grouped metric query
 

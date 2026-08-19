@@ -7,7 +7,12 @@ See proposal.md — Why. What shapes the approach:
   names that metric measures. Coverage in the bundled OTel 1.43 registry is
   concentrated exactly where the Catalog is blindest: all 13 `process.*` →
   `process`, all 45 `system.*` → `host`, all 13 `container.*` → `container`.
-  The endpoint pages at 200 hits and takes a name `prefix`.
+- That endpoint takes only a name `prefix` and a limit the server clamps to
+  200, with no cursor and no filter by association (`search_metrics` in
+  `src/router/src/endpoints/schema.rs`). So a client can neither enumerate all
+  definitions nor ask "which metrics describe `host`" — and the entity name is
+  no help as a prefix, since `host`'s metrics are `system.*`. This constraint
+  is what decides the selection strategy below.
 - The Catalog's entity types are already registry-derived (`deriveEntityTypes`),
   keyed by the registry's entity `name` with dots mapped to underscores. So an
   entity type's registry name — the join key to `entity_associations` — is
@@ -53,15 +58,38 @@ or the other alone.
 - Observation alone would sweep in every metric that happens to carry the
   entity's resource attributes — for a host, that is nearly the whole tenant.
 
-The intersection is computed by _asking_ for the associated set and letting the
-query answer with what exists, rather than by a separate discovery call — see
-the next decision.
+Since the registry cannot be asked "which metrics describe this entity" (see
+Context), the join runs the other way — from the data toward the registry:
 
-**Alternative considered:** a metric-name discovery call
-(`/prometheus/api/v1/label_values/__name__`) intersected client-side, then one
-query per survivor. Rejected: an extra round trip on the compat surface plus up
-to 45 follow-up queries, to learn something the single grouped query below
-already tells us.
+1. **What is observed.** One IR query over the window,
+   `aggregate by ["metric.name"]`, returns the tenant's observed metric names.
+   Measured against a live deployment: 80 distinct names, falling into 6
+   distinct first segments (`otelcol` 35, `system` 14, `container` 13,
+   `signaldb` 11, `process` 6, `http` 1).
+2. **What those names mean.** One prefix search per distinct first segment —
+   six calls, not one per metric — collects their definitions.
+3. **Which belong to this entity.** Keep the definitions whose
+   `entity_associations` contain the entity type's registry name.
+
+The bound that matters: every step is sized by what the tenant actually emits,
+never by how large the registry is. `otelcol_*` and `signaldb.*` fall out at
+step 3 for carrying no associations, which is the correct answer rather than a
+special case.
+
+Steps 1 and 2 are cached beyond a range change on the same terms as the
+Catalog's other metadata; step 1 is window-scoped and keyed accordingly.
+
+**Alternative considered:** an `?entity=<name>` filter on
+`/api/v1/schema/metrics`. It is the better API and would collapse step 2, but
+it does not remove step 1 — the registry can never say what a deployment
+actually emits — so it is an optimization of one step, not a substitute for the
+approach. Worth having on its own merits (MCP and the CLI could answer the same
+question), and filed as #1360 rather than blocking a UI-only change.
+
+**Alternative considered:** a metric-name discovery call on the Prometheus
+compat surface (`/prometheus/api/v1/label_values/__name__`). Rejected: the IR
+is this project's own query surface, and the same IR query that discovers the
+names is the one the panel already needs.
 
 ### Fetch: one grouped IR query per source, regex-alternated over the names
 
