@@ -423,11 +423,13 @@ result, same as `series`.
 
 `metrics` scans `metrics_gauge` and `metrics_sum` (unioned) — a scalar
 `value` per point, filtered/grouped/aggregated the same way as any other
-source. The two tables need not agree on every column's physical type: a
-dataset whose `metrics_sum` predates the typed-attribute change (attribute
-containers stored as JSON strings) while `metrics_gauge` stores maps is
-reconciled before the union, so grouping by any resource attribute
-(`host.name`, `k8s.pod.name`, …) works across both. `metrics_histogram` is a separate source (see [Histograms](#histograms))
+source. The two tables need not agree on the physical shape of their
+columns — not on type, order, or count. A dataset whose `metrics_sum`
+predates the typed-attribute change (attribute containers stored as JSON
+strings) while `metrics_gauge` stores maps, or whose tables carry their
+columns in different positions, is reconciled before the union, so both
+filtering and grouping by any resource attribute (`host.name`,
+`k8s.pod.name`, …) work across both. `metrics_histogram` is a separate source (see [Histograms](#histograms))
 since its row shape — a whole bucketed histogram per point, not a scalar
 value — has no equivalent in the generic `where`/`aggregate` pipeline.
 
@@ -632,11 +634,11 @@ never which names are valid.
 
 `origin` says which tier the item came from:
 
-| `origin` | meaning |
-|---|---|
-| `declared` | the canonical logical schema declares it (always valid) |
+| `origin`   | meaning                                                                                         |
+| ---------- | ----------------------------------------------------------------------------------------------- |
+| `declared` | the canonical logical schema declares it (always valid)                                         |
 | `registry` | statistics observed it and a schema registry defines it, so it carries a type and a description |
-| `observed` | statistics observed it and nothing defines it — treated as a string |
+| `observed` | statistics observed it and nothing defines it — treated as a string                             |
 
 `coverage` (the fraction of records carrying the field) and `cardinality` (an
 approximate distinct-value count; `at_least` means the collector hit its cap)
@@ -647,11 +649,15 @@ coverage descending, so the first screen is the fields most records carry.
 ### What values does a field take?
 
 ```jsonc
-{ "irVersion": 4, "from": "traces",
+{
+  "irVersion": 4,
+  "from": "traces",
   "range": { "from": "now-6h", "to": "now" },
   "result": "metadata",
-  "pipeline": [ { "describe": { "target": "values", "field": "span.kind",
-                                "limit": 50 } } ] }
+  "pipeline": [
+    { "describe": { "target": "values", "field": "span.kind", "limit": 50 } },
+  ],
+}
 ```
 
 Values are answered in tiers:
@@ -664,7 +670,7 @@ Values are answered in tiers:
    therefore `approximate: true`, with `cost.as_of` giving its age. Values come
    back with `origin: "statistics"`.
 3. **Nothing covers it.** The response returns no values, `cost.mode: "none"`,
-   and a `hint` naming the query that *would* compute the answer by reading
+   and a `hint` naming the query that _would_ compute the answer by reading
    data. It does not scan behind your back.
 4. **You asked for the data-derived answer** with `"sample": true`. SignalDB
    then runs exactly the aggregation the hint names — bounded by your window
@@ -683,26 +689,26 @@ answer — the top of a list that was never ranked — so no sketch is kept at a
 Every discovery response carries a `cost` object, because an answer's price and
 its trustworthiness are part of the answer:
 
-| field | meaning |
-|---|---|
-| `mode` | `metadata` (no data read), `sampled_scan` (data read, on request), `none` (not answered) |
-| `window_scoped` | whether your `range` narrowed the answer. The maintained statistics carry no time dimension, so a metadata-tier answer says `false` rather than pretending it did |
-| `sampled` | whether the answer is sampled and therefore possibly incomplete |
-| `approximate` | whether the answer is a bounded sketch of the most frequent values rather than the exact set. A declared value set is exact; a statistics- or scan-derived one is not |
-| `as_of` | how recent the statistics behind it are. `null` means none exist yet — on a tenant whose compactor has not run, `describe: fields` returns the declared fields only |
+| field           | meaning                                                                                                                                                               |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`          | `metadata` (no data read), `sampled_scan` (data read, on request), `none` (not answered)                                                                              |
+| `window_scoped` | whether your `range` narrowed the answer. The maintained statistics carry no time dimension, so a metadata-tier answer says `false` rather than pretending it did     |
+| `sampled`       | whether the answer is sampled and therefore possibly incomplete                                                                                                       |
+| `approximate`   | whether the answer is a bounded sketch of the most frequent values rather than the exact set. A declared value set is exact; a statistics- or scan-derived one is not |
+| `as_of`         | how recent the statistics behind it are. `null` means none exist yet — on a tenant whose compactor has not run, `describe: fields` returns the declared fields only   |
 
 **`mode` and `approximate` are independent, and the combination that matters is
 `mode: "metadata"` with `approximate: true`.** That is a sketch answer: it cost
-nothing (no data was read) *and* it is not the exact value set — the most
+nothing (no data was read) _and_ it is not the exact value set — the most
 frequent values, bounded, as of `as_of`. Cheap does not imply exact here. Read
 the two fields together:
 
-| `mode` | `approximate` | what you have |
-|---|---|---|
-| `metadata` | `false` | a declared value set — free and complete |
-| `metadata` | `true` | a maintained sketch — free, bounded, and dated; suggest it, do not count on it |
-| `sampled_scan` | `true` | a bounded read of your window, run because you asked |
-| `none` | `false` | no answer, with a `hint` naming the query that would produce one |
+| `mode`         | `approximate` | what you have                                                                  |
+| -------------- | ------------- | ------------------------------------------------------------------------------ |
+| `metadata`     | `false`       | a declared value set — free and complete                                       |
+| `metadata`     | `true`        | a maintained sketch — free, bounded, and dated; suggest it, do not count on it |
+| `sampled_scan` | `true`        | a bounded read of your window, run because you asked                           |
+| `none`         | `false`       | no answer, with a `hint` naming the query that would produce one               |
 
 ### What discovery deliberately does not do
 
