@@ -24,7 +24,11 @@ const registry: RegistryEntity[] = [
     identifying: ["service.instance.id"],
     descriptive: [],
   },
-  { name: "telemetry.sdk", identifying: ["telemetry.sdk.name"], descriptive: [] },
+  {
+    name: "telemetry.sdk",
+    identifying: ["telemetry.sdk.name"],
+    descriptive: [],
+  },
   // The registry models these with no identifying attribute at all — every
   // attribute they carry is descriptive. OTel 1.43 really is like this.
   {
@@ -55,6 +59,37 @@ describe("deriveEntityTypes", () => {
       },
     ]);
     expect(derived.map((e) => e.id)).toContain("cicd_pipeline_run");
+  });
+
+  it("records the registry name a derived type came from", () => {
+    // The join key to anything else the registry says about this entity —
+    // its metrics, for one. It has to be carried rather than reversed out of
+    // the id: registry names contain underscores of their own
+    // (`gcp.cloud_run`), so underscores-to-dots is not a safe inverse.
+    const derived = deriveEntityTypes([
+      {
+        name: "gcp.cloud_run",
+        identifying: ["gcp.cloud_run.job.execution"],
+        descriptive: [],
+      },
+    ]);
+    const run = derived.find((e) => e.id === "gcp_cloud_run");
+    expect(run?.registryEntity).toBe("gcp.cloud_run");
+  });
+
+  it("records the registry name on a curated type the registry also declares", () => {
+    // A curated type keeps every curated field, but it is still the registry's
+    // `host` — and without the name it could not be asked what measures a host.
+    const host = deriveEntityTypes(registry).find((e) => e.id === "host");
+    expect(host?.registryEntity).toBe("host");
+    expect(host?.identity).toEqual(entityType("host")!.identity);
+  });
+
+  it("leaves the registry name unset for a curated type nothing declares", () => {
+    const database = deriveEntityTypes(registry).find(
+      (e) => e.id === "database",
+    );
+    expect(database?.registryEntity).toBeUndefined();
   });
 
   it("labels a registry-only type from its own name", () => {
@@ -101,9 +136,7 @@ describe("deriveEntityTypes", () => {
   it("drops a registry entity with neither an identity nor a curated one", () => {
     const ids = deriveEntityTypes([
       { name: "browser", identifying: [], descriptive: [] },
-    ]).map(
-      (e) => e.id,
-    );
+    ]).map((e) => e.id);
     expect(ids).not.toContain("browser");
   });
 
@@ -164,9 +197,10 @@ describe("identity resolved from the schema", () => {
     const fields = new Map([
       ["traces", new Set(["k8s.replicaset.uid", "k8s.replicaset.name"])],
     ]);
-    const rs = observedEntityTypes(deriveEntityTypes(registryOnly), fields).find(
-      (e) => e.id === "k8s_replicaset",
-    );
+    const rs = observedEntityTypes(
+      deriveEntityTypes(registryOnly),
+      fields,
+    ).find((e) => e.id === "k8s_replicaset");
     expect(rs?.identity).toEqual(["k8s.replicaset.uid"]);
   });
 
@@ -182,9 +216,10 @@ describe("identity resolved from the schema", () => {
       },
     ];
     const fields = new Map([["traces", new Set(["k8s.replicaset.name"])]]);
-    const rs = observedEntityTypes(deriveEntityTypes(registryOnly), fields).find(
-      (e) => e.id === "k8s_replicaset",
-    );
+    const rs = observedEntityTypes(
+      deriveEntityTypes(registryOnly),
+      fields,
+    ).find((e) => e.id === "k8s_replicaset");
     expect(rs?.identity).toEqual(["k8s.replicaset.name"]);
   });
 
@@ -215,9 +250,10 @@ describe("identity resolved from the schema", () => {
     const fields = new Map([
       ["traces", new Set(["service.name", "service.namespace"])],
     ]);
-    const service = observedEntityTypes(deriveEntityTypes(registry), fields).find(
-      (e) => e.id === "service",
-    );
+    const service = observedEntityTypes(
+      deriveEntityTypes(registry),
+      fields,
+    ).find((e) => e.id === "service");
     expect(service?.identity).toEqual(["service.name", "service.namespace"]);
   });
 });

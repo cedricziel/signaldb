@@ -13,6 +13,7 @@ import {
   schemaResolveEntity,
   schemaResolveMetric,
   schemaSearchEntities,
+  schemaSearchMetrics,
   schemaValidateRegistry,
   type AttributeHit,
   type AttributeResolution,
@@ -114,6 +115,16 @@ export const searchEntities = async (limit = 200): Promise<EntityHit[]> =>
 
 export const resolveMetric = async (name: string): Promise<MetricResolution> =>
   unwrap(await schemaResolveMetric({ path: { name } }));
+
+/** Metric definitions whose name starts with `prefix`, across the visible
+ * registries. The server caps `limit` at 200 and offers no cursor, so a
+ * prefix broad enough to overflow that returns a truncated namespace — call
+ * it with a segment (`system`, `process`), not with the empty string. */
+export const searchMetrics = async (
+  prefix: string,
+  limit = 200,
+): Promise<MetricHit[]> =>
+  (await unwrap(await schemaSearchMetrics({ query: { prefix, limit } }))).hits;
 
 /** What kind of definition a lookup landed on. */
 export type DefinitionKind = "attributes" | "entities" | "metrics";

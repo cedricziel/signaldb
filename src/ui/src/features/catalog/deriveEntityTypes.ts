@@ -101,7 +101,14 @@ export function deriveEntityTypes(
   curated: EntityTypeDef[] = ENTITY_TYPES,
 ): EntityTypeDef[] {
   const byId = new Map(curated.map((e) => [e.id, e]));
-  const derived: EntityTypeDef[] = [...curated];
+  // Registry name by route id, for every entity the registry declares —
+  // including the curated ones, which keep their curated fields but are still
+  // that registry entity (see `EntityTypeDef.registryEntity`).
+  const registryNames = new Map(registry.map((e) => [idOf(e.name), e.name]));
+  const derived: EntityTypeDef[] = curated.map((e) => {
+    const registryEntity = registryNames.get(e.id);
+    return registryEntity ? { ...e, registryEntity } : e;
+  });
 
   for (const entity of registry) {
     const id = idOf(entity.name);
@@ -110,6 +117,7 @@ export function deriveEntityTypes(
     if (candidates.length === 0) continue;
     derived.push({
       id,
+      registryEntity: entity.name,
       ...labelOf(entity.name),
       // Declared identity first, descriptive as fallback. Which of these the
       // data actually carries is not knowable here — `observedEntityTypes`

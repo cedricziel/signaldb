@@ -80,6 +80,18 @@ export interface EntityTypeDef {
    * substituted.
    */
   identityFallback?: string[];
+  /**
+   * The schema-registry entity this type is, by its registry name — the join
+   * key to everything else the registry says about it, such as which metrics
+   * measure it.
+   *
+   * Set by `deriveEntityTypes` for any type a registry entity matched,
+   * curated or derived; absent for a curated type no visible registry
+   * declares. It is carried rather than reversed out of `id`, because
+   * registry names contain underscores of their own (`gcp.cloud_run`), so the
+   * dots-to-underscores mapping has no safe inverse.
+   */
+  registryEntity?: string;
 }
 
 /**
