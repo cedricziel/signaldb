@@ -11,6 +11,7 @@ use std::time::Duration;
 
 /// A single LogQL token.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Token {
     // Literals
     /// Double-quoted (escaped) or backtick-quoted (raw) string.

@@ -67,7 +67,11 @@ common = { path = "src/common" }
 compactor = { path = "src/compactor" }
 signaldb-api = { path = "src/signaldb-api" }
 signaldb-sdk = { path = "src/signaldb-sdk" }
-logql = { path = "src/logql" }
+# `package` keeps the dependency (and import) name `logql` while the crates.io
+# package is `logql-parser`; likewise `traceql`. Every `logql.workspace = true`
+# and every `use logql::…` is therefore unaffected by the publishing rename.
+logql = { path = "src/logql", package = "logql-parser" }
+traceql = { path = "src/traceql", package = "traceql-parser" }
 loki-api = { path = "src/loki-api" }
 prometheus-api = { path = "src/prometheus-api" }
 pyroscope-api = { path = "src/pyroscope-api" }

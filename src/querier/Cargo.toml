@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 common = { path = "../common" }
-logql = { path = "../logql" }
-traceql-parser = { path = "../traceql" }
+logql.workspace = true
+traceql.workspace = true
 tempo-api = { path = "../tempo-api", features = ["server"] }
 
 async-trait.workspace = true

@@ -17,8 +17,13 @@ use crate::token::{SpannedToken, Token};
 use std::time::Duration;
 
 /// Lexing error with 1-based source position.
+///
+/// `#[non_exhaustive]` because errors gain context over time and consumers
+/// only ever read them. The AST types are deliberately left constructible —
+/// building a query by hand is a legitimate use of this crate.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("{message} at line {line}, column {col}")]
+#[non_exhaustive]
 pub struct LexError {
     pub message: String,
     pub line: u32,

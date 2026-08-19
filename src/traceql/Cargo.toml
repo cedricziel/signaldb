@@ -8,6 +8,11 @@ edition = "2024"
 description = "TraceQL lexer and parser for SignalDB's Tempo-compatible query interface"
 # Grafana Tempo, whose language this implements, is AGPL-3.0. See design D2.
 license = "AGPL-3.0"
+repository = "https://github.com/cedricziel/signaldb"
+readme = "README.md"
+documentation = "https://docs.rs/traceql-parser"
+keywords = ["traceql", "tempo", "parser", "observability", "tracing"]
+categories = ["parser-implementations", "development-tools"]
 
 [lib]
 name = "traceql"

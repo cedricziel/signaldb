@@ -4093,7 +4093,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
-name = "logql"
+name = "logql-parser"
 version = "0.1.2"
 dependencies = [
  "thiserror 2.0.20",
@@ -5625,7 +5625,7 @@ dependencies = [
  "futures",
  "hex",
  "iceberg-rust",
- "logql",
+ "logql-parser",
  "object_store",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -6261,7 +6261,7 @@ dependencies = [
  "common",
  "datafusion",
  "futures",
- "logql",
+ "logql-parser",
  "loki-api",
  "prometheus-api",
  "pyroscope-api",
