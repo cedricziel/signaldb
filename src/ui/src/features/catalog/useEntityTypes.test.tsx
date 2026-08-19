@@ -38,15 +38,19 @@ function render() {
 }
 
 describe("toRegistryEntities", () => {
-  it("narrows registry hits to name and identifying keys", () => {
+  it("narrows registry hits to name and both attribute roles", () => {
+    // Descriptive attributes come along because they are the fallback
+    // identity for the 28 OTel entity types that declare no identifying
+    // attribute at all — dropping them here would silently un-catalogue
+    // hosts and containers.
     expect(
       toRegistryEntities([
         { name: "process", identifying: [{ key: "process.pid" }] },
-        { name: "host" },
+        { name: "host", descriptive: [{ key: "host.name" }] },
       ]),
     ).toEqual([
-      { name: "process", identifying: ["process.pid"] },
-      { name: "host", identifying: [] },
+      { name: "process", identifying: ["process.pid"], descriptive: [] },
+      { name: "host", identifying: [], descriptive: ["host.name"] },
     ]);
   });
 });

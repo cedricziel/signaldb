@@ -8,15 +8,35 @@ import {
 import { ENTITY_TYPES, entityType } from "./entityTypes";
 
 const registry: RegistryEntity[] = [
-  { name: "service", identifying: ["service.name"] },
-  { name: "process", identifying: ["process.pid", "process.creation.time"] },
-  { name: "k8s.pod", identifying: ["k8s.pod.uid"] },
-  { name: "service.instance", identifying: ["service.instance.id"] },
-  { name: "telemetry.sdk", identifying: ["telemetry.sdk.name"] },
-  // The registry models these, but every attribute they carry is
-  // descriptive — see the fallback tests below.
-  { name: "host", identifying: [] },
-  { name: "container", identifying: [] },
+  { name: "service", identifying: ["service.name"], descriptive: [] },
+  {
+    name: "process",
+    identifying: ["process.pid", "process.creation.time"],
+    descriptive: ["process.command"],
+  },
+  {
+    name: "k8s.pod",
+    identifying: ["k8s.pod.uid"],
+    descriptive: ["k8s.pod.name"],
+  },
+  {
+    name: "service.instance",
+    identifying: ["service.instance.id"],
+    descriptive: [],
+  },
+  { name: "telemetry.sdk", identifying: ["telemetry.sdk.name"], descriptive: [] },
+  // The registry models these with no identifying attribute at all — every
+  // attribute they carry is descriptive. OTel 1.43 really is like this.
+  {
+    name: "host",
+    identifying: [],
+    descriptive: ["host.id", "host.name", "host.type"],
+  },
+  {
+    name: "container",
+    identifying: [],
+    descriptive: ["container.name", "container.id"],
+  },
 ];
 
 describe("deriveEntityTypes", () => {
@@ -28,7 +48,11 @@ describe("deriveEntityTypes", () => {
 
   it("maps a dotted registry name onto an underscored route id", () => {
     const derived = deriveEntityTypes([
-      { name: "cicd.pipeline.run", identifying: ["cicd.pipeline.run.id"] },
+      {
+        name: "cicd.pipeline.run",
+        identifying: ["cicd.pipeline.run.id"],
+        descriptive: [],
+      },
     ]);
     expect(derived.map((e) => e.id)).toContain("cicd_pipeline_run");
   });
@@ -75,7 +99,9 @@ describe("deriveEntityTypes", () => {
   });
 
   it("drops a registry entity with neither an identity nor a curated one", () => {
-    const ids = deriveEntityTypes([{ name: "browser", identifying: [] }]).map(
+    const ids = deriveEntityTypes([
+      { name: "browser", identifying: [], descriptive: [] },
+    ]).map(
       (e) => e.id,
     );
     expect(ids).not.toContain("browser");
@@ -94,6 +120,105 @@ describe("deriveEntityTypes", () => {
     expect(ids.slice(0, ENTITY_TYPES.length)).toEqual(
       ENTITY_TYPES.map((e) => e.id),
     );
+  });
+});
+
+describe("identity resolved from the schema", () => {
+  it("uses the identifying attributes the data actually carries", () => {
+    // A registry-only type, so nothing overrides its identity. Both keys are
+    // declared identifying; only one is carried, and the absent one is
+    // dropped rather than grouping every instance under a single null.
+    const fields = new Map([["traces", new Set(["cicd.pipeline.name"])]]);
+    const pipeline = observedEntityTypes(
+      deriveEntityTypes([
+        {
+          name: "cicd.pipeline",
+          identifying: ["cicd.pipeline.name", "cicd.pipeline.run.id"],
+          descriptive: [],
+        },
+      ]),
+      fields,
+    ).find((e) => e.id === "cicd_pipeline");
+    expect(pipeline?.identity).toEqual(["cicd.pipeline.name"]);
+  });
+
+  it("falls back to a descriptive attribute when the registry identifies nothing", () => {
+    // `host` declares no identifying attribute in OTel 1.43. Without a
+    // fallback the entity type would be undiscoverable — which is why this
+    // used to need a hand-written identity per type.
+    const fields = new Map([["traces", new Set(["host.name"])]]);
+    const host = observedEntityTypes(deriveEntityTypes(registry), fields).find(
+      (e) => e.id === "host",
+    );
+    expect(host?.identity).toEqual(["host.name"]);
+  });
+
+  it("prefers the declared identity over a descriptive one when both are carried", () => {
+    const registryOnly: RegistryEntity[] = [
+      {
+        name: "k8s.replicaset",
+        identifying: ["k8s.replicaset.uid"],
+        descriptive: ["k8s.replicaset.name"],
+      },
+    ];
+    const fields = new Map([
+      ["traces", new Set(["k8s.replicaset.uid", "k8s.replicaset.name"])],
+    ]);
+    const rs = observedEntityTypes(deriveEntityTypes(registryOnly), fields).find(
+      (e) => e.id === "k8s_replicaset",
+    );
+    expect(rs?.identity).toEqual(["k8s.replicaset.uid"]);
+  });
+
+  it("falls back when the declared identity is absent from the data", () => {
+    // A uid is unique but frequently absent; the name is what real telemetry
+    // carries. Falling back keeps the entity type usable instead of dropping
+    // it for want of an attribute nobody sends.
+    const registryOnly: RegistryEntity[] = [
+      {
+        name: "k8s.replicaset",
+        identifying: ["k8s.replicaset.uid"],
+        descriptive: ["k8s.replicaset.name"],
+      },
+    ];
+    const fields = new Map([["traces", new Set(["k8s.replicaset.name"])]]);
+    const rs = observedEntityTypes(deriveEntityTypes(registryOnly), fields).find(
+      (e) => e.id === "k8s_replicaset",
+    );
+    expect(rs?.identity).toEqual(["k8s.replicaset.name"]);
+  });
+
+  it("keeps the scoping attribute on a process, whose pid is per-host", () => {
+    const fields = new Map([
+      ["metrics", new Set(["process.pid", "host.name"])],
+    ]);
+    const process = observedEntityTypes(
+      deriveEntityTypes(registry),
+      fields,
+    ).find((e) => e.id === "process");
+    expect(process?.identity).toEqual(["process.pid", "host.name"]);
+  });
+
+  it("drops a type when neither its declared nor its descriptive identity is carried", () => {
+    const fields = new Map([["traces", new Set(["service.name"])]]);
+    const ids = observedEntityTypes(deriveEntityTypes(registry), fields).map(
+      (e) => e.id,
+    );
+    expect(ids).not.toContain("container");
+  });
+
+  it("keeps a scoping attribute the registry does not model", () => {
+    // A pid is unique only within a host and a service name only within a
+    // namespace; the registry's identity model has no way to say so. Where
+    // the catalog adds a scoping attribute it is a correctness fix, so it
+    // must survive schema-derived identity.
+    const fields = new Map([
+      ["traces", new Set(["service.name", "service.namespace"])],
+    ]);
+    const service = observedEntityTypes(deriveEntityTypes(registry), fields).find(
+      (e) => e.id === "service",
+    );
+    expect(service?.identity).toEqual(["service.name", "service.namespace"]);
   });
 });
 
@@ -154,6 +279,7 @@ describe("observedEntityTypes", () => {
     const many: RegistryEntity[] = Array.from({ length: 200 }, (_, i) => ({
       name: `synthetic.type${i}`,
       identifying: [`synthetic.type${i}.id`],
+      descriptive: [],
     }));
     const everything = new Map([
       [
@@ -174,6 +300,7 @@ describe("observedEntityTypes", () => {
     const many: RegistryEntity[] = Array.from({ length: 200 }, (_, i) => ({
       name: `synthetic.type${i}`,
       identifying: [`synthetic.type${i}.id`],
+      descriptive: [],
     }));
     const everything = new Map([
       [
