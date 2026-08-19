@@ -2,12 +2,18 @@
 
 ## 1. Pin current behaviour before moving anything
 
-- [ ] 1.1 Add integration coverage in `tests-integration` for Tempo trace search
-      that asserts, end to end through the router: an accepted `q` returns the
-      expected traces; a malformed `q` returns 400; a valid-but-unsupported `q`
-      (e.g. `{ .foo != "bar" }`) returns 501 with the operator named. Run
-      `cargo test -p tests-integration` and confirm it passes **before** any
-      extraction — this is the regression net, not a failing test.
+- [x] 1.1 Integration coverage for Tempo trace search already exists:
+      `test_search_filters_are_applied` (`tests-integration/tests/router_tempo_endpoints.rs`)
+      asserts an accepted `q` returns the trace, a non-matching `q` returns
+      none, an unsupported `q` (`{ duration > 100ms }`) returns 501, and
+      malformed `tags` return 400. Confirmed present and passing before any
+      extraction — it is the regression net. The gap it leaves (malformed `q`)
+      is task 1.3.
+- [ ] 1.3 **Failing test first** for the BREAKING reclassification: extend
+      `test_search_filters_are_applied` with `q=notbraces`, `q={ foo }`, and
+      `q={ zzz = 1 }`, each asserting **400**. Confirm all three fail with 501
+      today — that failure is the proof the reclassification is real and not
+      already the case.
 - [ ] 1.2 Inventory the existing unit tests in
       `src/querier/src/query/search_filter.rs`, splitting them into
       parse-only (move to `traceql`) and lowering (stay). Record the split in
@@ -16,7 +22,7 @@
 ## 2. The `traceql` crate — TDD
 
 - [ ] 2.1 Create `src/traceql` (`traceql-parser` package, `[lib] name =
-  "traceql"`, `thiserror` only). Add to workspace `members` and
+"traceql"`, `thiserror` only). Add to workspace `members` and
       `default-members`. Empty `lib.rs`; confirm `cargo build -p traceql-parser`
       succeeds and `cargo tree -p traceql-parser` shows no workspace crate.
 - [ ] 2.2 **Failing test first**: port the parse-only tests from 1.2 into
@@ -26,9 +32,14 @@
       compile/run for the stated reason (no parser yet).
 - [ ] 2.3 Implement `Selector`, `FilterValue`, `Condition`, `ParseError`
       (`#[non_exhaustive]`, thiserror) and `parse_traceql`, moving
-      `split_top_level_and`, `parse_traceql_clause`, `take_value`, and
-      `unscoped_selector` from `search_filter.rs`. Preserve every error message
-      string verbatim. `cargo test -p traceql-parser` green.
+      `split_top_level_and`, `parse_traceql_clause`, `take_value`,
+      `parse_traceql_value`, and `unscoped_selector` from `search_filter.rs`.
+      Preserve every error message string verbatim. Classify per design D3:
+      `Syntax` for no-spanset / no-comparison-operator / unknown-selector /
+      unterminated-or-unparseable literal; `Unsupported` for `||`, the
+      comparison and regex operators, and `duration`. Document the escaped
+      string literal carve-out on the `Syntax` variant.
+      `cargo test -p traceql-parser` green.
 - [ ] 2.4 Module-level `//!` docs stating the supported subset, the
       `Syntax`/`Unsupported` contract, and the package/lib name mismatch (D1).
 
@@ -36,14 +47,19 @@
 
 - [ ] 3.1 Add `traceql-parser` to `src/querier/Cargo.toml`. Add
       `impl From<traceql::ParseError> for QuerierError` mapping `Syntax →
-  InvalidInput` and `Unsupported → Unsupported`.
+InvalidInput` and `Unsupported → Unsupported`.
 - [ ] 3.2 Reduce `search_filter.rs` to lowering: convert `Condition::to_expr`
       to a free function `to_expr(&Condition, &AttrContext)` (foreign type — no
       inherent impl) and update every call site. Keep `materialized_expr`,
       `map_attribute_expr`, `attribute_expr`, and `parse_tags` (D4).
 - [ ] 3.3 `cargo test -p querier` green; `cargo test -p tests-integration` green
-      — 1.1 must still pass unmodified. If a test needed editing, the extraction
-      changed behaviour: stop and reconcile.
+      — the 1.1 assertions must still pass **unmodified**, and the three 1.3
+      assertions must now pass (501 → 400). Any _other_ test needing an edit
+      means the extraction changed behaviour beyond the sanctioned delta: stop
+      and reconcile.
+- [ ] 3.4 Grep the repo for callers that branch on the Tempo search status
+      (UI error handling, SDK, CLI, Grafana plugin) and confirm none treats 501
+      as "retry" or 400 as fatal in a way the reclassification breaks.
 
 ## 4. `logql` publishing readiness (no logic change)
 
@@ -113,7 +129,10 @@
 - [ ] 7.1 Update the `crate-map` skill: `traceql` is a new workspace member and
       the `logql`/`traceql` package-vs-lib naming needs a line.
 - [ ] 7.2 Update the `tempo-api` skill where it describes TraceQL support, so
-      the supported subset points at the crate that now owns it.
+      the supported subset points at the crate that now owns it, and record the
+      400-vs-501 rule (unparseable → 400, valid-but-unimplemented → 501).
+- [ ] 7.5 Document the BREAKING reclassification in the user-facing Tempo
+      compatibility docs: which `q` inputs changed status and why.
 - [ ] 7.3 Add a docs page (route via the `docs` skill — `docs/contributing/`
       audience) covering the QL front-end rule: parse/validate only, no product
       dependency, how the CI guard enforces it, and where lowering lives.

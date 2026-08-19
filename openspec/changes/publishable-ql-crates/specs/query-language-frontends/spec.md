@@ -104,11 +104,13 @@ attributes. An empty spanset SHALL select all traces.
 - **THEN** the parsed result carries that scope distinctly, so execution can
   search the span attributes, the resource attributes, or either
 
-### Requirement: Compatibility-API behaviour is unchanged by front-end extraction
+### Requirement: Extraction changes only the rejection class of unparseable queries
 
-Moving a query language into a standalone front-end SHALL NOT change what the
-compatibility APIs accept, what they reject, the reason given for a rejection,
-or the status code returned.
+Moving a query language into a standalone front-end SHALL NOT change which
+queries the compatibility APIs accept, the results they return, or the reason
+text given for a rejection. The single permitted change is that input which
+cannot be parsed as the language SHALL be reclassified from not-implemented to
+client-error. No rejection SHALL move in the opposite direction.
 
 #### Scenario: An accepted query stays accepted
 
@@ -116,11 +118,25 @@ or the status code returned.
   submitted after it
 - **THEN** it is accepted and returns the same results
 
-#### Scenario: A rejected query stays rejected identically
+#### Scenario: A valid-but-unimplemented query keeps its status
 
-- **WHEN** a query that the trace-search API rejected before extraction is
-  submitted after it
-- **THEN** it is rejected for the same reason, with the same status code
+- **WHEN** a query using a construct that is well-formed in the language but
+  unimplemented is submitted before and after extraction
+- **THEN** it is rejected as unsupported both times, with the same reason text
+  and the same not-implemented status
+
+#### Scenario: An unparseable query is reclassified to a client error
+
+- **WHEN** a query that cannot be parsed as the language was previously
+  rejected as not-implemented
+- **THEN** it is now rejected as invalid input with a client-error status, and
+  the reason text is preserved
+
+#### Scenario: No rejection becomes less specific
+
+- **WHEN** any query is rejected as a client error before extraction
+- **THEN** it is still rejected as a client error afterwards, never
+  reclassified as not-implemented
 
 ### Requirement: Published front-ends carry a purity and stability contract
 

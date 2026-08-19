@@ -170,12 +170,32 @@ Two consequences worth stating before someone hits them:
    foreign type, so lowering becomes a free function
    `search_filter::to_expr(cond, ctx)` (or a private extension trait). Purely
    mechanical, but it touches every call site.
-2. **`ParseError` must have (at least) two variants.** Today the 400/501 split is
-   carried by `QuerierError::{InvalidInput, Unsupported}` created inside the
-   parser. A single-variant `ParseError` would collapse every
-   "operator not supported yet" 501 into a 400. The querier's
-   `From<traceql::ParseError> for QuerierError` maps them 1:1, and a test pins
-   the status for one query of each class.
+2. **`ParseError` must have exactly two variants, and the split is not where it
+   sits today.** The parser currently builds `QuerierError::Unsupported` for
+   _every_ structural rejection — including input that is not TraceQL at all —
+   and reserves `InvalidInput` for bad value literals. So `q=notbraces` answers 501. The extracted parser draws the line by the language instead:
+
+   | `ParseError` variant | Meaning                                  | Maps to                            |
+   | -------------------- | ---------------------------------------- | ---------------------------------- |
+   | `Syntax`             | not parseable as TraceQL                 | `QuerierError::InvalidInput` → 400 |
+   | `Unsupported`        | valid TraceQL, construct not implemented | `QuerierError::Unsupported` → 501  |
+
+   Three rejections move 501 → 400 as a result (no spanset braces; a clause with
+   no comparison operator; an unknown selector spelling). That is the BREAKING
+   delta the proposal tabulates, and it is the whole reason the split is worth
+   drawing here rather than preserved as-is.
+
+   **The delta is one-directional by construction.** Escaped string literals are
+   legal TraceQL that our lexer rejects, so the rule would classify them
+   `Unsupported` (501) where they are `InvalidInput` (400) today. They stay
+   `Syntax`/400: moving a client error into the not-implemented class helps
+   nobody and enlarges the change. The crate documents that carve-out on the
+   variant, so the next reader finds a stated exception rather than an
+   inconsistency.
+
+   A test pins the status for one query of each class, on both sides of the
+   boundary — `traceql-parser` asserts the variant, `tests-integration` asserts
+   the HTTP status end to end.
 
 ### D4 — `parse_tags` stays in the querier
 

@@ -163,13 +163,42 @@ release-PR labels; the `cargo-workspace` plugin no longer sees these crates).
   WASM build of the parsers for in-editor syntax validation in the Explore UI is
   the obvious payoff, and is a follow-up, not this change.)
 
-## Not BREAKING
+## BREAKING: malformed TraceQL becomes 400 instead of 501
 
-The project marks Tempo/LogQL/PromQL surface changes BREAKING. This change does
-not alter one: accepted grammar, rejection messages, and HTTP status codes are
-byte-identical, pinned by tests. Neither crate has ever been published, so no
-external consumer exists to break. The rename `logql` → `logql-parser` is a
-package-name choice made _before_ first publication.
+Scoping the extraction surfaced that the current parser answers **501 Not
+Implemented for input that is not TraceQL at all** — `q=notbraces`,
+`q={ foo }`, `q={ zzz = 1 }` — because every structural rejection in
+`parse_traceql` is built as `QuerierError::Unsupported`. Only bad _value
+literals_ produce a 400. "We have not implemented your syntactically invalid
+query" is the wrong answer to a client error, and it makes the error class
+useless for telling a Grafana user "your query is wrong" apart from "SignalDB
+cannot do that yet".
+
+This change fixes it, which makes it a deliberate Tempo-surface change:
+
+| `q`                                       | Today | After   | Why                          |
+| ----------------------------------------- | ----- | ------- | ---------------------------- |
+| `notbraces` — no spanset                  | 501   | **400** | not parseable as TraceQL     |
+| `{ foo }` — no comparison                 | 501   | **400** | not parseable as TraceQL     |
+| `{ zzz = 1 }` — unknown selector spelling | 501   | **400** | not a legal selector         |
+| `{ .a != "b" }`, `>=`, `=~`, …            | 501   | 501     | valid TraceQL, unimplemented |
+| `{ a } \|\| { b }`                        | 501   | 501     | valid TraceQL, unimplemented |
+| `{ duration > 100ms }`                    | 501   | 501     | valid TraceQL, unimplemented |
+| `{ .a = "unterminated }`                  | 400   | 400     | unchanged                    |
+| `{ .a = @@@ }`                            | 400   | 400     | unchanged                    |
+
+**The delta is strictly one-directional: only 501 → 400, never 400 → 501.**
+Escaped string literals (`{ .a = "he said \"hi\"" }`) are legal TraceQL we
+cannot lex, so by the rule above they "should" become 501 — they are
+deliberately left at 400, because moving a client error into the
+not-implemented class serves nobody and widens the blast radius for no gain.
+That inconsistency is documented in the crate rather than silently carried.
+
+Nothing else about the surface moves: the accepted grammar is identical, the
+rejection _messages_ are preserved verbatim, and every 200 response is
+unchanged. Neither crate has ever been published, so the `logql` →
+`logql-parser` rename breaks no external consumer; it is a package-name choice
+made _before_ first publication.
 
 ## Capabilities
 
