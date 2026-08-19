@@ -19,6 +19,7 @@ members = [
     "src/signaldb-cli",
     "src/signaldb-sdk",
     "src/tempo-api",
+    "src/traceql",
     "src/writer",
     "tests-integration",
     "xtask",
@@ -50,6 +51,7 @@ default-members = [
     "src/signaldb-cli",
     "src/signaldb-sdk",
     "src/tempo-api",
+    "src/traceql",
     "src/writer",
     "tests-integration",
 ]

@@ -15,3 +15,19 @@ pub enum QuerierError {
     )]
     TooManyGroups { count: usize, limit: usize },
 }
+
+/// The TraceQL parser's two rejection classes map 1:1 onto ours, and the
+/// mapping is what decides the HTTP status a client sees: unparseable input is
+/// the client's mistake (400), a construct we do not lower is ours (501).
+impl From<traceql::ParseError> for QuerierError {
+    fn from(err: traceql::ParseError) -> Self {
+        match err {
+            traceql::ParseError::Syntax(msg) => QuerierError::InvalidInput(msg),
+            traceql::ParseError::Unsupported(msg) => QuerierError::Unsupported(msg),
+            // `ParseError` is `#[non_exhaustive]`: the parser releases
+            // independently, so it may grow a class this build predates.
+            // Unknown rejections are ours, not the caller's.
+            other => QuerierError::Unsupported(other.to_string()),
+        }
+    }
+}
