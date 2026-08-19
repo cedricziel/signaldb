@@ -172,7 +172,10 @@ within it. `<identity>` is the entity's identity values, percent-encoded and
 comma-joined (`/catalog/service/checkout,shop` for `service.name=checkout`,
 `service.namespace=shop`), so entity pages are bookmarkable and shareable
 like every other view; tenant, dataset, and time range stay in the query
-string.
+string. `<entity>` names any entity type the tenant carries, registry-derived
+ones included (`/catalog/process_executable/...`) — a link naming one this
+tenant has no entity type for says so rather than opening some other type's
+page under that name.
 
 An entity keyed by a _resource_ attribute (service, host, Kubernetes
 pod/node, container, process — anything an SDK's `Resource` carries, not
