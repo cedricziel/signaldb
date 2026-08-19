@@ -3150,6 +3150,12 @@ mod tests {
     /// can put on an attribute-map column has to survive it, not just the
     /// `eq` the bug happened to be reported with. Each case below plans over
     /// the gauge+sum union and must match all three fixture rows.
+    ///
+    /// This is every member of `ComparisonOp` that is meaningful on a string
+    /// attribute. The ordered comparisons (`gt`/`gte`/`lt`/`lte`) are left
+    /// out as their own leaves because `between` already exercises that
+    /// lowering — it compiles to `>= lo AND <= hi` over the same field
+    /// expression.
     #[tokio::test]
     async fn metrics_union_filters_by_a_fallback_attribute_with_every_operator() {
         let cases: Vec<(&str, Option<serde_json::Value>)> = vec![
@@ -3158,6 +3164,17 @@ mod tests {
             ("contains", Some(serde_json::json!("signaldb"))),
             ("regex", Some(serde_json::json!("(?i)^ix-signaldb"))),
             ("exists", None),
+            // `in` takes a list; the non-matching member must not change the
+            // count, or the predicate is not being applied at all.
+            (
+                "in",
+                Some(serde_json::json!(["ix-signaldb-mcp-1", "not-this-one"])),
+            ),
+            // `between` on a string is a lexicographic range, lowered to
+            // `>= lo AND <= hi` — two comparisons over one field expression,
+            // which is a different shape again from the single-comparison
+            // leaves above.
+            ("between", Some(serde_json::json!(["ix-a", "ix-z"]))),
         ];
         for (op, value) in cases {
             let mut predicate = serde_json::json!({ "field": "container.name", "op": op });
@@ -3197,6 +3214,46 @@ mod tests {
                 })
                 .sum();
             assert_eq!(n, 3, "op '{op}' matched the wrong number of rows");
+        }
+    }
+
+    /// Planning is not the whole claim: a predicate that plans but matches
+    /// everything would pass the test above while silently ignoring the
+    /// filter. These cases must exclude all three rows, proving the
+    /// predicate is evaluated against the union's real values rather than
+    /// dropped somewhere in the rewrite.
+    #[tokio::test]
+    async fn metrics_union_filter_by_a_fallback_attribute_excludes_as_well_as_matches() {
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            ("eq", serde_json::json!("not-a-container")),
+            ("ne", serde_json::json!("ix-signaldb-mcp-1")),
+            ("contains", serde_json::json!("nothing-like-this")),
+            ("regex", serde_json::json!("^zzz")),
+            ("in", serde_json::json!(["neither", "nor"])),
+            ("between", serde_json::json!(["aa", "ab"])),
+        ];
+        for (op, value) in cases {
+            let svc = IrService::new(realistic_metrics_ctx());
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [
+                    { "where": { "field": "container.name", "op": op, "value": value } },
+                    { "aggregate": { "by": ["container.name"],
+                                     "aggs": [{ "fn": "count", "as": "n" }] } }
+                ]
+            }));
+            let (df, _) = svc
+                .plan(&d, "t", "d", 0)
+                .await
+                .unwrap()
+                .expect("both metrics tables are registered");
+            let batches = df
+                .collect()
+                .await
+                .unwrap_or_else(|e| panic!("op '{op}' must plan over the union: {e}"));
+            let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            assert_eq!(rows, 0, "op '{op}' should have excluded every row");
         }
     }
 
