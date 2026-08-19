@@ -28,6 +28,14 @@ in `src/common/src/self_monitoring/app_metrics.rs`; WAL-specific ones are
 documented alongside their recovery behavior in
 [WAL Persistence](wal-persistence.md#monitoring-and-alerting).
 
+The registry is no longer spans-only, though: the compactor's job counters
+(`compactor.jobs.started`/`.succeeded`/`.failed`, scraped as
+`compactor_jobs_*_total`) are declared there as `type: metric` groups, so
+their names and label sets are governed the same way. Those are rendered by
+hand on the compactor's own Prometheus endpoint rather than through the OTel
+SDK, and a test in the compactor fails the build if the two disagree — see
+[Compactor Operations](compactor/operations.md#compaction-retries).
+
 Two writer instruments are worth naming here because they are read together:
 `signaldb.writer.commit_duration` (histogram, `tenant` attribute) is how long
 one group's Iceberg commit took, and `signaldb.writer.groups_deferred` (gauge)

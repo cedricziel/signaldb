@@ -63,7 +63,7 @@ Controls compaction planning: which files are merged into larger ones and when a
 | `max_candidates_per_cycle` | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                                                                            |
 | `max_per_tenant`           | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                                                                                      |
 | `lease_ttl_seconds`        | integer         | `300`            | How long a compaction lease stays valid without renewal                                                                                                                                        |
-| `metrics_addr`             | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled)                                                                                                                                                  |
+| `metrics_addr`             | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled). Job counters served here are labelled by tenant, dataset and table, and failures by `error_type` — see [Operations](operations.md#compaction-retries) |
 
 **How the cadences interact:** each lifecycle cycle runs on its own task, so
 these intervals are independent of one another — a compaction pass that runs
