@@ -9,7 +9,7 @@ sources:
   - src/prometheus-api/**
   - src/pyroscope-api/**
   - src/tempo-api/**
-  - xtask/ql-purity.sh
+  - scripts/check-ql-purity.sh
   - release-please-config.ql.json
 ---
 
