@@ -135,6 +135,16 @@ the nav grows when a new SDK resource detector, an OTel Collector with
 an attribute, and it does not fill up with dozens of entity types you have
 no data for.
 
+What identifies an entity is resolved against your data too, not taken on
+faith from the registry. An entity type is keyed by the identifying
+attributes your telemetry actually carries — an attribute the registry
+declares but nothing sends is dropped rather than lumping every instance
+under one blank value. Where a registry declares no identifying attribute at
+all (OTel 1.43 has 26 such entity types, `host` and `container` among them,
+whose names are merely _descriptive_), the first descriptive attribute your
+data carries stands in. That is what lets those entity types be catalogued
+without SignalDB hard-coding a key for each one.
+
 That metadata is maintained by compaction, so a freshly-ingesting deployment
 may not have been analyzed yet. The catalog says so — "not analyzed yet"
 alongside the age of the metadata it used — rather than showing an empty nav,
@@ -143,7 +153,16 @@ looked yet".
 
 An entity type whose attribute is present but has no values in the selected
 window renders an explicit empty state naming the attribute and the signals
-it looked in, rather than a placeholder row.
+it looked in, rather than a placeholder row. Where SignalDB knows the
+attribute has values outside your window, it says so — "3 values have been
+seen outside it (as of …), such as `ix-signaldb-mcp-1`. Try a wider time
+range" — which separates "nothing here right now" from "nothing has ever
+reported this", two findings that call for opposite next steps. That comes
+from the same maintained statistics as everything else on this page, so it
+describes what compaction last saw rather than your selected range; it can
+tell you values exist, never that they are current. When no statistics cover
+the attribute, the empty state stays quiet instead of claiming nothing has
+ever been seen.
 
 Catalog selection is part of the URL path: `/catalog/<entity>` lists an
 entity type (`service`, `database`, `messaging_destination`, `host`,
