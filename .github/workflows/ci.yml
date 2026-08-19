@@ -141,7 +141,10 @@ jobs:
       - name: Build
         run: pnpm --filter signaldb-ui build
 
+      # `--with-deps` shells out to apt, which can stall for hours on a bad
+      # mirror; cap it so the job fails rather than blocking the queue.
       - name: Install Playwright browsers
+        timeout-minutes: 10
         run: pnpm --filter signaldb-ui exec playwright install --with-deps chromium
 
       - name: E2E tests
@@ -220,9 +223,9 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler mold clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler mold clang
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -363,9 +366,9 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler mold clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler mold clang
 
       - name: Setup test environment
         run: |
@@ -415,9 +418,9 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler musl-tools mold clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler musl-tools mold clang
 
       - name: Build musl binaries
         run: |
@@ -473,9 +476,9 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler mold clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler mold clang
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.11
@@ -534,9 +537,9 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler musl-tools mold clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler musl-tools mold clang
 
       - name: Build musl binaries
         run: |
@@ -928,9 +931,9 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler mold clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler mold clang
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov

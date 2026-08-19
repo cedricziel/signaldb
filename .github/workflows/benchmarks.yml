@@ -54,9 +54,9 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler mold clang jq
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler mold clang jq
 
       - name: Run every Criterion bench target
         run: scripts/run-benches.sh -- --output-format bencher

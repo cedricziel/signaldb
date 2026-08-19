@@ -81,9 +81,9 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         # mold + clang: .cargo/config.toml links x86_64-unknown-linux-gnu
         # with clang and -fuse-ld=mold
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler mold clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler mold clang
 
       - name: Install system dependencies (macOS)
         if: matrix.os == 'macos-latest'
@@ -173,9 +173,9 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler musl-tools mold clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler musl-tools mold clang
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.11
@@ -246,9 +246,9 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler musl-tools mold clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler musl-tools mold clang
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.11
@@ -640,18 +640,18 @@ jobs:
 
       - name: Install cross-compilation tools (Linux ARM64)
         if: matrix.target.os == 'linux' && matrix.target.arch == 'arm64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+        uses: ./.github/actions/apt-install
+        with:
+          packages: gcc-aarch64-linux-gnu
 
       - name: Install mold linker (Linux AMD64)
         # The repo-level .cargo/config.toml links x86_64-unknown-linux-gnu
         # with clang and -fuse-ld=mold, and it applies to the backend
         # workspace too; the plugin's own CI installs mold the same way.
         if: matrix.target.os == 'linux' && matrix.target.arch == 'amd64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y mold clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: mold clang
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2

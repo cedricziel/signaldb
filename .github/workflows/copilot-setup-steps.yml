@@ -40,6 +40,6 @@ jobs:
                   save-if: ${{ github.ref == 'refs/heads/main' }}
 
             - name: Install system dependencies
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y protobuf-compiler mold clang
+              uses: ./.github/actions/apt-install
+              with:
+                packages: protobuf-compiler mold clang

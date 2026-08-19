@@ -76,9 +76,9 @@ jobs:
         cache-on-failure: true
 
     - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y protobuf-compiler
+      uses: ./.github/actions/apt-install
+      with:
+        packages: protobuf-compiler
     
     - name: Setup test environment
       run: |
@@ -152,9 +152,9 @@ jobs:
 
     - name: Install system dependencies (Ubuntu)
       if: matrix.os == 'ubuntu-latest'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y protobuf-compiler
+      uses: ./.github/actions/apt-install
+      with:
+        packages: protobuf-compiler
     
     - name: Install system dependencies (macOS)
       if: matrix.os == 'macos-latest'
@@ -249,9 +249,9 @@ jobs:
         cache-on-failure: true
 
     - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y protobuf-compiler
+      uses: ./.github/actions/apt-install
+      with:
+        packages: protobuf-compiler
     
     - name: Configure load-test environment
       run: |
@@ -328,9 +328,9 @@ jobs:
         cache-on-failure: true
 
     - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y protobuf-compiler curl
+      uses: ./.github/actions/apt-install
+      with:
+        packages: protobuf-compiler curl
     
     - name: Setup test environment
       run: |
