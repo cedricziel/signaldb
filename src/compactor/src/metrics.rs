@@ -2,9 +2,57 @@
 //!
 //! Provides thread-safe metrics collection for compaction operations using atomic counters.
 
+use dashmap::DashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
+
+/// Upper bound on the distinct `(tenant, dataset, table)` label sets tracked.
+///
+/// Tenants and datasets are operator-created, so the label space is not
+/// closed and an unbounded map here would be a memory leak with a metrics
+/// endpoint attached. Work beyond the cap is still counted, under
+/// [`OVERFLOW_LABEL`], so the totals stay honest even when the breakdown
+/// stops being specific.
+pub const MAX_TRACKED_SCOPES: usize = 512;
+
+/// Tenant id standing in for every scope past [`MAX_TRACKED_SCOPES`].
+pub const OVERFLOW_LABEL: &str = "__overflow__";
+
+/// The table a compaction job acted on: the label set for the per-job
+/// counters.
+///
+/// Owned strings rather than borrowed: these live in the metrics map for the
+/// process's lifetime, and the cardinality cap keeps the total bounded.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct JobScope {
+    pub tenant_id: String,
+    pub dataset_id: String,
+    pub table_name: String,
+}
+
+impl JobScope {
+    pub fn new(tenant_id: &str, dataset_id: &str, table_name: &str) -> Self {
+        Self {
+            tenant_id: tenant_id.to_string(),
+            dataset_id: dataset_id.to_string(),
+            table_name: table_name.to_string(),
+        }
+    }
+
+    /// The bucket every scope past the cap collapses into.
+    fn overflow() -> Self {
+        Self::new(OVERFLOW_LABEL, OVERFLOW_LABEL, OVERFLOW_LABEL)
+    }
+}
+
+/// Job outcomes for one label set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScopeCounts {
+    pub started: usize,
+    pub succeeded: usize,
+}
 
 /// Thread-safe metrics for tracking compaction operations
 #[derive(Debug, Clone)]
@@ -29,6 +77,19 @@ struct MetricsInner {
     oversized_partitions_skipped: AtomicUsize,
     cooldown_partitions_skipped: AtomicUsize,
     stale_leases_expired: AtomicU64,
+    /// Per-table job outcomes. The aggregates above stay authoritative for
+    /// totals; this only says how they are distributed.
+    by_scope: DashMap<JobScope, ScopeCountsInner>,
+    /// Failures split further by error type, which is what separates a
+    /// self-resolving conflict from a job that will never succeed.
+    failures: DashMap<(JobScope, String), AtomicUsize>,
+}
+
+/// Interior-mutable counterpart of [`ScopeCounts`].
+#[derive(Debug, Default)]
+struct ScopeCountsInner {
+    started: AtomicUsize,
+    succeeded: AtomicUsize,
 }
 
 impl Default for CompactionMetrics {
@@ -57,6 +118,8 @@ impl CompactionMetrics {
                 oversized_partitions_skipped: AtomicUsize::new(0),
                 cooldown_partitions_skipped: AtomicUsize::new(0),
                 stale_leases_expired: AtomicU64::new(0),
+                by_scope: DashMap::new(),
+                failures: DashMap::new(),
             }),
         }
     }
@@ -130,14 +193,62 @@ impl CompactionMetrics {
             .load(Ordering::Relaxed)
     }
 
-    /// Record the start of a compaction job
-    pub fn record_job_start(&self) {
-        self.inner.jobs_started.fetch_add(1, Ordering::Relaxed);
+    /// The label set a *new* scope is counted under: itself, or the overflow
+    /// bucket once the cap is reached.
+    ///
+    /// Only called on a miss, so the first [`MAX_TRACKED_SCOPES`] label sets
+    /// seen keep their own series and later ones share the bucket. Which
+    /// tables win that race does not matter operationally: a deployment with
+    /// that many tables has a dashboard problem rather than a compaction
+    /// problem, and the totals are unaffected either way.
+    fn label_set_for_new_scope(&self, scope: &JobScope) -> JobScope {
+        if self.inner.by_scope.len() >= MAX_TRACKED_SCOPES {
+            tracing::warn!(
+                tenant_id = %scope.tenant_id,
+                dataset_id = %scope.dataset_id,
+                table = %scope.table_name,
+                max_tracked_scopes = MAX_TRACKED_SCOPES,
+                "Compaction metrics label cardinality cap reached; counting this table under \
+                 the overflow bucket"
+            );
+            return JobScope::overflow();
+        }
+        scope.clone()
     }
 
-    /// Record a successful compaction job
+    /// Increment one of a scope's counters, allocating a label set only when
+    /// the scope is seen for the first time.
+    fn bump(&self, scope: &JobScope, pick: fn(&ScopeCountsInner) -> &AtomicUsize) {
+        if let Some(counts) = self.inner.by_scope.get(scope) {
+            pick(counts.value()).fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let label_set = self.label_set_for_new_scope(scope);
+        pick(self.inner.by_scope.entry(label_set).or_default().value())
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Give `scope` a series if it has none, and return the label set it is
+    /// counted under.
+    fn ensure_scope(&self, scope: &JobScope) -> JobScope {
+        if self.inner.by_scope.contains_key(scope) {
+            return scope.clone();
+        }
+        let label_set = self.label_set_for_new_scope(scope);
+        self.inner.by_scope.entry(label_set.clone()).or_default();
+        label_set
+    }
+
+    /// Record the start of a compaction job on `scope`'s table
+    pub fn record_job_start(&self, scope: &JobScope) {
+        self.inner.jobs_started.fetch_add(1, Ordering::Relaxed);
+        self.bump(scope, |counts| &counts.started);
+    }
+
+    /// Record a successful compaction job on `scope`'s table
     pub fn record_job_success(
         &self,
+        scope: &JobScope,
         input_files: usize,
         output_files: usize,
         bytes_before: u64,
@@ -145,6 +256,7 @@ impl CompactionMetrics {
         duration: Duration,
     ) {
         self.inner.jobs_succeeded.fetch_add(1, Ordering::Relaxed);
+        self.bump(scope, |counts| &counts.succeeded);
         self.inner
             .total_input_files
             .fetch_add(input_files, Ordering::Relaxed);
@@ -162,9 +274,49 @@ impl CompactionMetrics {
             .fetch_add(duration.as_millis() as u64, Ordering::Relaxed);
     }
 
-    /// Record a failed compaction job
-    pub fn record_job_failure(&self) {
+    /// Record a failed compaction job on `scope`'s table.
+    ///
+    /// `error_type` is the retry classification (`conflict`,
+    /// `resource_exhausted`, ...), which is what tells a self-resolving
+    /// failure apart from one that will never succeed on its own.
+    pub fn record_job_failure(&self, scope: &JobScope, error_type: &str) {
         self.inner.jobs_failed.fetch_add(1, Ordering::Relaxed);
+        // Registered even when the failure is the scope's first event, so a
+        // table that only ever fails still appears in the breakdown.
+        let label_set = self.ensure_scope(scope);
+        self.inner
+            .failures
+            .entry((label_set, error_type.to_string()))
+            .or_default()
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Job outcomes per table, for the labeled metric series.
+    pub fn jobs_by_scope(&self) -> HashMap<JobScope, ScopeCounts> {
+        self.inner
+            .by_scope
+            .iter()
+            .map(|entry| {
+                let counts = entry.value();
+                (
+                    entry.key().clone(),
+                    ScopeCounts {
+                        started: counts.started.load(Ordering::Relaxed),
+                        succeeded: counts.succeeded.load(Ordering::Relaxed),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Failure counts per table and error type. A table's total failures
+    /// are the sum over its error types.
+    pub fn failures_by_scope(&self) -> HashMap<(JobScope, String), usize> {
+        self.inner
+            .failures
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().load(Ordering::Relaxed)))
+            .collect()
     }
 
     /// Record leases reclaimed from crashed instances by one expiry pass.
@@ -287,6 +439,8 @@ impl CompactionMetrics {
         self.inner.jobs_started.store(0, Ordering::Relaxed);
         self.inner.jobs_succeeded.store(0, Ordering::Relaxed);
         self.inner.jobs_failed.store(0, Ordering::Relaxed);
+        self.inner.by_scope.clear();
+        self.inner.failures.clear();
         self.inner.conflicts_detected.store(0, Ordering::Relaxed);
         self.inner.retries_attempted.store(0, Ordering::Relaxed);
         self.inner.stale_leases_expired.store(0, Ordering::Relaxed);
@@ -499,14 +653,111 @@ mod tests {
         assert_eq!(metrics.bytes_after_compaction(), 0);
     }
 
+    /// Label set for tests that only care about the aggregate counters.
+    fn any_scope() -> JobScope {
+        JobScope::new("test-tenant", "test-dataset", "traces")
+    }
+
+    /// A single global failure counter cannot answer the first question an
+    /// operator asks — *what* is failing. On hive 12 of 140 jobs failed and
+    /// finding out they were all one table took a log dig.
+    #[test]
+    fn job_outcomes_are_counted_per_table() {
+        let metrics = CompactionMetrics::new();
+        let profiles = JobScope::new("_system", "_monitoring", "profiles");
+        let traces = JobScope::new("_system", "_monitoring", "traces");
+
+        metrics.record_job_start(&profiles);
+        metrics.record_job_failure(&profiles, "resource_exhausted");
+        metrics.record_job_start(&traces);
+        metrics.record_job_success(
+            &traces,
+            10,
+            1,
+            2048,
+            1024,
+            std::time::Duration::from_millis(5),
+        );
+
+        let by_scope = metrics.jobs_by_scope();
+        assert_eq!(by_scope.get(&profiles).map(|c| c.succeeded), Some(0));
+        assert_eq!(by_scope.get(&traces).map(|c| c.succeeded), Some(1));
+        assert_eq!(
+            metrics
+                .failures_by_scope()
+                .get(&(profiles, "resource_exhausted".to_string())),
+            Some(&1),
+            "the failing table must be identifiable from the metric alone"
+        );
+        assert!(
+            !metrics
+                .failures_by_scope()
+                .keys()
+                .any(|(scope, _)| scope == &traces),
+            "a table that never failed must not appear in the failure breakdown"
+        );
+
+        // The aggregate stays intact: /status and the compact_status tool
+        // read it, and it is what makes a per-table count legible as a share.
+        assert_eq!(metrics.jobs_failed(), 1);
+        assert_eq!(metrics.jobs_succeeded(), 1);
+        assert_eq!(metrics.jobs_started(), 2);
+    }
+
+    /// The table says what is failing; the error type says whether it is
+    /// worth paging over. A commit conflict resolves itself, a terminal
+    /// resource error does not.
+    #[test]
+    fn failures_are_counted_per_error_type() {
+        let metrics = CompactionMetrics::new();
+        let profiles = JobScope::new("_system", "_monitoring", "profiles");
+
+        metrics.record_job_failure(&profiles, "resource_exhausted");
+        metrics.record_job_failure(&profiles, "resource_exhausted");
+        metrics.record_job_failure(&profiles, "conflict");
+
+        let failures = metrics.failures_by_scope();
+        assert_eq!(
+            failures.get(&(profiles.clone(), "resource_exhausted".to_string())),
+            Some(&2)
+        );
+        assert_eq!(failures.get(&(profiles, "conflict".to_string())), Some(&1));
+    }
+
+    /// Label sets are operator-created (tenants and datasets), so the series
+    /// count has to be bounded — an unbounded metric map is a memory leak
+    /// with a metrics endpoint attached.
+    #[test]
+    fn scope_cardinality_is_capped() {
+        let metrics = CompactionMetrics::new();
+        for i in 0..(MAX_TRACKED_SCOPES + 50) {
+            metrics.record_job_failure(&JobScope::new(&format!("tenant-{i}"), "d", "traces"), "x");
+        }
+
+        let by_scope = metrics.jobs_by_scope();
+        assert!(
+            by_scope.len() <= MAX_TRACKED_SCOPES + 1,
+            "tracked scopes ({}) must stay within the cap plus the overflow bucket",
+            by_scope.len()
+        );
+        assert!(
+            by_scope
+                .keys()
+                .any(|scope| scope.tenant_id == OVERFLOW_LABEL),
+            "work beyond the cap must land in the overflow bucket, not vanish"
+        );
+        // Nothing is lost from the aggregate, whatever the cap does.
+        assert_eq!(metrics.jobs_failed(), MAX_TRACKED_SCOPES + 50);
+    }
+
     #[test]
     fn test_record_job_start() {
         let metrics = CompactionMetrics::new();
 
-        metrics.record_job_start();
+        metrics.record_job_start(&any_scope());
         assert_eq!(metrics.jobs_started(), 1);
 
-        metrics.record_job_start();
+        metrics.record_job_start(&any_scope());
         assert_eq!(metrics.jobs_started(), 2);
     }
 
@@ -515,6 +766,7 @@ mod tests {
         let metrics = CompactionMetrics::new();
 
         metrics.record_job_success(
+            &any_scope(),
             15,                      // input files
             2,                       // output files
             30 * 1024 * 1024,        // 30 MB before
@@ -533,10 +785,10 @@ mod tests {
     fn test_record_job_failure() {
         let metrics = CompactionMetrics::new();
 
-        metrics.record_job_failure();
+        metrics.record_job_failure(&any_scope(), "conflict");
         assert_eq!(metrics.jobs_failed(), 1);
 
-        metrics.record_job_failure();
+        metrics.record_job_failure(&any_scope(), "conflict");
         assert_eq!(metrics.jobs_failed(), 2);
     }
 
@@ -565,6 +817,7 @@ mod tests {
 
         // Add some data: 30MB -> 15MB = 2x compression
         metrics.record_job_success(
+            &any_scope(),
             10,
             2,
             30 * 1024 * 1024,
@@ -583,8 +836,8 @@ mod tests {
         assert_eq!(metrics.avg_duration_ms(), 0.0);
 
         // Add two jobs with 10s and 20s durations
-        metrics.record_job_success(10, 2, 1024, 512, Duration::from_secs(10));
-        metrics.record_job_success(10, 2, 1024, 512, Duration::from_secs(20));
+        metrics.record_job_success(&any_scope(), 10, 2, 1024, 512, Duration::from_secs(10));
+        metrics.record_job_success(&any_scope(), 10, 2, 1024, 512, Duration::from_secs(20));
 
         // Average should be 15 seconds = 15000 ms
         assert!((metrics.avg_duration_ms() - 15000.0).abs() < 1.0);
@@ -594,8 +847,9 @@ mod tests {
     fn test_metrics_summary() {
         let metrics = CompactionMetrics::new();
 
-        metrics.record_job_start();
+        metrics.record_job_start(&any_scope());
         metrics.record_job_success(
+            &any_scope(),
             15,
             2,
             30 * 1024 * 1024,
@@ -630,7 +884,7 @@ mod tests {
             let metrics_clone = Arc::clone(&metrics);
             let handle = thread::spawn(move || {
                 for _ in 0..100 {
-                    metrics_clone.record_job_start();
+                    metrics_clone.record_job_start(&any_scope());
                 }
             });
             handles.push(handle);

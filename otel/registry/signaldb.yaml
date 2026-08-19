@@ -242,3 +242,56 @@ groups:
           Audit outcome of an MCP tool call, as recorded on the
           `signaldb.mcp.tool_calls` counter.
         examples: ["ok", "denied"]
+
+  # --- Metrics ----------------------------------------------------------
+  # The compactor exposes these on its own Prometheus endpoint
+  # (`[compactor] metrics_addr`), rendered by `compactor::http`, rather than
+  # through the OTel SDK. They are declared here so the names and their label
+  # sets are governed by the same registry as the spans, and `registry_pins`
+  # fails the build if the exporter drifts from this file. Prometheus renders
+  # a dot-separated name as underscores with a `_total` suffix, so
+  # `compactor.jobs.failed` is scraped as `compactor_jobs_failed_total`.
+
+  - id: metric.compactor.jobs.started
+    type: metric
+    metric_name: compactor.jobs.started
+    stability: development
+    brief: Compaction jobs started, per table.
+    instrument: counter
+    unit: "{job}"
+    attributes:
+      - ref: signaldb.tenant.id
+      - ref: signaldb.dataset.id
+      - ref: signaldb.table
+
+  - id: metric.compactor.jobs.succeeded
+    type: metric
+    metric_name: compactor.jobs.succeeded
+    stability: development
+    brief: Compaction jobs that committed successfully, per table.
+    instrument: counter
+    unit: "{job}"
+    attributes:
+      - ref: signaldb.tenant.id
+      - ref: signaldb.dataset.id
+      - ref: signaldb.table
+
+  - id: metric.compactor.jobs.failed
+    type: metric
+    metric_name: compactor.jobs.failed
+    stability: development
+    brief: >
+      Compaction jobs that failed, per table and error type. A single global
+      total cannot say which table is failing, nor whether the failure is one
+      that resolves itself: a commit conflict means another actor won the
+      race, while a resource error means the job cannot succeed as configured
+      and the partition will be held in cooldown.
+    instrument: counter
+    unit: "{job}"
+    attributes:
+      - ref: signaldb.tenant.id
+      - ref: signaldb.dataset.id
+      - ref: signaldb.table
+      - ref: error.type
+        brief: The compactor's retry classification of the failure.
+        examples: ["conflict", "resource_exhausted", "validation"]

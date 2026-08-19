@@ -311,7 +311,11 @@ curl -s localhost:9091/metrics | grep -E "compactor_(orphan_candidates_identifie
 
 ### Key Metrics to Monitor
 
-All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Counters are process-global — there are no per-tenant, per-dataset, or per-table labels. The labelled metrics are `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}` and the `cycle="compaction"|"lease_expiry"|"retention"|"orphan_cleanup"` label on `compactor_cycle_panics_total` / `compactor_cycle_down` (see [Lifecycle Task Recovery](#lifecycle-task-recovery) below).
+All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Most are process-global, with three exceptions worth knowing:
+
+- the job counters — `compactor_jobs_started_total`, `compactor_jobs_succeeded_total` and `compactor_jobs_failed_total` — carry `signaldb_tenant_id`, `signaldb_dataset_id` and `signaldb_table`, and the failure counter additionally carries `error_type` (see [Compaction Retries](#compaction-retries) below). Their names and label sets are declared in the SignalDB convention registry, `otel/registry/signaldb.yaml`;
+- `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}`;
+- `cycle="compaction"|"lease_expiry"|"retention"|"orphan_cleanup"` on `compactor_cycle_panics_total` / `compactor_cycle_down` (see [Lifecycle Task Recovery](#lifecycle-task-recovery) below).
 
 #### Compaction Retries
 
@@ -333,6 +337,37 @@ increase(compactor_conflicts_detected_total[1h])
 Retries far in excess of conflicts mean infrastructure flakiness rather than
 contention. The `error_class` field on each job's failure log says which class
 a given failure was.
+
+**Which table is failing.** The job counters carry the tenant, dataset and
+table they acted on, and failures additionally carry the error type — so the
+first question after "jobs are failing" is answerable from the metric rather
+than from the logs:
+
+```promql
+# Failures by table, worst first
+topk(5, sum by (signaldb_tenant_id, signaldb_dataset_id, signaldb_table) (
+  increase(compactor_jobs_failed_total[6h])
+))
+
+# Is a table failing occasionally, or every time?
+sum by (signaldb_table) (increase(compactor_jobs_failed_total[6h]))
+  / sum by (signaldb_table) (increase(compactor_jobs_started_total[6h]))
+
+# Self-resolving contention, or a job that will never succeed as configured?
+sum by (signaldb_table, error_type) (increase(compactor_jobs_failed_total[6h]))
+```
+
+An `error_type` of `conflict` means another actor committed first and the work
+will be retried. Anything else on a table that fails *every* attempt means the
+partition is heading for [cooldown](#compaction-backoff) and will stop being
+attempted at all — that is the shape to alert on. Label names are the
+Prometheus rendering of the attributes declared in the SignalDB convention
+registry (`otel/registry/signaldb.yaml`); the label set is bounded, and tables
+past that bound are counted under `__overflow__` rather than dropped.
+
+> **Breaking change:** these three counters previously had no labels. A query
+> that read `compactor_jobs_failed_total` as a bare scalar must now aggregate:
+> `sum(compactor_jobs_failed_total)`.
 
 #### Lease Recovery
 
