@@ -141,10 +141,13 @@ client-error. No rejection SHALL move in the opposite direction.
 ### Requirement: Published front-ends carry a purity and stability contract
 
 A compatibility query-language front-end that SignalDB publishes as a reusable
-artifact SHALL depend on no SignalDB product component, and SHALL NOT require
-one to build or to run. Its published form SHALL be verified automatically
-rather than by review, and its public types SHALL be declared extensible so
-that growing the implemented subset does not force a breaking release.
+artifact SHALL depend on no SignalDB product component and on no component of
+the query engine, and SHALL NOT require either to build or to run. Its
+published form SHALL be verified automatically rather than by review. Its
+public types — every type a consumer matches on or constructs, not only its
+enumerations — SHALL either be declared extensible or be documented as fixed,
+so that growing the implemented subset does not silently force a breaking
+release on consumers.
 
 #### Scenario: A product dependency fails the build pipeline
 
@@ -152,6 +155,14 @@ that growing the implemented subset does not force a breaking release.
   published front-end
 - **THEN** the pipeline fails before the change can merge, rather than the
   regression being caught in review or at release time
+
+#### Scenario: A query-engine dependency also fails
+
+- **WHEN** a change adds a dependency on the query engine's own stack to a
+  published front-end, even though that dependency is independently published
+  and would package successfully
+- **THEN** the pipeline fails, because packaging successfully is not the same
+  as remaining independent of the engine
 
 #### Scenario: Extending the accepted subset is not a breaking release
 

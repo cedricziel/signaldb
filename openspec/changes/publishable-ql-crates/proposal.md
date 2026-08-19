@@ -39,9 +39,12 @@ executing one:
 | the supported/unsupported subset decision                                                                      | the `QuerierError` mapping and HTTP status                                                                                                                   |
 |                                                                                                                | `parse_tags` — Tempo's logfmt `tags` parameter is an _HTTP parameter format_, not TraceQL. It keeps using the `traceql` AST but is not part of the language. |
 
-The extraction is behaviour-preserving. Every accepted query stays accepted,
-every rejected query stays rejected **with the same message and the same HTTP
-status**, pinned by tests that move with the code.
+The extraction preserves behaviour **with one deliberate exception**: every
+accepted query stays accepted and returns the same results, every rejection
+keeps its message verbatim, and every HTTP status is unchanged **except for
+input that cannot be parsed as TraceQL, which moves from 501 to 400** — see
+the BREAKING section below for the exact set. Pinned by tests that move with
+the code.
 
 The one substantive addition: `traceql::ParseError` must distinguish
 _syntactically invalid_ from _valid TraceQL we do not lower yet_, because the
@@ -69,14 +72,14 @@ A compatibility front-end is a re-implementation of somebody else's published
 language, so it takes that project's licence rather than one chosen for our own
 convenience. Verified against the upstream `LICENSE` files:
 
-| Our crate        | Implements | Upstream            | Upstream licence | Ours today     | Action                                      |
-| ---------------- | ---------- | ------------------- | ---------------- | -------------- | ------------------------------------------- |
-| `logql-parser`   | LogQL      | `grafana/loki`      | AGPL-3.0         | AGPL-3.0       | keep — already correct                      |
-| `traceql-parser` | TraceQL    | `grafana/tempo`     | AGPL-3.0         | (new)          | AGPL-3.0                                    |
-| `loki-api`       | Loki HTTP  | `grafana/loki`      | AGPL-3.0         | AGPL-3.0       | keep                                        |
-| `pyroscope-api`  | Pyroscope  | `grafana/pyroscope` | AGPL-3.0         | AGPL-3.0       | keep                                        |
-| `prometheus-api` | Prom HTTP  | `prometheus`        | **Apache-2.0**   | AGPL-3.0       | stricter than upstream; out of scope, noted |
-| `tempo-api`      | Tempo API  | `grafana/tempo`     | AGPL-3.0         | **Apache-2.0** | **mismatch — see below**                    |
+| Our crate        | Implements | Upstream            | Upstream licence | Ours today     | Action                             |
+| ---------------- | ---------- | ------------------- | ---------------- | -------------- | ---------------------------------- |
+| `logql-parser`   | LogQL      | `grafana/loki`      | AGPL-3.0         | AGPL-3.0       | keep — already correct             |
+| `traceql-parser` | TraceQL    | `grafana/tempo`     | AGPL-3.0         | (new)          | AGPL-3.0                           |
+| `loki-api`       | Loki HTTP  | `grafana/loki`      | AGPL-3.0         | AGPL-3.0       | keep                               |
+| `pyroscope-api`  | Pyroscope  | `grafana/pyroscope` | AGPL-3.0         | AGPL-3.0       | keep                               |
+| `prometheus-api` | Prom HTTP  | `prometheus`        | **Apache-2.0**   | AGPL-3.0       | corrected to Apache-2.0 (task 5.3) |
+| `tempo-api`      | Tempo API  | `grafana/tempo`     | AGPL-3.0         | **Apache-2.0** | **mismatch — see below**           |
 
 This settles the licence question by rule rather than by preference, and it
 removes it as a blocker: `logql` is already AGPL-3.0 and stays there, `traceql`
@@ -107,11 +110,23 @@ crates.io/crates/logql   created 2022-01-24, last updated 2022-05-19
 `traceql`, `traceql-parser`, `logql-parser`, `signaldb-logql`, and `tempo-api`
 are all free. crates.io has no reliable transfer path for an inactive name.
 
-**Recommendation:** publish as `logql-parser` / `traceql-parser`, keeping
+**Decided:** publish as `logql-parser` / `traceql-parser`, keeping
 `[lib] name = "logql"` so every existing `use logql::…` site is untouched — the
 package name is the crates.io identity, the lib name is the import path.
 Descriptive names also travel better than `signaldb-`-prefixed ones for a
 library whose whole point is reuse outside SignalDB.
+
+**`logql` is a workspace dependency** (`Cargo.toml:70`), and `router` consumes
+it as `logql.workspace = true`. The rename is therefore _one_ line in the root
+manifest, using Cargo's `package` key to keep the dependency name stable —
+not an edit to each dependent:
+
+```toml
+# root Cargo.toml [workspace.dependencies]
+logql = { path = "src/logql", package = "logql-parser" }
+```
+
+Every `logql.workspace = true` and every `use logql::…` stays exactly as it is.
 
 ## The QL crates release standalone
 

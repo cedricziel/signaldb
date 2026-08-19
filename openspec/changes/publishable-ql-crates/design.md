@@ -293,14 +293,32 @@ Two gotchas that will otherwise cost a debugging cycle each:
 
 1. **Both instances label their release PRs.** release-please finds its own PRs
    by label, and two instances sharing the default `autorelease: pending` will
-   each try to manage the other's PR. The action's `label` and `release-label`
-   inputs must be set to distinct values on the new workflow.
+   each try to manage the other's PR. The distinct labels go **at the root of
+   `release-please-config.ql.json`**, not on the workflow step —
+   `release-please-action@v5` exposes no `label`/`release-label` inputs (its
+   inputs are `token`, `release-type`, `path`, `target-branch`, `config-file`,
+   `manifest-file`, `repo-url`, `github-api-url`, `github-graphql-url`, `fork`,
+   `include-component-in-tag`, `proxy-server`, `skip-github-release`,
+   `skip-github-pull-request`, `skip-labeling`, `changelog-host`,
+   `versioning-strategy`, `release-as`):
+
+   ```json
+   "label": "autorelease-ql: pending",
+   "release-label": "autorelease-ql: tagged"
+   ```
+
 2. **The `cargo-workspace` plugin stops seeing these crates.** It lives in the
    main config and bumps dependents when a workspace crate's version moves; once
    `logql` is in the other config, a `logql` bump no longer nudges `querier` or
    `router`. That is harmless here — both depend on it by `path`, and neither is
    published — but it is exactly the kind of silent decoupling that surprises
-   someone later, so it is stated in the config as a comment.
+   someone later. It is recorded here and in the proposal, **not** as a comment
+   in the config: both release-please files are strict JSON, where a comment is
+   a parse error.
+
+Each package entry in the new config needs `"release-type": "rust"` explicitly.
+Manifest mode defaults to the Node strategy, which would update a
+`package.json` that does not exist instead of `Cargo.toml`.
 
 Everything else the QL crates need is already per-package and carries over
 unchanged: `release-type: rust`, `include-component-in-tag`,
@@ -313,10 +331,15 @@ crates.io names rather than the directory names.
 A boundary that only a reviewer checks decays. Three cheap guards, in
 increasing order of strictness:
 
-- `cargo publish --dry-run` in CI (D7) — a workspace `path` dependency without a
-  version fails the job.
-- A one-line check that the QL manifests' `[dependencies]` tables contain no
-  `path =` key. Optional; the dry-run already covers the realistic regression.
+- `cargo publish --dry-run` in CI (D7) — catches an unpublishable _package_: a
+  bare `path` dependency, missing metadata, uncommitted files.
+- **An explicit purity assertion, because the dry-run is not one.** A dry-run
+  happily accepts `datafusion = "54"` or any other crates.io dependency — it
+  checks that the crate _can_ be published, not that it stayed pure. The guard
+  that actually enforces the rule reads `cargo metadata` for each QL crate and
+  fails if any dependency is a workspace member, has a `path`/`git` source, or
+  is in the FDAP set (`datafusion`, `arrow*`, `parquet`). Without it, the
+  boundary is enforced by reviewer attention, which is what D8 exists to avoid.
 
 `cargo deny` needs no allowlist work: AGPL-3.0 and Apache-2.0 are both already
 present in the workspace, and D2 introduces no new licence identifier.

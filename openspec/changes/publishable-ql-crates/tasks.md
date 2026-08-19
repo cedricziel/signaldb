@@ -99,21 +99,33 @@ InvalidInput` and `Unsupported → Unsupported`.
 - [ ] 6.1 Create `release-please-config.ql.json` and
       `.release-please-manifest.ql.json` covering only `src/logql` and
       `src/traceql`. Carry `logql`'s current version (`0.1.2`) over verbatim.
-      Set an explicit `component` per package (`logql-parser`,
-      `traceql-parser`) so tags match the crates.io names.
+      Per package: `"release-type": "rust"` (manifest mode defaults to the Node
+      strategy, which would look for a `package.json` instead of `Cargo.toml`),
+      plus an explicit `component` (`logql-parser`, `traceql-parser`) so tags
+      match the crates.io names. At the config root, the distinct labels:
+      `"label": "autorelease-ql: pending"`,
+      `"release-label": "autorelease-ql: tagged"` (D9, gotcha 1).
 - [ ] 6.2 Remove `src/logql` from `release-please-config.json` and
-      `.release-please-manifest.json`. Add a comment recording that the
-      `cargo-workspace` plugin no longer sees these crates (D9, gotcha 2).
-- [ ] 6.3 Add `.github/workflows/release-ql-crates.yml`: release-please with the
-      `.ql` config/manifest and **distinct `label` / `release-label` inputs**
-      (D9, gotcha 1 — sharing `autorelease: pending` makes the two instances
-      fight over each other's PRs).
-- [ ] 6.4 In that workflow, gate a `cargo publish` step per crate on the
-      per-package `--release_created` output, using `CARGO_REGISTRY_TOKEN`. Both
-      crates are leaves — no publish ordering.
+      `.release-please-manifest.json`. Record in the proposal — **not** as a
+      JSON comment, which is a parse error — that the `cargo-workspace` plugin
+      no longer sees these crates (D9, gotcha 2).
+- [ ] 6.3 Add `.github/workflows/release-ql-crates.yml`: `release-please-action@v5`
+      with `config-file`/`manifest-file` pointing at the `.ql` pair. The labels
+      come from the config (6.1) — the action exposes no `label` input.
+- [ ] 6.4 In that workflow, add an `actions/checkout` step, then a `cargo publish`
+      step per crate gated on `steps.release.outputs['src/logql--release_created']`
+      and `steps.release.outputs['src/traceql--release_created']`, with
+      `CARGO_REGISTRY_TOKEN` from the repository secret. Both crates are leaves —
+      no publish ordering.
 - [ ] 6.5 Add `cargo publish --dry-run -p logql-parser -p traceql-parser` to
-      `.github/workflows/ci.yml` (D7/D8). Verify it fails when a `path`
+      `.github/workflows/ci.yml` (D7). Verify it fails when a `path`
       dependency on a workspace crate is added, then revert the probe.
+- [ ] 6.9 Add the purity assertion the dry-run does **not** provide (D8): read
+      `cargo metadata` for each QL crate and fail if any dependency is a
+      workspace member, carries a `path`/`git` source, or is in the FDAP set
+      (`datafusion`, `arrow*`, `parquet`). Prove it by adding `datafusion` to
+      `src/traceql/Cargo.toml`, confirming the job fails where the dry-run
+      passes, then reverting.
 - [ ] 6.6 Configure the `CARGO_REGISTRY_TOKEN` repository secret.
 - [ ] 6.7 `cargo machete --with-metadata`, `cargo fmt`,
       `cargo clippy --workspace --all-targets --all-features`,
