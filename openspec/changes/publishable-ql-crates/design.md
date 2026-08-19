@@ -55,8 +55,8 @@ is no migration and nothing to roll back beyond a normal revert.
 2022-05-19, 11,305 downloads, unrelated). `traceql`, `traceql-parser`,
 `logql-parser`, and `signaldb-logql` are all free.
 
-**Decision:** package `logql-parser` with `[lib] name = "logql"`; package
-`traceql-parser` with `[lib] name = "traceql"`.
+**Decision (confirmed):** package `logql-parser` with `[lib] name = "logql"`;
+package `traceql-parser` with `[lib] name = "traceql"`.
 
 ```toml
 [package]
@@ -307,9 +307,6 @@ dry-run in PR CI and the real publish behind a release tag.
 
 ## Open Questions
 
-1. **`logql-parser` vs `signaldb-logql` (D1)** — reuse-optimised or
-   brand-optimised naming? The only decision still open; it blocks nothing until
-   task 4.1.
-2. Should `promql-parser` (third-party) be re-exported from a thin
+1. Should `promql-parser` (third-party) be re-exported from a thin
    `signaldb`-side crate for symmetry, or is "we don't own that grammar" the
    honest answer? Current recommendation: the honest answer; add no crate.
