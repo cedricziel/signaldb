@@ -69,7 +69,14 @@ Context), the join runs the other way — from the data toward the registry:
    distinct first segments (`otelcol` 35, `system` 14, `container` 13,
    `signaldb` 11, `process` 6, `http` 1).
 2. **What those names mean.** One prefix search per distinct first segment —
-   six calls, not one per metric — collects their definitions.
+   six calls, not one per metric — collects their definitions. The segment
+   ends at the first dot _or underscore_: OTel names are dotted, but anything
+   scraped from a Prometheus exporter is not, and splitting on the dot alone
+   made all 35 `otelcol_*` metrics their own prefix — 39 requests per page
+   instead of six, restoring exactly the fan-out this step exists to avoid.
+   The search is a plain string prefix, so the first word covers the family,
+   and an over-broad prefix only widens a response that is filtered back to
+   the observed names anyway.
 3. **Which belong to this entity.** Keep the definitions whose
    `entity_associations` contain the entity type's registry name.
 

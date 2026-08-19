@@ -72,7 +72,11 @@ function seriesFor(names: string[]) {
 beforeEach(() => {
   useEntityMetrics.mockReset();
   fetchEntityMetricSeries.mockReset();
-  useEntityMetrics.mockReturnValue({ metrics: [], isPending: false });
+  useEntityMetrics.mockReturnValue({
+    metrics: [],
+    isPending: false,
+    isError: false,
+  });
   fetchEntityMetricSeries.mockResolvedValue(new Map());
 });
 
@@ -99,6 +103,7 @@ describe("EntityMetricsPanel", () => {
         metric("system.cpu.time", "counter", "s"),
       ],
       isPending: false,
+      isError: false,
     });
     fetchEntityMetricSeries.mockResolvedValue(
       seriesFor(["system.cpu.utilization", "system.cpu.time"]),
@@ -117,8 +122,28 @@ describe("EntityMetricsPanel", () => {
     expect(counter).toHaveTextContent("s");
   });
 
+  it("says so when the association lookup itself failed", () => {
+    // An empty list because the lookup broke must not render like an empty
+    // list because the entity has no metrics.
+    useEntityMetrics.mockReturnValue({
+      metrics: [],
+      isPending: false,
+      isError: true,
+    });
+
+    render();
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not look up which metrics describe this host",
+    );
+  });
+
   it("renders nothing for an entity type the registry associates no metric with", () => {
-    useEntityMetrics.mockReturnValue({ metrics: [], isPending: false });
+    useEntityMetrics.mockReturnValue({
+    metrics: [],
+    isPending: false,
+    isError: false,
+  });
 
     render();
 
@@ -131,6 +156,7 @@ describe("EntityMetricsPanel", () => {
     useEntityMetrics.mockReturnValue({
       metrics: [metric("system.cpu.utilization")],
       isPending: false,
+      isError: false,
     });
     fetchEntityMetricSeries.mockResolvedValue(
       seriesFor(["system.cpu.utilization"]),
@@ -148,6 +174,7 @@ describe("EntityMetricsPanel", () => {
     useEntityMetrics.mockReturnValue({
       metrics: [metric("system.cpu.utilization")],
       isPending: false,
+      isError: false,
     });
     fetchEntityMetricSeries.mockResolvedValue(new Map());
 
@@ -169,6 +196,7 @@ describe("EntityMetricsPanel", () => {
     useEntityMetrics.mockReturnValue({
       metrics: names.map((n) => metric(n)),
       isPending: false,
+      isError: false,
     });
     fetchEntityMetricSeries.mockResolvedValue(seriesFor(names));
 
@@ -186,6 +214,7 @@ describe("EntityMetricsPanel", () => {
     useEntityMetrics.mockReturnValue({
       metrics: [metric("system.cpu.utilization")],
       isPending: false,
+      isError: false,
     });
     fetchEntityMetricSeries.mockResolvedValue(
       seriesFor(["system.cpu.utilization"]),

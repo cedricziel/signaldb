@@ -107,14 +107,19 @@ export async function discoverObservedMetricNames(
  * The distinct first name segments, in first-seen order — the unit the
  * registry can be searched by, since its endpoint takes a prefix.
  *
- * A name with no dot is its own segment: `otelcol_receiver_accepted_spans`
- * shares no namespace with anything, so searching its full name is both the
- * narrowest and the only correct prefix.
+ * Split on the dot *and* the underscore, because both spell a namespace: OTel
+ * names are dotted (`system.cpu.time`) but anything scraped from a Prometheus
+ * exporter is not (`otelcol_exporter_sent_spans`). Splitting on the dot alone
+ * turned a real deployment's 80 observed names into 39 prefixes — one request
+ * per collector metric, which is the fan-out batching by prefix exists to
+ * prevent. The search is a plain string prefix, so the first word covers the
+ * whole family; over-broad prefixes only widen a response that is filtered
+ * back to the observed names anyway.
  */
 export function nameSegments(names: string[]): string[] {
   const seen = new Set<string>();
   for (const name of names) {
-    seen.add(name.split(".")[0]!);
+    seen.add(name.split(/[._]/)[0]!);
   }
   return [...seen];
 }

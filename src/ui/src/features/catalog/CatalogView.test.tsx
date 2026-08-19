@@ -86,7 +86,11 @@ beforeEach(() => {
   fetchEntitySparklines.mockReset();
   fetchEntitySparklines.mockResolvedValue(new Map());
   useEntityMetrics.mockReset();
-  useEntityMetrics.mockReturnValue({ metrics: [], isPending: false });
+  useEntityMetrics.mockReturnValue({
+    metrics: [],
+    isPending: false,
+    isError: false,
+  });
   useCatalogEntityTypes.mockReset();
   // The curated list, unanalyzed: what a deployment reports before any field
   // metadata has landed.
@@ -426,6 +430,7 @@ describe("the entity list's sparkline column", () => {
     useEntityMetrics.mockReturnValue({
       metrics: [metricDef("system.cpu.utilization")],
       isPending: false,
+      isError: false,
     });
     fetchCatalogEntities.mockResolvedValue({
       entities: [
@@ -449,7 +454,11 @@ describe("the entity list's sparkline column", () => {
   });
 
   it("shows no column at all for an entity type with no associated metric", async () => {
-    useEntityMetrics.mockReturnValue({ metrics: [], isPending: false });
+    useEntityMetrics.mockReturnValue({
+    metrics: [],
+    isPending: false,
+    isError: false,
+  });
     fetchCatalogEntities.mockResolvedValue({
       entities: [
         group(["gateway", "edge"], 10, 0, 1, 2, "1700000000000000000"),

@@ -102,15 +102,24 @@ describe("metric definition lookup", () => {
         "system.cpu.time",
         "system.memory.usage",
         "process.cpu.utilization",
-        "otelcol_receiver_accepted_spans",
         "signaldb.wal.entries_processed",
       ]),
-    ).toEqual([
-      "system",
-      "process",
-      "otelcol_receiver_accepted_spans",
-      "signaldb",
-    ]);
+    ).toEqual(["system", "process", "signaldb"]);
+  });
+
+  it("segments a Prometheus-style name at its underscore too", () => {
+    // Measured against a live deployment: splitting on the dot alone turned
+    // 80 observed names into 39 prefixes, because collector metrics are named
+    // `otelcol_exporter_sent_spans` with no dot at all — one request per
+    // metric, which is what batching by prefix exists to avoid. The search is
+    // a plain string prefix, so the first word covers them all.
+    expect(
+      nameSegments([
+        "otelcol_exporter_sent_spans",
+        "otelcol_receiver_accepted_spans",
+        "otelcol_scraper_errored_metric_points",
+      ]),
+    ).toEqual(["otelcol"]);
   });
 
   it("fetches one prefix search per segment, not one per metric", async () => {

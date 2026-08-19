@@ -25,6 +25,13 @@ export interface EntityMetrics {
   /** The entity's associated metric definitions observed in this window. */
   metrics: MetricHit[];
   isPending: boolean;
+  /**
+   * Whether asking *failed*, as opposed to answering "none".
+   *
+   * Both are the same empty list, and rendering them alike is what makes a
+   * broken lookup look like an entity with nothing to show.
+   */
+  isError: boolean;
 }
 
 export function useEntityMetrics(
@@ -64,5 +71,6 @@ export function useEntityMetrics(
   return {
     metrics: metricsForEntity(definitions.data ?? [], entity),
     isPending: enabled && (observed.isPending || definitions.isPending),
+    isError: observed.isError || definitions.isError,
   };
 }

@@ -73,6 +73,7 @@ beforeEach(() => {
       } as never,
     ],
     isPending: false,
+    isError: false,
   });
 });
 

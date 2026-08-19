@@ -39,7 +39,11 @@ interface Props {
 }
 
 export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
-  const { metrics } = useEntityMetrics(entity, range, rangeKey);
+  const { metrics, isError: lookupFailed } = useEntityMetrics(
+    entity,
+    range,
+    rangeKey,
+  );
   const names = metrics.map((m) => m.name).join(",");
 
   const series = useQuery({
@@ -61,6 +65,16 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
       ),
     enabled: metrics.length > 0,
   });
+
+  // Failing to ask which metrics describe this entity is not the same answer
+  // as "none describe it", and rendering nothing for both hides the breakage.
+  if (lookupFailed) {
+    return (
+      <div className="query-error" role="alert">
+        Could not look up which metrics describe this {entity.singular}.
+      </div>
+    );
+  }
 
   // Nothing the registry associates with this entity type — so there is no
   // panel to draw, rather than an empty one to explain.
