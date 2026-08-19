@@ -1,5 +1,9 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { fetchCatalogEntities, type EntityPin } from "../../api/catalog";
+import {
+  fetchCatalogEntities,
+  pinsKey,
+  type EntityPin,
+} from "../../api/catalog";
 import { GROUP_BUDGET, type GroupSort } from "../../api/traceGroups";
 import { fetchFieldValueSketch } from "../../api/sourceFields";
 import { SkeletonRows } from "../explore/Skeleton";
@@ -236,7 +240,7 @@ export function entityQueryKey(
     rangeKey,
     sort.key,
     sort.dir,
-    pinned.map((p) => `${p.field}=${p.value}`).join(","),
+    pinsKey(pinned),
   ];
 }
 

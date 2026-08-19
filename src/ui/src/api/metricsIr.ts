@@ -84,8 +84,10 @@ export function buildMetricIrDoc(
 /** Adapts the IR `series` envelope to the shape `MetricsChart` already
  * renders (nanoseconds → ms, unknown → number) — so the chart component
  * itself needs no changes to accept either source. */
-export function irSeriesToPromSeries(res: QueryIrResponse): PromSeries[] {
-  return (res.series ?? []).map((s) => ({
+export function irSeriesToPromSeries(
+  series: NonNullable<QueryIrResponse["series"]>,
+): PromSeries[] {
+  return series.map((s) => ({
     labels: s.labels,
     points: s.points.map((p): [number, number] => {
       const [tNs, v] = p;

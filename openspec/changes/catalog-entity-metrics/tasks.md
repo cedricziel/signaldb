@@ -43,31 +43,31 @@ from the data toward the registry — see design.md, Selection.
 
 ## 3. The panel
 
-- [ ] 3.1 Add a failing test: an entity type with associated metrics renders one
+- [x] 3.1 Add a failing test: an entity type with associated metrics renders one
       chart per observed metric, each labelled with its unit and instrument
-- [ ] 3.2 Add a failing test: an entity type with no associations renders no
+- [x] 3.2 Add a failing test: an entity type with no associations renders no
       metrics section at all (not an empty one)
-- [ ] 3.3 Add a failing test: every series is pinned to the entity's identity
+- [x] 3.3 Add a failing test: every series is pinned to the entity's identity
       values — assert the pins reach the query
-- [ ] 3.4 Add a failing test: at the breakdown drill-in depth the panel still
+- [x] 3.4 Add a failing test: at the breakdown drill-in depth the panel still
       describes the entity, not the breakdown row
-- [ ] 3.5 Add a failing test: when the window holds no points for any associated
+- [x] 3.5 Add a failing test: when the window holds no points for any associated
       metric, the panel says so rather than charting zeroes
-- [ ] 3.6 Add a failing test: over the tile cap, the panel states how many
+- [x] 3.6 Add a failing test: over the tile cap, the panel states how many
       metrics are not shown
-- [ ] 3.7 Add a failing test that the section names the registry association it
+- [x] 3.7 Add a failing test that the section names the registry association it
       was discovered through
-- [ ] 3.8 Implement the panel component against those tests, rendering through
+- [x] 3.8 Implement the panel component against those tests, rendering through
       the shared `VizTooltip` per the frontend-instrumentation rule
-- [ ] 3.9 Wire the panel into the entity detail page, querying `metrics` and
+- [x] 3.9 Wire the panel into the entity detail page, querying `metrics` and
       `metrics_histogram` and merging the results
 
 ## 4. PR 1 close-out
 
-- [ ] 4.1 Run `pnpm typecheck`, `pnpm lint`, `pnpm test` in `src/ui` — all green
-- [ ] 4.2 Update `docs/users/explore-ui.md`'s Catalog section to describe the
+- [x] 4.1 Run `pnpm typecheck`, `pnpm lint`, `pnpm test` in `src/ui` — all green
+- [x] 4.2 Update `docs/users/explore-ui.md`'s Catalog section to describe the
       metrics panel and where its selection comes from
-- [ ] 4.3 Run `/simplify` on the changed code, then commit and open PR 1
+- [x] 4.3 Run `/simplify` on the changed code, then commit and open PR 1
 
 ## 5. Entity list sparkline (PR 2)
 
@@ -87,10 +87,10 @@ from the data toward the registry — see design.md, Selection.
 
 ## 6. Verification against real data
 
-- [ ] 6.1 Point the UI dev server at a deployment carrying `system.*` and
+- [x] 6.1 Point the UI dev server at a deployment carrying `system.*` and
       `process.*` metrics and confirm a host page charts them, pinned to that
       host
-- [ ] 6.2 Confirm an entity type with no associations (e.g. a database) still
+- [x] 6.2 Confirm an entity type with no associations (e.g. a database) still
       renders exactly as it does today
 - [ ] 6.3 Run the docs-freshness gate after committing, and again after any fix
 - [ ] 6.4 Sync the delta spec into `openspec/specs/explore-ui-catalog/` and

@@ -212,7 +212,23 @@ pinned to exactly that entity, a breakdown table for entity types that have
 one (services by operation, databases by `db.operation.name`, infrastructure
 entity types by which services were observed alongside them), and a list of
 real recent matching spans linking straight into their trace waterfalls. A
-breakdown row drills one level deeper the same way. "View matching traces →"
+breakdown row drills one level deeper the same way.
+
+The page also charts the entity's **metrics**, and which metrics those are is
+the registry's answer rather than a list maintained in the UI: a metric
+definition declares the entity it measures, so a host is charted with the
+`system.*` metrics, a container with `container.*`, a process with
+`process.*` — and a tenant publishing its own registry gets its own metrics
+charted on the same terms, with no code change. That is what stops an entity
+whose telemetry is metrics rather than traces from being a page of dashes.
+
+Only metrics the selected window actually holds are charted; an associated
+metric a deployment never emits is absent rather than drawn as a flat zero,
+and an entity type the registry associates no metric with shows no metrics
+section at all. Every tile names its instrument and unit, which matters for
+counters: a cumulative counter is charted as the cumulative value it is, not
+as a rate. Where an entity associates more metrics than fit, the panel says
+how many it is not showing rather than truncating silently. "View matching traces →"
 on the entity page hands off to the Traces tab, pre-filtered — the general
 escape hatch when the catalog's own view isn't enough.
 

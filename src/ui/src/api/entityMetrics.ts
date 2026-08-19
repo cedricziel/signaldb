@@ -19,6 +19,20 @@ import { searchMetrics, type MetricHit } from "../features/schema/api";
 import type { EntityTypeDef } from "../features/catalog/entityTypes";
 
 /**
+ * The IR sources metric points live in, by the shape of the row.
+ *
+ * Two sources for one OTel signal: a `metrics` row is a scalar sample, a
+ * `metrics_histogram` row is a whole bucketed histogram. They are named by
+ * role rather than listed, because which one a metric belongs to is decided
+ * per metric from its instrument — asking the wrong one is not a slow query
+ * but a rejected one.
+ */
+export const METRIC_SOURCES = {
+  scalar: "metrics",
+  histogram: "metrics_histogram",
+} as const;
+
+/**
  * Every distinct metric name in the window, as an IR aggregate.
  *
  * No `where` clause: the point is to learn what exists, and the entity's own

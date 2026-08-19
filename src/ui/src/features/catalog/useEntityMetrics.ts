@@ -13,17 +13,13 @@ import { useQuery } from "@tanstack/react-query";
 import {
   discoverObservedMetricNames,
   fetchMetricDefinitions,
+  METRIC_SOURCES,
   metricsForEntity,
 } from "../../api/entityMetrics";
 import type { MetricHit } from "../schema/api";
 import type { ResolvedRange } from "../../lib/time";
 import type { EntityTypeDef } from "./entityTypes";
 import { tenantScope } from "./useEntityTypes";
-
-/** The IR source the discovery query runs against. Histogram-instrument
- * metrics live in their own source but are the same OTel signal; both are
- * queried and merged, the way the catalog already treats them. */
-const METRIC_SOURCES = ["metrics", "metrics_histogram"];
 
 export interface EntityMetrics {
   /** The entity's associated metric definitions observed in this window. */
@@ -44,11 +40,14 @@ export function useEntityMetrics(
     queryKey: ["entity-metric-names", rangeKey],
     queryFn: async () => {
       const perSource = await Promise.all(
-        METRIC_SOURCES.map((source) =>
+        Object.values(METRIC_SOURCES).map((source) =>
           discoverObservedMetricNames(source, range),
         ),
       );
-      return [...new Set(perSource.flat())];
+      // Sorted so an equal set of names is an equal cache key: the querier
+      // makes no ordering promise, and an unstable key would re-fetch the
+      // definitions this hook exists to keep cached.
+      return [...new Set(perSource.flat())].sort();
     },
     enabled,
     staleTime: 60_000,

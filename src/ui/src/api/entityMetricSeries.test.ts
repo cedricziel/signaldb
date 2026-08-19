@@ -48,7 +48,6 @@ function alternatedNames(docs: QueryIrRequest[]): string[] {
 describe("buildEntityMetricDocs", () => {
   it("alternates the names and pins the entity", () => {
     const [doc] = buildEntityMetricDocs(
-      "metrics",
       [metric("system.cpu.utilization", "gauge")],
       pins,
       range,
@@ -72,7 +71,6 @@ describe("buildEntityMetricDocs", () => {
 
   it("groups by metric name so one response covers every metric", () => {
     const [doc] = buildEntityMetricDocs(
-      "metrics",
       [metric("system.cpu.utilization", "gauge")],
       pins,
       range,
@@ -93,7 +91,6 @@ describe("buildEntityMetricDocs", () => {
     // Averaging a cumulative counter across a step is nonsense; taking the
     // step's maximum keeps the series monotonic, which is what a counter is.
     const docs = buildEntityMetricDocs(
-      "metrics",
       [
         metric("system.cpu.utilization", "gauge"),
         metric("system.memory.usage", "updowncounter"),
@@ -125,14 +122,52 @@ describe("buildEntityMetricDocs", () => {
       metric(`system.metric.${i}`, "gauge"),
     );
 
-    const docs = buildEntityMetricDocs("metrics", many, pins, range, 300);
+    const docs = buildEntityMetricDocs(many, pins, range, 300);
 
     expect(docs).toHaveLength(2);
     expect(docs.every((d) => d.pipeline!.length === 3)).toBe(true);
   });
 
+  it("sends a histogram to the source that can answer for it", () => {
+    // A metrics_histogram row is a whole bucketed histogram, not a scalar —
+    // there is no value column to average, so the scalar aggregate is
+    // rejected outright. The quantile stage is the only way in, and its
+    // default rate mode is also the right reading of a cumulative histogram.
+    const docs = buildEntityMetricDocs(
+      [
+        metric("system.cpu.utilization", "gauge"),
+        metric("http.server.request.duration", "histogram"),
+      ],
+      pins,
+      range,
+      300,
+    );
+
+    const hist = docs.find((d) => d.from === "metrics_histogram")!;
+    expect(hist).toBeDefined();
+    expect(hist.pipeline!.at(-1)).toEqual({
+      histogram_quantile: { q: 0.95, step: "300s", as: "p95" },
+    });
+    expect(alternatedNames([hist])).toEqual(["http.server.request.duration"]);
+
+    // and the scalar source never sees the histogram
+    const scalar = docs.filter((d) => d.from === "metrics");
+    expect(alternatedNames(scalar)).toEqual(["system.cpu.utilization"]);
+  });
+
+  it("asks nothing of the histogram source when no metric is a histogram", () => {
+    const docs = buildEntityMetricDocs(
+      [metric("system.cpu.utilization", "gauge")],
+      pins,
+      range,
+      300,
+    );
+
+    expect(docs.every((d) => d.from === "metrics")).toBe(true);
+  });
+
   it("asks nothing when the entity has no associated metrics", () => {
-    expect(buildEntityMetricDocs("metrics", [], pins, range, 300)).toEqual([]);
+    expect(buildEntityMetricDocs([], pins, range, 300)).toEqual([]);
   });
 });
 
@@ -202,7 +237,6 @@ describe("fetchEntityMetricSeries", () => {
       });
 
     const groups = await fetchEntityMetricSeries(
-      "metrics",
       [
         metric("system.cpu.utilization", "gauge"),
         metric("system.cpu.time", "counter"),

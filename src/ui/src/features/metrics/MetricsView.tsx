@@ -74,7 +74,7 @@ export function MetricsView({ state, update }: Props) {
       const range = resolveRange(state.range, Date.now());
       const step = durationToSeconds(stepForRange(range, 120)) ?? 60;
       const irDoc = ranQuery ? buildMetricIrDoc(ranQuery, range, step) : null;
-      if (irDoc) return irSeriesToPromSeries(await runIrQuery(irDoc));
+      if (irDoc) return irSeriesToPromSeries((await runIrQuery(irDoc)).series ?? []);
       return promQueryRange(promql, range, step);
     },
     enabled: ranQuery !== null || promql.trim() !== "",

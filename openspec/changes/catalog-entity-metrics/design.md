@@ -123,6 +123,25 @@ The name list is chunked when the alternation would grow unreasonable, and the
 tile grid is capped with an explicit "showing N of M" — a silently truncated
 panel would read as "this is everything the host reports".
 
+### The instrument also decides which source can answer
+
+A `metrics_histogram` row is a whole bucketed histogram, not a scalar — it
+carries no value column at all, so a scalar aggregate against it is not merely
+wrong but rejected (`aggregate 'avg' requires a numeric field, got string`).
+Sending every associated metric to both sources, as the first implementation
+did, therefore fails the whole panel the moment a tenant has one histogram.
+
+The registry's `instrument` is what routes each metric to the source that can
+answer for it: histogram and exponentialhistogram to `metrics_histogram`
+through a `histogram_quantile` stage, everything else to `metrics` through the
+scalar aggregate. Nothing is ever asked of a source that cannot answer.
+
+Charting a histogram means charting a quantile — buckets have no single level
+to plot — so the panel takes p95, the number a duration histogram exists to
+answer. The stage's default `rate` mode is also the correct reading of the
+cumulative temporality most histogram instrumentation emits, which makes
+histograms, ironically, the one instrument the panel charts _correctly_ today.
+
 ### Aggregation follows the instrument, from the registry
 
 The registry gives each metric's `instrument`, so the query picks the

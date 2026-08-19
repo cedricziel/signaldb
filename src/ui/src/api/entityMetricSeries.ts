@@ -13,6 +13,7 @@
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import type { EntityPin } from "./catalog";
 import type { MetricHit } from "../features/schema/api";
+import { METRIC_SOURCES } from "./entityMetrics";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 
@@ -22,6 +23,26 @@ export const METRIC_NAMES_PER_QUERY = 25;
 
 /** One response's series, as the IR envelope carries them. */
 type IrSeries = NonNullable<QueryIrResponse["series"]>;
+
+/**
+ * Whether a metric's rows live in the histogram source.
+ *
+ * A `metrics_histogram` row is a whole bucketed histogram rather than a
+ * scalar, so it carries no value column at all: a scalar aggregate over it is
+ * rejected outright ("requires a numeric field, got string"). The instrument
+ * the registry declares is what says which source can answer for a metric, so
+ * nothing is ever asked of a source that cannot.
+ */
+function isHistogram(instrument: string): boolean {
+  return instrument === "histogram" || instrument === "exponentialhistogram";
+}
+
+/**
+ * The quantile charted for a histogram. Buckets have no single level to plot,
+ * so the panel charts the tail — the number a duration histogram exists to
+ * answer.
+ */
+const HISTOGRAM_QUANTILE = 0.95;
 
 /**
  * How to collapse a step's worth of points, per instrument.
@@ -53,42 +74,55 @@ function chunk<T>(items: T[], size: number): T[][] {
 /**
  * The IR documents covering these metrics for one entity.
  *
- * Grouped by aggregation kind, because a document carries a single
- * `aggregate` spec — so at most two per source, plus chunking, never one per
+ * Each metric is routed to the source that can answer for it and grouped with
+ * the others that share its aggregation, because a document carries a single
+ * aggregate spec. That bounds the panel at a few documents, never one per
  * metric.
  */
 export function buildEntityMetricDocs(
-  source: string,
   metrics: MetricHit[],
   pinned: EntityPin[],
   range: ResolvedRange,
   stepSeconds: number,
 ): QueryIrRequest[] {
-  const byAgg = new Map<"avg" | "max", string[]>();
+  const scalars = new Map<"avg" | "max", string[]>();
+  const histograms: string[] = [];
   for (const m of metrics) {
+    if (isHistogram(m.instrument)) {
+      histograms.push(m.name);
+      continue;
+    }
     const fn = aggFor(m.instrument);
-    byAgg.set(fn, [...(byAgg.get(fn) ?? []), m.name]);
+    scalars.set(fn, [...(scalars.get(fn) ?? []), m.name]);
   }
 
+  /** Every document opens the same way: these names, this entity. */
+  const head = (batch: string[]) => [
+    {
+      where: {
+        field: "metric.name",
+        op: "regex",
+        value: `^(${batch.map(escapeName).join("|")})$`,
+      },
+    },
+    ...pinned.map((p) => ({
+      where: { field: p.field, op: "eq", value: p.value },
+    })),
+  ];
+  const window = {
+    range: { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) },
+    result: "series" as const,
+  };
+
   const docs: QueryIrRequest[] = [];
-  for (const [fn, names] of byAgg) {
+  for (const [fn, names] of scalars) {
     for (const batch of chunk(names, METRIC_NAMES_PER_QUERY)) {
       docs.push({
         irVersion: 1,
-        from: source,
-        range: { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) },
-        result: "series",
+        from: METRIC_SOURCES.scalar,
+        ...window,
         pipeline: [
-          {
-            where: {
-              field: "metric.name",
-              op: "regex",
-              value: `^(${batch.map(escapeName).join("|")})$`,
-            },
-          },
-          ...pinned.map((p) => ({
-            where: { field: p.field, op: "eq", value: p.value },
-          })),
+          ...head(batch),
           {
             aggregate: {
               by: ["metric.name"],
@@ -99,6 +133,26 @@ export function buildEntityMetricDocs(
         ],
       });
     }
+  }
+  for (const batch of chunk(histograms, METRIC_NAMES_PER_QUERY)) {
+    docs.push({
+      // The quantile stage is IR v3. It groups by `metric.name` implicitly,
+      // and its default `rate` mode is the right reading of the cumulative
+      // temporality most histogram instrumentation emits.
+      irVersion: 3,
+      from: METRIC_SOURCES.histogram,
+      ...window,
+      pipeline: [
+        ...head(batch),
+        {
+          histogram_quantile: {
+            q: HISTOGRAM_QUANTILE,
+            step: `${stepSeconds}s`,
+            as: "p95",
+          },
+        },
+      ],
+    });
   }
   return docs;
 }
@@ -120,21 +174,14 @@ export function splitSeriesByMetric(series: IrSeries): Map<string, IrSeries> {
   return groups;
 }
 
-/** Every document's series for one source, merged under their metric names. */
+/** Every document's series, across both sources, under their metric names. */
 export async function fetchEntityMetricSeries(
-  source: string,
   metrics: MetricHit[],
   pinned: EntityPin[],
   range: ResolvedRange,
   stepSeconds: number,
 ): Promise<Map<string, IrSeries>> {
-  const docs = buildEntityMetricDocs(
-    source,
-    metrics,
-    pinned,
-    range,
-    stepSeconds,
-  );
+  const docs = buildEntityMetricDocs(metrics, pinned, range, stepSeconds);
   const responses = await Promise.all(docs.map((doc) => runIrQuery(doc)));
   const merged = new Map<string, IrSeries>();
   for (const res of responses) {
