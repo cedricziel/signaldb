@@ -209,6 +209,52 @@ describe("CatalogView", () => {
   });
 });
 
+describe("registry-derived entity types", () => {
+  // A type the schema registry contributed, with no curated presentation and
+  // no FACET_FIELDS entry for its identity attribute — the shape every
+  // registry-only entity type has.
+  const serviceInstance: EntityTypeDef = {
+    id: "service_instance",
+    label: "Service instances",
+    singular: "service instance",
+    identity: ["service.instance.id"],
+    sources: ["metrics"],
+  };
+
+  it("opens its rows into a detail page like any curated type", async () => {
+    // Row navigation goes through catalogPrimary, which is independent of
+    // FACET_FIELDS — so a registry-derived type is browsable even though
+    // nothing maps its identity onto a trace facet.
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        unmeasured(
+          ["7f3c-instance"],
+          [{ source: "metrics", count: 12 }],
+          "1700000000000000000",
+        ),
+      ],
+      truncated: false,
+    });
+    const update = renderView({ catalogEntity: "service_instance" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("7f3c-instance"));
+    expect(update).toHaveBeenCalledWith(
+      { catalogPrimary: compositeKey(["7f3c-instance"]) },
+      { push: true },
+    );
+  });
+
+  it("has no trace escape hatch, because nothing maps its identity", () => {
+    // Deliberate and worth pinning: `drillFilters` compiles a Traces filter
+    // from FACET_FIELDS, which covers the curated identity attributes only.
+    // A registry-derived type therefore cannot offer "View matching traces",
+    // and must render no button rather than one that navigates to an
+    // unfiltered trace list.
+    expect(isDrillable(serviceInstance)).toBe(false);
+    expect(drillFilters(serviceInstance, ["7f3c-instance"])).toEqual([]);
+  });
+});
+
 describe("isDrillable / drillFilters", () => {
   const unmapped: EntityTypeDef = {
     id: "queue_depth",
