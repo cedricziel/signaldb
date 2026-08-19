@@ -118,18 +118,32 @@ screen** at `/oauth/consent` (see [MCP](mcp.md)).
 ### The catalog
 
 The catalog answers "what's actually sending telemetry" by discovery, not
-configuration: it groups the OTel attributes that identify a **service**,
-**database**, **message destination**, **host**, **Kubernetes pod/node**,
-**container**, or **process**, and lists whatever it finds under each
-entity type in the left nav. There is no hardcoded or sample data: an
-entity type with nothing matching in the window renders an explicit empty
-state naming the attribute — and the source(s) — it's looking for (e.g.
-"No hosts observed in this window — no matching `host.name` value seen in
-traces or logs") rather than a placeholder row. A tenant whose telemetry
-starts carrying that
-attribute — an SDK resource detector, an OTel Collector with
-`resourcedetection`, Kubernetes downward-API injection — gets that entity
-type populated with no further configuration.
+configuration. The entity types it can find come from your
+[schema registries](schema-registry.md), not from a list baked into
+SignalDB: every entity an OTel registry declares — services, hosts,
+containers, processes, Kubernetes objects, CI/CD pipelines, service
+instances, telemetry SDKs — is catalogable, and a tenant that publishes its
+own registry gets its own entity types on the same terms, with no code
+change and no configuration.
+
+The nav lists the entity types your telemetry actually carries, not all of
+them. SignalDB works out which those are from the field metadata each signal
+maintains — one lookup per signal, reading no signal data — and an entity
+type appears once some signal carries the attribute that identifies it. So
+the nav grows when a new SDK resource detector, an OTel Collector with
+`resourcedetection`, or Kubernetes downward-API injection starts populating
+an attribute, and it does not fill up with dozens of entity types you have
+no data for.
+
+That metadata is maintained by compaction, so a freshly-ingesting deployment
+may not have been analyzed yet. The catalog says so — "not analyzed yet"
+alongside the age of the metadata it used — rather than showing an empty nav,
+which would read as "you have no entities" when the truth is "we have not
+looked yet".
+
+An entity type whose attribute is present but has no values in the selected
+window renders an explicit empty state naming the attribute and the signals
+it looked in, rather than a placeholder row.
 
 Catalog selection is part of the URL path: `/catalog/<entity>` lists an
 entity type (`service`, `database`, `messaging_destination`, `host`,
@@ -143,9 +157,18 @@ string.
 
 An entity keyed by a _resource_ attribute (service, host, Kubernetes
 pod/node, container, process — anything an SDK's `Resource` carries, not
-just spans) is discovered from both traces **and** logs, and its Last-seen
-column is the merge of both: a process that only ever logs, never traced,
-still shows up.
+just spans) is discovered from **every** signal, and its Last-seen column is
+the merge of them: a process that only ever emits metrics, never traced and
+never logged, still shows up. This matters more than it sounds — `process.pid`
+and `container.name` typically ride on metrics and on nothing else, so
+processes and containers are invisible to a trace-only catalog even though
+their data is already stored. Each entity type is queried only against the
+signals that carry its identity, so nothing pays for a signal that cannot
+match.
+
+An entity keyed by a _span_ attribute (database, message destination —
+these describe one client call, not the process that made it) is discovered
+from traces only.
 
 The list answers "which entities are there", so it carries no sample
 counts — how many spans or log lines back an entity is a fact about
@@ -159,11 +182,8 @@ service as a flawless one. Which signals cover an entity is shown on its
 detail page, under **Signals**; that is what tells you whether a missing
 latency number means "healthy" or "not instrumented for tracing".
 
-An entity keyed by a _span_ attribute (database, message
-destination — these describe one client call, not the process that made
-it) is discovered from traces only. The subtitle under each entity type's
-heading ("discovered from ... across traces, logs") names exactly which
-attributes and sources fed it.
+The subtitle under each entity type's heading ("discovered from ... across
+traces, logs") names exactly which attributes and signals fed it.
 
 Selecting a row opens that entity's own page: a breadcrumb, its RED numbers
 pinned to exactly that entity, a breakdown table for entity types that have
