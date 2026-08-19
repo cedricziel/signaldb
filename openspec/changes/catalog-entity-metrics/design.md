@@ -91,9 +91,12 @@ compat surface (`/prometheus/api/v1/label_values/__name__`). Rejected: the IR
 is this project's own query surface, and the same IR query that discovers the
 names is the one the panel already needs.
 
-### Fetch: one grouped IR query per source, regex-alternated over the names
+### Fetch: grouped IR queries, regex-alternated over the names
 
-Per source (`metrics`, `metrics_histogram`), one IR document:
+Per source (`metrics`, `metrics_histogram`) and per aggregation kind, one IR
+document. A document carries a single `aggregate` spec, so metrics that must be
+aggregated differently (see below) cannot share one — which bounds the panel at
+two documents per source, not one, and still nothing like one per metric:
 
 ```
 from: <source>
@@ -108,6 +111,10 @@ Metrics with no points in the window simply produce no series, which _is_ the
 observed-set filter — no separate existence check, and no zero-filled series to
 suppress. Splitting the response by its `metric.name` label yields one chart
 per metric.
+
+Verified against a live querier before building on it: regex alternation on
+`metric.name`, `aggregate by ["metric.name"]` with a step, and an identity pin
+on `host.name` all answer as assumed.
 
 **Alternative considered:** one IR document per metric. Rejected: 45 concurrent
 queries for a host page, each repeating the same scan predicates.

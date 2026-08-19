@@ -29,15 +29,15 @@ from the data toward the registry — see design.md, Selection.
 
 ## 2. Grouped metric query
 
-- [ ] 2.1 Add a failing test for building one Query IR document from a metric
+- [x] 2.1 Add a failing test for building one Query IR document from a metric
       name list plus the entity's identity pins: regex alternation on
       `metric.name`, one `where` per pin, `aggregate by metric.name` with a step
-- [ ] 2.2 Add a failing test that the aggregation follows the instrument
+- [x] 2.2 Add a failing test that the aggregation follows the instrument
       (gauge/updowncounter → `avg`, counter → `max`)
-- [ ] 2.3 Add a failing test that the name list is chunked when the alternation
+- [x] 2.3 Add a failing test that the name list is chunked when the alternation
       exceeds the agreed bound
-- [ ] 2.4 Implement the document builder against those tests
-- [ ] 2.5 Add a failing test that the response splits into one series group per
+- [x] 2.4 Implement the document builder against those tests
+- [x] 2.5 Add a failing test that the response splits into one series group per
       `metric.name`, and that a metric absent from the response yields no group
       (never a zero-filled one), then implement the split
 
