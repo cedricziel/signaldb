@@ -869,8 +869,9 @@ network outages.
 2. **The Holder Is Alive and Genuinely Slow:**
 
 A lease that keeps being renewed is not stale. Check whether the holder is
-still executing the job (`compactor_jobs_started_total` vs
-`compactor_jobs_succeeded_total`) before assuming a crash.
+still executing the job (`sum(compactor_jobs_started_total)` vs
+`sum(compactor_jobs_succeeded_total)` — both counters are labelled by table)
+before assuming a crash.
 
 ## Debug Procedures
 
