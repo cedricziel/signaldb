@@ -604,6 +604,21 @@ _concurrency_, not by one oversized partition. Every DataFusion partition gets
 its own sorter plus an unspillable merge reservation, and they all divide the
 single `memory_limit_mb` budget.
 
+**Read the error before choosing a fix — it has two shapes.** The number that
+tells them apart is how much the failing sorter had _already_ allocated:
+
+| In the error                                                             | Cause                                    | Fix                                                       |
+| ------------------------------------------------------------------------ | ---------------------------------------- | --------------------------------------------------------- |
+| several `ExternalSorter[N]`, the failing one holding a substantial amount | fan-out divides the pool                 | lower `target_partitions`, or raise `memory_limit_mb`      |
+| one `ExternalSorter[0]` with **`0.0 B` already allocated**                | a single incoming batch is too wide       | lower `scan_batch_size`                                    |
+
+The second shape is a batch-size problem, not a pool-size one: the sorter's
+first reservation for a single batch already exceeds the pool, so raising the
+pool only moves the ceiling. See
+[Configuration](configuration.md#compactor) for why row width, not row count,
+decides that — and Issue 14 below for the cooldown these repeated failures
+trigger.
+
 **Diagnostic Steps:**
 
 ```bash
@@ -634,10 +649,21 @@ target_partitions = 1
 memory_limit_mb = 1024
 ```
 
-3. **Check the startup warnings.** The compactor logs an explicit warning when
-   `target_file_size_mb` is at or above `memory_limit_mb`, or when the
-   per-sorter share is below the spill floor. Both combinations produce this
-   failure and neither is visible from any single setting.
+3. **Shrink the scan batch** when the failing sorter had `0.0 B` allocated —
+   the wide-row shape above. Divide the requested size by the pool to see how
+   far it must come down; the default is already 8x below DataFusion's:
+
+```toml
+[compactor]
+scan_batch_size = 256
+```
+
+4. **Check the startup warnings.** The compactor logs an explicit warning when
+   `target_file_size_mb` is at or above `memory_limit_mb`, when the per-sorter
+   share is below the spill floor, or when `sort_spill_reservation_mb` claims
+   half or more of that share. Each combination produces this failure and none
+   is visible from any single setting. Note that no startup check can catch
+   the wide-row case: row width is a property of the data, not of the config.
 
 ### Issue 14: A Partition Stops Being Compacted After Repeated Failures
 

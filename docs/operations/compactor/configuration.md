@@ -57,6 +57,8 @@ Controls compaction planning: which files are merged into larger ones and when a
 | `memory_limit_mb`          | integer (MB)    | `512`            | Budget for the rewrite's **DataFusion operators** (the sort above all), which spill to disk past it. Not a total: see the caveat below                                                         |
 | `target_partitions`        | integer         | `1`              | DataFusion partition fan-out for the rewrite (`0` = available parallelism). Each partition sorts independently and they share `memory_limit_mb`, so raising this divides the budget            |
 | `max_partition_input_mb`   | integer (MB)    | `2048`           | Upper bound on the summed size of a partition's eligible input files. Partitions above it are declined with a warning and counted, rather than attempted and failed every cycle (`0` = no cap) |
+| `scan_batch_size`          | integer (rows)  | `1024`           | Rows per batch the rewrite reads into the sort (`0` = DataFusion's default of 8192). The sort reserves roughly twice a batch's **bytes** before it holds anything spillable, so wide rows need a smaller row count                                    |
+| `sort_spill_reservation_mb`| integer (MB)    | `10`             | Memory each spilling sort holds back so its spill merge can run. Taken **out of** `memory_limit_mb`, not added to it                                                                            |
 | `value_sketch_size`        | integer         | `100`            | Values kept per attribute key as a suggestion sketch for query discovery, most frequent first (`0` = keep none). The analyzer already reads every value, so this bounds only what is stored     |
 | `max_candidates_per_cycle` | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                                                                            |
 | `max_per_tenant`           | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                                                                                      |
@@ -94,15 +96,18 @@ a task that wakes up and returns.
 
 Jobs are restricted to **closed** partitions: an hour partition becomes eligible once its hour has ended and `partition_lateness` has elapsed. The partition still receiving writes is exactly the one whose files would change under a running rewrite, so leaving it alone is what lets compaction and ingest coexist. Raise `partition_lateness` if your sources deliver data well after the fact; it is a late-data allowance, not a commit-cadence knob.
 
-**Sizing a compactor's memory.** The three knobs interact, so tune them together:
+**Sizing a compactor's memory.** The knobs interact, so tune them together:
 
 ```
 peak job memory  ≈  memory_limit_mb  +  target_file_size_mb  +  small fixed overhead
 per-sorter share  =  memory_limit_mb / max(target_partitions, 1)
+sort headroom     =  sort_spill_reservation_mb, taken out of that share
+one batch's claim ≈  2 × scan_batch_size × average row bytes
 ```
 
 - `memory_limit_mb` is the accounted half: DataFusion's operators spill past it.
 - `target_file_size_mb` is the unaccounted half: the chunker accumulates one output file outside the pool. Keep it comfortably **below** `memory_limit_mb`, or the part the pool does not control dominates the part it does.
+- `sort_spill_reservation_mb` is headroom carved out of that share so a sort that spills has room to merge its runs back. It cannot hold data, so a large value makes the sort spill sooner, not later.
 - The per-sorter share must stay above roughly **64 MB**. Below that a spilling sort has no room for a batch plus the reservation its spill merge needs, so it fails instead of spilling — the #1064 failure in miniature. With the default `target_partitions = 1` the share is the whole pool.
 
 The compactor logs a warning at startup for either incoherent combination rather than refusing to start: an operator who has measured their workload may want an unusual ratio, and a background service should say so loudly rather than not run.
@@ -114,6 +119,8 @@ The defaults (512 MB pool, 128 MB target, fan-out 1) put peak job memory around 
 **Failure cooldown (not configurable):** the same "do not spend capacity on work that cannot succeed" reasoning covers failures the planner cannot predict — a schema error, a corrupt input file, a rewrite that always exhausts the pool. When a compaction job fails, the scheduler suppresses that partition for 15 minutes, doubling per consecutive failure up to a 6-hour ceiling; a success clears the suppression and resets the escalation. The windows are fixed constants rather than settings. Commit conflicts do not count as failures — they mean another actor committed first and the job should be retried. Watch `compactor_cooldown_partitions_skipped_total`, and see [Operations](operations.md#compaction-backoff).
 
 **What `memory_limit_mb` actually bounds:** the pool covers the rewrite's **DataFusion operators** — the partition sort above all — which spill to disk rather than growing past it. The rewrite streams its partition rather than collecting it, so the memory outside the pool is bounded too: the chunker holds at most one output file's worth of batches, and the attribute-statistics pass holds per-key state capped by cardinality. Neither grows with the size of the partition. Peak process memory for a job is therefore roughly the pool plus one `target_file_size_mb`, not the pool plus the whole partition.
+
+**Why the scan's batch size is a memory setting:** `ExternalSorter` reserves roughly twice an incoming batch's bytes the moment the batch arrives, and that first reservation cannot spill — nothing has accumulated yet, so there is nothing to write out. Either it fits the pool or the job fails outright. The reservation is bounded in bytes while the batch size is counted in **rows**, so DataFusion's 8192-row default is safe only for narrow rows. A profiles table carrying pprof payloads of tens of KB per row turned that default into a single 506 MB request against a 512 MB pool, and every compaction of the partition failed terminally until it went into cooldown. `scan_batch_size = 1024` keeps that first claim proportionate on wide tables; lower it further if a table's rows run to hundreds of KB, raise it toward 8192 for narrow tables where per-batch overhead matters more than the ceiling.
 
 **What the rewrite sorts by (not configurable):** the table's own declared sort order — time-leading, one key per signal (see [Storage Layout](../../architecture/storage-layout.md#declared-sort-order)). There is deliberately no compactor setting for it: the declaration is what the query engine is told about the data, so a second knob here could only make the two disagree. Output files record the order they were written in, which is how a partition of pre-declaration files becomes fully attested.
 
@@ -128,6 +135,9 @@ file_count_threshold = 10
 max_input_file_size_kb = 65536  # 64 MB; files >= this are left alone
 partition_lateness = "10m"      # only compact hours that closed 10m ago
 memory_limit_mb = 512           # rewrites spill past this instead of growing the heap
+scan_batch_size = 1024          # rows per batch into the sort; bounds the unspillable
+                                # first reservation on wide rows
+sort_spill_reservation_mb = 10  # headroom for the spill merge, taken out of the pool
 ```
 
 > **Removed setting (breaking change, issue #925):**

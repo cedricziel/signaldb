@@ -239,6 +239,14 @@ fn default_max_partition_input_mb() -> u64 {
     2048
 }
 
+fn default_compactor_scan_batch_size() -> usize {
+    1024
+}
+
+fn default_sort_spill_reservation_mb() -> u64 {
+    10
+}
+
 fn default_max_per_tenant() -> usize {
     5
 }
@@ -450,6 +458,45 @@ pub struct CompactorConfig {
     #[serde(default = "default_compactor_target_partitions")]
     pub target_partitions: usize,
 
+    /// Row count of the batches the compaction scan feeds to the sort.
+    ///
+    /// `ExternalSorter` reserves roughly twice a batch's bytes the moment
+    /// the batch arrives, and that reservation cannot spill: with nothing
+    /// accumulated yet there is nothing to write out, so a batch too big
+    /// for the pool fails the job instead of degrading to disk. The
+    /// reservation is bounded in *bytes*, but DataFusion's batch size is
+    /// counted in *rows*, so the default of 8192 is only safe for narrow
+    /// rows. On a profiles table — pprof payloads, tens of KB per row —
+    /// 8192 rows asked for 506 MB against a 512 MB pool and every
+    /// compaction of that partition failed terminally.
+    ///
+    /// A smaller batch trades per-batch overhead, which a background job
+    /// can afford, for a per-batch reservation that fits the pool with
+    /// room to accumulate and spill.
+    ///
+    /// `0` restores DataFusion's default (8192 rows).
+    ///
+    /// Default: 1024.
+    /// Env: SIGNALDB__COMPACTOR__SCAN_BATCH_SIZE
+    #[serde(default = "default_compactor_scan_batch_size")]
+    pub scan_batch_size: usize,
+
+    /// Memory in MB each spilling sort holds back so its spill merge can
+    /// run (`datafusion.execution.sort_spill_reservation_bytes`).
+    ///
+    /// This is headroom taken out of `memory_limit_mb`, not added to it:
+    /// raise it when a sort fails *while* merging its spilled runs, lower
+    /// it to give the sort more room to accumulate before spilling.
+    /// DataFusion's own out-of-memory message names this knob, so the
+    /// compactor exposes it rather than leaving the advice unactionable.
+    ///
+    /// `0` means no headroom at all, which DataFusion permits.
+    ///
+    /// Default: 10 MB (DataFusion's default).
+    /// Env: SIGNALDB__COMPACTOR__SORT_SPILL_RESERVATION_MB
+    #[serde(default = "default_sort_spill_reservation_mb")]
+    pub sort_spill_reservation_mb: u64,
+
     /// Upper bound, in MB, on the compaction inputs a single job will take
     /// on — the summed size of the partition's *eligible* (small) files.
     ///
@@ -563,6 +610,8 @@ impl Default for CompactorConfig {
             memory_limit_mb: default_compactor_memory_limit_mb(),
             target_partitions: default_compactor_target_partitions(),
             max_partition_input_mb: default_max_partition_input_mb(),
+            scan_batch_size: default_compactor_scan_batch_size(),
+            sort_spill_reservation_mb: default_sort_spill_reservation_mb(),
             value_sketch_size: default_value_sketch_size(),
             retention: RetentionConfig::default(),
             orphan_cleanup: OrphanCleanupConfig::default(),

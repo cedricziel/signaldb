@@ -731,8 +731,8 @@ impl ParquetRewriter {
 
     /// Warn about `[compactor]` memory settings that cannot work together.
     ///
-    /// The three knobs interact, and only one of the three combinations is
-    /// obvious from any single value:
+    /// The knobs interact, and none of the bad combinations is obvious
+    /// from any single value:
     ///
     /// * a job's peak memory is `memory_limit_mb` **plus** roughly one
     ///   `target_file_size_mb` — the chunker accumulates an output file
@@ -742,7 +742,10 @@ impl ParquetRewriter {
     ///   fan-out shrinks every sorter's share (#1064);
     /// * a share too small to hold a batch plus its spill-merge
     ///   reservation makes the sort fail rather than spill, which is the
-    ///   failure this whole area exists to prevent.
+    ///   failure this whole area exists to prevent;
+    /// * `sort_spill_reservation_mb` comes *out of* that share rather
+    ///   than adding to it, so a large one leaves the sort spilling from
+    ///   the first batches on.
     ///
     /// These are warnings, not errors: an operator who has measured their
     /// workload may legitimately want an unusual ratio, and refusing to
@@ -750,8 +753,7 @@ impl ParquetRewriter {
     /// saying so loudly.
     pub fn warn_on_incoherent_memory_config(config: &common::config::CompactorConfig) {
         let pool_mb = config.memory_limit_mb as u64;
-        let fan_out = config.target_partitions.max(1) as u64;
-        let per_sorter_mb = pool_mb / fan_out;
+        let per_sorter_mb = Self::per_sorter_mb(config);
 
         if config.target_file_size_mb >= pool_mb {
             tracing::warn!(
@@ -760,6 +762,18 @@ impl ParquetRewriter {
                 "[compactor] target_file_size_mb is at or above memory_limit_mb; the chunker \
                  accumulates an output file outside the memory pool, so peak job memory will be \
                  dominated by the part the pool does not account for"
+            );
+        }
+
+        if config.sort_spill_reservation_mb * 2 >= per_sorter_mb {
+            tracing::warn!(
+                memory_limit_mb = pool_mb,
+                target_partitions = config.target_partitions,
+                per_sorter_mb,
+                sort_spill_reservation_mb = config.sort_spill_reservation_mb,
+                "[compactor] sort_spill_reservation_mb claims half or more of each sorter's \
+                 share of memory_limit_mb; that headroom cannot hold data, so the sort will \
+                 spill almost immediately"
             );
         }
 
@@ -774,6 +788,13 @@ impl ParquetRewriter {
                  rewrite will fail instead of spilling"
             );
         }
+    }
+
+    /// Each sorter's slice of the pool: the budget is divided by the
+    /// fan-out, and `0` means DataFusion picks the fan-out itself, which
+    /// is at least one.
+    fn per_sorter_mb(config: &common::config::CompactorConfig) -> u64 {
+        config.memory_limit_mb as u64 / config.target_partitions.max(1) as u64
     }
 
     /// Build the compaction session context.
@@ -816,7 +837,7 @@ impl ParquetRewriter {
     fn compaction_context(&self) -> SessionContext {
         let compactor = &self.catalog_manager.config().compactor;
         let memory_limit_mb = compactor.memory_limit_mb;
-        let session_config = Self::compaction_session_config(compactor.target_partitions);
+        let session_config = Self::compaction_session_config(compactor);
         let builder =
             datafusion::execution::runtime_env::RuntimeEnvBuilder::new().with_memory_pool(
                 common::datafusion_runtime::bounded_memory_pool(memory_limit_mb * 1024 * 1024, 1.0),
@@ -826,6 +847,7 @@ impl ParquetRewriter {
                 tracing::debug!(
                     memory_limit_mb,
                     target_partitions = session_config.target_partitions(),
+                    batch_size = session_config.batch_size(),
                     "Compaction memory pool configured"
                 );
                 SessionContext::new_with_config_rt(session_config, Arc::new(runtime_env))
@@ -840,17 +862,30 @@ impl ParquetRewriter {
         }
     }
 
-    /// `SessionConfig` for the rewrite, with the partition fan-out pinned.
+    /// `SessionConfig` for the rewrite: the partition fan-out, the scan's
+    /// batch size, and the sort's spill headroom.
     ///
-    /// `0` means "use DataFusion's default" — `with_target_partitions`
-    /// rejects zero, so the knob is simply not applied.
-    fn compaction_session_config(target_partitions: usize) -> datafusion::prelude::SessionConfig {
-        let config = datafusion::prelude::SessionConfig::new();
-        if target_partitions == 0 {
-            config
-        } else {
-            config.with_target_partitions(target_partitions)
+    /// The batch size is a memory bound rather than a throughput knob;
+    /// [`common::config::CompactorConfig::scan_batch_size`] carries the
+    /// reasoning.
+    ///
+    /// `0` means "use DataFusion's default" for both counts —
+    /// `with_target_partitions` rejects zero, and a zero batch size would
+    /// stall the scan.
+    fn compaction_session_config(
+        compactor: &common::config::CompactorConfig,
+    ) -> datafusion::prelude::SessionConfig {
+        let mut config = datafusion::prelude::SessionConfig::new()
+            .with_sort_spill_reservation_bytes(
+                compactor.sort_spill_reservation_mb as usize * 1024 * 1024,
+            );
+        if compactor.target_partitions > 0 {
+            config = config.with_target_partitions(compactor.target_partitions);
         }
+        if compactor.scan_batch_size > 0 {
+            config = config.with_batch_size(compactor.scan_batch_size);
+        }
+        config
     }
 
     /// Predicate selecting exactly the rows of one hour partition.
@@ -1189,8 +1224,7 @@ mod tests {
             target_partitions: 16,
             ..Default::default()
         };
-        let per_sorter = config.memory_limit_mb as u64 / config.target_partitions as u64;
-        assert!(per_sorter < MIN_PER_SORTER_MB);
+        assert!(ParquetRewriter::per_sorter_mb(&config) < MIN_PER_SORTER_MB);
         ParquetRewriter::warn_on_incoherent_memory_config(&config);
     }
 
@@ -1215,10 +1249,15 @@ mod tests {
             config.target_file_size_mb,
             config.memory_limit_mb
         );
+        let per_sorter_mb = ParquetRewriter::per_sorter_mb(&config);
         assert!(
-            config.memory_limit_mb as u64 / config.target_partitions.max(1) as u64
-                >= MIN_PER_SORTER_MB,
+            per_sorter_mb >= MIN_PER_SORTER_MB,
             "default per-sorter share must clear the spill floor"
+        );
+        assert!(
+            config.sort_spill_reservation_mb * 2 < per_sorter_mb,
+            "default spill headroom ({} MB) must leave a sorter most of its share",
+            config.sort_spill_reservation_mb
         );
     }
 
@@ -1328,5 +1367,82 @@ mod tests {
             datafusion::prelude::SessionConfig::new().target_partitions(),
             "zero must land on DataFusion's own default, not merely some positive count"
         );
+    }
+
+    /// The scan's batch size is a memory knob, not just a throughput one
+    /// (see [`common::config::CompactorConfig::scan_batch_size`]), so the
+    /// default has to sit below DataFusion's.
+    #[tokio::test]
+    async fn compaction_context_bounds_the_scan_batch_size() {
+        let rewriter = rewriter_with_config(|_| {}).await;
+        let ctx = rewriter.compaction_context();
+
+        assert!(
+            ctx.state().config().batch_size()
+                < datafusion::prelude::SessionConfig::new().batch_size(),
+            "compaction must read smaller batches than DataFusion's default, whose per-batch \
+             reservation cannot spill and is unbounded in bytes"
+        );
+        assert_eq!(
+            ctx.state().config().batch_size(),
+            common::config::CompactorConfig::default().scan_batch_size
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_context_honors_configured_batch_size() {
+        let rewriter = rewriter_with_config(|c| c.compactor.scan_batch_size = 256).await;
+        let ctx = rewriter.compaction_context();
+
+        assert_eq!(ctx.state().config().batch_size(), 256);
+    }
+
+    /// `0` is the escape hatch back to DataFusion's own default, matching
+    /// `target_partitions`.
+    #[tokio::test]
+    async fn compaction_context_treats_zero_batch_size_as_auto() {
+        let rewriter = rewriter_with_config(|c| c.compactor.scan_batch_size = 0).await;
+        let ctx = rewriter.compaction_context();
+
+        assert_eq!(
+            ctx.state().config().batch_size(),
+            datafusion::prelude::SessionConfig::new().batch_size()
+        );
+    }
+
+    /// The headroom the sorter holds back so its spill merge can run is
+    /// the knob DataFusion's own OOM message tells operators to tune, so
+    /// the compactor has to expose it.
+    #[tokio::test]
+    async fn compaction_context_sets_the_sort_spill_reservation() {
+        let rewriter = rewriter_with_config(|c| c.compactor.sort_spill_reservation_mb = 32).await;
+        let ctx = rewriter.compaction_context();
+
+        assert_eq!(
+            ctx.state()
+                .config()
+                .options()
+                .execution
+                .sort_spill_reservation_bytes,
+            32 * 1024 * 1024
+        );
+    }
+
+    /// Headroom taken from the pool is memory the sort cannot fill with
+    /// data, so a reservation that claims half a sorter's share leaves it
+    /// spilling constantly — a combination invisible from either value.
+    #[test]
+    fn a_spill_reservation_that_eats_the_per_sorter_share_is_flagged() {
+        let config = common::config::CompactorConfig {
+            memory_limit_mb: 128,
+            target_partitions: 1,
+            sort_spill_reservation_mb: 64,
+            ..Default::default()
+        };
+        assert!(
+            config.sort_spill_reservation_mb * 2 >= ParquetRewriter::per_sorter_mb(&config),
+            "fixture must actually be the incoherent case"
+        );
+        ParquetRewriter::warn_on_incoherent_memory_config(&config);
     }
 }

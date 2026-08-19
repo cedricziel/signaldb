@@ -90,6 +90,64 @@ pub async fn generate_trace_files_with_ids(
     Ok(())
 }
 
+/// Writes `num_files` trace files of `rows_per_file` rows whose
+/// `attributes_json` column carries `payload_bytes` of filler each, all in
+/// one hour partition.
+///
+/// Row *width*, not row count, is what makes a compaction sort run out of
+/// memory (see `CompactorConfig::scan_batch_size`), and narrow generated rows
+/// cannot reproduce that — which is why this generator exists.
+pub async fn generate_wide_trace_files(
+    writer: &mut IcebergTableWriter,
+    num_files: usize,
+    rows_per_file: usize,
+    payload_bytes: usize,
+    base_timestamp: i64,
+) -> Result<()> {
+    for file in 0..num_files {
+        // Interleave ids across files so the files' trace_id ranges overlap:
+        // each file is internally sorted (the writer attests that), but no
+        // arrangement of the files is globally ordered, so the compaction
+        // read must actually sort rather than concatenate attested files.
+        let ids: Vec<String> = (0..rows_per_file)
+            .map(|row| format!("wide-r{:016}", row * num_files + file))
+            .collect();
+        // start == end, so every row shares `base_timestamp`: one file per write.
+        let batch = create_trace_batch_with_ids(base_timestamp, base_timestamp, &ids)?;
+        // Valid JSON, because the write path keeps `attributes_json` only if
+        // it parses — and distinct per row, because identical values are
+        // stored once by Parquet's dictionary encoding and read back as views
+        // into a single buffer, which would leave the batch narrow after all.
+        let payloads: Vec<String> = ids
+            .iter()
+            .map(|id| {
+                let mut filler = String::with_capacity(payload_bytes);
+                while filler.len() < payload_bytes {
+                    filler.push_str(id);
+                }
+                filler.truncate(payload_bytes);
+                format!("{{\"payload\":\"{filler}\"}}")
+            })
+            .collect();
+        let batch = with_attributes_json(batch, &payloads)?;
+        writer
+            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+            .await?;
+    }
+    Ok(())
+}
+
+/// Replaces a trace batch's `attributes_json` column with `values`, one per row.
+fn with_attributes_json(batch: RecordBatch, values: &[String]) -> Result<RecordBatch> {
+    let schema = batch.schema();
+    let index = schema
+        .index_of("attributes_json")
+        .map_err(|e| anyhow::anyhow!("trace batch has no attributes_json column: {e}"))?;
+    let mut columns = batch.columns().to_vec();
+    columns[index] = Arc::new(StringArray::from(values.to_vec()));
+    Ok(RecordBatch::try_new(schema, columns)?)
+}
+
 /// Lowest possible trace id; written into every bloom-pruning file.
 pub const BLOOM_LOW_SENTINEL: &str = "00000000000000000000000000000000";
 /// Highest possible trace id; written into every bloom-pruning file.

@@ -569,6 +569,8 @@ mod tests {
             memory_limit_mb: 512,
             target_partitions: 1,
             max_partition_input_mb: 2048,
+            scan_batch_size: 1024,
+            sort_spill_reservation_mb: 10,
             retention: Default::default(),
             orphan_cleanup: Default::default(),
             attr_promotion: Default::default(),
