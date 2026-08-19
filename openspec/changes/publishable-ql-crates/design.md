@@ -1,0 +1,315 @@
+## Context
+
+The workspace's internal dependency graph is already clean at the leaves:
+
+```
+logql          -> (none)          loki-api       -> (none)
+tempo-api      -> (none)          prometheus-api -> (none)
+schema-model   -> (none)          pyroscope-api  -> (none)
+
+common         -> schema-model
+querier        -> common, logql, tempo-api
+router         -> common, logql, loki-api, prometheus-api, pyroscope-api,
+                  schema-model, signaldb-api, tempo-api
+```
+
+No compatibility crate depends on a product crate today. The premise holds — but
+it holds trivially, because only LogQL was ever given a crate. The coupling this
+change addresses is not in the crates; it is in the ~4,800 lines of lowering
+inside `querier/src/query/`, one slice of which (`search_filter.rs`) is a parser
+that never got separated from its lowering.
+
+**Constraint:** FDAP version alignment applies to everything that touches Arrow
+or DataFusion types. This change moves code in the opposite direction — the
+extracted parser touches neither, which is precisely what makes it extractable.
+The lowering that remains in `querier` keeps using DataFusion's re-exported
+Arrow/Parquet types, unchanged.
+
+**Constraint:** no Flight wire schema, WAL, or Iceberg layout is touched. There
+is no migration and nothing to roll back beyond a normal revert.
+
+## Goals / Non-Goals
+
+**Goals**
+
+- One rule, mechanically enforced: a QL crate's dependency list contains no
+  workspace crate, no DataFusion, no Arrow.
+- A TraceQL parser that can answer "is this valid?" without a querier.
+- Preserve Tempo search behaviour exactly — including which malformed queries
+  return 400 and which unsupported ones return 501.
+- Publishable artifacts, if the licence decision allows.
+
+**Non-Goals**
+
+- Lowering to Query IR from the QL crates (D6).
+- Extracting `query_ir` from `common` (its own change).
+- Extending the supported TraceQL subset. The subset is small and stays small in
+  this change; growing it after the parser exists is much cheaper, which is part
+  of the point.
+
+## Decisions
+
+### D1 — Crate naming: package name for crates.io, lib name for imports
+
+`logql` is occupied on crates.io (created 2022-01-24, last published
+2022-05-19, 11,305 downloads, unrelated). `traceql`, `traceql-parser`,
+`logql-parser`, and `signaldb-logql` are all free.
+
+**Decision:** package `logql-parser` with `[lib] name = "logql"`; package
+`traceql-parser` with `[lib] name = "traceql"`.
+
+```toml
+[package]
+name = "logql-parser"        # crates.io identity
+[lib]
+name = "logql"               # `use logql::…` — every call site unchanged
+```
+
+_Alternatives rejected:_ `signaldb-logql` ties a general-purpose grammar
+implementation to a product name and discourages exactly the reuse that
+justifies publishing. Requesting the squatted name has no reliable crates.io
+process and would block the change on a third party.
+
+_Risk:_ a package/lib name mismatch surprises readers. Mitigate with a comment
+in each manifest stating why, and a line in the crate-level `//!` docs.
+
+### D2 — Licence: track the upstream project whose language the crate implements
+
+A compatibility front-end re-implements a language that another project defined
+and published. The licence follows that project, not our convenience. Verified
+by fetching each upstream `LICENSE`:
+
+| Language / API | Upstream            | Licence    | Our crate                 |
+| -------------- | ------------------- | ---------- | ------------------------- |
+| LogQL          | `grafana/loki`      | AGPL-3.0   | `logql-parser`            |
+| TraceQL        | `grafana/tempo`     | AGPL-3.0   | `traceql-parser`          |
+| Pyroscope      | `grafana/pyroscope` | AGPL-3.0   | `pyroscope-api`           |
+| PromQL / Prom  | `prometheus`        | Apache-2.0 | (no crate — D6/scope-out) |
+
+**Decision:** `logql-parser` stays `AGPL-3.0` (already correct); `traceql-parser`
+is born `AGPL-3.0`. No relicensing, no consent to gather, no `cargo deny`
+allowlist change, and no open question blocking the release.
+
+The consequence — AGPL narrows who can depend on the published crates — is
+accepted, not mitigated. These crates implement AGPL projects' languages; a
+permissive re-licence of that work would be the wrong call regardless of how
+much wider it would spread. Publishing still delivers what this change is for:
+the crates become independently consumable artifacts, and the act of publishing
+is what mechanically enforces their purity (D7/D8).
+
+The author has confirmed they do not object to relicensing where the rule calls
+for it, so applying it needs no consent-gathering and is not an open question.
+
+**The rule also corrects two existing crates**, which this change does as a
+one-line manifest edit each:
+
+- **`tempo-api`: `Apache-2.0` → `AGPL-3.0`.** Grafana Tempo is AGPL-3.0, and
+  `src/tempo-api/proto/tempo.proto` is a copy of Tempo's `tempopb` protobuf
+  definitions from which `src/tempo-api/src/generated/tempopb.rs` is generated
+  by `build.rs`. A vendored file from an AGPL repository re-declared as
+  Apache-2.0 is the one genuine discrepancy in the table, and it carries
+  `publish = true` today. It also stays `publish = false` until it has real
+  publication metadata (task 5.4) — correcting the licence and wiring it for
+  release are separate jobs, and only the first belongs here.
+- **`prometheus-api`: `AGPL-3.0` → `Apache-2.0`**, tracking Prometheus. Stricter
+  than upstream is legal and harmless, but the rule is "track the equivalent",
+  and applying it selectively only where it tightens would not be the rule.
+
+Neither crate is a QL front-end and neither is published by this change; they
+are corrected here because the rule that motivates the change applies to them
+and the fix is trivial. `loki-api` and `pyroscope-api` are already correct.
+
+**`query-ir` is out of the rule entirely.** It is SignalDB's own query surface,
+not a re-implementation of anyone's language, so it tracks nothing: it stays
+AGPL-3.0 and stays inside `common`. This change neither extracts it nor
+relicenses it (see the proposal's scope-out).
+
+### D3 — The boundary is the AST; errors carry the 400/501 distinction
+
+```
+   ┌─────────────────────────────────────────────────────────────┐
+   │  traceql  (leaf: thiserror only)                            │
+   │                                                             │
+   │   "{ .service.name = \"api\" && span.http.method = \"GET\" }"│
+   │        │                                                    │
+   │        ▼  parse_traceql                                     │
+   │   Vec<Condition> { selector: Selector, value: FilterValue }  │
+   │        │                                                    │
+   │   Err(ParseError::Syntax)      ← malformed  → 400           │
+   │   Err(ParseError::Unsupported) ← valid, not lowered → 501   │
+   └────────┼────────────────────────────────────────────────────┘
+            ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │  querier::query::search_filter  (lowering)                  │
+   │   to_expr(&Condition, &AttrContext) -> Result<Expr, …>      │
+   │     ├─ materialized column  (label_<key>)   ← promotion     │
+   │     ├─ map get_field        (map attrs)                     │
+   │     └─ JSON substring       (legacy tables)                 │
+   └─────────────────────────────────────────────────────────────┘
+```
+
+Two consequences worth stating before someone hits them:
+
+1. **`Condition::to_expr` cannot stay an inherent method.** `Condition` becomes a
+   foreign type, so lowering becomes a free function
+   `search_filter::to_expr(cond, ctx)` (or a private extension trait). Purely
+   mechanical, but it touches every call site.
+2. **`ParseError` must have (at least) two variants.** Today the 400/501 split is
+   carried by `QuerierError::{InvalidInput, Unsupported}` created inside the
+   parser. A single-variant `ParseError` would collapse every
+   "operator not supported yet" 501 into a 400. The querier's
+   `From<traceql::ParseError> for QuerierError` maps them 1:1, and a test pins
+   the status for one query of each class.
+
+### D4 — `parse_tags` stays in the querier
+
+Tempo's `tags` parameter is space-separated logfmt `key=value` pairs supplied in
+a URL query string. It is an HTTP parameter encoding, not a TraceQL construct —
+it just happens to produce the same `Condition` values. Moving it would put an
+HTTP concern in a language crate.
+
+It stays in `querier`, importing the AST from `traceql`. If it ever wants a
+home of its own, that home is `tempo-api` (wire-format types), not `traceql`.
+
+### D5 — `#[non_exhaustive]` on every public enum, before first publish
+
+`Selector`, `FilterValue`, `ParseError`, and LogQL's `Token`, `PipelineStage`,
+`RangeFunction`, `AggregationFunction`, `BinOp`, `LabelMatcher` are all public
+enums that the LogQL/TraceQL parity work adds variants to. Post-publication,
+each added variant is a breaking release unless the enum is `#[non_exhaustive]`.
+
+This is free now and impossible later, so it is a task in this change rather
+than a note for the future. Internal matches on our own crates are unaffected;
+downstream matchers gain a required wildcard arm, which is the intended contract.
+
+### D6 — Parse-only, and what that forgoes
+
+This change fixes the crates at lex/parse/validate-syntax. The alternative —
+having the crates also lower their AST to a Query IR document — would collapse
+the querier's two parallel lowering paths (four QL lowerings targeting
+DataFusion `Expr` directly, plus `ir_planner.rs` at 5,383 lines targeting it
+independently) into one, and would let the SDK, CLI, and a WASM UI build produce
+executable queries client-side.
+
+It is not done here because:
+
+- it requires `query-ir` to be a leaf crate first (its own change), and
+- it contradicts the rule this change is establishing, so adopting both at once
+  would leave the boundary undefined.
+
+What parse-only _does_ buy immediately: syntax validation and highlighting
+anywhere the crates compile, including WASM — replacing, for instance, the UI's
+current `buildPromQL.ts` string concatenation with a real grammar. That
+follow-up is unblocked by this change and does not need the IR.
+
+### D7 — Publishing is gated, dry-run first
+
+There is no `cargo publish` anywhere in `.github/workflows/` today and no
+`CARGO_REGISTRY_TOKEN`. The missing metadata is real: none of the manifests
+carry `repository`, `readme`, `keywords`, `categories`, or `documentation`, so a
+publish attempt today fails on metadata, during a release, when it is most
+expensive.
+
+**Decision:** two pieces, in this order.
+
+1. `cargo publish --dry-run -p <crate>` runs in PR CI for each publishable
+   crate. This catches missing metadata, uncommitted files, and path-dependency
+   leaks on the PR, not on the tag. It is also the mechanical enforcement of the
+   purity rule: a QL crate that grows a `path` dependency on a workspace crate
+   cannot be dry-run published, so CI fails.
+2. A `publish-crates.yml` job triggered on the release-please tag, running
+   `cargo publish` per crate with `CARGO_REGISTRY_TOKEN`. Both crates are leaves,
+   so there is no inter-crate publish ordering to get right.
+
+The publish step is driven by the QL crates' own release train (D9), so a parser
+release does not wait on the monorepo's.
+
+### D9 — A standalone release train for the QL crates
+
+The QL crates are already half-independent: `include-component-in-tag` is `true`
+(tags read `logql-v0.1.2`) and neither is in the `linked-versions`
+`signaldb-core` group, so their versions already move on their own — `logql` is
+at 0.1.2 while the core group is at 0.3.0. What they share with everything else
+is the release _PR_: `separate-pull-requests` is `false`, so all 21 packages
+release together.
+
+**Rejected: flipping `separate-pull-requests` to `true`.** It is a root-level
+option. Turning it on splits every package in the repo into its own release PR
+— a change to the whole project's release process, arriving as a side effect of
+adding two crates. Out of proportion, and out of scope.
+
+**Decision: a second release-please instance**, scoped to the QL crates alone.
+
+```
+  .github/workflows/release-please.yml          .github/workflows/release-ql-crates.yml
+    config:   release-please-config.json          config:   release-please-config.ql.json
+    manifest: .release-please-manifest.json       manifest: .release-please-manifest.ql.json
+    packages: 20 (src/logql removed)              packages: src/logql, src/traceql
+    label:    autorelease: pending (default)      label:    autorelease-ql: pending
+    on release → binaries, images, plugin         on release → cargo publish
+```
+
+`src/logql` moves out of the main config and manifest into the QL pair; its
+current version (`0.1.2`) carries over verbatim, so release-please continues
+from where it is with no version surgery and no retagging.
+
+Two gotchas that will otherwise cost a debugging cycle each:
+
+1. **Both instances label their release PRs.** release-please finds its own PRs
+   by label, and two instances sharing the default `autorelease: pending` will
+   each try to manage the other's PR. The action's `label` and `release-label`
+   inputs must be set to distinct values on the new workflow.
+2. **The `cargo-workspace` plugin stops seeing these crates.** It lives in the
+   main config and bumps dependents when a workspace crate's version moves; once
+   `logql` is in the other config, a `logql` bump no longer nudges `querier` or
+   `router`. That is harmless here — both depend on it by `path`, and neither is
+   published — but it is exactly the kind of silent decoupling that surprises
+   someone later, so it is stated in the config as a comment.
+
+Everything else the QL crates need is already per-package and carries over
+unchanged: `release-type: rust`, `include-component-in-tag`,
+`bump-minor-pre-major`, `prerelease: true`, and the shared `changelog-sections`.
+Add an explicit `component` (`logql-parser`, `traceql-parser`) so tags match the
+crates.io names rather than the directory names.
+
+### D8 — Enforcing the rule after the change lands
+
+A boundary that only a reviewer checks decays. Three cheap guards, in
+increasing order of strictness:
+
+- `cargo publish --dry-run` in CI (D7) — a workspace `path` dependency without a
+  version fails the job.
+- A one-line check that the QL manifests' `[dependencies]` tables contain no
+  `path =` key. Optional; the dry-run already covers the realistic regression.
+
+`cargo deny` needs no allowlist work: AGPL-3.0 and Apache-2.0 are both already
+present in the workspace, and D2 introduces no new licence identifier.
+
+## Risks / Trade-offs
+
+| Risk                                                        | Mitigation                                                                                                                                                                           |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Extraction silently changes a Tempo search response         | Move the existing tests with the code; add integration coverage asserting one 400 case and one 501 case end-to-end through the router before touching anything (task 1.x, TDD-first) |
+| `ParseError` collapses the 400/501 distinction              | D3; pinned by test                                                                                                                                                                   |
+| Published AST churns as LogQL/TraceQL parity work continues | `#[non_exhaustive]` (D5); 0.x versioning until the grammar settles                                                                                                                   |
+| AGPL narrows who can depend on the published crates         | Accepted, not mitigated — it is the licence of the languages being implemented (D2)                                                                                                  |
+| Two release-please instances fight over release PRs         | Distinct `label`/`release-label` on the new workflow (D9, gotcha 1)                                                                                                                  |
+| A `logql` bump silently stops nudging its dependents        | Both depend by `path` and neither is published; stated as a comment in the config (D9, gotcha 2)                                                                                     |
+| Package/lib name mismatch confuses contributors             | Comment in the manifest and in the crate docs (D1)                                                                                                                                   |
+| A future contributor adds `common` to a QL crate            | D8                                                                                                                                                                                   |
+
+## Migration Plan
+
+None. No persisted format, wire schema, or API changes. Revert is an ordinary
+`git revert` — until the first `cargo publish`, after which a published version
+cannot be unpublished (only yanked). That asymmetry is the reason D7 puts the
+dry-run in PR CI and the real publish behind a release tag.
+
+## Open Questions
+
+1. **`logql-parser` vs `signaldb-logql` (D1)** — reuse-optimised or
+   brand-optimised naming? The only decision still open; it blocks nothing until
+   task 4.1.
+2. Should `promql-parser` (third-party) be re-exported from a thin
+   `signaldb`-side crate for symmetry, or is "we don't own that grammar" the
+   honest answer? Current recommendation: the honest answer; add no crate.
