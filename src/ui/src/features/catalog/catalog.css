@@ -272,3 +272,21 @@
   color: var(--faint);
   white-space: nowrap;
 }
+
+/* Sparkline column — a shape at cell size, deliberately without axes or
+   legend; the entity's own page carries the readable chart. */
+.entity-sparkline-cell {
+  width: 88px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.entity-sparkline {
+  display: block;
+  overflow: visible;
+}
+
+.entity-sparkline polyline {
+  stroke: var(--accent);
+  vector-effect: non-scaling-stroke;
+}

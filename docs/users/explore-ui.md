@@ -207,6 +207,12 @@ latency number means "healthy" or "not instrumented for tracing".
 The subtitle under each entity type's heading ("discovered from ... across
 traces, logs") names exactly which attributes and signals fed it.
 
+Where the registry associates a metric with the entity type, the list also
+carries a sparkline column for it, so a type no trace ever touched is not a
+table of dashes. The metric charted is the first the entity type is associated
+with that the window holds, and the column header names it — a row with no
+data for it stays empty rather than drawing a flat line.
+
 Selecting a row opens that entity's own page: a breadcrumb, its RED numbers
 pinned to exactly that entity, a breakdown table for entity types that have
 one (services by operation, databases by `db.operation.name`, infrastructure

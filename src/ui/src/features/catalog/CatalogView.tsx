@@ -30,6 +30,13 @@ import {
   type EntityTypeDef,
 } from "./entityTypes";
 import { useCatalogEntityTypes } from "./useEntityTypes";
+import { useEntityMetrics } from "./useEntityMetrics";
+import {
+  fetchEntitySparklines,
+  headlineMetric,
+} from "../../api/entitySparkline";
+import { EntitySparkline } from "./EntitySparkline";
+import { durationToSeconds, stepForRange } from "../../lib/time";
 import "./catalog.css";
 
 interface Props {
@@ -336,9 +343,26 @@ export function EntityTable({
       fetchCatalogEntities(entity, range, sort as GroupSort, pinned),
   });
 
+  // The column exists only where the registry associates a metric with this
+  // entity type — so a breakdown or top-values table, whose entity type is
+  // synthetic and carries no registry name, never grows one.
+  const { metrics } = useEntityMetrics(entity, range, rangeKey);
+  const headline = headlineMetric(metrics);
+  const sparklines = useQuery({
+    queryKey: ["entity-sparklines", entity.id, rangeKey, headline?.name],
+    queryFn: () =>
+      fetchEntitySparklines(
+        headline!,
+        entity.identity,
+        range,
+        durationToSeconds(stepForRange(range, 40)) ?? 60,
+      ),
+    enabled: headline !== undefined,
+  });
+
   const pending = result.isPending;
   const rows = result.data?.entities ?? [];
-  const columns = entity.identity.length + 5;
+  const columns = entity.identity.length + 5 + (headline ? 1 : 0);
   const done = !pending && result.data !== undefined;
 
   return (
@@ -398,6 +422,9 @@ export function EntityTable({
               toggle={toggle}
               firstDir="desc"
             />
+            {/* Named, not decorative: the reader must know which metric the
+                shape belongs to without opening the entity. */}
+            {headline && <th title={headline.name}>{headline.name}</th>}
           </tr>
         </thead>
         <tbody>
@@ -428,6 +455,14 @@ export function EntityTable({
                 <td className="num">{redDuration(g.red, "p50Ms")}</td>
                 <td className="num">{redDuration(g.red, "p95Ms")}</td>
                 <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
+                {headline && (
+                  <td className="entity-sparkline-cell">
+                    <EntitySparkline
+                      series={sparklines.data?.get(compositeKey(g.values)) ?? []}
+                      label={headline.name}
+                    />
+                  </td>
+                )}
               </tr>
             ))
           )}

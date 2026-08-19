@@ -10,6 +10,8 @@ import * as catalogApi from "../../api/catalog";
 import * as sourceFieldsApi from "../../api/sourceFields";
 import * as membersApi from "../../api/traceGroupMembers";
 import * as entityTypesHook from "./useEntityTypes";
+import * as sparklineApi from "../../api/entitySparkline";
+import * as entityMetricsHook from "./useEntityMetrics";
 import type { CatalogEntity, EntityObservation } from "../../api/catalog";
 
 // The entity table is a server-side aggregate (see api/catalog) — mocked at
@@ -33,6 +35,15 @@ vi.mock("../../api/traceGroupMembers", async (importOriginal) => {
 // The observed set is two metadata fetches away (see useEntityTypes); what
 // this view owes is resolving the URL's entity type against whatever that
 // hook reports, so the hook is the boundary to control here.
+vi.mock("../../api/entitySparkline", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/entitySparkline")>();
+  return { ...actual, fetchEntitySparklines: vi.fn() };
+});
+vi.mock("./useEntityMetrics", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./useEntityMetrics")>();
+  return { ...actual, useEntityMetrics: vi.fn() };
+});
 vi.mock("./useEntityTypes", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./useEntityTypes")>();
   return { ...actual, useCatalogEntityTypes: vi.fn() };
@@ -42,6 +53,24 @@ const fetchCatalogEntities = vi.mocked(catalogApi.fetchCatalogEntities);
 const fetchFieldValueSketch = vi.mocked(sourceFieldsApi.fetchFieldValueSketch);
 const fetchTraceGroupMembers = vi.mocked(membersApi.fetchTraceGroupMembers);
 const useCatalogEntityTypes = vi.mocked(entityTypesHook.useCatalogEntityTypes);
+const fetchEntitySparklines = vi.mocked(sparklineApi.fetchEntitySparklines);
+const useEntityMetrics = vi.mocked(entityMetricsHook.useEntityMetrics);
+
+/** A registry metric definition, as the association lookup returns it. */
+function metricDef(name: string) {
+  return {
+    name,
+    brief: "",
+    group_id: `metric.${name}`,
+    instrument: "gauge",
+    unit: "1",
+    attributes: [],
+    entity_associations: ["host"],
+    namespace: "otel",
+    source: "bundled",
+    version: "1.43.0",
+  } as never;
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -54,6 +83,10 @@ beforeEach(() => {
   fetchFieldValueSketch.mockResolvedValue(undefined);
   fetchTraceGroupMembers.mockReset();
   fetchTraceGroupMembers.mockResolvedValue([]);
+  fetchEntitySparklines.mockReset();
+  fetchEntitySparklines.mockResolvedValue(new Map());
+  useEntityMetrics.mockReset();
+  useEntityMetrics.mockReturnValue({ metrics: [], isPending: false });
   useCatalogEntityTypes.mockReset();
   // The curated list, unanalyzed: what a deployment reports before any field
   // metadata has landed.
@@ -383,6 +416,51 @@ describe("registry-derived entity types", () => {
     // unfiltered trace list.
     expect(isDrillable(serviceInstance)).toBe(false);
     expect(drillFilters(serviceInstance, ["7f3c-instance"])).toEqual([]);
+  });
+});
+
+describe("the entity list's sparkline column", () => {
+  it("charts the entity type's headline metric, named in the header", async () => {
+    // An entity type no trace ever carried reads as entirely unmeasured
+    // otherwise — four dashes and nothing else.
+    useEntityMetrics.mockReturnValue({
+      metrics: [metricDef("system.cpu.utilization")],
+      isPending: false,
+    });
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        unmeasured(
+          ["db-01"],
+          [{ source: "metrics", count: 12 }],
+          "1700000000000000000",
+        ),
+      ],
+      truncated: false,
+    });
+    fetchEntitySparklines.mockResolvedValue(
+      new Map([["db-01", [{ labels: { host_name: "db-01" }, points: [] }]]]),
+    );
+
+    renderView({ catalogEntity: "host" });
+
+    expect(
+      await screen.findByText("system.cpu.utilization"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no column at all for an entity type with no associated metric", async () => {
+    useEntityMetrics.mockReturnValue({ metrics: [], isPending: false });
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        group(["gateway", "edge"], 10, 0, 1, 2, "1700000000000000000"),
+      ],
+      truncated: false,
+    });
+
+    renderView();
+
+    await screen.findByText("gateway");
+    expect(fetchEntitySparklines).not.toHaveBeenCalled();
   });
 });
 

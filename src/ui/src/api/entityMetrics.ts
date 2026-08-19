@@ -12,7 +12,7 @@
  * entity associates with. Every step is bounded by what the tenant emits
  * rather than by how large the registry is.
  */
-import type { QueryIrRequest } from "./gen";
+import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { searchMetrics, type MetricHit } from "../features/schema/api";
@@ -31,6 +31,45 @@ export const METRIC_SOURCES = {
   scalar: "metrics",
   histogram: "metrics_histogram",
 } as const;
+
+/** One response's series, as the IR envelope carries them. */
+export type IrSeries = NonNullable<QueryIrResponse["series"]>;
+
+/**
+ * Whether a metric's rows live in the histogram source.
+ *
+ * A `metrics_histogram` row is a whole bucketed histogram rather than a
+ * scalar, so it carries no value column at all: a scalar aggregate over it is
+ * rejected outright ("requires a numeric field, got string"). The instrument
+ * the registry declares is what says which source can answer for a metric, so
+ * nothing is ever asked of a source that cannot.
+ */
+export function isHistogram(instrument: string): boolean {
+  return instrument === "histogram" || instrument === "exponentialhistogram";
+}
+
+/**
+ * The quantile charted for a histogram. Buckets have no single level to plot,
+ * so the tail is charted — the number a duration histogram exists to answer.
+ *
+ * One constant, because the entity page's tiles and the list's sparkline
+ * column chart the same metric for the same entity: two would be free to
+ * disagree, and the disagreement would be invisible.
+ */
+export const HISTOGRAM_QUANTILE = 0.95;
+
+/**
+ * How to collapse a step's worth of points, per instrument.
+ *
+ * A gauge and an updowncounter are levels: their average over the step is the
+ * level. A counter is cumulative, and averaging it produces a number that is
+ * neither the count nor the rate — its step maximum at least stays monotonic
+ * and readable as a total. The honest fix for counters is a rate stage in the
+ * IR, which does not exist yet (see design.md, Risks).
+ */
+export function aggFor(instrument: string): "avg" | "max" {
+  return instrument === "counter" ? "max" : "avg";
+}
 
 /**
  * Every distinct metric name in the window, as an IR aggregate.

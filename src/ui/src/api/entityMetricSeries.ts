@@ -10,52 +10,22 @@
  * *is* the observed-set filter — nothing here has to zero-fill, and nothing
  * downstream can mistake "not reported" for "reported as zero".
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { QueryIrRequest } from "./gen";
 import type { EntityPin } from "./catalog";
 import type { MetricHit } from "../features/schema/api";
-import { METRIC_SOURCES } from "./entityMetrics";
+import {
+  aggFor,
+  HISTOGRAM_QUANTILE,
+  isHistogram,
+  METRIC_SOURCES,
+  type IrSeries,
+} from "./entityMetrics";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 
 /** Names per alternation. Past this the predicate stops being readable in a
  * query log and starts being one string the planner must match linearly. */
 export const METRIC_NAMES_PER_QUERY = 25;
-
-/** One response's series, as the IR envelope carries them. */
-type IrSeries = NonNullable<QueryIrResponse["series"]>;
-
-/**
- * Whether a metric's rows live in the histogram source.
- *
- * A `metrics_histogram` row is a whole bucketed histogram rather than a
- * scalar, so it carries no value column at all: a scalar aggregate over it is
- * rejected outright ("requires a numeric field, got string"). The instrument
- * the registry declares is what says which source can answer for a metric, so
- * nothing is ever asked of a source that cannot.
- */
-function isHistogram(instrument: string): boolean {
-  return instrument === "histogram" || instrument === "exponentialhistogram";
-}
-
-/**
- * The quantile charted for a histogram. Buckets have no single level to plot,
- * so the panel charts the tail — the number a duration histogram exists to
- * answer.
- */
-const HISTOGRAM_QUANTILE = 0.95;
-
-/**
- * How to collapse a step's worth of points, per instrument.
- *
- * A gauge and an updowncounter are levels: their average over the step is the
- * level. A counter is cumulative, and averaging it produces a number that is
- * neither the count nor the rate — its step maximum at least stays monotonic
- * and readable as a total. The honest fix for counters is a rate stage in the
- * IR, which does not exist yet (see design.md, Risks).
- */
-function aggFor(instrument: string): "avg" | "max" {
-  return instrument === "counter" ? "max" : "avg";
-}
 
 /** Escaped for the alternation: an unescaped `.` matches any character, so
  * `system.cpu.time` would also select metrics that merely look like it. */

@@ -43,8 +43,10 @@ See proposal.md — Why. What shapes the approach:
 - Adding a range/rate stage to the Query IR. Counters are charted as what the
   IR can currently return; see Risks.
 - Alerting, thresholds, or anomaly marking on these charts.
-- A metrics panel on the _breakdown_ drill-in depth. A breakdown row is a
-  dimension within the entity, not an entity with its own resource attributes.
+- Metrics _of a breakdown row_. A breakdown row is a dimension within the
+  entity, not an entity with its own resource attributes, so there are no
+  metrics that describe it. The panel stays visible at that depth and keeps
+  describing the entity, pinned to the entity's identity.
 
 ## Decisions
 

@@ -96,19 +96,32 @@ function labelOf(name: string): { label: string; singular: string } {
  * An entity with neither a curated identity nor a declared one is dropped:
  * with nothing to group by there is no instance to list.
  */
+/**
+ * The curated types, each tagged with the registry entity it *is*.
+ *
+ * Split out from {@link deriveEntityTypes} because it needs only the
+ * registry: what a registry entity is called, and therefore what the registry
+ * says measures it, does not depend on which fields compaction has indexed.
+ * The unanalyzed path uses this too, so a deployment whose metadata has not
+ * landed still gets everything the registry alone can answer.
+ */
+export function withRegistryNames(
+  curated: EntityTypeDef[],
+  registry: RegistryEntity[],
+): EntityTypeDef[] {
+  const registryNames = new Map(registry.map((e) => [idOf(e.name), e.name]));
+  return curated.map((e) => {
+    const registryEntity = registryNames.get(e.id);
+    return registryEntity ? { ...e, registryEntity } : e;
+  });
+}
+
 export function deriveEntityTypes(
   registry: RegistryEntity[],
   curated: EntityTypeDef[] = ENTITY_TYPES,
 ): EntityTypeDef[] {
   const byId = new Map(curated.map((e) => [e.id, e]));
-  // Registry name by route id, for every entity the registry declares —
-  // including the curated ones, which keep their curated fields but are still
-  // that registry entity (see `EntityTypeDef.registryEntity`).
-  const registryNames = new Map(registry.map((e) => [idOf(e.name), e.name]));
-  const derived: EntityTypeDef[] = curated.map((e) => {
-    const registryEntity = registryNames.get(e.id);
-    return registryEntity ? { ...e, registryEntity } : e;
-  });
+  const derived: EntityTypeDef[] = withRegistryNames(curated, registry);
 
   for (const entity of registry) {
     const id = idOf(entity.name);
