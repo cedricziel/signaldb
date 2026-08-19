@@ -111,6 +111,22 @@ one-line manifest edit each:
   `publish = true` today. It also stays `publish = false` until it has real
   publication metadata (task 5.4) — correcting the licence and wiring it for
   release are separate jobs, and only the first belongs here.
+
+  **What actually blocks `tempo-api` from ever publishing is its `build.rs`,
+  not its metadata.** The script writes generated `.proto` files into
+  `src/tempo-api/proto/**` and generated Rust into `src/tempo-api/src/generated/`
+  — both inside the package directory rather than `OUT_DIR`, which `cargo
+publish` rejects as a dirty package — and it reads
+  `../../opentelemetry-proto`, a submodule _outside_ the crate root that a
+  published `.crate` archive cannot contain, so the packaged build script would
+  panic on any consumer's machine. It also requires `protoc` at consumer build
+  time and decides staleness by mtime, which git checkouts make
+  non-deterministic. The fix is to move generation into `xtask`, where the
+  `write_or_check` + `cargo run -p xtask -- check` pattern already exists in CI
+  for the OpenAPI-derived SDK and TypeScript clients. That is its own change:
+  it shares no file with this one, and a proto-generation regression must not be
+  able to block a parser extraction.
+
 - **`prometheus-api`: `AGPL-3.0` → `Apache-2.0`**, tracking Prometheus. Stricter
   than upstream is legal and harmless, but the rule is "track the equivalent",
   and applying it selectively only where it tightens would not be the rule.
