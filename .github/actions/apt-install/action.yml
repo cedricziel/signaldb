@@ -1,0 +1,39 @@
+name: Install apt packages
+description: >-
+  Install Debian packages with bounded, retried apt calls so that a stalled
+  Ubuntu mirror fails the job in minutes instead of hanging it until the
+  six-hour timeout.
+
+inputs:
+  packages:
+    description: Space-separated list of packages to install.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # A hung apt transfer has no timeout of its own: the step sits in
+    # `in_progress` until the job's six-hour limit, and every run queued behind
+    # it stalls with it. Azure's mirrors stall often enough that this has jammed
+    # the whole PR queue for hours. Bound each attempt, then retry a couple of
+    # times so a transient mirror blip still resolves on its own.
+    - shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        # $PACKAGES is deliberately unquoted: the input is a space-separated
+        # list and must word-split into separate arguments.
+        opts=(-o Acquire::Retries=3
+              -o Acquire::http::Timeout=20
+              -o Acquire::https::Timeout=20)
+        for attempt in 1 2 3; do
+          if timeout 240 sudo apt-get update "${opts[@]}" \
+            && timeout 240 sudo apt-get install -y "${opts[@]}" $PACKAGES; then
+            exit 0
+          fi
+          echo "::warning::apt attempt ${attempt} failed or timed out; retrying"
+          sleep $((attempt * 15))
+        done
+        echo "::error::apt failed after 3 attempts installing: ${PACKAGES}"
+        exit 1

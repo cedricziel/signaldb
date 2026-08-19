@@ -44,7 +44,9 @@ jobs:
       # protobuf code and needs protoc — a warm cargo cache hides this, a cache
       # miss fails the build.
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
