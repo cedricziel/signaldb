@@ -66,40 +66,40 @@ InvalidInput` and `Unsupported → Unsupported`.
 
 ## 4. `logql` publishing readiness (no logic change)
 
-- [ ] 4.1 Rename the package to `logql-parser` with `[lib] name = "logql"`.
+- [x] 4.1 Rename the package to `logql-parser` with `[lib] name = "logql"`.
       Update `src/querier/Cargo.toml` and `src/router/Cargo.toml` dependency
       names; no `use logql::…` site changes. Confirm with
       `cargo test -p querier -p router`.
-- [ ] 4.2 Add `#[non_exhaustive]` to the public enums (`Token`, `PipelineStage`,
+- [x] 4.2 Add `#[non_exhaustive]` to the public enums (`Token`, `PipelineStage`,
       `RangeFunction`, `AggregationFunction`, `BinOp`, `MatchOp`, `LineFilterOp`,
       `FilterOp`, `LexError`, `ParseError`, …). `cargo test -p logql-parser`
       green.
-- [ ] 4.3 Add `README.md` to `src/logql` and `src/traceql` (what the crate is,
+- [x] 4.3 Add `README.md` to `src/logql` and `src/traceql` (what the crate is,
       supported subset, licence, "extracted from SignalDB" pointer).
-- [ ] 4.4 Add `repository`, `readme`, `keywords`, `categories`, and
+- [x] 4.4 Add `repository`, `readme`, `keywords`, `categories`, and
       `documentation` to both manifests.
 
 ## 5. Licences track upstream (D2)
 
-- [ ] 5.1 Confirm `logql-parser` and `traceql-parser` are both `AGPL-3.0`
+- [x] 5.1 Confirm `logql-parser` and `traceql-parser` are both `AGPL-3.0`
       (matching Loki and Tempo). No relicensing, no `cargo deny` allowlist
       change — verify with `cargo deny check`.
-- [ ] 5.2 `tempo-api`: `license = "Apache-2.0"` → `"AGPL-3.0"`, matching Grafana
+- [x] 5.2 `tempo-api`: `license = "Apache-2.0"` → `"AGPL-3.0"`, matching Grafana
       Tempo, whose `tempopb` protobuf definitions `src/tempo-api/proto/tempo.proto`
       copies. Update `src/tempo-api/README.md` if it states a licence.
-- [ ] 5.3 `prometheus-api`: `license = "AGPL-3.0"` → `"Apache-2.0"`, matching
+- [x] 5.3 `prometheus-api`: `license = "AGPL-3.0"` → `"Apache-2.0"`, matching
       Prometheus.
-- [ ] 5.4 `tempo-api`: `publish = true` → `false`. It has no publication
+- [x] 5.4 `tempo-api`: `publish = true` → `false`. It has no publication
       metadata and is not part of this change's release train; wiring it for
       release is its own job.
-- [ ] 5.5 Add a short note to `docs/contributing/` (task 7.3) stating the rule —
+- [x] 5.5 Add a short note to `docs/contributing/` (task 7.3) stating the rule —
       a compat crate takes the licence of the project whose language or API it
       re-implements; first-party crates (`common`, `query-ir`, the services)
       stay AGPL-3.0 regardless.
 
 ## 6. Standalone release train and publication (D9)
 
-- [ ] 6.1 Create `release-please-config.ql.json` and
+- [x] 6.1 Create `release-please-config.ql.json` and
       `.release-please-manifest.ql.json` covering only `src/logql` and
       `src/traceql`. Carry `logql`'s current version (`0.1.2`) over verbatim.
       Per package: `"release-type": "rust"` (manifest mode defaults to the Node
@@ -108,14 +108,14 @@ InvalidInput` and `Unsupported → Unsupported`.
       match the crates.io names. At the config root, the distinct labels:
       `"label": "autorelease-ql: pending"`,
       `"release-label": "autorelease-ql: tagged"` (D9, gotcha 1).
-- [ ] 6.2 Remove `src/logql` from `release-please-config.json` and
+- [x] 6.2 Remove `src/logql` from `release-please-config.json` and
       `.release-please-manifest.json`. Record in the proposal — **not** as a
       JSON comment, which is a parse error — that the `cargo-workspace` plugin
       no longer sees these crates (D9, gotcha 2).
-- [ ] 6.3 Add `.github/workflows/release-ql-crates.yml`: `release-please-action@v5`
+- [x] 6.3 Add `.github/workflows/release-ql-crates.yml`: `release-please-action@v5`
       with `config-file`/`manifest-file` pointing at the `.ql` pair. The labels
       come from the config (6.1) — the action exposes no `label` input.
-- [ ] 6.4 In that workflow, give the release-please step `id: release` (the
+- [x] 6.4 In that workflow, give the release-please step `id: release` (the
       per-package outputs are addressed through it), add an `actions/checkout`
       step, then a `cargo publish` step per crate gated on
       `steps.release.outputs['src/logql--release_created']` and
@@ -123,17 +123,17 @@ InvalidInput` and `Unsupported → Unsupported`.
       `CARGO_REGISTRY_TOKEN` from the repository secret. Gate each crate on its
       *own* output: releasing one must not republish the other. Both are leaves,
       so there is no publish ordering.
-- [ ] 6.5 Add `cargo publish --dry-run -p logql-parser -p traceql-parser` to
+- [x] 6.5 Add `cargo publish --dry-run -p logql-parser -p traceql-parser` to
       `.github/workflows/ci.yml` (D7). Verify it fails when a `path`
       dependency on a workspace crate is added, then revert the probe.
-- [ ] 6.9 Add the purity assertion the dry-run does **not** provide (D8): read
+- [x] 6.9 Add the purity assertion the dry-run does **not** provide (D8): read
       `cargo metadata` for each QL crate and fail if any dependency is a
       workspace member, carries a `path`/`git` source, or is in the FDAP set
       (`datafusion`, `arrow*`, `parquet`). Prove it by adding `datafusion` to
       `src/traceql/Cargo.toml`, confirming the job fails where the dry-run
       passes, then reverting.
 - [ ] 6.6 Configure the `CARGO_REGISTRY_TOKEN` repository secret.
-- [ ] 6.7 `cargo machete --with-metadata`, `cargo fmt`,
+- [x] 6.7 `cargo machete --with-metadata`, `cargo fmt`,
       `cargo clippy --workspace --all-targets --all-features`,
       `cargo deny check`.
 - [ ] 6.8 After the first release: verify `cargo add logql-parser` /
@@ -155,10 +155,10 @@ InvalidInput` and `Unsupported → Unsupported`.
       400-vs-501 rule (unparseable → 400, valid-but-unimplemented → 501).
 - [x] 7.5 Document the BREAKING reclassification in the user-facing Tempo
       compatibility docs: which `q` inputs changed status and why.
-- [ ] 7.3 Add a docs page (route via the `docs` skill — `docs/contributing/`
+- [x] 7.3 Add a docs page (route via the `docs` skill — `docs/contributing/`
       audience) covering the QL front-end rule: parse/validate only, no product
       dependency, how the CI guard enforces it, and where lowering lives.
-- [ ] 7.4 Run the docs-freshness gate **after committing**, and again after any
+- [x] 7.4 Run the docs-freshness gate **after committing**, and again after any
       fix (it diffs committed history and cascades code → doc → skill).
 
 ## 8. Ship

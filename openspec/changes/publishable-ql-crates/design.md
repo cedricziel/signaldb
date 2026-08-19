@@ -346,7 +346,19 @@ Two gotchas that will otherwise cost a debugging cycle each:
 
 Each package entry in the new config needs `"release-type": "rust"` explicitly.
 Manifest mode defaults to the Node strategy, which would update a
-`package.json` that does not exist instead of `Cargo.toml`.
+`package.json` that does not exist instead of `Cargo.toml`. Both search depths
+carry over from the main config too: same repository, same commit history, and
+these two crates see a far smaller share of its traffic, so a default window
+would run out sooner here rather than later.
+
+**The `cargo-workspace` plugin is deliberately _not_ carried over**, unlike the
+rest of the package entry. It exists to bump the workspace crates that depend
+on a released crate — and `querier` and `router` both depend on `logql` while
+belonging to the _main_ train. Enabling it here would have the QL instance
+propose version bumps for packages the other instance owns, which is precisely
+the cross-train interference the split is meant to prevent. The cost is that a
+QL release does not refresh `Cargo.lock` in the same commit; the next build
+does, and neither crate is depended on by version.
 
 Everything else the QL crates need is already per-package and carries over
 unchanged: `release-type: rust`, `include-component-in-tag`,
@@ -361,13 +373,16 @@ increasing order of strictness:
 
 - `cargo publish --dry-run` in CI (D7) — catches an unpublishable _package_: a
   bare `path` dependency, missing metadata, uncommitted files.
-- **An explicit purity assertion, because the dry-run is not one.** A dry-run
-  happily accepts `datafusion = "54"` or any other crates.io dependency — it
-  checks that the crate _can_ be published, not that it stayed pure. The guard
-  that actually enforces the rule reads `cargo metadata` for each QL crate and
-  fails if any dependency is a workspace member, has a `path`/`git` source, or
-  is in the FDAP set (`datafusion`, `arrow*`, `parquet`). Without it, the
-  boundary is enforced by reviewer attention, which is what D8 exists to avoid.
+- **An explicit purity assertion, because the dry-run is not one.**
+  **Verified during implementation:** with `datafusion.workspace = true` added
+  to `src/traceql/Cargo.toml`, `cargo publish --dry-run -p traceql-parser`
+  reports `Packaged 9 files` and exits clean. The dry-run checks that a crate
+  _can_ be published, not that it stayed pure — and a dependency on the query
+  engine is perfectly publishable. The guard that actually enforces the rule
+  (`xtask/ql-purity.sh`) reads `cargo metadata` and fails if any dependency is
+  a workspace member, has a `path`/`git` source, or is in the FDAP set. It was
+  proven red against the same probe before being wired into CI. Without it, the
+  boundary rests on reviewer attention, which is what D8 exists to avoid.
 
 `cargo deny` needs no allowlist work: AGPL-3.0 and Apache-2.0 are both already
 present in the workspace, and D2 introduces no new licence identifier.

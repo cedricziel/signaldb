@@ -296,6 +296,20 @@ jobs:
       - name: Check for unused dependencies
         run: cargo machete --with-metadata
 
+      # The compatibility query-language parsers must stay independent of the
+      # query engine: their whole value is that "is this query valid?" can be
+      # answered without linking DataFusion or a catalog. That is not something
+      # `cargo publish --dry-run` checks — it accepts `datafusion = "54"`
+      # without complaint (verified) — so purity gets its own assertion.
+      - name: Check QL parser crates are pure
+        run: ./scripts/check-ql-purity.sh
+
+      # Catches missing publication metadata, packaging problems, and bare
+      # path dependencies on the PR that introduces them rather than during a
+      # release, when a published version cannot be taken back.
+      - name: Check QL parser crates can be published
+        run: cargo publish --dry-run -p logql-parser -p traceql-parser
+
   # macOS is a supported release target (release-please ships darwin
   # binaries), so keep a cheap compile signal on every PR. A full release
   # build here would repeat the same thin-LTO cost as the Linux jobs for no

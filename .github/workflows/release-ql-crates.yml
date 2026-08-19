@@ -1,0 +1,62 @@
+name: Release QL Crates
+
+# The compatibility query-language parsers release on their own train, so a
+# parser fix reaches crates.io without waiting for — or dragging along — a
+# signaldb-core release. They are leaf crates depending only on `thiserror`,
+# which is what makes an independent cadence safe.
+#
+# This is a second release-please instance over the same repository. It reads
+# release-please-config.ql.json / .release-please-manifest.ql.json, which cover
+# only src/logql and src/traceql; those two are absent from the main config.
+# The `label`/`release-label` distinguishing this instance's release PRs live in
+# that config file, not here — release-please-action exposes no such inputs.
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      logql-released: ${{ steps.release.outputs['src/logql--release_created'] }}
+      traceql-released: ${{ steps.release.outputs['src/traceql--release_created'] }}
+    steps:
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.ql.json
+          manifest-file: .release-please-manifest.ql.json
+
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: release-please
+    if: ${{ needs.release-please.outputs.logql-released == 'true' || needs.release-please.outputs.traceql-released == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Both crates are leaves with no path dependencies, so there is no
+      # inter-crate publish ordering to respect. Each is gated on its own
+      # release output: a release of one must not republish the other.
+      - name: Publish logql-parser
+        if: ${{ needs.release-please.outputs.logql-released == 'true' }}
+        run: cargo publish -p logql-parser
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish traceql-parser
+        if: ${{ needs.release-please.outputs.traceql-released == 'true' }}
+        run: cargo publish -p traceql-parser
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

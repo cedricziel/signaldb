@@ -88,4 +88,5 @@ nav:
           - architecture/decisions/users-tenant-membership.md
   - Contributing:
       - contributing/rust.md
+      - contributing/compat-crates.md
       - contributing/benchmarking.md
