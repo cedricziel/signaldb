@@ -22,7 +22,7 @@ use axum::http::StatusCode;
 use axum::{Json, Router, extract::State, routing::get};
 use uuid::Uuid;
 
-use crate::metrics::{CompactionMetrics, Cycle, CycleHealth};
+use crate::metrics::{CompactionMetrics, Cycle, CycleHealth, JobScope, ScopeCounts};
 use crate::orphan::OrphanMetrics;
 use crate::retention::metrics::RetentionMetrics;
 
@@ -70,74 +70,113 @@ impl ObservabilityState {
         let s = &self.inner;
         let mut out = String::with_capacity(4096);
 
-        let mut counter = |name: &str, help: &str, value: u64| {
-            out.push_str(&format!(
-                "# HELP {name} {help}\n# TYPE {name} counter\n{name} {value}\n"
-            ));
-        };
+        // Compaction execution, per table. The label set is declared in the
+        // SignalDB convention registry (otel/registry/signaldb.yaml) and
+        // pinned by `registry_pins`; the names here are the Prometheus
+        // rendering of those semconv attributes.
+        //
+        // These carry labels rather than being plain totals because a single
+        // global failure count cannot say *what* is failing: on hive 12 of
+        // 140 jobs failed and identifying them as one table took a log dig.
+        // Sum across the label set to recover the old aggregate.
+        let by_scope = s.compaction.jobs_by_scope();
+        let mut scopes: Vec<_> = by_scope.into_iter().collect();
+        scopes.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        // Compaction execution
-        counter(
-            "compactor_jobs_started_total",
-            "Compaction jobs started",
-            s.compaction.jobs_started() as u64,
+        for (name, help, pick) in [
+            (
+                "compactor_jobs_started_total",
+                "Compaction jobs started",
+                (|c: &ScopeCounts| c.started) as fn(&ScopeCounts) -> usize,
+            ),
+            (
+                "compactor_jobs_succeeded_total",
+                "Compaction jobs completed successfully",
+                (|c: &ScopeCounts| c.succeeded) as fn(&ScopeCounts) -> usize,
+            ),
+        ] {
+            out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} counter\n"));
+            for (scope, counts) in &scopes {
+                out.push_str(&format!(
+                    "{name}{{{}}} {}\n",
+                    scope_labels(scope),
+                    pick(counts)
+                ));
+            }
+        }
+
+        // Failures carry the retry classification as well: a conflict
+        // resolves itself, a terminal resource error never will. A table's
+        // total failures are the sum over its error types.
+        let mut failures: Vec<_> = s.compaction.failures_by_scope().into_iter().collect();
+        failures.sort_by(|(a, _), (b, _)| a.cmp(b));
+        out.push_str(
+            "# HELP compactor_jobs_failed_total Compaction jobs failed, by table and error type\n\
+             # TYPE compactor_jobs_failed_total counter\n",
         );
+        for ((scope, error_type), count) in &failures {
+            out.push_str(&format!(
+                "compactor_jobs_failed_total{{{},error_type=\"{}\"}} {count}\n",
+                scope_labels(scope),
+                escape_label_value(error_type)
+            ));
+        }
         counter(
-            "compactor_jobs_succeeded_total",
-            "Compaction jobs completed successfully",
-            s.compaction.jobs_succeeded() as u64,
-        );
-        counter(
-            "compactor_jobs_failed_total",
-            "Compaction jobs failed",
-            s.compaction.jobs_failed() as u64,
-        );
-        counter(
+            &mut out,
             "compactor_conflicts_detected_total",
             "Iceberg commit conflicts detected during compaction",
             s.compaction.conflicts_detected() as u64,
         );
         counter(
+            &mut out,
             "compactor_retries_attempted_total",
             "Compaction retries after commit conflicts",
             s.compaction.retries_attempted() as u64,
         );
         counter(
+            &mut out,
             "compactor_stale_leases_expired_total",
             "Compaction leases reclaimed from crashed instances",
             s.compaction.stale_leases_expired(),
         );
         counter(
+            &mut out,
             "compactor_input_files_total",
             "Input files consumed by compaction jobs",
             s.compaction.total_input_files() as u64,
         );
         counter(
+            &mut out,
             "compactor_output_files_total",
             "Output files produced by compaction jobs",
             s.compaction.total_output_files() as u64,
         );
         counter(
+            &mut out,
             "compactor_bytes_before_compaction_total",
             "Bytes read by compaction jobs (pre-compaction size)",
             s.compaction.bytes_before_compaction(),
         );
         counter(
+            &mut out,
             "compactor_bytes_after_compaction_total",
             "Bytes written by compaction jobs (post-compaction size)",
             s.compaction.bytes_after_compaction(),
         );
         counter(
+            &mut out,
             "compactor_compaction_duration_ms_total",
             "Cumulative wall-clock milliseconds spent in successful compaction jobs",
             s.compaction.total_duration_ms(),
         );
         counter(
+            &mut out,
             "compactor_oversized_partitions_skipped_total",
             "Partitions the planner declined because their eligible input bytes exceed max_partition_input_mb; these stay uncompacted until the cap is raised",
             s.compaction.oversized_partitions_skipped() as u64,
         );
         counter(
+            &mut out,
             "compactor_cooldown_partitions_skipped_total",
             "Partitions the scheduler withheld because a recent compaction failure put them in a backoff window; a climbing value means some partition cannot be compacted at all",
             s.compaction.cooldown_partitions_skipped() as u64,
@@ -145,41 +184,49 @@ impl ObservabilityState {
 
         // Retention enforcement
         counter(
+            &mut out,
             "compactor_retention_cutoffs_computed_total",
             "Retention cutoff computations performed",
             s.retention.cutoffs_computed() as u64,
         );
         counter(
+            &mut out,
             "compactor_partitions_evaluated_total",
             "Partitions evaluated for retention",
             s.retention.partitions_evaluated() as u64,
         );
         counter(
+            &mut out,
             "compactor_partitions_dropped_total",
             "Partitions dropped by retention enforcement",
             s.retention.partitions_dropped() as u64,
         );
         counter(
+            &mut out,
             "compactor_snapshots_expired_total",
             "Iceberg snapshots expired",
             s.retention.snapshots_expired() as u64,
         );
         counter(
+            &mut out,
             "compactor_bytes_reclaimed_total",
             "Bytes reclaimed by retention enforcement",
             s.retention.bytes_reclaimed(),
         );
         counter(
+            &mut out,
             "compactor_unclassifiable_files_total",
             "Data files whose timestamp_hour partition value could not be determined; kept and excluded from retention",
             s.retention.unclassifiable_files() as u64,
         );
         counter(
+            &mut out,
             "compactor_retention_failures_total",
             "Retention enforcement passes that failed (per tenant/dataset or per table)",
             s.retention.enforcement_failures() as u64,
         );
         counter(
+            &mut out,
             "compactor_retention_duration_ms_total",
             "Cumulative wall-clock milliseconds spent enforcing retention",
             s.retention.total_duration_ms(),
@@ -187,21 +234,25 @@ impl ObservabilityState {
 
         // Orphan cleanup
         counter(
+            &mut out,
             "compactor_orphan_candidates_identified_total",
             "Orphan file candidates identified",
             s.orphan.candidates_identified() as u64,
         );
         counter(
+            &mut out,
             "compactor_files_deleted_total",
             "Orphan files deleted",
             s.orphan.files_deleted() as u64,
         );
         counter(
+            &mut out,
             "compactor_bytes_freed_total",
             "Bytes freed by orphan file deletion",
             s.orphan.bytes_freed(),
         );
         counter(
+            &mut out,
             "compactor_deletion_failures_total",
             "Orphan file deletion failures",
             s.orphan.deletion_failures() as u64,
@@ -337,6 +388,37 @@ async fn status_handler(State(state): State<ObservabilityState>) -> Json<serde_j
     Json(state.status_json())
 }
 
+/// Append one unlabeled counter's HELP/TYPE/sample triple.
+fn counter(out: &mut String, name: &str, help: &str, value: u64) {
+    out.push_str(&format!(
+        "# HELP {name} {help}\n# TYPE {name} counter\n{name} {value}\n"
+    ));
+}
+
+/// The tenancy label set for a job counter, in the Prometheus rendering of
+/// the registry's `signaldb.tenant.id` / `signaldb.dataset.id` /
+/// `signaldb.table` attributes (dots become underscores).
+fn scope_labels(scope: &JobScope) -> String {
+    format!(
+        "signaldb_tenant_id=\"{}\",signaldb_dataset_id=\"{}\",signaldb_table=\"{}\"",
+        escape_label_value(&scope.tenant_id),
+        escape_label_value(&scope.dataset_id),
+        escape_label_value(&scope.table_name),
+    )
+}
+
+/// Escape a Prometheus label value: backslash, quote, newline.
+///
+/// Tenant and dataset ids are slugs today, but they arrive from operator
+/// input, and one stray quote would otherwise corrupt the whole exposition
+/// for every scraper.
+fn escape_label_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
 /// Serve the observability endpoints until the process shuts down.
 pub async fn serve(addr: std::net::SocketAddr, state: ObservabilityState) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -355,8 +437,9 @@ mod tests {
         let retention = RetentionMetrics::new();
         let orphan = OrphanMetrics::new();
 
-        compaction.record_job_start();
-        compaction.record_job_success(10, 2, 2048, 1024, Duration::from_millis(500));
+        let scope = JobScope::new("test-tenant", "test-dataset", "traces");
+        compaction.record_job_start(&scope);
+        compaction.record_job_success(&scope, 10, 2, 2048, 1024, Duration::from_millis(500));
         retention.record_partitions_dropped(3);
         retention.record_snapshots_expired(4);
         retention.record_bytes_reclaimed(4096);
@@ -384,7 +467,7 @@ mod tests {
             "compactor_files_deleted_total 7",
             "compactor_bytes_freed_total 8192",
             "compactor_deletion_failures_total 0",
-            "compactor_jobs_succeeded_total 1",
+            "compactor_jobs_succeeded_total{signaldb_tenant_id=\"test-tenant\",signaldb_dataset_id=\"test-dataset\",signaldb_table=\"traces\"} 1",
             "compactor_input_files_total 10",
             "compactor_bytes_reclaimed_total 4096",
             "compactor_unclassifiable_files_total 2",
@@ -475,7 +558,7 @@ mod tests {
         });
 
         let body = reqwest_get(bound, "/metrics").await;
-        assert!(body.contains("compactor_jobs_succeeded_total 1"));
+        assert!(body.contains("compactor_jobs_succeeded_total{signaldb_tenant_id=\"test-tenant\""));
 
         let health = reqwest_get(bound, "/health").await;
         assert_eq!(health, "ok");
