@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787026747085,
+  "lastUpdate": 1787113964144,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -659,6 +659,244 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1136620,
             "range": "± 27495",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "61c9f1bc426edc34516922368ddcfe598d1e62f2",
+          "message": "fix(writer): retire Iceberg WAL markers left by writer ids past retention (#1346)\n\n* fix(writer): retire Iceberg WAL markers left by writer ids past retention\n\nThe WAL to Iceberg idempotency marker is a table property keyed by the\nwriter's id. Nothing ever removed one, so every writer id that has ever\ncommitted to a table left a permanent property there. A writer id is stable per\nWAL directory but a new one is generated whenever that directory is created or\nwiped: a redeploy on ephemeral storage, a WAL quarantined and recreated after\ncorruption (#883), an operator clearing `.data/wal`. The per-tenant WAL fanout\nmultiplies the number of WAL directories, and therefore of writer ids, by\ntenant x dataset x signal.\n\nEvery property lands in `metadata.json`, which #959 fought down from 11.9 MB to\n28.5 KB, and its size is paid on every read and every commit.\n\nMarker values now lead with the commit time, so a marker can be dated and\ntherefore retired. Values written before this have no such field and still\ndecode — they are live idempotency evidence for whichever writer wrote them.\n\nA marker is evidence that its writer committed rows it may not have marked\nprocessed yet, so deleting one that is still needed makes that writer\nre-insert those rows as duplicates on its next replay. Three rules keep that\nfrom happening:\n\n- Never one of ours. Every WAL this process holds has its own writer id and\n  its own marker, and all of them are excluded, not just the one being\n  committed through.\n- Only past `[writer].wal_marker_retention` (default 30 days). A writer that\n  committed inside the window may still be alive and mid-recovery.\n- An undated marker only once this process has itself been up longer than the\n  window. Such a marker could belong to a writer that is healthy but has not\n  committed since the deploy; outliving the window proves otherwise, because a\n  live writer would have rewritten it with a dated one by then.\n\nThe delete is a metadata-only commit asserting the branch's current snapshot,\nso a marker written between the read and the delete fails this commit rather\nthan discarding fresh evidence. Failure is never fatal: the markers stay until\nthe next pass, which runs hourly over the tables this writer commits to.\n\nCloses #1307\n\n* docs(configuration): document the writer wal_marker_retention setting",
+          "timestamp": "2026-08-18T10:56:31Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/61c9f1bc426edc34516922368ddcfe598d1e62f2"
+        },
+        "date": 1787113960987,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1925178,
+            "range": "± 20860",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1168811,
+            "range": "± 17807",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 752275,
+            "range": "± 24684",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1597751,
+            "range": "± 60523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 795102,
+            "range": "± 4700",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1925762,
+            "range": "± 14668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1226764,
+            "range": "± 10627",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1383010,
+            "range": "± 4936",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2574880,
+            "range": "± 198870",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 11730597,
+            "range": "± 89457",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 105451278,
+            "range": "± 5142893",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 3983356,
+            "range": "± 58182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8022951,
+            "range": "± 70237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 14598847,
+            "range": "± 111970",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 28231310,
+            "range": "± 116975",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 958554,
+            "range": "± 4987",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2265193,
+            "range": "± 55893",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3516527,
+            "range": "± 168507",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6408146,
+            "range": "± 163632",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 643031,
+            "range": "± 22233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 20717004,
+            "range": "± 233835",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 26961360,
+            "range": "± 687390",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 25890907,
+            "range": "± 1520819",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 25858620,
+            "range": "± 173475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 25692213,
+            "range": "± 969637",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 6419381,
+            "range": "± 51943",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 15199660,
+            "range": "± 101959",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 32171329,
+            "range": "± 212083",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 28431371,
+            "range": "± 1442289",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 6522785,
+            "range": "± 139494",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 68350266,
+            "range": "± 1408346",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 125417091,
+            "range": "± 1638931",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 133986791,
+            "range": "± 1656273",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1110226,
+            "range": "± 43381",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1057680,
+            "range": "± 9404",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1105505,
+            "range": "± 10086",
             "unit": "ns/iter"
           }
         ]
