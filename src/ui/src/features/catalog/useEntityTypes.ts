@@ -48,6 +48,12 @@ export function toRegistryEntities(hits: EntityHitLike[]): RegistryEntity[] {
   }));
 }
 
+/** Drops the range from a `rangeScopeKey` (`range|tenant|dataset`), leaving
+ * the tenant and dataset a range-independent query should key on. */
+export function tenantScope(rangeKey: string): string {
+  return rangeKey.split("|").slice(1).join("|");
+}
+
 /** The oldest stamp any source reported — the honest age of the whole
  * answer, since one stale source makes the merged view that stale. */
 function oldestAsOf(fields: Map<string, SourceFields>): string | undefined {
@@ -67,28 +73,26 @@ export function useCatalogEntityTypes(
     staleTime: 10 * 60_000,
   });
 
+  // Keyed on tenant and dataset but NOT on the time range: field metadata is
+  // maintained by compaction, and the describe call reports itself as not
+  // window-scoped, so the answer is the same whichever window is selected.
+  // Keying it on the range would refetch all five sources every time someone
+  // touches the range picker, for an identical result.
   const fields = useQuery({
-    queryKey: ["catalog-source-fields", rangeKey],
+    queryKey: ["catalog-source-fields", tenantScope(rangeKey)],
     queryFn: () => fetchAllSourceFields(range),
     staleTime: 60_000,
   });
 
   const isPending = registry.isPending || fields.isPending;
+  const bySource = fields.data ?? new Map<string, SourceFields>();
+  const analyzed = [...bySource.values()].some((f) => f.analyzed);
+  const asOf = oldestAsOf(bySource);
 
-  // Until the field metadata lands there is nothing to filter by. Falling
-  // back to the curated list keeps the nav populated on first paint and on a
-  // registry that fails to load, rather than blanking a working page.
-  if (!fields.data) {
-    return { types: ENTITY_TYPES, isPending, analyzed: false };
-  }
-
-  const analyzed = [...fields.data.values()].some((f) => f.analyzed);
-  const asOf = oldestAsOf(fields.data);
-
-  // No source reported any metadata — because nothing has been compacted
-  // yet, or because the describe calls failed. Either way we know nothing
-  // about what is present, and filtering on that emptiness would delete
-  // every entity type from the nav and report a working deployment as
+  // No source reported any metadata — the fetch has not landed, nothing has
+  // been compacted yet, or the describe calls failed. Either way we know
+  // nothing about what is present, and filtering on that emptiness would
+  // delete every entity type from the nav and report a working deployment as
   // having none. Fall back to the curated list and say it is unanalyzed.
   if (!analyzed) {
     return { types: ENTITY_TYPES, isPending, analyzed: false, asOf };
@@ -99,7 +103,7 @@ export function useCatalogEntityTypes(
     ENTITY_TYPES,
   );
   const fieldsBySource = new Map(
-    [...fields.data].map(([source, f]) => [source, f.fields]),
+    [...bySource].map(([source, f]) => [source, f.fields]),
   );
 
   return {

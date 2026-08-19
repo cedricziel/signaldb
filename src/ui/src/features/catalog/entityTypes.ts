@@ -1,3 +1,5 @@
+import { CATALOG_SOURCES } from "../../api/sourceFields";
+
 // The catalog's entity registry.
 //
 // Every entity type is discovered and measured the same way: group its
@@ -77,6 +79,12 @@ export interface EntityTypeDef {
  * signal a tenant can query, because a resource attribute rides on everything
  * an SDK emits, not just on spans.
  *
+ * This is {@link CATALOG_SOURCES} under the name that reads correctly here.
+ * The two were separate literals holding the same five strings, with nothing
+ * keeping them equal — and they mean the same thing, so a new signal source
+ * must not be able to reach one and miss the other. The API layer owns the
+ * list because it is what talks to the backend.
+ *
  * `metrics` and `profiles` were excluded until #1205 (no logical `timestamp`
  * field, so the "last seen" aggregate 400d) and #1206 (grouping metrics by an
  * unregistered resource attribute 500d) were fixed. Both are closed. Their
@@ -87,18 +95,8 @@ export interface EntityTypeDef {
  * `metrics_histogram` is its own Query IR source but the same OTel signal as
  * `metrics`; both are listed because an entity reporting only histograms
  * would otherwise go undiscovered.
- *
- * Every entry costs one query per entity type per catalog paint. Detecting
- * presence from maintained metadata instead — one call per source, whatever
- * the entity-type count — is the change this list is an interim step toward.
  */
-export const RESOURCE_SOURCES = [
-  "traces",
-  "logs",
-  "metrics",
-  "metrics_histogram",
-  "profiles",
-];
+export const RESOURCE_SOURCES = CATALOG_SOURCES;
 
 export const ENTITY_TYPES: EntityTypeDef[] = [
   {

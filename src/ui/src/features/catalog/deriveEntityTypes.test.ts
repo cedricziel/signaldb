@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveEntityTypes,
+  ENTITY_TYPE_BUDGET,
   observedEntityTypes,
   type RegistryEntity,
 } from "./deriveEntityTypes";
@@ -143,5 +144,48 @@ describe("observedEntityTypes", () => {
 
   it("reports nothing observed when no source carries any identity", () => {
     expect(observedEntityTypes(derived, new Map())).toEqual([]);
+  });
+
+  it("bounds how many entity types a catalog paint can fan out over", () => {
+    // The nav issues one query per entity type per source it carries. The
+    // registry is served with a limit of 200, so an unbounded list is an
+    // unbounded number of concurrent requests from a single page paint —
+    // the ceiling the hand-written list used to provide by construction.
+    const many: RegistryEntity[] = Array.from({ length: 200 }, (_, i) => ({
+      name: `synthetic.type${i}`,
+      identifying: [`synthetic.type${i}.id`],
+    }));
+    const everything = new Map([
+      [
+        "traces",
+        new Set(many.map((e) => e.identifying[0]!).concat("service.name")),
+      ],
+    ]);
+
+    const observed = observedEntityTypes(deriveEntityTypes(many), everything);
+
+    expect(observed.length).toBeLessThanOrEqual(ENTITY_TYPE_BUDGET);
+  });
+
+  it("keeps curated types when the budget truncates registry ones", () => {
+    // Curated types lead the list, so truncation drops the tail — the
+    // registry-derived long tail — rather than the eight pages that carry
+    // the presentation work.
+    const many: RegistryEntity[] = Array.from({ length: 200 }, (_, i) => ({
+      name: `synthetic.type${i}`,
+      identifying: [`synthetic.type${i}.id`],
+    }));
+    const everything = new Map([
+      [
+        "traces",
+        new Set(many.map((e) => e.identifying[0]!).concat("service.name")),
+      ],
+    ]);
+
+    const ids = observedEntityTypes(deriveEntityTypes(many), everything).map(
+      (e) => e.id,
+    );
+
+    expect(ids).toContain("service");
   });
 });

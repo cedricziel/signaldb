@@ -61,13 +61,6 @@ export function buildSourceFieldsDoc(
   };
 }
 
-interface FieldsMetadata {
-  metadata?: {
-    fields?: { name?: string }[];
-    cost?: { as_of?: string };
-  };
-}
-
 /** One source's field set. A source that fails to answer is reported as
  * unanalyzed rather than as empty: a 500 from one signal must not silently
  * delete every entity type that only that signal carries. */
@@ -76,15 +69,11 @@ export async function fetchSourceFields(
   range: ResolvedRange,
 ): Promise<SourceFields> {
   try {
-    const res = (await runIrQuery(
-      buildSourceFieldsDoc(source, range),
-    )) as FieldsMetadata;
+    const res = await runIrQuery(buildSourceFieldsDoc(source, range));
     const fields = res.metadata?.fields ?? [];
     return {
-      fields: new Set(
-        fields.map((f) => f.name).filter((n): n is string => n !== undefined),
-      ),
-      asOf: res.metadata?.cost?.as_of,
+      fields: new Set(fields.map((f) => f.name)),
+      asOf: res.metadata?.cost?.as_of ?? undefined,
       analyzed: fields.length > 0,
     };
   } catch {

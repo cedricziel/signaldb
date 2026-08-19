@@ -35,6 +35,22 @@ import {
   type EntityTypeDef,
 } from "./entityTypes";
 
+/**
+ * How many entity types the nav will render, and therefore fan out queries
+ * over.
+ *
+ * The nav issues one query per entity type per source that type is observed
+ * in. A hand-written list bounded that by construction; a registry does not —
+ * it is served with a limit of 200, so a tenant with a broad custom registry
+ * could otherwise turn one page paint into hundreds of concurrent requests.
+ * The budget restores the ceiling.
+ *
+ * Set well above what any real deployment shows (a live one surfaces nine)
+ * so that truncation is a backstop against a pathological registry, not a
+ * limit a user meets in normal use.
+ */
+export const ENTITY_TYPE_BUDGET = 40;
+
 /** A registry entity definition, narrowed to what deriving a type needs. */
 export interface RegistryEntity {
   /** Entity type name, dotted (`k8s.pod`). */
@@ -127,5 +143,7 @@ export function observedEntityTypes(
     observed.push({ ...type, sources: carrying });
   }
 
-  return observed;
+  // Curated types lead the list, so truncation drops the registry-derived
+  // tail rather than the pages that carry presentation work.
+  return observed.slice(0, ENTITY_TYPE_BUDGET);
 }

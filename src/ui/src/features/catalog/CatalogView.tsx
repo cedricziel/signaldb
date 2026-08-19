@@ -1,10 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import {
-  fetchCatalogEntities,
-  type EntityObservation,
-  type EntityPin,
-  type EntityRed,
-} from "../../api/catalog";
+import { fetchCatalogEntities, type EntityPin } from "../../api/catalog";
 import { GROUP_BUDGET, type GroupSort } from "../../api/traceGroups";
 import { SkeletonRows } from "../explore/Skeleton";
 import { SortTh, useSort } from "../../lib/sortTable";
@@ -13,7 +8,7 @@ import {
   upsertTraceFilter,
   type TraceFilter,
 } from "../../lib/traceFilters";
-import { NOT_SET, compositeKey, formatRate } from "../../lib/traceGroups";
+import { NOT_SET, compositeKey } from "../../lib/traceGroups";
 import {
   formatTimestamp,
   nanosToMs,
@@ -22,8 +17,8 @@ import {
   type ResolvedRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { formatDurationMs } from "../../lib/waterfall";
 import { EntityDetail } from "./EntityDetail";
+import { redDuration, redErrorClass, redErrorRate, redRate } from "./red";
 import {
   DEFAULT_ENTITY_TYPE,
   entityType,
@@ -178,58 +173,6 @@ export function isDrillable(entity: EntityTypeDef): boolean {
 }
 
 /**
- * Which signals cover this entity.
- *
- * Deliberately no counts. How many spans or metric points an entity produced
- * is a fact about our storage, not about the thing being observed — nobody
- * asks "how many samples does this host have". What *is* worth knowing is
- * which signals see it at all, because that is what explains a missing RED
- * measurement: a host covered only by metrics has no error rate because
- * nothing traces it, not because it is healthy.
- */
-export function Observed({
-  observations,
-}: {
-  observations: EntityObservation[];
-}) {
-  return (
-    <span className="entity-observed">
-      {observations.map((o) => (
-        <span key={o.source} className="entity-signal">
-          {o.source}
-        </span>
-      ))}
-    </span>
-  );
-}
-
-/**
- * The RED cells render "–" for an entity carrying no trace measurement, and a
- * real value — including a real zero — for one that does. The distinction is
- * the point: "–" means "no span ever carried this entity, so there is nothing
- * to measure", while "0%" means "spans measured it, and it was clean".
- * Collapsing both to zero reported uninstrumented entities as flawless.
- */
-export function redRate(red: EntityRed | undefined, seconds: number): string {
-  return red ? formatRate(red.traces, seconds) : "–";
-}
-
-export function redErrorRate(red: EntityRed | undefined): string {
-  if (!red) return "–";
-  // `traces` is the population the errors were counted among. An entity with
-  // a `red` was seen in traces so it is never zero, but guarding the division
-  // keeps that a local fact rather than an invariant held at a distance.
-  return `${Math.round((100 * red.errors) / Math.max(1, red.traces))}%`;
-}
-
-export function redDuration(
-  red: EntityRed | undefined,
-  ms: number | undefined,
-): string {
-  return red && ms !== undefined ? formatDurationMs(ms) : "–";
-}
-
-/**
  * The RED table shared by the entity-type list view and (for a
  * `breakdown` dimension, pinned to the parent entity) the detail page —
  * same columns, same sort/loading/empty handling either way. `pinned`
@@ -354,13 +297,11 @@ export function EntityTable({
                   </td>
                 ))}
                 <td className="num">{redRate(g.red, rangeSeconds)}</td>
-                <td
-                  className={`num${(g.red?.errors ?? 0) > 0 ? " err-rate" : ""}`}
-                >
+                <td className={`num${redErrorClass(g.red) ? " err-rate" : ""}`}>
                   {redErrorRate(g.red)}
                 </td>
-                <td className="num">{redDuration(g.red, g.red?.p50Ms)}</td>
-                <td className="num">{redDuration(g.red, g.red?.p95Ms)}</td>
+                <td className="num">{redDuration(g.red, "p50Ms")}</td>
+                <td className="num">{redDuration(g.red, "p95Ms")}</td>
                 <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
               </tr>
             ))

@@ -169,6 +169,14 @@ export function rankOf(entity: CatalogEntity): number {
   return entity.observations.reduce((sum, o) => sum + o.count, 0);
 }
 
+/** One decoded row, before it is attributed to the source it came from. */
+interface SourceRow {
+  values: (string | null)[];
+  count: number;
+  lastNs: string;
+  red?: EntityRed;
+}
+
 /** One source's decoded rows, positional per `buildEntitySourceDoc`: a traces
  * row carries [dims..., n, errors, p50, p95, last]; every other source carries
  * [dims..., n, last] - it asked for no errors/p50/p95 aggs. */
@@ -176,10 +184,10 @@ function decodeSourceRows(
   res: QueryIrResponse,
   dimensionCount: number,
   isTraces: boolean,
-): { rows: CatalogEntity[]; truncated: boolean; source: string } {
+): { rows: SourceRow[]; truncated: boolean } {
   const rows = res.rows ?? [];
   const d = dimensionCount;
-  const decoded = rows.slice(0, GROUP_BUDGET).map((row): CatalogEntity => {
+  const decoded = rows.slice(0, GROUP_BUDGET).map((row): SourceRow => {
     const cells = row as unknown[];
     const values = cells.slice(0, d).map((v) => (v == null ? null : String(v)));
     const num = (i: number) => {
@@ -190,7 +198,7 @@ function decodeSourceRows(
     const count = num(0);
     return {
       values,
-      observations: [{ source: "", count }],
+      count,
       lastNs: lastCell == null ? "0" : String(lastCell),
       red: isTraces
         ? {
@@ -202,7 +210,7 @@ function decodeSourceRows(
         : undefined,
     };
   });
-  return { rows: decoded, truncated: rows.length > GROUP_BUDGET, source: "" };
+  return { rows: decoded, truncated: rows.length > GROUP_BUDGET };
 }
 
 /** `sortRows`'s per-cell accessor. `"last"` sorts as a bigint so an epoch-
@@ -249,10 +257,15 @@ export async function fetchCatalogEntities(
   for (const { source, rows } of perSource) {
     for (const row of rows) {
       const key = compositeKey(row.values);
-      const observation = { source, count: row.observations[0]!.count };
+      const observation = { source, count: row.count };
       const existing = merged.get(key);
       if (!existing) {
-        merged.set(key, { ...row, observations: [observation] });
+        merged.set(key, {
+          values: row.values,
+          observations: [observation],
+          lastNs: row.lastNs,
+          red: row.red,
+        });
         continue;
       }
       existing.observations.push(observation);

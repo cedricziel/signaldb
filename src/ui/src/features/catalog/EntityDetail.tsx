@@ -26,11 +26,14 @@ import {
   drillFilters,
   EntityTable,
   isDrillable,
+} from "./CatalogView";
+import {
   Observed,
   redDuration,
+  redErrorClass,
   redErrorRate,
   redRate,
-} from "./CatalogView";
+} from "./red";
 import {
   DEFAULT_ENTITY_TYPE,
   entityType,
@@ -205,19 +208,17 @@ export function EntityDetail({ state, update }: Props) {
           </div>
           <div>
             <dt>Errors</dt>
-            <dd
-              className={(kpiRow.red?.errors ?? 0) > 0 ? "err-rate" : undefined}
-            >
+            <dd className={redErrorClass(kpiRow.red) ? "err-rate" : undefined}>
               {redErrorRate(kpiRow.red)}
             </dd>
           </div>
           <div>
             <dt>P50</dt>
-            <dd>{redDuration(kpiRow.red, kpiRow.red?.p50Ms)}</dd>
+            <dd>{redDuration(kpiRow.red, "p50Ms")}</dd>
           </div>
           <div>
             <dt>P95</dt>
-            <dd>{redDuration(kpiRow.red, kpiRow.red?.p95Ms)}</dd>
+            <dd>{redDuration(kpiRow.red, "p95Ms")}</dd>
           </div>
           <div>
             <dt>Last seen</dt>

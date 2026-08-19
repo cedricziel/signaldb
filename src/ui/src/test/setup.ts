@@ -6,22 +6,38 @@ afterEach(() => {
   cleanup();
 });
 
-// The app formats numbers in the viewer's own locale — `Intl.NumberFormat()`
-// and `toLocaleString()` with no explicit locale — which is right for users
-// and non-deterministic for tests: `2018` renders "2,018" under en-US and
-// "2.018" under de-DE, so assertions pass or fail according to the developer's
-// shell rather than the code. Pin the default for the test process only. Tests
-// that pass an explicit locale are untouched, and production behavior is
-// unchanged: this shim exists nowhere but here.
+// The app formats in the viewer's own locale — `Intl.NumberFormat()`,
+// `Intl.DateTimeFormat()`, and `toLocaleString()` with no explicit locale —
+// which is right for users and non-deterministic for tests: `2018` renders
+// "2,018" under en-US and "2.018" under de-DE, and dates differ likewise, so
+// assertions pass or fail according to the developer's shell rather than the
+// code. Pin the default for the test process only. Tests that pass an
+// explicit locale are untouched, and production behavior is unchanged: this
+// shim exists nowhere but here.
+//
+// Pinning the process locale instead (`LC_ALL`) would cover every
+// locale-sensitive built-in at once and is what CI effectively does, but it
+// has to be set before the process starts — there is no portable way to do
+// that from an npm script, and Node has no `--icu-default-locale` flag to
+// reach for. So the surfaces are patched individually; anything added here
+// must cover both the `Intl` constructor and the matching `toLocale*`
+// prototype methods, since code in this repo uses both.
 const TEST_LOCALE = "en-US";
 
-const RealNumberFormat = Intl.NumberFormat;
-Intl.NumberFormat = new Proxy(RealNumberFormat, {
-  apply: (target, _this, args: Parameters<typeof Intl.NumberFormat>) =>
-    target(args[0] ?? TEST_LOCALE, args[1]),
-  construct: (target, args: Parameters<typeof Intl.NumberFormat>) =>
-    new target(args[0] ?? TEST_LOCALE, args[1]),
-});
+function pinLocale<T extends object>(target: T): T {
+  return new Proxy(target, {
+    apply: (fn, _this, args: unknown[]) =>
+      (fn as (...a: unknown[]) => unknown)(args[0] ?? TEST_LOCALE, args[1]),
+    construct: (fn, args: unknown[]) =>
+      new (fn as new (...a: unknown[]) => object)(
+        args[0] ?? TEST_LOCALE,
+        args[1],
+      ),
+  });
+}
+
+Intl.NumberFormat = pinLocale(Intl.NumberFormat);
+Intl.DateTimeFormat = pinLocale(Intl.DateTimeFormat);
 
 const realNumberToLocaleString = Number.prototype.toLocaleString;
 Number.prototype.toLocaleString = function (
@@ -30,6 +46,23 @@ Number.prototype.toLocaleString = function (
 ) {
   return realNumberToLocaleString.call(this, locales ?? TEST_LOCALE, options);
 };
+
+// `Date.prototype.toLocaleString` is a different method from the Number one
+// and is not covered by the Intl patches above — `RegistryList.tsx` calls it,
+// so leaving it out made the "deterministic suite" claim false.
+for (const method of [
+  "toLocaleString",
+  "toLocaleDateString",
+  "toLocaleTimeString",
+] as const) {
+  const real = Date.prototype[method];
+  Date.prototype[method] = function (
+    locales?: Intl.LocalesArgument,
+    options?: Intl.DateTimeFormatOptions,
+  ) {
+    return real.call(this, locales ?? TEST_LOCALE, options);
+  };
+}
 
 // jsdom reports zero layout sizes, which makes @tanstack/react-virtual render
 // an empty window. Give scroll containers a plausible size so virtualized
