@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -69,6 +69,22 @@ function renderView(state: Partial<ExploreState> = {}) {
 }
 
 describe("CatalogView", () => {
+  it("fetches the selected entity type once, not once per consumer", async () => {
+    // The nav needs a count for every entity type and the table needs the
+    // rows for the selected one — the same aggregate, at the same sort, over
+    // the same window. They must share a cache entry: keyed differently, the
+    // selected type is fetched twice on every paint, doubling the cost of the
+    // one query most likely to be expensive.
+    renderView();
+    await screen.findByRole("complementary", { name: "Entity types" });
+    await waitFor(() => expect(fetchCatalogEntities).toHaveBeenCalled());
+
+    const forSelected = fetchCatalogEntities.mock.calls.filter(
+      ([entity]) => entity.id === "service",
+    );
+    expect(forSelected).toHaveLength(1);
+  });
+
   it("lists every registered entity type in the nav, Services selected by default", async () => {
     renderView();
     const nav = screen.getByRole("complementary", { name: "Entity types" });

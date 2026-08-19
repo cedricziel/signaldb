@@ -100,8 +100,8 @@ function CatalogNav({
 }) {
   const results = useQueries({
     queries: types.map((e) => ({
-      queryKey: ["catalog-entities", e.id, rangeKey, "n", "desc"],
-      queryFn: () => fetchCatalogEntities(e, range),
+      queryKey: entityQueryKey(e.id, rangeKey, NAV_SORT),
+      queryFn: () => fetchCatalogEntities(e, range, NAV_SORT),
       staleTime: 30_000,
     })),
   });
@@ -173,6 +173,38 @@ export function isDrillable(entity: EntityTypeDef): boolean {
 }
 
 /**
+ * The cache key for one entity-type aggregate.
+ *
+ * The nav and the table ask for the same thing about the selected entity
+ * type — same aggregate, same sort, same window — so they must agree on the
+ * key down to the last element, or the selected type is fetched twice on
+ * every paint. They did not: the nav omitted the pin element, so its
+ * five-element key never matched the table's six.
+ *
+ * Deriving both from here is what keeps them in step; a key spelled out at
+ * each call site drifts the moment one gains a dimension.
+ */
+export function entityQueryKey(
+  entityId: string,
+  rangeKey: string,
+  sort: GroupSort,
+  pinned: EntityPin[] = [],
+): (string | undefined)[] {
+  return [
+    "catalog-entities",
+    entityId,
+    rangeKey,
+    sort.key,
+    sort.dir,
+    pinned.map((p) => `${p.field}=${p.value}`).join(","),
+  ];
+}
+
+/** The sort the nav's counts are fetched at — and therefore the sort a table
+ * must be showing for the two to share a cache entry. */
+export const NAV_SORT: GroupSort = { key: "n", dir: "desc" };
+
+/**
  * The RED table shared by the entity-type list view and (for a
  * `breakdown` dimension, pinned to the parent entity) the detail page —
  * same columns, same sort/loading/empty handling either way. `pinned`
@@ -197,16 +229,8 @@ export function EntityTable({
   onRowClick?: (values: (string | null)[]) => void;
 }) {
   const [sort, toggle] = useSort("n", "desc");
-  const pinKey = (pinned ?? []).map((p) => `${p.field}=${p.value}`).join(",");
   const result = useQuery({
-    queryKey: [
-      "catalog-entities",
-      entity.id,
-      rangeKey,
-      sort.key,
-      sort.dir,
-      pinKey,
-    ],
+    queryKey: entityQueryKey(entity.id, rangeKey, sort as GroupSort, pinned),
     queryFn: () =>
       fetchCatalogEntities(entity, range, sort as GroupSort, pinned),
   });
