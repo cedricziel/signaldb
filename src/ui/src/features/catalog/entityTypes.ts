@@ -1,3 +1,5 @@
+import { CATALOG_SOURCES } from "../../api/sourceFields";
+
 // The catalog's entity registry.
 //
 // Every entity type is discovered and measured the same way: group its
@@ -73,15 +75,28 @@ export interface EntityTypeDef {
 }
 
 /**
- * The resource-scoped multi-source list (see `EntityTypeDef.sources`).
- * `metrics` and `profiles` belong here in principle — a resource attribute
- * is attached to every signal an SDK emits — but the backend can't serve
- * them yet: neither source has a logical `timestamp` field, so the
- * "last seen" aggregate 400s (#1205), and grouping `metrics` by any
- * resource attribute other than the handful explicitly registered 500s on
- * a query-planner type mismatch (#1206). Add them back once those land.
+ * The resource-scoped multi-source list (see `EntityTypeDef.sources`): every
+ * signal a tenant can query, because a resource attribute rides on everything
+ * an SDK emits, not just on spans.
+ *
+ * This is {@link CATALOG_SOURCES} under the name that reads correctly here.
+ * The two were separate literals holding the same five strings, with nothing
+ * keeping them equal — and they mean the same thing, so a new signal source
+ * must not be able to reach one and miss the other. The API layer owns the
+ * list because it is what talks to the backend.
+ *
+ * `metrics` and `profiles` were excluded until #1205 (no logical `timestamp`
+ * field, so the "last seen" aggregate 400d) and #1206 (grouping metrics by an
+ * unregistered resource attribute 500d) were fixed. Both are closed. Their
+ * absence was not cosmetic: `process.pid` and `container.name` appear on
+ * metrics and on no other signal in a typical deployment, so the Processes
+ * and Containers pages rendered empty over data that was already stored.
+ *
+ * `metrics_histogram` is its own Query IR source but the same OTel signal as
+ * `metrics`; both are listed because an entity reporting only histograms
+ * would otherwise go undiscovered.
  */
-export const RESOURCE_SOURCES = ["traces", "logs"];
+export const RESOURCE_SOURCES = CATALOG_SOURCES;
 
 export const ENTITY_TYPES: EntityTypeDef[] = [
   {

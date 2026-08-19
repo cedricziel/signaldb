@@ -118,14 +118,3 @@ export function formatDurationMs(ms: number): string {
   if (ms >= 1) return `${ms.toFixed(ms < 10 ? 1 : 0)} ms`;
   return `${(ms * 1000).toFixed(0)} µs`;
 }
-
-/** Like {@link formatDurationMs}, but for a duration that may not exist at
- * all — e.g. a catalog entity discovered only via a non-trace signal, which
- * carries no span duration to measure (`TraceGroup.traceCount === 0`).
- * `0ms` would misreport that as a real (if implausibly fast) measurement. */
-export function formatDurationMsOrDash(
-  traceCount: number | undefined,
-  ms: number,
-): string {
-  return traceCount === 0 ? "–" : formatDurationMs(ms);
-}

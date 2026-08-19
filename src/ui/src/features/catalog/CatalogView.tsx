@@ -8,7 +8,7 @@ import {
   upsertTraceFilter,
   type TraceFilter,
 } from "../../lib/traceFilters";
-import { NOT_SET, compositeKey, formatRate } from "../../lib/traceGroups";
+import { NOT_SET, compositeKey } from "../../lib/traceGroups";
 import {
   formatTimestamp,
   nanosToMs,
@@ -17,14 +17,14 @@ import {
   type ResolvedRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { formatDurationMsOrDash } from "../../lib/waterfall";
 import { EntityDetail } from "./EntityDetail";
+import { redDuration, redErrorClass, redErrorRate, redRate } from "./red";
 import {
   DEFAULT_ENTITY_TYPE,
-  ENTITY_TYPES,
   entityType,
   type EntityTypeDef,
 } from "./entityTypes";
+import { useCatalogEntityTypes } from "./useEntityTypes";
 import "./catalog.css";
 
 interface Props {
@@ -46,15 +46,25 @@ export function CatalogView({ state, update }: Props) {
 
   const range = resolveRange(state.range, Date.now());
   const rangeKey = rangeScopeKey(state);
+  const { types, analyzed, asOf } = useCatalogEntityTypes(range, rangeKey);
+  // Selection resolves against the observed set first so a registry-derived
+  // type is addressable by URL, then falls back to the curated list — a
+  // bookmarked entity type stays openable while its data is out of window.
   const selected =
-    entityType(state.catalogEntity) ?? entityType(DEFAULT_ENTITY_TYPE)!;
+    types.find((e) => e.id === state.catalogEntity) ??
+    entityType(state.catalogEntity) ??
+    types[0] ??
+    entityType(DEFAULT_ENTITY_TYPE)!;
 
   return (
     <div className="catalog">
       <CatalogNav
+        types={types}
         selectedId={selected.id}
         range={range}
         rangeKey={rangeKey}
+        analyzed={analyzed}
+        asOf={asOf}
         onSelect={(id) => update({ catalogEntity: id })}
       />
       <EntityTable
@@ -72,18 +82,24 @@ export function CatalogView({ state, update }: Props) {
 }
 
 function CatalogNav({
+  types,
   selectedId,
   range,
   rangeKey,
+  analyzed,
+  asOf,
   onSelect,
 }: {
+  types: EntityTypeDef[];
   selectedId: string;
   range: ResolvedRange;
   rangeKey: string;
+  analyzed: boolean;
+  asOf?: string;
   onSelect: (id: string) => void;
 }) {
   const results = useQueries({
-    queries: ENTITY_TYPES.map((e) => ({
+    queries: types.map((e) => ({
       queryKey: ["catalog-entities", e.id, rangeKey, "n", "desc"],
       queryFn: () => fetchCatalogEntities(e, range),
       staleTime: 30_000,
@@ -94,12 +110,12 @@ function CatalogNav({
     <aside className="sidebar" aria-label="Entity types">
       <div className="sidebar-head">Entities</div>
       <div className="fieldlist">
-        {ENTITY_TYPES.map((e, i) => {
+        {types.map((e, i) => {
           const result = results[i];
           const countLabel = result?.data
             ? result.data.truncated
               ? `${GROUP_BUDGET}+`
-              : String(result.data.groups.length)
+              : String(result.data.entities.length)
             : "…";
           return (
             <button
@@ -113,6 +129,14 @@ function CatalogNav({
             </button>
           );
         })}
+      </div>
+      {/* Absence of an entity type is a claim about the data; absence of
+          metadata is a claim about what we know. Saying so keeps a
+          never-compacted deployment from reading as an empty one. */}
+      <div className="sidebar-note">
+        {analyzed
+          ? asOf && `Field metadata as of ${asOf}`
+          : "Not analyzed yet — entity types appear once compaction has run."}
       </div>
     </aside>
   );
@@ -188,8 +212,8 @@ export function EntityTable({
   });
 
   const pending = result.isPending;
-  const rows = result.data?.groups ?? [];
-  const columns = entity.identity.length + 6;
+  const rows = result.data?.entities ?? [];
+  const columns = entity.identity.length + 5;
   const done = !pending && result.data !== undefined;
 
   return (
@@ -214,13 +238,6 @@ export function EntityTable({
             {entity.identity.map((dim) => (
               <th key={dim}>{dim}</th>
             ))}
-            <SortTh
-              label="Count"
-              sortKey="n"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
             <SortTh
               label="Rate"
               sortKey="n"
@@ -279,19 +296,12 @@ export function EntityTable({
                     {v ?? NOT_SET}
                   </td>
                 ))}
-                <td className="num">{g.count}</td>
-                <td className="num">{formatRate(g.count, rangeSeconds)}</td>
-                <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
-                  {g.errors > 0
-                    ? `${Math.round((100 * g.errors) / (g.traceCount ?? g.count))}%`
-                    : "–"}
+                <td className="num">{redRate(g.red, rangeSeconds)}</td>
+                <td className={`num${redErrorClass(g.red) ? " err-rate" : ""}`}>
+                  {redErrorRate(g.red)}
                 </td>
-                <td className="num">
-                  {formatDurationMsOrDash(g.traceCount, g.p50Ms)}
-                </td>
-                <td className="num">
-                  {formatDurationMsOrDash(g.traceCount, g.p95Ms)}
-                </td>
+                <td className="num">{redDuration(g.red, "p50Ms")}</td>
+                <td className="num">{redDuration(g.red, "p95Ms")}</td>
                 <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
               </tr>
             ))

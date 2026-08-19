@@ -48,7 +48,7 @@ describe("ENTITY_TYPES", () => {
     }
   });
 
-  it("discovers resource-scoped entity types from traces and logs", () => {
+  it("discovers resource-scoped entity types from every signal", () => {
     for (const id of [
       "service",
       "host",
@@ -59,6 +59,20 @@ describe("ENTITY_TYPES", () => {
     ]) {
       expect(entityType(id)?.sources).toEqual(RESOURCE_SOURCES);
     }
+  });
+
+  it("counts every queryable signal as carrying resource attributes", () => {
+    // A resource attribute rides on everything an SDK emits, so leaving a
+    // signal out of this list hides any entity that only reports through it —
+    // which is exactly what kept processes (`process.pid`, a metrics-only
+    // attribute in practice) invisible while their data was already stored.
+    expect(RESOURCE_SOURCES).toEqual([
+      "traces",
+      "logs",
+      "metrics",
+      "metrics_histogram",
+      "profiles",
+    ]);
   });
 
   it("leaves span-attribute entity types trace-only", () => {
