@@ -351,6 +351,11 @@ async fn scan_source_tables(
             for (table_ref, provider) in providers {
                 let provider = CoercedTableProvider::wrap(provider, source.row_defaults, &targets)?;
                 let df = scan_provider(ctx, table_ref, provider)?;
+                // Now an identity projection — the provider above already
+                // presents exactly `row_defaults`, in order. Kept so the two
+                // branches carry the same unqualified column names into the
+                // union regardless of their table qualifiers, not because it
+                // selects or reorders anything.
                 let proj: Vec<Expr> = source.row_defaults.iter().map(|c| col(*c)).collect();
                 let projected = df.select(proj).map_err(QuerierError::QueryFailed)?;
                 union = Some(match union {
@@ -436,9 +441,13 @@ struct CoercedTableProvider {
 impl CoercedTableProvider {
     /// Present `inner` as `columns`, coerced to `targets`.
     ///
-    /// Returns `inner` untouched only when it already *is* that schema —
-    /// same columns, same order, same types — so a single-table source and a
-    /// table that happens to match pay nothing.
+    /// Returns `inner` untouched only when it already *is* that schema: same
+    /// columns, same order, same types. In practice no real table matches —
+    /// `row_defaults` is a strict subset of a physical schema, which also
+    /// carries `date_day`/`hour` and the rest — so this is an identity check
+    /// rather than an optimization for any known caller. (A single-table
+    /// source never reaches here at all: `scan_source_tables` returns before
+    /// the union branch.)
     fn wrap(
         inner: Arc<dyn TableProvider>,
         columns: &[&str],
