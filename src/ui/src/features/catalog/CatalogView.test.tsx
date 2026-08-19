@@ -7,6 +7,7 @@ import { CatalogView, drillFilters, isDrillable } from "./CatalogView";
 import { compositeKey } from "../../lib/traceGroups";
 import type { EntityTypeDef } from "./entityTypes";
 import * as catalogApi from "../../api/catalog";
+import * as sourceFieldsApi from "../../api/sourceFields";
 import type { CatalogEntity, EntityObservation } from "../../api/catalog";
 
 // The entity table is a server-side aggregate (see api/catalog) — mocked at
@@ -17,8 +18,14 @@ vi.mock("../../api/catalog", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/catalog")>();
   return { ...actual, fetchCatalogEntities: vi.fn() };
 });
+vi.mock("../../api/sourceFields", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/sourceFields")>();
+  return { ...actual, fetchFieldValueSketch: vi.fn() };
+});
 
 const fetchCatalogEntities = vi.mocked(catalogApi.fetchCatalogEntities);
+const fetchFieldValueSketch = vi.mocked(sourceFieldsApi.fetchFieldValueSketch);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -27,6 +34,8 @@ afterEach(() => {
 beforeEach(() => {
   fetchCatalogEntities.mockReset();
   fetchCatalogEntities.mockResolvedValue({ entities: [], truncated: false });
+  fetchFieldValueSketch.mockReset();
+  fetchFieldValueSketch.mockResolvedValue(undefined);
 });
 
 /** An entity traces observed, optionally also seen in other signals. */
@@ -206,6 +215,48 @@ describe("CatalogView", () => {
     expect(within(row).getByText("batch-worker")).toBeInTheDocument();
     expect(within(row).queryByText("0%")).not.toBeInTheDocument();
     expect(within(row).queryByText("0 ms")).not.toBeInTheDocument();
+  });
+});
+
+describe("the empty state", () => {
+  it("separates 'none in this window' from 'none ever'", async () => {
+    // The value sketch is not window-scoped, so it cannot list what is here —
+    // but it can say the attribute has values elsewhere, which turns a dead
+    // end into "widen the range".
+    fetchFieldValueSketch.mockResolvedValue({
+      distinct: 3,
+      examples: ["ix-signaldb-mcp-1"],
+      asOf: "2026-08-19 07:13:57",
+    });
+    renderView({ catalogEntity: "host" });
+
+    const note = await screen.findByText(/No hosts observed in this window/);
+    expect(note).toHaveTextContent("3 values have been seen outside it");
+    expect(note).toHaveTextContent("2026-08-19 07:13:57");
+    expect(note).toHaveTextContent("Try a wider time range");
+  });
+
+  it("claims nothing when no statistics cover the attribute", async () => {
+    // The common case. Silence here is the honest answer: an uncompacted
+    // deployment knows nothing about what exists outside the window, and
+    // saying "none have ever been seen" would be a claim we cannot support.
+    fetchFieldValueSketch.mockResolvedValue(undefined);
+    renderView({ catalogEntity: "host" });
+
+    const note = await screen.findByText(/No hosts observed in this window/);
+    expect(note).not.toHaveTextContent("seen outside it");
+    expect(note).not.toHaveTextContent("wider time range");
+  });
+
+  it("reads naturally when the sketch holds a single value", async () => {
+    fetchFieldValueSketch.mockResolvedValue({
+      distinct: 1,
+      examples: ["db-01"],
+    });
+    renderView({ catalogEntity: "host" });
+
+    const note = await screen.findByText(/No hosts observed in this window/);
+    expect(note).toHaveTextContent("One value has been seen outside it");
   });
 });
 

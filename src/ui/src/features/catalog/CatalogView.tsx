@@ -1,6 +1,7 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { fetchCatalogEntities, type EntityPin } from "../../api/catalog";
 import { GROUP_BUDGET, type GroupSort } from "../../api/traceGroups";
+import { fetchFieldValueSketch } from "../../api/sourceFields";
 import { SkeletonRows } from "../explore/Skeleton";
 import { SortTh, useSort } from "../../lib/sortTable";
 import {
@@ -205,6 +206,63 @@ export function entityQueryKey(
 export const NAV_SORT: GroupSort = { key: "n", dir: "desc" };
 
 /**
+ * An empty result, said as precisely as the data allows.
+ *
+ * "No hosts in this window" and "no host has ever reported" are different
+ * findings — the second is a reason to go and look at your instrumentation,
+ * the first is a reason to widen the range — and a bare empty table conflates
+ * them.
+ *
+ * The maintained value sketch can tell them apart, and this is the only thing
+ * in the catalog it may be asked. It reports `window_scoped: false`: it
+ * describes what compaction last saw, never the selected range. So it can say
+ * "this attribute has values, just not here", and it must never be used to
+ * list them as though they were current — an entity last seen days ago would
+ * appear to someone who narrowed to fifteen minutes.
+ *
+ * Consulted only once the window has come back empty, so the common path
+ * costs nothing.
+ */
+function EmptyEntityState({
+  entity,
+  range,
+}: {
+  entity: EntityTypeDef;
+  range: ResolvedRange;
+}) {
+  const primary = entity.identity[0]!;
+  const sources = entity.sources ?? ["traces"];
+  const sketch = useQuery({
+    queryKey: ["catalog-empty-sketch", entity.id, primary, sources[0]],
+    queryFn: () => fetchFieldValueSketch(sources[0]!, primary, range),
+    staleTime: 5 * 60_000,
+  });
+
+  return (
+    <div className="traces-note">
+      No {entity.label.toLowerCase()} observed in this window — no matching{" "}
+      <code>{primary}</code> value seen in {sources.join(" or ")}.
+      {sketch.data && (
+        <>
+          {" "}
+          {sketch.data.distinct === 1
+            ? "One value has"
+            : `${sketch.data.distinct} values have`}{" "}
+          been seen outside it
+          {sketch.data.asOf ? ` (as of ${sketch.data.asOf})` : ""}
+          {sketch.data.examples.length > 0 && (
+            <>
+              , such as <code>{sketch.data.examples[0]}</code>
+            </>
+          )}
+          . Try a wider time range.
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
  * The RED table shared by the entity-type list view and (for a
  * `breakdown` dimension, pinned to the parent entity) the detail page —
  * same columns, same sort/loading/empty handling either way. `pinned`
@@ -333,11 +391,7 @@ export function EntityTable({
         </tbody>
       </table>
       {done && rows.length === 0 && (
-        <div className="traces-note">
-          No {entity.label.toLowerCase()} observed in this window — no matching{" "}
-          <code>{entity.identity[0]}</code> value seen in{" "}
-          {(entity.sources ?? ["traces"]).join(" or ")}.
-        </div>
+        <EmptyEntityState entity={entity} range={range} />
       )}
       {result.data?.truncated && (
         <div className="traces-note">
