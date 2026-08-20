@@ -170,8 +170,8 @@ Two consequences worth stating before someone hits them:
    foreign type, so lowering becomes a free function
    `search_filter::to_expr(cond, ctx)` (or a private extension trait). Purely
    mechanical, but it touches every call site.
-2. **`ParseError` must have exactly two variants, and the split is not where it
-   sits today.** The parser currently builds `QuerierError::Unsupported` for
+2. **`ParseError` needs two variants today, and the split is not where it
+   sits.** The parser currently builds `QuerierError::Unsupported` for
    _every_ structural rejection — including input that is not TraceQL at all —
    and reserves `InvalidInput` for bad value literals. So `q=notbraces` answers 501. The extracted parser draws the line by the language instead:
 
@@ -179,6 +179,13 @@ Two consequences worth stating before someone hits them:
    | -------------------- | ---------------------------------------- | ---------------------------------- |
    | `Syntax`             | not parseable as TraceQL                 | `QuerierError::InvalidInput` → 400 |
    | `Unsupported`        | valid TraceQL, construct not implemented | `QuerierError::Unsupported` → 501  |
+   | _any future variant_ | unknown to this build                    | `QuerierError::Unsupported` → 501  |
+
+   Two variants is the count today, not a ceiling: D5 marks `ParseError`
+   `#[non_exhaustive]`, so a newer parser may add a class this build predates.
+   The `From` impl therefore needs a third arm, and it maps to **501**, not 400
+   — a rejection this build cannot interpret is our gap, not the client's
+   mistake, and 400 would tell them to fix a query that may be perfectly valid.
 
    Three rejections move 501 → 400 as a result (no spanset braces; a clause with
    no comparison operator; an unknown selector spelling). That is the BREAKING
