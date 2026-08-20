@@ -106,8 +106,9 @@ attributes. An empty spanset SHALL select all traces.
 
 #### Scenario: Operators outside the subset are rejected as unsupported
 
-- **WHEN** a client uses a comparison, regex, negation, disjunction, or
-  duration matcher outside the implemented subset
+- **WHEN** a client uses an ordering comparison, a regex match, a negation, a
+  disjunction, or a duration matcher — equality being the only comparison the
+  subset implements
 - **THEN** the query is rejected as unsupported, naming the construct, rather
   than being approximated or ignored
 
