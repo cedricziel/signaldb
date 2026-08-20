@@ -10,6 +10,7 @@ sources:
   - src/signaldb-api/src/**
   - src/common/src/tenant_api.rs
   - xtask/src/main.rs
+  - xtask/src/tempopb.rs
   - src/ui/openapi-ts.config.ts
   - api/signaldb-api.json
 ---
@@ -119,10 +120,30 @@ UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date
 # CI runs the same test without the env var, so a stale spec fails the build.
 ```
 
+## What xtask generates
+
+`cargo xtask generate` produces every committed generated artifact;
+`cargo xtask check` verifies they are current and is what CI gates on. Two
+groups, sharing one `write_or_check` contract — generate to a scratch
+location, then either write the file or fail with a diff:
+
+| Artifact | From |
+| --- | --- |
+| Rust SDK (`signaldb-sdk`) | `api/signaldb-api.json` |
+| TypeScript client (`src/ui/src/api/gen`) | `api/signaldb-api.json` |
+| `tempo-api` protobuf bindings (`src/tempo-api/src/generated/*.rs`) | `src/tempo-api/proto/tempo.proto` + the `opentelemetry-proto` submodule |
+
+The protobuf half lives here rather than in a build script because a build
+script may only write into `OUT_DIR`, and these outputs are committed. The
+previous `src/tempo-api/build.rs` wrote into the package directory and read a
+submodule outside the crate root, which meant `tempo-api` could never package
+at all; see `xtask/src/tempopb.rs`. Regenerating it needs
+`git submodule update --init opentelemetry-proto` and `protoc`, neither of
+which an ordinary `cargo build` requires any more.
+
 ## Downstream clients
 
-`cargo xtask generate` reads `api/signaldb-api.json` and regenerates both
-clients; `cargo xtask check` verifies they are current (used in CI):
+The two OpenAPI-derived clients:
 
 - **Rust SDK** (`signaldb-sdk`, consumed by `signaldb-cli` and `mcp-server`)
   via progenitor. xtask sets `with_inner_type(crate::retry::RetryPolicy)`, so

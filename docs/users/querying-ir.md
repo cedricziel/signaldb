@@ -4,7 +4,7 @@ type: reference
 status: living
 sources:
   - src/router/src/endpoints/query.rs
-  - src/common/src/query_ir/**
+  - src/query-ir/src/**
   - src/querier/src/query/ir_planner.rs
   - src/signaldb-cli/src/commands/query.rs
 ---
