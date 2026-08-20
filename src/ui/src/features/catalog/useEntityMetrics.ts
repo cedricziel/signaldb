@@ -9,15 +9,27 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import {
+  fetchEntitySparklines,
+  headlineMetric,
+} from "../../api/entitySparkline";
+import {
   discoverObservedMetricNames,
   fetchEntityMetricNames,
   fetchMetricDefinitions,
   METRIC_SOURCES,
 } from "../../api/entityMetrics";
 import type { MetricHit } from "../schema/api";
-import type { ResolvedRange } from "../../lib/time";
+import type { IrSeries } from "../../api/entityMetrics";
+import {
+  durationToSeconds,
+  stepForRange,
+  type ResolvedRange,
+} from "../../lib/time";
 import type { EntityTypeDef } from "./entityTypes";
 import { tenantScope } from "./useEntityTypes";
+
+/** Points per sparkline — enough shape to read a trend at cell size. */
+const SPARKLINE_POINTS = 40;
 
 export interface EntityMetrics {
   /** The entity's associated metric definitions observed in this window. */
@@ -36,10 +48,12 @@ export function useEntityMetrics(
   entity: EntityTypeDef,
   range: ResolvedRange,
   rangeKey: string,
+  /** Callers that cannot show metrics skip the fetches entirely. */
+  wanted = true,
 ): EntityMetrics {
   // An entity type no visible registry declares has no association to look
   // up, so neither fetch has a question to ask.
-  const enabled = entity.registryEntity !== undefined;
+  const enabled = wanted && entity.registryEntity !== undefined;
 
   const observed = useQuery({
     queryKey: ["entity-metric-names", rangeKey],
@@ -84,4 +98,38 @@ export function useEntityMetrics(
     isPending: enabled && (observed.isPending || definitions.isPending),
     isError: observed.isError || definitions.isError,
   };
+}
+
+/**
+ * The entity list's sparkline column: which metric it charts, and each row's
+ * series.
+ *
+ * One hook rather than two data-fetching primitives at the call site, and an
+ * explicit `wanted` rather than an inferred guard — `EntityTable` is shared
+ * with the breakdown and top-values tables, whose synthetic entity types
+ * happen to carry no registry name today. That is a coincidence in another
+ * file, not a contract, so the caller says whether it wants the column.
+ */
+export function useSparklineColumn(
+  entity: EntityTypeDef,
+  range: ResolvedRange,
+  rangeKey: string,
+  wanted: boolean,
+): { headline?: MetricHit; byRow: Map<string, IrSeries> } {
+  const { metrics } = useEntityMetrics(entity, range, rangeKey, wanted);
+  const headline = wanted ? headlineMetric(metrics) : undefined;
+
+  const series = useQuery({
+    queryKey: ["entity-sparklines", entity.id, rangeKey, headline?.name],
+    queryFn: () =>
+      fetchEntitySparklines(
+        headline!,
+        entity.identity,
+        range,
+        durationToSeconds(stepForRange(range, SPARKLINE_POINTS)) ?? 60,
+      ),
+    enabled: headline !== undefined,
+  });
+
+  return { headline, byRow: series.data ?? new Map() };
 }

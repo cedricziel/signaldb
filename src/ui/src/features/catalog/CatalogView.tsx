@@ -30,13 +30,8 @@ import {
   type EntityTypeDef,
 } from "./entityTypes";
 import { useCatalogEntityTypes } from "./useEntityTypes";
-import { useEntityMetrics } from "./useEntityMetrics";
-import {
-  fetchEntitySparklines,
-  headlineMetric,
-} from "../../api/entitySparkline";
+import { useSparklineColumn } from "./useEntityMetrics";
 import { EntitySparkline } from "./EntitySparkline";
-import { durationToSeconds, stepForRange } from "../../lib/time";
 import "./catalog.css";
 
 interface Props {
@@ -124,6 +119,7 @@ export function CatalogView({ state, update }: Props) {
         range={range}
         rangeKey={rangeKey}
         rangeSeconds={catalogRangeSeconds(range)}
+        sparkline
         onRowClick={(values) =>
           update({ catalogPrimary: compositeKey(values) }, { push: true })
         }
@@ -325,6 +321,7 @@ export function EntityTable({
   rangeKey,
   rangeSeconds,
   pinned,
+  sparkline = false,
   onRowClick,
 }: {
   entity: EntityTypeDef;
@@ -332,6 +329,14 @@ export function EntityTable({
   rangeKey: string;
   rangeSeconds: number;
   pinned?: EntityPin[];
+  /**
+   * Whether this table wants the entity type's headline-metric sparkline.
+   *
+   * Opt-in rather than inferred: this component is shared with the detail
+   * page's breakdown and top-values tables, whose entity types are synthetic
+   * and describe a dimension rather than an entity.
+   */
+  sparkline?: boolean;
   /** Omit for a read-only table (e.g. a `topValues` ranking with nothing
    * to drill into) — rows render without a click affordance. */
   onRowClick?: (values: (string | null)[]) => void;
@@ -343,22 +348,12 @@ export function EntityTable({
       fetchCatalogEntities(entity, range, sort as GroupSort, pinned),
   });
 
-  // The column exists only where the registry associates a metric with this
-  // entity type — so a breakdown or top-values table, whose entity type is
-  // synthetic and carries no registry name, never grows one.
-  const { metrics } = useEntityMetrics(entity, range, rangeKey);
-  const headline = headlineMetric(metrics);
-  const sparklines = useQuery({
-    queryKey: ["entity-sparklines", entity.id, rangeKey, headline?.name],
-    queryFn: () =>
-      fetchEntitySparklines(
-        headline!,
-        entity.identity,
-        range,
-        durationToSeconds(stepForRange(range, 40)) ?? 60,
-      ),
-    enabled: headline !== undefined,
-  });
+  const { headline, byRow } = useSparklineColumn(
+    entity,
+    range,
+    rangeKey,
+    sparkline,
+  );
 
   const pending = result.isPending;
   const rows = result.data?.entities ?? [];
@@ -458,7 +453,7 @@ export function EntityTable({
                 {headline && (
                   <td className="entity-sparkline-cell">
                     <EntitySparkline
-                      series={sparklines.data?.get(compositeKey(g.values)) ?? []}
+                      series={byRow.get(compositeKey(g.values)) ?? []}
                       label={headline.name}
                     />
                   </td>
