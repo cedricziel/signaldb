@@ -10,7 +10,7 @@ sources:
   - src/pyroscope-api/**
   - src/tempo-api/**
   - scripts/check-ql-purity.sh
-  - release-please-config.ql.json
+  - release-please-config.json
 ---
 
 # Compatibility Crates
@@ -85,10 +85,13 @@ engineer around with a permissive re-licence.
 
 ## Publishing
 
-`logql-parser` and `traceql-parser` publish to crates.io on **their own
-release-please train** (`release-please-config.ql.json`,
-`.github/workflows/release-ql-crates.yml`), so a parser fix ships without a
-product release. The package names carry a `-parser` suffix because a bare
+`logql-parser` and `traceql-parser` publish to crates.io from
+`.github/workflows/release-please.yml`. Both are marked
+`"separate-pull-requests": true` in `release-please-config.json` — a
+**per-package** option — so each gets its own release PR and ships without
+waiting on a product release, while every other package keeps sharing one. The
+`publish-ql-crates` job is gated on each crate's own `--release_created`
+output, so releasing one never republishes the other. The package names carry a `-parser` suffix because a bare
 `logql` was taken in 2022; `[lib] name` keeps the import path short, and the
 root manifest's `package` key keeps the dependency name stable:
 

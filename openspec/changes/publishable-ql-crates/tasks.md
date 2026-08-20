@@ -99,30 +99,24 @@ InvalidInput` and `Unsupported → Unsupported`.
 
 ## 6. Standalone release train and publication (D9)
 
-- [x] 6.1 Create `release-please-config.ql.json` and
-      `.release-please-manifest.ql.json` covering only `src/logql` and
-      `src/traceql`. Carry `logql`'s current version (`0.1.2`) over verbatim.
-      Per package: `"release-type": "rust"` (manifest mode defaults to the Node
-      strategy, which would look for a `package.json` instead of `Cargo.toml`),
-      plus an explicit `component` (`logql-parser`, `traceql-parser`) so tags
-      match the crates.io names. At the config root, the distinct labels:
-      `"label": "autorelease-ql: pending"`,
-      `"release-label": "autorelease-ql: tagged"` (D9, gotcha 1).
-- [x] 6.2 Remove `src/logql` from `release-please-config.json` and
-      `.release-please-manifest.json`. Record in the proposal — **not** as a
-      JSON comment, which is a parse error — that the `cargo-workspace` plugin
-      no longer sees these crates (D9, gotcha 2).
-- [x] 6.3 Add `.github/workflows/release-ql-crates.yml`: `release-please-action@v5`
-      with `config-file`/`manifest-file` pointing at the `.ql` pair. The labels
-      come from the config (6.1) — the action exposes no `label` input.
-- [x] 6.4 In that workflow, give the release-please step `id: release` (the
-      per-package outputs are addressed through it), add an `actions/checkout`
-      step, then a `cargo publish` step per crate gated on
-      `steps.release.outputs['src/logql--release_created']` and
-      `steps.release.outputs['src/traceql--release_created']`, with
-      `CARGO_REGISTRY_TOKEN` from the repository secret. Gate each crate on its
-      *own* output: releasing one must not republish the other. Both are leaves,
-      so there is no publish ordering.
+- [x] 6.1 Add `src/traceql` to `release-please-config.json` and
+      `.release-please-manifest.json`, and mark both QL packages
+      `"separate-pull-requests": true` — a per-package option, so each gets its
+      own release PR while the other eighteen keep sharing one. Per package:
+      `"release-type": "rust"` (manifest mode defaults to the Node strategy,
+      which would look for a `package.json`) and an explicit `component`
+      (`logql-parser`, `traceql-parser`) so tags match the crates.io names.
+- [x] 6.2 No second config, manifest, or workflow — `separate-pull-requests`
+      being per-package makes them unnecessary. The `cargo-workspace` plugin
+      keeps covering both crates, and there are no release-PR labels to keep
+      distinct.
+- [x] 6.3 Expose `src/logql--release_created` and `src/traceql--release_created`
+      as outputs of the existing release-please job.
+- [x] 6.4 Add a `publish-ql-crates` job to `release-please.yml`: checkout,
+      toolchain, then a `cargo publish` step per crate gated on that crate's
+      own `--release_created` output, with `CARGO_REGISTRY_TOKEN` from the
+      repository secret. Releasing one must not republish the other. Both are
+      leaves, so there is no publish ordering.
 - [x] 6.5 Add `cargo publish --dry-run -p logql-parser -p traceql-parser` to
       `.github/workflows/ci.yml` (D7). Verify it fails when a `path`
       dependency on a workspace crate is added, then revert the probe.
@@ -139,12 +133,11 @@ InvalidInput` and `Unsupported → Unsupported`.
 - [ ] 6.8 After the first release: verify `cargo add logql-parser` /
       `traceql-parser` works from an empty scratch crate outside the workspace
       and that `cargo tree` shows no SignalDB dependency.
-- [ ] 6.10 Verify the two trains are actually isolated, in both directions:
-      a commit touching only `src/logql`/`src/traceql` must produce a QL release
-      PR and **no** main release PR, and a commit touching only a service must
-      produce a main release PR that neither lists nor version-bumps the QL
-      crates. Check the labels differ (`autorelease-ql: pending` vs
-      `autorelease: pending`) so neither instance adopts the other's PR.
+- [ ] 6.10 Verify the standalone flag does what it claims, in both directions:
+      a commit touching only `src/logql`/`src/traceql` must produce a release PR
+      for that crate alone, and a commit touching only a service must produce
+      the shared release PR without listing or version-bumping the QL crates.
+      Confirm `publish-ql-crates` fires on the first and skips on the second.
 
 ## 7. Docs and skills
 

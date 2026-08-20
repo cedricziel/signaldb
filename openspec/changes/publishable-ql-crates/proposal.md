@@ -142,17 +142,16 @@ along, a `signaldb-core` release.
 They are already independent in two of the three respects that matter:
 `include-component-in-tag` is `true` (so tags are `logql-v0.1.2`), and neither
 crate is in the `linked-versions` `signaldb-core` group, so their versions
-already move on their own (`logql` at 0.1.2 while the core sits at 0.3.0). What
-is missing is a release train of their own.
+already move on their own — `logql` reached 0.1.2 while the core sat at 0.3.0,
+all while sharing the main config. What is missing is a release *PR* of their
+own.
 
-**Approach: a second release-please instance**, with its own
-`release-please-config.ql.json` and `.release-please-manifest.ql.json` covering
-only `src/logql` and `src/traceql`, in its own workflow that runs `cargo
-publish` when it cuts a release. Flipping the existing `separate-pull-requests`
-to `true` would instead split all 21 packages into individual release PRs — a
-change to the whole project's release process, made as a side effect of adding
-two crates. See design D9 for the mechanics and the two gotchas (distinct
-release-PR labels; the `cargo-workspace` plugin no longer sees these crates).
+**Approach: mark the two packages standalone in the existing config.**
+`separate-pull-requests` is a per-package option, so `src/logql` and
+`src/traceql` each get their own release PR while the other eighteen keep
+sharing one. `release-please.yml` gains a `publish-ql-crates` job gated on the
+per-package `--release_created` outputs. No second config, no second manifest,
+no second workflow. See design D9.
 
 ## Explicitly scoped out
 
@@ -241,12 +240,11 @@ None. No existing capability's observable behaviour changes.
   reduces to lowering; `QuerierError` gains a `From<traceql::ParseError>`);
   `router` (no change — it never called the TraceQL parser directly);
   `tests-integration` (Tempo search regression coverage).
-- **Workspace**: `Cargo.toml` `members` + `default-members`; a new
-  `release-please-config.ql.json` + `.release-please-manifest.ql.json` and
-  `.github/workflows/release-ql-crates.yml` (the QL release train, which also
-  publishes); `src/logql` removed from the main
-  `release-please-config.json`/manifest; `tempo-api` set `publish = false`
-  pending its licence review.
+- **Workspace**: `Cargo.toml` `members` + `default-members`;
+  `release-please-config.json` gains `src/traceql` and marks both QL packages
+  `separate-pull-requests: true`; `.github/workflows/release-please.yml` gains a
+  `publish-ql-crates` job; `scripts/check-ql-purity.sh` and its CI step;
+  `tempo-api` set `publish = false` pending its licence review.
 - **Issues**: no existing issue tracks this; file one and link it here.
 - **API surfaces**: none. No ingest, Flight wire, OpenAPI, SDK, or on-disk
   change.
