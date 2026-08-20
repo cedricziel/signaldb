@@ -5,7 +5,7 @@
 name = "logql-parser"
 version = "0.1.2"
 edition = "2024"
-description = "LogQL lexer and parser for SignalDB's Loki-compatible query interface"
+description = "LogQL lexer and parser"
 # Grafana Loki, whose language this implements, is AGPL-3.0. See design D2.
 license = "AGPL-3.0"
 repository = "https://github.com/cedricziel/signaldb"

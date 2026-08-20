@@ -2,7 +2,7 @@
 name = "loki-api"
 version = "0.1.2"
 edition = "2024"
-description = "Loki-compatible API types for SignalDB"
+description = "Loki-compatible HTTP API types"
 license = "AGPL-3.0"
 
 [dependencies]

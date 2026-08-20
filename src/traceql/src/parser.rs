@@ -12,8 +12,8 @@ use crate::ast::{Condition, FilterValue, Selector, unscoped_selector};
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ParseError {
-    /// The input is not TraceQL. Nothing SignalDB could implement would make
-    /// it parse.
+    /// The input is not TraceQL. No amount of implementing would make it
+    /// parse.
     ///
     /// Carries one documented exception — escaped string literals. See the
     /// crate-level docs, which are the single statement of this contract.
