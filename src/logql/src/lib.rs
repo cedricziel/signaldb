@@ -1,10 +1,36 @@
 //! # LogQL Front-End
 //!
-//! Lexing (and, in later phases, parsing and SQL transpilation) for
-//! Loki's LogQL query language. LogQL queries start from a stream
-//! selector (`{service_name="api"}`), optionally followed by a pipeline
-//! of line filters and parser stages, or wrapped in range/vector
-//! aggregations for metric queries.
+//! Lexing, parsing, and syntactic validation for Grafana Loki's LogQL. This
+//! crate recognises a query; it does not execute one. It knows nothing about
+//! columns, catalogs, tenants, or storage, and depends on nothing but
+//! `thiserror` — so the same query string parses identically whatever backend
+//! it is aimed at, and validity can be checked without one at all.
+//!
+//! Published as **`logql-parser`**; the library is imported as `logql`.
+//!
+//! ## The two query forms
+//!
+//! A **log query** starts from a stream selector (`{service_name="api"}`),
+//! optionally followed by a pipeline of line filters, label filters, parser
+//! stages, and formatters:
+//!
+//! ```text
+//! {service_name="api"} |= "error" | json | status >= 500
+//! ```
+//!
+//! A **metric query** wraps one in a range or vector aggregation:
+//!
+//! ```text
+//! sum by (service_name) (rate({service_name="api"} |= "error" [5m]))
+//! ```
+//!
+//! [`parse`] accepts either and returns an [`Expr`] saying which it got;
+//! [`parse_query`] and [`parse_selector`] are the narrower entry points.
+//!
+//! ## Errors carry positions
+//!
+//! [`LexError`] and [`ParseError`] both report 1-based line and column, so a
+//! caller can underline the offending token rather than restating the query.
 //!
 //! ## Modules
 //!
