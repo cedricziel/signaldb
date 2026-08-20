@@ -14,7 +14,10 @@ pub mod iceberg;
 pub mod model;
 pub mod parquet_metadata_cache;
 pub mod profile;
-pub mod query_ir;
+/// The query IR lives in its own leaf crate (`serde` only) so a document can be
+/// built and validated without linking the query engine. Re-exported here
+/// because `common::query_ir::…` is how the rest of the workspace addresses it.
+pub use query_ir;
 pub mod ratelimit;
 pub mod schema;
 pub mod schema_registry;

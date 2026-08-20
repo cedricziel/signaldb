@@ -1,3 +1,5 @@
+mod tempopb;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -157,6 +159,11 @@ fn generate(check_only: bool) -> Result<()> {
 
     // --- UI TypeScript client (@hey-api/openapi-ts) ---
     generate_ts_client(&root, check_only)?;
+
+    // --- tempo-api protobuf bindings (tonic-prost-build) ---
+    // Lives here rather than in a build script: a build script may only write
+    // to OUT_DIR, and this writes committed files. See xtask/src/tempopb.rs.
+    tempopb::generate(&root, check_only, write_or_check)?;
 
     if check_only {
         eprintln!("All generated files are up-to-date.");
@@ -632,6 +639,11 @@ fn run_rustfmt(code: &str) -> Result<String> {
 }
 
 /// Write content to a file, or in check mode, verify the file matches.
+/// The signature of [`write_or_check`], so a generator module can be handed the
+/// one implementation rather than duplicating the committed-and-verified
+/// contract.
+pub type WriteOrCheck = fn(&Path, &str, bool) -> Result<()>;
+
 fn write_or_check(path: &Path, content: &str, check_only: bool) -> Result<()> {
     let rel = path.strip_prefix(project_root()).unwrap_or(path).display();
 

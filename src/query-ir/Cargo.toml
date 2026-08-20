@@ -1,0 +1,20 @@
+[package]
+name = "query-ir"
+version = "0.1.0"
+edition = "2024"
+description = "SignalDB's signal-agnostic query IR: document model, validation, and field resolution"
+license = "AGPL-3.0"
+# SignalDB's own query surface, not a re-implementation of anyone else's
+# language — so it does not track an upstream licence, and it is not published.
+# It is a separate crate for the same reason the parsers are: an IR document can
+# be built and validated without the query engine.
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# Value coercion: base64 for binary literals, chrono for RFC-3339 timestamps.
+# Both are leaf registry crates — nothing here reaches the FDAP stack.
+base64.workspace = true
+chrono.workspace = true

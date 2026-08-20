@@ -127,6 +127,13 @@ dependency, so a query can be parsed and validated without the query engine.
 Lowering a parsed query onto columns stays in the querier. See
 [Compatibility crates](../contributing/compat-crates.md).
 
+SignalDB's own **query IR** (`src/query-ir`) sits outside the stack for the
+same reason, though it re-implements nobody: an IR document can be built,
+versioned, and validated with `serde` alone, so a client can construct and
+check a query without the engine that will run it. Field resolution enters
+through a trait the querier implements, which is what keeps attribute
+promotion invisible to the IR.
+
 **One version rule.** Arrow, Parquet, and DataFusion evolve together and
 must agree on versions. SignalDB therefore always imports Arrow and
 Parquet types through DataFusion's re-exports — the rule and rationale

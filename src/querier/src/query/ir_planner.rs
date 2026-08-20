@@ -847,10 +847,13 @@ impl FieldResolver for SchemaResolver {
             && self.logical_schema.resolve(&self.source, field).is_none()
     }
 
-    fn filterability(&self, _source: &str, field: &str) -> Filterability {
+    /// Maps the logical schema's filterability vocabulary onto the IR's yes/no
+    /// question. The IR deliberately does not know this enum — it asks whether
+    /// a field may be addressed, and the schema layer decides what that means.
+    fn is_filterable(&self, _source: &str, field: &str) -> bool {
         self.logical_schema
             .resolve(&self.source, field)
-            .map_or(Filterability::Filterable, |logical| logical.filterability)
+            .is_none_or(|logical| logical.filterability != Filterability::RetrievalOnly)
     }
 }
 

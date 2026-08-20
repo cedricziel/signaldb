@@ -13,3 +13,6 @@ syn = "3"
 quote = "1"
 anyhow.workspace = true
 clap.workspace = true
+# Was a build-dependency of tempo-api; proto generation moved here so the
+# crate has no build script writing into its own package directory.
+tonic-prost-build.workspace = true

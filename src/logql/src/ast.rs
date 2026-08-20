@@ -233,3 +233,18 @@ pub enum FilterValue {
     /// An `ip("...")` matcher (single address, CIDR, or range).
     Ip(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `MatchOp` renders back into a stream selector, so the text must be the
+    /// operator as written rather than the variant name.
+    #[test]
+    fn match_ops_display_as_their_operators() {
+        assert_eq!(MatchOp::Eq.to_string(), "=");
+        assert_eq!(MatchOp::Neq.to_string(), "!=");
+        assert_eq!(MatchOp::Re.to_string(), "=~");
+        assert_eq!(MatchOp::Nre.to_string(), "!~");
+    }
+}

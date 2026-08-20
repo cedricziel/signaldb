@@ -56,5 +56,5 @@ pub use metric::{
     AggregationFunction, BinOp, BinaryExpr, LabelReplace, MetricQuery, RangeAggregation,
     RangeFunction, VectorAggregation, VectorMatch,
 };
-pub use parser::{Expr, ParseError, parse, parse_query, parse_selector};
+pub use parser::{Expr, ParseError, parse, parse_metric_query, parse_query, parse_selector};
 pub use token::{SpannedToken, Token};

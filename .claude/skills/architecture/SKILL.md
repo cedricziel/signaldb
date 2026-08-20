@@ -5,7 +5,7 @@ user-invocable: false
 sources:
   - docs/architecture/overview.md
   - src/signaldb-bin/src/**
-  - src/common/src/query_ir/**
+  - src/query-ir/src/**
   - src/querier/src/query/ir_planner.rs
   - src/router/src/endpoints/query.rs
   - Cargo.toml

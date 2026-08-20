@@ -217,3 +217,135 @@ pub struct SpannedToken {
     pub line: u32,
     pub col: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every keyword the lexer recognises, paired with the token it produces.
+    /// Written as one table so a keyword added to `keyword` without a matching
+    /// `keyword_text` arm (or vice versa) fails the round-trip below.
+    const KEYWORDS: &[(&str, Token)] = &[
+        ("by", Token::By),
+        ("without", Token::Without),
+        ("on", Token::On),
+        ("ignoring", Token::Ignoring),
+        ("group_left", Token::GroupLeft),
+        ("group_right", Token::GroupRight),
+        ("unwrap", Token::Unwrap),
+        ("offset", Token::Offset),
+        ("bool", Token::Bool),
+        ("and", Token::And),
+        ("or", Token::Or),
+        ("unless", Token::Unless),
+    ];
+
+    #[test]
+    fn every_keyword_maps_to_its_token() {
+        for (word, expected) in KEYWORDS {
+            assert_eq!(
+                Token::keyword(word).as_ref(),
+                Some(expected),
+                "keyword({word:?})"
+            );
+        }
+    }
+
+    /// `keyword_text` is documented as the inverse of `keyword`, and the
+    /// grammar relies on it where a keyword may appear as a plain label name.
+    /// An arm missing from either direction breaks that.
+    #[test]
+    fn keyword_text_inverts_keyword() {
+        for (word, token) in KEYWORDS {
+            assert_eq!(
+                Token::keyword_text(token),
+                Some(*word),
+                "keyword_text({token:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn non_keywords_are_identifiers() {
+        for word in ["service_name", "rate", "json", "By", "AND", ""] {
+            assert_eq!(Token::keyword(word), None, "{word:?} is not a keyword");
+        }
+    }
+
+    #[test]
+    fn only_keyword_tokens_have_keyword_text() {
+        for token in [
+            Token::Eq,
+            Token::Pipe,
+            Token::LBrace,
+            Token::Ident("service_name".to_string()),
+            Token::Number(1.0),
+        ] {
+            assert_eq!(Token::keyword_text(&token), None, "{token:?}");
+        }
+    }
+
+    /// Display is what error messages show a user, so every variant needs to
+    /// render as the source text it was lexed from — not as a Debug dump.
+    #[test]
+    fn every_token_displays_as_its_source_text() {
+        let cases: &[(Token, &str)] = &[
+            (Token::Number(2.5), "2.5"),
+            (Token::Bytes(1024), "1024B"),
+            (Token::Ident("service_name".to_string()), "service_name"),
+            (Token::Flag("strict".to_string()), "--strict"),
+            (Token::Eq, "="),
+            (Token::Neq, "!="),
+            (Token::Re, "=~"),
+            (Token::Nre, "!~"),
+            (Token::PipeExact, "|="),
+            (Token::PipeRegex, "|~"),
+            (Token::Pipe, "|"),
+            (Token::CmpEq, "=="),
+            (Token::Gt, ">"),
+            (Token::Gte, ">="),
+            (Token::Lt, "<"),
+            (Token::Lte, "<="),
+            (Token::Add, "+"),
+            (Token::Sub, "-"),
+            (Token::Mul, "*"),
+            (Token::Div, "/"),
+            (Token::Mod, "%"),
+            (Token::Pow, "^"),
+            (Token::LBrace, "{"),
+            (Token::RBrace, "}"),
+            (Token::LParen, "("),
+            (Token::RParen, ")"),
+            (Token::LBracket, "["),
+            (Token::RBracket, "]"),
+            (Token::Comma, ","),
+            (Token::By, "by"),
+            (Token::Without, "without"),
+            (Token::On, "on"),
+            (Token::Ignoring, "ignoring"),
+            (Token::GroupLeft, "group_left"),
+            (Token::GroupRight, "group_right"),
+            (Token::Unwrap, "unwrap"),
+            (Token::Offset, "offset"),
+            (Token::Bool, "bool"),
+            (Token::And, "and"),
+            (Token::Or, "or"),
+            (Token::Unless, "unless"),
+        ];
+        for (token, expected) in cases {
+            assert_eq!(&token.to_string(), expected, "Display for {token:?}");
+        }
+    }
+
+    /// A string renders quoted so an error message can show where a literal
+    /// began and ended; a duration renders in its Debug form, which is the
+    /// spelled-out unit rather than a raw nanosecond count.
+    #[test]
+    fn strings_and_durations_render_readably() {
+        assert_eq!(Token::String("api".to_string()).to_string(), "\"api\"");
+        assert_eq!(
+            Token::Duration(std::time::Duration::from_secs(300)).to_string(),
+            "300s"
+        );
+    }
+}

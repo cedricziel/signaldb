@@ -1295,6 +1295,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prost",
  "pyroscope",
+ "query-ir",
  "rand 0.10.2",
  "rustc-hash",
  "schema-model",
@@ -5645,6 +5646,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "query-ir"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.39.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7547,7 +7559,6 @@ dependencies = [
  "serde_json",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "utoipa",
 ]
 
@@ -9258,6 +9269,7 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 3.0.3",
+ "tonic-prost-build",
 ]
 
 [[package]]

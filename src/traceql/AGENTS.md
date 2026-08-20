@@ -19,7 +19,7 @@ keeps its own selector vocabulary in the querier rather than calling in here:
 the two agree today by coincidence, and sharing one function would let a new
 TraceQL intrinsic silently redefine a frozen wire format.
 
-`scripts/check-ql-purity.sh` enforces this in CI. `cargo publish --dry-run`
+`scripts/check-leaf-purity.sh` enforces this in CI. `cargo publish --dry-run`
 does **not** — it accepts `datafusion = "54"` happily.
 
 ## Doctests on every public item
@@ -28,12 +28,13 @@ Every `pub` function, type, and variant should carry a `///` example that
 compiles and runs. These are the crate's user-facing documentation on docs.rs,
 and unlike prose they fail the build when they go stale.
 
-Current state: **0 doctests.** `tests/parse.rs` covers behaviour, but nothing
-executes the examples a reader sees first.
+`parse` carries runnable examples covering both the happy path and each
+rejection class. The remaining `pub` types do not, which is the gap.
 
 ## Coverage: 95%
 
 Current: **95.53% regions / 95.28% lines** — at target, with no margin.
+Both figures are one uncovered branch away from slipping under.
 
 ```
 cargo llvm-cov -p traceql-parser --summary-only

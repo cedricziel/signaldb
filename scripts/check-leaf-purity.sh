@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assert that the published query-language parsers stayed pure.
+# Assert that the leaf crates stayed leaves.
 #
 # `cargo publish --dry-run` does NOT do this, which is the whole reason this
 # script exists. It checks that a crate *can* be published — metadata,
@@ -10,11 +10,14 @@
 # Purity is what makes "answer whether a query is valid without linking the
 # query engine" true, so it needs an assertion of its own.
 #
-# A QL crate may depend only on registry packages that are neither part of this
-# workspace nor part of the query engine's stack.
+# These crates may depend only on registry packages that are neither part of
+# this workspace nor part of the query engine's stack.
 set -euo pipefail
 
-CRATES=("logql-parser" "traceql-parser")
+# The compatibility parsers, plus the query IR: all three exist so that a
+# query can be parsed, built, or validated without the query engine. That is
+# only true while none of them reaches into the workspace or the FDAP stack.
+CRATES=("logql-parser" "traceql-parser" "query-ir")
 
 exec python3 - "${CRATES[@]}" <<'PY'
 import json
@@ -82,8 +85,8 @@ if failures:
     print()
     print("\n".join(failures))
     print()
-    print("A query-language crate lexes, parses, and validates syntax. It must")
-    print("not know a column, a catalog, or a tenant. See openspec design D8")
-    print("and docs/contributing/compat-crates.md.")
+    print("These crates must not know a column, a catalog, or a tenant — that is")
+    print("what lets a caller use them without the query engine. See openspec")
+    print("design D8 and docs/contributing/compat-crates.md.")
     sys.exit(1)
 PY

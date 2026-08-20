@@ -24,6 +24,7 @@ jemalloc-profiling = [
 tempfile = { workspace = true, optional = true }
 anyhow.workspace = true
 schema-model = { path = "../schema-model" }
+query-ir = { path = "../query-ir" }
 
 datafusion.workspace = true
 serde.workspace = true

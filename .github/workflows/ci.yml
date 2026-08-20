@@ -169,7 +169,19 @@ jobs:
     needs: changes
     if: needs.changes.outputs.core == 'true' || needs.changes.outputs.ui == 'true'
     steps:
+      # `xtask check` verifies tempo-api's committed protobuf bindings as well
+      # as the OpenAPI-derived clients, and regenerating those reads the
+      # opentelemetry-proto submodule and shells out to protoc. Neither is
+      # needed to *build* the workspace — the bindings are committed — only to
+      # prove they are current.
       - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Install protobuf compiler
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -302,7 +314,7 @@ jobs:
       # `cargo publish --dry-run` checks — it accepts `datafusion = "54"`
       # without complaint (verified) — so purity gets its own assertion.
       - name: Check QL parser crates are pure
-        run: ./scripts/check-ql-purity.sh
+        run: ./scripts/check-leaf-purity.sh
 
       # Catches missing publication metadata, packaging problems, and bare
       # path dependencies on the PR that introduces them rather than during a

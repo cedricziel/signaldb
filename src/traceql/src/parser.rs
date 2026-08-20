@@ -31,6 +31,41 @@ pub enum ParseError {
 ///
 /// An empty spanset (`{}`) is valid and selects everything, so it returns no
 /// conditions rather than an error.
+///
+/// # Examples
+///
+/// ```
+/// use traceql::{FilterValue, Selector};
+///
+/// let conditions = traceql::parse(r#"{ resource.service.name = "api" }"#)?;
+/// assert_eq!(conditions.len(), 1);
+/// assert_eq!(conditions[0].selector, Selector::ServiceName);
+/// assert_eq!(conditions[0].value, FilterValue::String("api".into()));
+/// # Ok::<(), traceql::ParseError>(())
+/// ```
+///
+/// An empty spanset selects everything:
+///
+/// ```
+/// assert!(traceql::parse("{}")?.is_empty());
+/// # Ok::<(), traceql::ParseError>(())
+/// ```
+///
+/// The two rejection classes are distinguishable without reading the message
+/// — a caller serving HTTP maps them to different statuses:
+///
+/// ```
+/// use traceql::ParseError;
+///
+/// // Not TraceQL at all: the caller's mistake.
+/// assert!(matches!(traceql::parse("notbraces"), Err(ParseError::Syntax(_))));
+///
+/// // Valid TraceQL this parser does not implement: ours.
+/// assert!(matches!(
+///     traceql::parse(r#"{ span.x != "y" }"#),
+///     Err(ParseError::Unsupported(_)),
+/// ));
+/// ```
 pub fn parse(q: &str) -> Result<Vec<Condition>, ParseError> {
     let trimmed = q.trim();
     let inner = trimmed

@@ -224,3 +224,77 @@ pub enum BinOp {
     Or,
     Unless,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every range function the grammar accepts, and whether it takes a
+    /// leading scalar parameter. `quantile_over_time(0.99, …)` is the only one
+    /// that does — getting this wrong silently shifts a query's arguments.
+    #[test]
+    fn range_functions_round_trip_and_declare_their_parameter() {
+        let cases: &[(&str, RangeFunction, bool)] = &[
+            ("rate", RangeFunction::Rate, false),
+            ("count_over_time", RangeFunction::CountOverTime, false),
+            ("bytes_rate", RangeFunction::BytesRate, false),
+            ("bytes_over_time", RangeFunction::BytesOverTime, false),
+            ("sum_over_time", RangeFunction::SumOverTime, false),
+            ("avg_over_time", RangeFunction::AvgOverTime, false),
+            ("min_over_time", RangeFunction::MinOverTime, false),
+            ("max_over_time", RangeFunction::MaxOverTime, false),
+            ("stdvar_over_time", RangeFunction::StdvarOverTime, false),
+            ("stddev_over_time", RangeFunction::StddevOverTime, false),
+            ("first_over_time", RangeFunction::FirstOverTime, false),
+            ("last_over_time", RangeFunction::LastOverTime, false),
+            ("absent_over_time", RangeFunction::AbsentOverTime, false),
+            ("quantile_over_time", RangeFunction::QuantileOverTime, true),
+        ];
+        for (name, expected, takes_param) in cases {
+            assert_eq!(
+                RangeFunction::from_name(name),
+                Some(*expected),
+                "from_name({name:?})"
+            );
+            assert_eq!(expected.takes_param(), *takes_param, "{name} takes_param");
+        }
+    }
+
+    #[test]
+    fn unknown_range_functions_are_rejected() {
+        for name in ["rate_over_time", "histogram_quantile", "sum", ""] {
+            assert_eq!(RangeFunction::from_name(name), None, "{name:?}");
+        }
+    }
+
+    /// `topk`/`bottomk` take the `k`; the rest take no parameter.
+    #[test]
+    fn aggregation_functions_round_trip_and_declare_their_parameter() {
+        let cases: &[(&str, AggregationFunction, bool)] = &[
+            ("sum", AggregationFunction::Sum, false),
+            ("avg", AggregationFunction::Avg, false),
+            ("min", AggregationFunction::Min, false),
+            ("max", AggregationFunction::Max, false),
+            ("count", AggregationFunction::Count, false),
+            ("stddev", AggregationFunction::Stddev, false),
+            ("stdvar", AggregationFunction::Stdvar, false),
+            ("topk", AggregationFunction::Topk, true),
+            ("bottomk", AggregationFunction::Bottomk, true),
+        ];
+        for (name, expected, takes_param) in cases {
+            assert_eq!(
+                AggregationFunction::from_name(name),
+                Some(*expected),
+                "from_name({name:?})"
+            );
+            assert_eq!(expected.takes_param(), *takes_param, "{name} takes_param");
+        }
+    }
+
+    #[test]
+    fn unknown_aggregation_functions_are_rejected() {
+        for name in ["rate", "quantile", "median", ""] {
+            assert_eq!(AggregationFunction::from_name(name), None, "{name:?}");
+        }
+    }
+}
