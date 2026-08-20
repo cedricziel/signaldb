@@ -199,7 +199,7 @@ flowchart LR
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Ports**      | HTTP: 3000, Flight: 50053                                                                                                                                         |
 | **Capability** | `Routing`                                                                                                                                                         |
-| **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible (stubs), native Query IR (`POST /api/v1/query`), schema registry (`/api/v1/schema/*`), Admin API, OpenAPI |
+| **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible, native Query IR (`POST /api/v1/query`), schema registry (`/api/v1/schema/*`), Admin API, OpenAPI |
 
 The router also serves the explore UI (a static SPA built from `src/ui`)
 under `/ui`, from the directory named by `SIGNALDB_UI_DIR`. See
