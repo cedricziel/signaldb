@@ -31,6 +31,30 @@ pub struct LexError {
 }
 
 /// Tokenize a LogQL query.
+///
+/// # Examples
+///
+/// ```
+/// use logql::Token;
+///
+/// let tokens = logql::tokenize(r#"{service_name="api"}"#)?;
+/// assert_eq!(tokens[0].token, Token::LBrace);
+/// assert_eq!(tokens[1].token, Token::Ident("service_name".into()));
+/// # Ok::<(), logql::LexError>(())
+/// ```
+///
+/// Durations are single tokens, not a number beside an identifier — which is
+/// why an invalid unit is an error here rather than two valid tokens:
+///
+/// ```
+/// use logql::Token;
+/// use std::time::Duration;
+///
+/// let tokens = logql::tokenize("5m")?;
+/// assert_eq!(tokens[0].token, Token::Duration(Duration::from_secs(300)));
+/// assert!(logql::tokenize("5z").is_err());
+/// # Ok::<(), logql::LexError>(())
+/// ```
 pub fn tokenize(input: &str) -> Result<Vec<SpannedToken>, LexError> {
     Lexer::new(input).run()
 }

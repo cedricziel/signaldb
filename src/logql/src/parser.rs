@@ -50,6 +50,21 @@ impl From<LexError> for ParseError {
 
 /// Parse a full log query: a stream selector followed by an optional
 /// pipeline. Metric-query wrappers are not parsed here.
+///
+/// # Examples
+///
+/// ```
+/// let q = logql::parse_query(r#"{service_name="api"} |= "error""#)?;
+/// assert_eq!(q.selector.matchers.len(), 1);
+/// assert_eq!(q.pipeline.len(), 1);
+/// # Ok::<(), logql::ParseError>(())
+/// ```
+///
+/// A metric query is rejected here — use [`parse`] to accept either form:
+///
+/// ```
+/// assert!(logql::parse_query(r#"rate({service_name="api"}[5m])"#).is_err());
+/// ```
 pub fn parse_query(input: &str) -> Result<LogQuery, ParseError> {
     let mut parser = Parser::new(input)?;
     let selector = parser.parse_selector()?;
@@ -60,6 +75,18 @@ pub fn parse_query(input: &str) -> Result<LogQuery, ParseError> {
 
 /// Parse a bare stream selector, as sent by the metadata endpoints'
 /// `match[]` parameter.
+///
+/// # Examples
+///
+/// ```
+/// use logql::MatchOp;
+///
+/// let selector = logql::parse_selector(r#"{service_name="api", level!="debug"}"#)?;
+/// assert_eq!(selector.matchers.len(), 2);
+/// assert_eq!(selector.matchers[0].name, "service_name");
+/// assert_eq!(selector.matchers[1].op, MatchOp::Neq);
+/// # Ok::<(), logql::ParseError>(())
+/// ```
 pub fn parse_selector(input: &str) -> Result<StreamSelector, ParseError> {
     let mut parser = Parser::new(input)?;
     let selector = parser.parse_selector()?;
@@ -71,6 +98,31 @@ pub fn parse_selector(input: &str) -> Result<StreamSelector, ParseError> {
 /// and a metric query. A query beginning with `{` is a log query; any
 /// other start (a range/vector function, a number, or a parenthesis) is
 /// a metric query.
+///
+/// # Examples
+///
+/// ```
+/// use logql::Expr;
+///
+/// assert!(matches!(
+///     logql::parse(r#"{service_name="api"} |= "error""#)?,
+///     Expr::Log(_),
+/// ));
+/// assert!(matches!(
+///     logql::parse(r#"sum by (service_name) (rate({service_name="api"}[5m]))"#)?,
+///     Expr::Metric(_),
+/// ));
+/// # Ok::<(), logql::ParseError>(())
+/// ```
+///
+/// Errors carry a 1-based position, so a caller can underline the offending
+/// token rather than restating the query:
+///
+/// ```
+/// let err = logql::parse("{service_name=}").unwrap_err();
+/// assert_eq!(err.line, 1);
+/// assert!(err.col > 1);
+/// ```
 pub fn parse(input: &str) -> Result<Expr, ParseError> {
     let mut parser = Parser::new(input)?;
     let expr = if matches!(parser.peek().map(|t| &t.token), Some(Token::LBrace)) {
@@ -85,6 +137,14 @@ pub fn parse(input: &str) -> Result<Expr, ParseError> {
 }
 
 /// Parse a metric query (rejects a bare log query).
+///
+/// # Examples
+///
+/// ```
+/// let q = logql::parse_metric_query(r#"count_over_time({service_name="api"}[1h])"#)?;
+/// assert!(format!("{q:?}").contains("CountOverTime"));
+/// # Ok::<(), logql::ParseError>(())
+/// ```
 pub fn parse_metric_query(input: &str) -> Result<MetricQuery, ParseError> {
     let mut parser = Parser::new(input)?;
     let query = parser.parse_metric_expr()?;
