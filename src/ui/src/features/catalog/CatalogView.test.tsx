@@ -5,9 +5,11 @@ import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { renderWithClient } from "../../test/render";
 import { CatalogView, drillFilters, isDrillable } from "./CatalogView";
 import { compositeKey } from "../../lib/traceGroups";
-import type { EntityTypeDef } from "./entityTypes";
+import { ENTITY_TYPES, type EntityTypeDef } from "./entityTypes";
 import * as catalogApi from "../../api/catalog";
 import * as sourceFieldsApi from "../../api/sourceFields";
+import * as membersApi from "../../api/traceGroupMembers";
+import * as entityTypesHook from "./useEntityTypes";
 import type { CatalogEntity, EntityObservation } from "../../api/catalog";
 
 // The entity table is a server-side aggregate (see api/catalog) — mocked at
@@ -23,9 +25,23 @@ vi.mock("../../api/sourceFields", async (importOriginal) => {
     await importOriginal<typeof import("../../api/sourceFields")>();
   return { ...actual, fetchFieldValueSketch: vi.fn() };
 });
+vi.mock("../../api/traceGroupMembers", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/traceGroupMembers")>();
+  return { ...actual, fetchTraceGroupMembers: vi.fn() };
+});
+// The observed set is two metadata fetches away (see useEntityTypes); what
+// this view owes is resolving the URL's entity type against whatever that
+// hook reports, so the hook is the boundary to control here.
+vi.mock("./useEntityTypes", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./useEntityTypes")>();
+  return { ...actual, useCatalogEntityTypes: vi.fn() };
+});
 
 const fetchCatalogEntities = vi.mocked(catalogApi.fetchCatalogEntities);
 const fetchFieldValueSketch = vi.mocked(sourceFieldsApi.fetchFieldValueSketch);
+const fetchTraceGroupMembers = vi.mocked(membersApi.fetchTraceGroupMembers);
+const useCatalogEntityTypes = vi.mocked(entityTypesHook.useCatalogEntityTypes);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -36,6 +52,16 @@ beforeEach(() => {
   fetchCatalogEntities.mockResolvedValue({ entities: [], truncated: false });
   fetchFieldValueSketch.mockReset();
   fetchFieldValueSketch.mockResolvedValue(undefined);
+  fetchTraceGroupMembers.mockReset();
+  fetchTraceGroupMembers.mockResolvedValue([]);
+  useCatalogEntityTypes.mockReset();
+  // The curated list, unanalyzed: what a deployment reports before any field
+  // metadata has landed.
+  useCatalogEntityTypes.mockReturnValue({
+    types: ENTITY_TYPES,
+    isPending: false,
+    analyzed: false,
+  });
 });
 
 /** An entity traces observed, optionally also seen in other signals. */
@@ -230,8 +256,13 @@ describe("the empty state", () => {
     });
     renderView({ catalogEntity: "host" });
 
+    // The note renders as soon as the window comes back empty; the sketch is
+    // a second, later fetch that appends to it — so this waits for the
+    // sketch's own sentence rather than reading the note the moment it exists.
     const note = await screen.findByText(/No hosts observed in this window/);
-    expect(note).toHaveTextContent("3 values have been seen outside it");
+    await waitFor(() =>
+      expect(note).toHaveTextContent("3 values have been seen outside it"),
+    );
     expect(note).toHaveTextContent("2026-08-19 07:13:57");
     expect(note).toHaveTextContent("Try a wider time range");
   });
@@ -256,7 +287,9 @@ describe("the empty state", () => {
     renderView({ catalogEntity: "host" });
 
     const note = await screen.findByText(/No hosts observed in this window/);
-    expect(note).toHaveTextContent("One value has been seen outside it");
+    await waitFor(() =>
+      expect(note).toHaveTextContent("One value has been seen outside it"),
+    );
   });
 });
 
@@ -293,6 +326,53 @@ describe("registry-derived entity types", () => {
       { catalogPrimary: compositeKey(["7f3c-instance"]) },
       { push: true },
     );
+  });
+
+  it("renders its detail page from its own definition, not a curated one", async () => {
+    // The URL is the only carrier of the selected type, and a derived type
+    // exists only in the observed set — so this deep link is the case
+    // `resolveEntityType` exists for.
+    useCatalogEntityTypes.mockReturnValue({
+      types: [...ENTITY_TYPES, serviceInstance],
+      isPending: false,
+      analyzed: true,
+    });
+    renderView({
+      catalogEntity: "service_instance",
+      catalogPrimary: compositeKey(["7f3c-instance"]),
+    });
+
+    const crumb = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(within(crumb).getByText("Service instances")).toBeInTheDocument();
+    await waitFor(() => expect(fetchCatalogEntities).toHaveBeenCalled());
+    const [entity, , , pinned] = fetchCatalogEntities.mock.calls[0]!;
+    expect(entity.id).toBe("service_instance");
+    expect(pinned).toEqual([
+      { field: "service.instance.id", value: "7f3c-instance" },
+    ]);
+  });
+
+  it("waits for the observed set rather than guessing the type", async () => {
+    // Mid-fetch a derived type is not resolvable yet. Falling back to the
+    // curated default there paints a whole dashboard of another entity's
+    // numbers — and fetches them — before correcting itself.
+    useCatalogEntityTypes.mockReturnValue({
+      types: ENTITY_TYPES,
+      isPending: true,
+      analyzed: false,
+    });
+    renderView({
+      catalogEntity: "service_instance",
+      catalogPrimary: compositeKey(["7f3c-instance"]),
+    });
+
+    expect(fetchCatalogEntities).not.toHaveBeenCalled();
+    // Asserted positively: absence alone is also satisfied by a blank page,
+    // which is the regression this test exists to catch.
+    expect(screen.getByText("Loading entity types…")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("navigation", { name: "Breadcrumb" }),
+    ).not.toBeInTheDocument();
   });
 
   it("has no trace escape hatch, because nothing maps its identity", () => {

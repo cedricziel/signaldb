@@ -2,9 +2,11 @@ import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { compositeKey } from "../../lib/traceGroups";
+import { resolveRange } from "../../lib/time";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { renderWithClient } from "../../test/render";
 import { EntityDetail } from "./EntityDetail";
+import { entityType, type EntityTypeDef } from "./entityTypes";
 import * as catalogApi from "../../api/catalog";
 import * as membersApi from "../../api/traceGroupMembers";
 import * as dependencyBreakdownApi from "../../api/dependencyBreakdown";
@@ -79,14 +81,19 @@ function member(
   };
 }
 
-function renderView(state: Partial<ExploreState> = {}) {
+function renderView(
+  state: Partial<ExploreState> = {},
+  entity: EntityTypeDef = entityType("service")!,
+) {
   const update = vi.fn();
   renderWithClient(
     <EntityDetail
+      entity={entity}
+      range={resolveRange(DEFAULT_STATE.range, Date.now())}
       state={{
         ...DEFAULT_STATE,
         signal: "catalog",
-        catalogEntity: "service",
+        catalogEntity: entity.id,
         catalogPrimary: compositeKey(["gateway", "edge"]),
         ...state,
       }}
@@ -257,10 +264,10 @@ describe("EntityDetail", () => {
       }
       return { entities: [], truncated: false };
     });
-    const update = renderView({
-      catalogEntity: "database",
-      catalogPrimary: compositeKey(["prod", "postgres"]),
-    });
+    const update = renderView(
+      { catalogPrimary: compositeKey(["prod", "postgres"]) },
+      entityType("database")!,
+    );
 
     expect(await screen.findByText("Top statements")).toBeInTheDocument();
     const cell = await screen.findByText("SELECT * FROM users WHERE id = ?");
@@ -303,10 +310,10 @@ describe("EntityDetail", () => {
     });
 
     it("is not shown for non-service entity types", async () => {
-      renderView({
-        catalogEntity: "database",
-        catalogPrimary: compositeKey(["prod", "postgres"]),
-      });
+      renderView(
+        { catalogPrimary: compositeKey(["prod", "postgres"]) },
+        entityType("database")!,
+      );
 
       await screen.findByText("Recent matching spans");
       expect(screen.queryByText("Time by dependency")).not.toBeInTheDocument();

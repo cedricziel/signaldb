@@ -34,28 +34,67 @@ interface Props {
 }
 
 /** Shared by the list and detail views — the window's length in seconds,
- * for turning a raw count into a rate. */
-export function catalogRangeSeconds(state: ExploreState): number {
-  const r = resolveRange(state.range, Date.now());
-  return Math.max(1, (r.toMs - r.fromMs) / 1000);
+ * for turning a raw count into a rate. Takes the already-resolved range so
+ * that a page's rate and its queries describe one `now`, not two. */
+export function catalogRangeSeconds(range: ResolvedRange): number {
+  return Math.max(1, (range.toMs - range.fromMs) / 1000);
+}
+
+/**
+ * The entity type the URL names, resolved against the observed set first so
+ * a registry-derived type is addressable, then against the curated list — a
+ * bookmarked entity type stays openable while its data is out of window.
+ *
+ * Undefined means "not this URL's type": either the observed set has not
+ * landed yet, or nothing in this tenant answers to that id. Both callers
+ * must decide what to do with that; substituting a default here is what made
+ * every derived entity's detail page render the *service* dashboard.
+ */
+export function resolveEntityType(
+  id: string,
+  types: EntityTypeDef[],
+): EntityTypeDef | undefined {
+  return types.find((e) => e.id === id) ?? entityType(id);
 }
 
 export function CatalogView({ state, update }: Props) {
-  if (state.catalogPrimary !== "") {
-    return <EntityDetail state={state} update={update} />;
-  }
-
   const range = resolveRange(state.range, Date.now());
   const rangeKey = rangeScopeKey(state);
-  const { types, analyzed, asOf } = useCatalogEntityTypes(range, rangeKey);
-  // Selection resolves against the observed set first so a registry-derived
-  // type is addressable by URL, then falls back to the curated list — a
-  // bookmarked entity type stays openable while its data is out of window.
-  const selected =
-    types.find((e) => e.id === state.catalogEntity) ??
-    entityType(state.catalogEntity) ??
-    types[0] ??
-    entityType(DEFAULT_ENTITY_TYPE)!;
+  // Called before the detail branch below: an early return above a hook
+  // changes the hook count between renders of the same instance, and drilling
+  // into a row is exactly that transition.
+  const { types, isPending, analyzed, asOf } = useCatalogEntityTypes(
+    range,
+    rangeKey,
+  );
+  const resolved = resolveEntityType(state.catalogEntity, types);
+
+  if (state.catalogPrimary !== "") {
+    // A detail page is entirely an entity type's own: its identity dimensions
+    // pin every query on it. Guessing one paints another entity's numbers
+    // under this entity's name, so it waits instead.
+    if (!resolved) {
+      return (
+        <div className="traces-note">
+          {isPending
+            ? "Loading entity types…"
+            : `Unknown entity type "${state.catalogEntity}".`}
+        </div>
+      );
+    }
+    return (
+      <EntityDetail
+        entity={resolved}
+        range={range}
+        state={state}
+        update={update}
+      />
+    );
+  }
+
+  // The list, unlike the detail page, has somewhere sensible to land: showing
+  // the first observed type beats showing nothing.
+  const selected = resolved ?? types[0] ?? entityType(DEFAULT_ENTITY_TYPE)!;
 
   return (
     <div className="catalog">
@@ -73,7 +112,7 @@ export function CatalogView({ state, update }: Props) {
         entity={selected}
         range={range}
         rangeKey={rangeKey}
-        rangeSeconds={catalogRangeSeconds(state)}
+        rangeSeconds={catalogRangeSeconds(range)}
         onRowClick={(values) =>
           update({ catalogPrimary: compositeKey(values) }, { push: true })
         }

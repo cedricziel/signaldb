@@ -12,7 +12,7 @@ import {
   formatTimestamp,
   nanosToMs,
   rangeScopeKey,
-  resolveRange,
+  type ResolvedRange,
 } from "../../lib/time";
 import {
   compositeKey,
@@ -34,14 +34,19 @@ import {
   redErrorRate,
   redRate,
 } from "./red";
-import {
-  DEFAULT_ENTITY_TYPE,
-  entityType,
-  type EntityTypeDef,
-} from "./entityTypes";
+import type { EntityTypeDef } from "./entityTypes";
 import "./catalog.css";
 
 interface Props {
+  /**
+   * The entity type this page describes. Resolved by the caller against the
+   * observed set rather than looked up here, because the curated registry
+   * this module can reach holds only the hand-written types — see
+   * {@link resolveEntityType}.
+   */
+  entity: EntityTypeDef;
+  /** The caller's already-resolved window, so both views read one `now`. */
+  range: ResolvedRange;
   state: ExploreState;
   update: UpdateFn;
 }
@@ -50,12 +55,9 @@ interface Props {
  * bound rather than the traces tab's user-configurable limit. */
 const MEMBER_LIMIT = 25;
 
-export function EntityDetail({ state, update }: Props) {
-  const entity =
-    entityType(state.catalogEntity) ?? entityType(DEFAULT_ENTITY_TYPE)!;
-  const range = resolveRange(state.range, Date.now());
+export function EntityDetail({ entity, range, state, update }: Props) {
   const rangeKey = rangeScopeKey(state);
-  const rangeSeconds = catalogRangeSeconds(state);
+  const rangeSeconds = catalogRangeSeconds(range);
 
   const primaryValues = parseCompositeKey(
     state.catalogPrimary,
