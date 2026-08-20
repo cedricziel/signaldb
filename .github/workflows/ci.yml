@@ -169,7 +169,19 @@ jobs:
     needs: changes
     if: needs.changes.outputs.core == 'true' || needs.changes.outputs.ui == 'true'
     steps:
+      # `xtask check` verifies tempo-api's committed protobuf bindings as well
+      # as the OpenAPI-derived clients, and regenerating those reads the
+      # opentelemetry-proto submodule and shells out to protoc. Neither is
+      # needed to *build* the workspace — the bindings are committed — only to
+      # prove they are current.
       - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Install protobuf compiler
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
