@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787113964144,
+  "lastUpdate": 1787200438009,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -897,6 +897,244 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1105505,
             "range": "± 10086",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "29994a1d88bface511f7480dfb1b3232c087984f",
+          "message": "fix(querier): union metric tables on an identical scan schema (#1351)\n\n* fix(querier): union metric tables on an identical scan schema\n\nFiltering the metrics source by a resource attribute served from the\nattribute map failed to plan:\n\n  Optimizer rule 'optimize_projections' failed\n  UNION field 0 have different type in inputs: left has Utf8 whereas\n  right has Date32\n\nGrouping by the same attribute worked, which is why #1206's fix did not\ncover this. That change reconciled column *types* across the union\nbranches, and types are enough until something is pushed between the\nprojection and the scan. A predicate is exactly that.\n\nThe branches disagreed on more than type. metrics_sum carries\naggregation_temporality and is_monotonic in the middle of its schema, so\nevery later column sits at a different index than in metrics_gauge, and\nboth end with the date_day/hour partition helpers. Each branch's scan\nexposed its own full schema and relied on a projection above it to pick\nthe common columns by name. push_down_filter moves the predicate below\nthe union into each branch; optimize_projections then rebuilds each\nbranch's scan projection from sorted column indices, and the branches are\nrebuilt against different index spaces — lining Utf8 up against\ndate_day's Date32.\n\nSo the provider now presents the union's common columns directly: the\nrow_defaults list, in that order, already coerced. Every branch's\nTableScan has an identical schema and there is no index space left for\nthe optimizer to disagree about. scan() translates back to the inner\ntable's indices, so filter and partition pushdown are unaffected.\n\nwrap() is fallible now. It used to skip a column missing from a table;\nsince the provider defines the branch's width, that would silently yield\na branch of the wrong shape, so it names the missing column instead.\n\nCovered for the class rather than the reported operator: eq, ne,\ncontains, regex and exists all plan over the union. `in` and `between`\nare untested here — the former takes a different operand shape, the\nlatter is meaningless on a string attribute.\n\nCloses #1348\n\n* test(querier): cover in/between and exclusion on the metrics union\n\nThe operator coverage added with the #1348 fix stopped at eq, ne,\ncontains, regex and exists, and justified the omission of `between` by\ncalling it meaningless on a string attribute. That was wrong: it lowers\nto `>= lo AND <= hi`, a lexicographic range, and it is a different plan\nshape from every single-comparison leaf — two comparisons over one field\nexpression. `in` lowers to an in-list, a third shape. Both are exactly\nthe kind of node arrangement that exposed the union misalignment, so\nneither belonged outside the net.\n\nThe existing cases also only asserted that a predicate matches all three\nfixture rows. A predicate that plans but is dropped during the rewrite\nmatches all three too, so those cases could not tell a working filter\nfrom a vanished one. The added test requires each operator to exclude\nevery row, pinning the other direction.\n\ngt/gte/lt/lte still have no leaf of their own, deliberately: `between`\nexercises that lowering already, and the test says so.\n\n* docs(querier): correct what the identical-schema guard actually spares\n\nThe guard's doc claimed it spares \"a single-table source\", which is not a\npath that exists: scan_source_tables returns at providers.len() == 1 and\nnever reaches wrap(). It also implied the check pays off in practice,\nwhen row_defaults is a strict subset of any real physical schema — which\nalso carries date_day/hour — so no real table matches and the guard is an\nidentity check, not an optimization. A reader would have gone looking for\na caller that isn't there.\n\nAlso marks the per-branch select() as the identity projection it became:\nthe provider now presents row_defaults directly, so the select reorders\nnothing and only normalizes the column names the two branches carry into\nthe union. As written it read as load-bearing.\n\nComments only — verified no non-comment line in the diff.",
+          "timestamp": "2026-08-19T11:10:29Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/29994a1d88bface511f7480dfb1b3232c087984f"
+        },
+        "date": 1787200436632,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1975783,
+            "range": "± 22111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1180683,
+            "range": "± 28859",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 725275,
+            "range": "± 8868",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1611724,
+            "range": "± 21177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 786912,
+            "range": "± 4318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1948314,
+            "range": "± 87841",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1234791,
+            "range": "± 15157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1424887,
+            "range": "± 43024",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2600543,
+            "range": "± 40283",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 12252498,
+            "range": "± 54779",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 111820354,
+            "range": "± 1829929",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 4096534,
+            "range": "± 23386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8396374,
+            "range": "± 54167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 15075293,
+            "range": "± 270280",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 29567466,
+            "range": "± 238459",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 979757,
+            "range": "± 4870",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2307647,
+            "range": "± 63981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3382623,
+            "range": "± 102483",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6509958,
+            "range": "± 79491",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 611829,
+            "range": "± 5338",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 21122101,
+            "range": "± 607450",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 28415179,
+            "range": "± 1200338",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 26944174,
+            "range": "± 312261",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 27031542,
+            "range": "± 168012",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 26989318,
+            "range": "± 787693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 6738955,
+            "range": "± 173583",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 15880425,
+            "range": "± 237397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 34457422,
+            "range": "± 676134",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 30828917,
+            "range": "± 2243486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 6604540,
+            "range": "± 50483",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 73004187,
+            "range": "± 1372907",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 132772249,
+            "range": "± 1483866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 143559221,
+            "range": "± 3199838",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1125650,
+            "range": "± 36909",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1066291,
+            "range": "± 23496",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1116152,
+            "range": "± 24353",
             "unit": "ns/iter"
           }
         ]
