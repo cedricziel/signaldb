@@ -432,7 +432,7 @@ impl TraceService {
         // unfiltered results (issue #551).
         let mut conditions = Vec::new();
         if let Some(q) = query.q.as_deref().filter(|s| !s.trim().is_empty()) {
-            conditions.extend(search_filter::parse_traceql(q)?);
+            conditions.extend(traceql::parse(q)?);
         }
         if let Some(tags) = query.tags.as_deref().filter(|s| !s.trim().is_empty()) {
             conditions.extend(search_filter::parse_tags(tags)?);
@@ -525,18 +525,20 @@ impl TraceService {
         // Query demand (epic #737, #733): attribute conditions are
         // materialization candidates.
         for condition in &conditions {
-            if let search_filter::Selector::SpanAttribute(key)
-            | search_filter::Selector::ResourceAttribute(key)
-            | search_filter::Selector::AnyAttribute(key) = &condition.selector
+            if let traceql::Selector::SpanAttribute(key)
+            | traceql::Selector::ResourceAttribute(key)
+            | traceql::Selector::AnyAttribute(key) = &condition.selector
             {
                 common::attr_demand::record(tenant_slug, dataset_slug, "traces", key);
             }
         }
         for condition in &conditions {
-            df = df.filter(condition.to_expr(&attr_ctx)?).map_err(|e| {
-                tracing::error!("Failed to apply search filter {condition:?}: {e}");
-                QuerierError::QueryFailed(e)
-            })?;
+            df = df
+                .filter(search_filter::to_expr(condition, &attr_ctx)?)
+                .map_err(|e| {
+                    tracing::error!("Failed to apply search filter {condition:?}: {e}");
+                    QuerierError::QueryFailed(e)
+                })?;
         }
 
         // Projection pushdown: only read the columns the search assembly

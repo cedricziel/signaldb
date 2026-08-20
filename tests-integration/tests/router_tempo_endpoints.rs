@@ -2076,13 +2076,32 @@ async fn test_search_filters_are_applied() {
         "TraceQL attribute search must return the trace"
     );
 
-    // Unsupported TraceQL is an explicit 501, not silently unfiltered.
-    let response = search("q={ duration > 100ms }".to_string()).await;
-    assert_eq!(
-        response.status(),
-        StatusCode::NOT_IMPLEMENTED,
-        "unsupported TraceQL must be 501"
-    );
+    // Valid TraceQL we do not lower is an explicit 501, not silently
+    // unfiltered.
+    for q in [
+        "q={ duration > 100ms }",
+        r#"q={ span.x != "y" }"#,
+        r#"q={ span.a = "1" || span.b = "2" }"#,
+    ] {
+        let response = search(q.to_string()).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_IMPLEMENTED,
+            "valid-but-unimplemented TraceQL must be 501: {q}"
+        );
+    }
+
+    // Input that is not TraceQL at all is the client's mistake, so 400 —
+    // answering 501 would leave a client unable to tell a wrong query from
+    // one SignalDB cannot yet run.
+    for q in ["q=notbraces", "q={ foo }", "q={ zzz = 1 }"] {
+        let response = search(q.to_string()).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "unparseable TraceQL must be 400: {q}"
+        );
+    }
 
     // Malformed tags are an explicit 400.
     let response = search("tags=justaword".to_string()).await;

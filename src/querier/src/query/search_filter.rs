@@ -1,193 +1,194 @@
-//! # Trace Search Filters
+//! # Trace search filter lowering
 //!
-//! Parses the Tempo search parameters `tags` (logfmt pairs) and `q`
-//! (TraceQL) into DataFusion filter expressions over the traces table.
+//! Turns parsed trace-search conditions into DataFusion filter expressions
+//! over the traces table. Recognising TraceQL is not done here — that is the
+//! [`traceql`] crate, which knows nothing about columns or storage. This
+//! module owns the other half: which physical representation answers a given
+//! [`traceql::Selector`].
 //!
-//! Only an equality subset is supported; anything else is rejected with
-//! an explicit error instead of silently returning unfiltered results
-//! (issue #551):
+//! It also parses Tempo's `tags` parameter (space-separated logfmt
+//! `key=value` pairs, values optionally double-quoted). That is an HTTP
+//! parameter encoding rather than a TraceQL construct — it merely produces the
+//! same [`traceql::Condition`] values — so it stays on this side of the
+//! boundary.
 //!
-//! - `tags`: space-separated `key=value` pairs, values optionally
-//!   double-quoted (logfmt).
-//! - `q`: `{ selector = value && ... }` where a selector is an intrinsic
-//!   (`name`, `status`, `kind`, `.service.name`/`resource.service.name`), a
-//!   span attribute (`span.key` / `.key`), or a resource attribute
-//!   (`resource.key`).
+//! ## How an attribute is matched
 //!
-//! Intrinsics filter dedicated columns. Attributes are stored as flat
-//! JSON objects in the `span_attributes` / `resource_attributes` string
-//! columns, so attribute equality is implemented as a substring match on
-//! the serialized `"key":value` fragment. That can over-match when
-//! another attribute's serialized text embeds the same fragment — a
-//! documented approximation until attributes are indexed.
+//! Three representations, in preference order:
+//!
+//! | Table shape | Expression |
+//! |-------------|------------|
+//! | attribute promoted to a column | equality on `label_<key>` |
+//! | map-typed attribute columns | `get_field(col, key)` equality |
+//! | legacy flat-JSON columns | substring match on the serialized `"key":value` fragment |
+//!
+//! The JSON fallback can over-match when another attribute's serialized text
+//! embeds the same fragment — a documented approximation that disappears as
+//! tables move to map-typed attributes.
 
 use common::schema::materialized_column_name;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::logical_expr::{Expr, col, lit};
+use traceql::{Condition, FilterValue, Selector};
 
 use super::error::QuerierError;
 use super::logql::{AttrContext, MaterializedColumns};
 
-/// Where a filter condition applies.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Selector {
-    /// The dedicated `service_name` column.
-    ServiceName,
-    /// The dedicated `span_name` column.
-    SpanName,
-    /// The dedicated `status_code` column.
-    Status,
-    /// The dedicated `span_kind` column.
-    Kind,
-    /// A span attribute (JSON column `span_attributes`).
-    SpanAttribute(String),
-    /// A resource attribute (JSON column `resource_attributes`).
-    ResourceAttribute(String),
-    /// An attribute that may live on the span or the resource.
-    AnyAttribute(String),
-}
-
-/// A parsed equality condition.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Condition {
-    pub selector: Selector,
-    pub value: FilterValue,
-}
-
-/// Supported comparison values.
-#[derive(Debug, Clone, PartialEq)]
-pub enum FilterValue {
-    String(String),
-    Number(String),
-    Bool(bool),
-}
-
-impl Condition {
-    /// Lower the condition to a DataFusion filter expression, routing an
-    /// attribute key to its materialized `label_<key>` column (exact match)
-    /// when the table has one; otherwise to per-key `get_field` extraction
-    /// on map-typed attribute tables, else the attribute-JSON substring
-    /// match (legacy tables).
-    pub fn to_expr(&self, ctx: &AttrContext) -> Result<Expr, QuerierError> {
-        let columns: &MaterializedColumns = &ctx.materialized;
-        match &self.selector {
-            Selector::ServiceName => Ok(col("service_name").eq(lit(self.string_value()?))),
-            Selector::SpanName => Ok(col("span_name").eq(lit(self.string_value()?))),
-            Selector::Status => {
-                let status = match self.string_value()?.to_ascii_lowercase().as_str() {
-                    "ok" => "Ok",
-                    "error" => "Error",
-                    "unset" | "unspecified" => "Unspecified",
-                    other => {
-                        return Err(QuerierError::InvalidInput(format!(
-                            "Unknown status value '{other}' (expected ok, error, or unset)"
-                        )));
-                    }
-                };
-                Ok(col("status_code").eq(lit(status)))
-            }
-            Selector::Kind => {
-                let kind = match self.string_value()?.to_ascii_lowercase().as_str() {
-                    "internal" => "Internal",
-                    "server" => "Server",
-                    "client" => "Client",
-                    "producer" => "Producer",
-                    "consumer" => "Consumer",
-                    other => {
-                        return Err(QuerierError::InvalidInput(format!(
-                            "Unknown kind value '{other}' (expected internal, server, client, producer, or consumer)"
-                        )));
-                    }
-                };
-                Ok(col("span_kind").eq(lit(kind)))
-            }
-            Selector::SpanAttribute(key)
-            | Selector::ResourceAttribute(key)
-            | Selector::AnyAttribute(key)
-                if columns.contains(&materialized_column_name(key)) =>
-            {
-                Ok(materialized_expr(
-                    &materialized_column_name(key),
-                    &self.value,
-                ))
-            }
-            Selector::SpanAttribute(key) if ctx.map_attrs => {
-                Ok(map_attribute_expr("span_attributes", key, &self.value))
-            }
-            Selector::ResourceAttribute(key) if ctx.map_attrs => {
-                Ok(map_attribute_expr("resource_attributes", key, &self.value))
-            }
-            Selector::AnyAttribute(key) if ctx.map_attrs => Ok(map_attribute_expr(
-                "span_attributes",
-                key,
-                &self.value,
+/// Lower a condition to a DataFusion filter expression, routing an attribute
+/// key to its materialized `label_<key>` column (exact match) when the table
+/// has one; otherwise to per-key `get_field` extraction on map-typed attribute
+/// tables, else the attribute-JSON substring match (legacy tables).
+///
+/// A free function rather than a method: `Condition` is defined in `traceql`,
+/// which must not know what a DataFusion expression is.
+pub fn to_expr(condition: &Condition, ctx: &AttrContext) -> Result<Expr, QuerierError> {
+    let columns: &MaterializedColumns = &ctx.materialized;
+    match &condition.selector {
+        Selector::ServiceName => Ok(col("service_name").eq(lit(string_value(condition)?))),
+        Selector::SpanName => Ok(col("span_name").eq(lit(string_value(condition)?))),
+        Selector::Status => {
+            let status = match string_value(condition)?.to_ascii_lowercase().as_str() {
+                "ok" => "Ok",
+                "error" => "Error",
+                "unset" | "unspecified" => "Unspecified",
+                other => {
+                    return Err(QuerierError::InvalidInput(format!(
+                        "Unknown status value '{other}' (expected ok, error, or unset)"
+                    )));
+                }
+            };
+            Ok(col("status_code").eq(lit(status)))
+        }
+        Selector::Kind => {
+            let kind = match string_value(condition)?.to_ascii_lowercase().as_str() {
+                "internal" => "Internal",
+                "server" => "Server",
+                "client" => "Client",
+                "producer" => "Producer",
+                "consumer" => "Consumer",
+                other => {
+                    return Err(QuerierError::InvalidInput(format!(
+                        "Unknown kind value '{other}' (expected internal, server, client, producer, or consumer)"
+                    )));
+                }
+            };
+            Ok(col("span_kind").eq(lit(kind)))
+        }
+        Selector::SpanAttribute(key)
+        | Selector::ResourceAttribute(key)
+        | Selector::AnyAttribute(key)
+            if columns.contains(&materialized_column_name(key)) =>
+        {
+            materialized_expr(&materialized_column_name(key), &condition.value)
+        }
+        Selector::SpanAttribute(key) if ctx.map_attrs => {
+            map_attribute_expr("span_attributes", key, &condition.value)
+        }
+        Selector::ResourceAttribute(key) if ctx.map_attrs => {
+            map_attribute_expr("resource_attributes", key, &condition.value)
+        }
+        Selector::AnyAttribute(key) if ctx.map_attrs => {
+            Ok(
+                map_attribute_expr("span_attributes", key, &condition.value)?.or(
+                    map_attribute_expr("resource_attributes", key, &condition.value)?,
+                ),
             )
-            .or(map_attribute_expr("resource_attributes", key, &self.value))),
-            Selector::SpanAttribute(key) => Ok(attribute_expr("span_attributes", key, &self.value)),
-            Selector::ResourceAttribute(key) => {
-                Ok(attribute_expr("resource_attributes", key, &self.value))
-            }
-            Selector::AnyAttribute(key) => Ok(attribute_expr("span_attributes", key, &self.value)
-                .or(attribute_expr("resource_attributes", key, &self.value))),
         }
+        Selector::SpanAttribute(key) => attribute_expr("span_attributes", key, &condition.value),
+        Selector::ResourceAttribute(key) => {
+            attribute_expr("resource_attributes", key, &condition.value)
+        }
+        Selector::AnyAttribute(key) => {
+            Ok(
+                attribute_expr("span_attributes", key, &condition.value)?.or(attribute_expr(
+                    "resource_attributes",
+                    key,
+                    &condition.value,
+                )?),
+            )
+        }
+        // `Selector` is `#[non_exhaustive]`: the parser releases on its own
+        // cadence, so it can recognise a selector this build cannot lower.
+        // Saying so beats filtering on the wrong column.
+        other => Err(QuerierError::Unsupported(format!(
+            "TraceQL selector {other:?} is recognised but not lowered by this build"
+        ))),
     }
+}
 
-    fn string_value(&self) -> Result<String, QuerierError> {
-        match &self.value {
-            FilterValue::String(s) => Ok(s.clone()),
-            other => Err(QuerierError::InvalidInput(format!(
-                "Selector {:?} requires a string value, got {other:?}",
-                self.selector
-            ))),
-        }
+fn string_value(condition: &Condition) -> Result<String, QuerierError> {
+    match &condition.value {
+        FilterValue::String(s) => Ok(s.clone()),
+        other => Err(QuerierError::InvalidInput(format!(
+            "Selector {:?} requires a string value, got {other:?}",
+            condition.selector
+        ))),
     }
 }
 
 /// Exact equality against a materialized attribute column, comparing the
 /// value as its stored string form.
-fn materialized_expr(column: &str, value: &FilterValue) -> Expr {
-    let v = match value {
-        FilterValue::String(s) => s.clone(),
-        FilterValue::Number(n) => n.clone(),
-        FilterValue::Bool(b) => b.to_string(),
-    };
-    col(column).eq(lit(v))
+fn materialized_expr(column: &str, value: &FilterValue) -> Result<Expr, QuerierError> {
+    Ok(col(column).eq(lit(stored_string(value)?)))
 }
 
 /// Exact per-key equality on a map-typed attribute column. Values are
 /// stored as strings (numbers/bools rendered bare at ingest), so every
 /// filter value compares by its string form.
-fn map_attribute_expr(column: &str, key: &str, value: &FilterValue) -> Expr {
+fn map_attribute_expr(column: &str, key: &str, value: &FilterValue) -> Result<Expr, QuerierError> {
     use datafusion::functions::core::expr_fn::get_field;
-    let v = match value {
-        FilterValue::String(s) => s.clone(),
-        FilterValue::Number(n) => n.clone(),
-        FilterValue::Bool(b) => b.to_string(),
-    };
-    get_field(col(column), key).eq(lit(v))
+    Ok(get_field(col(column), key).eq(lit(stored_string(value)?)))
+}
+
+/// A filter value as ingest rendered it into a string-typed column.
+///
+/// Fallible for the same reason [`to_expr`] is: `FilterValue` is
+/// `#[non_exhaustive]`, and a value kind this build cannot render must be
+/// reported, not guessed at. Rendering an unknown variant via `Debug` would
+/// produce a filter that silently matches nothing — the failure mode this
+/// module exists to avoid.
+fn stored_string(value: &FilterValue) -> Result<String, QuerierError> {
+    match value {
+        FilterValue::String(s) => Ok(s.clone()),
+        FilterValue::Number(n) => Ok(n.clone()),
+        FilterValue::Bool(b) => Ok(b.to_string()),
+        other => Err(QuerierError::Unsupported(format!(
+            "TraceQL value {other:?} is recognised but not lowered by this build"
+        ))),
+    }
 }
 
 /// Match the serialized `"key":value` fragment inside a flat-JSON
 /// attribute column. Non-string OTLP values serialize unquoted
 /// (`{"http.status_code":200}`), so numbers and bools match both the
 /// bare and the quoted form.
-fn attribute_expr(column: &str, key: &str, value: &FilterValue) -> Expr {
+fn attribute_expr(column: &str, key: &str, value: &FilterValue) -> Result<Expr, QuerierError> {
     // serde_json::to_string on &str cannot fail.
     let json_key = serde_json::to_string(key).unwrap_or_else(|_| format!("\"{key}\""));
     match value {
         FilterValue::String(s) => {
             let json_value = serde_json::to_string(s).unwrap_or_else(|_| format!("\"{s}\""));
-            contains(col(column), lit(format!("{json_key}:{json_value}")))
+            Ok(contains(
+                col(column),
+                lit(format!("{json_key}:{json_value}")),
+            ))
         }
-        FilterValue::Number(n) => contains(col(column), lit(format!("{json_key}:{n}")))
-            .or(contains(col(column), lit(format!("{json_key}:\"{n}\"")))),
-        FilterValue::Bool(b) => contains(col(column), lit(format!("{json_key}:{b}")))
-            .or(contains(col(column), lit(format!("{json_key}:\"{b}\"")))),
+        other => {
+            let bare = stored_string(other)?;
+            Ok(contains(col(column), lit(format!("{json_key}:{bare}")))
+                .or(contains(col(column), lit(format!("{json_key}:\"{bare}\"")))))
+        }
     }
 }
 
-/// Map an attribute-style key that may name an intrinsic to its selector.
-fn unscoped_selector(key: &str) -> Selector {
+/// Which selector a Tempo `tags` key denotes.
+///
+/// Deliberately a copy of the vocabulary TraceQL uses for unscoped keys rather
+/// than a call into `traceql`. The two agree today by coincidence: `tags` is a
+/// frozen logfmt wire format, while TraceQL's intrinsics evolve with the
+/// language on its own release cadence. Sharing one function would let a new
+/// TraceQL intrinsic silently redefine what an existing `tags=` request means.
+fn tags_selector(key: &str) -> Selector {
     match key {
         "service.name" => Selector::ServiceName,
         "name" => Selector::SpanName,
@@ -216,7 +217,7 @@ pub fn parse_tags(tags: &str) -> Result<Vec<Condition>, QuerierError> {
         }
         let (raw_value, remainder) = take_value(after_key)?;
         conditions.push(Condition {
-            selector: unscoped_selector(key),
+            selector: tags_selector(key),
             value: FilterValue::String(raw_value),
         });
         rest = remainder.trim_start();
@@ -241,143 +242,6 @@ fn take_value(input: &str) -> Result<(String, &str), QuerierError> {
         let end = input.find(char::is_whitespace).unwrap_or(input.len());
         Ok((input[..end].to_string(), &input[end..]))
     }
-}
-
-/// Parse the supported TraceQL subset:
-/// `{ selector = value && selector = value ... }`.
-///
-/// Anything outside the subset (other operators, `||`, nesting, pipeline
-/// stages, duration comparisons) returns [`QuerierError::Unsupported`] so
-/// clients get an explicit 501 instead of silently unfiltered results.
-pub fn parse_traceql(q: &str) -> Result<Vec<Condition>, QuerierError> {
-    let trimmed = q.trim();
-    let inner = trimmed
-        .strip_prefix('{')
-        .and_then(|s| s.strip_suffix('}'))
-        .ok_or_else(|| {
-            QuerierError::Unsupported(format!(
-                "Unsupported TraceQL query '{q}': only a single {{ ... }} spanset is supported"
-            ))
-        })?;
-
-    if inner.contains("||") {
-        return Err(QuerierError::Unsupported(
-            "TraceQL '||' is not supported yet; only '&&' conjunctions of equality matchers"
-                .to_string(),
-        ));
-    }
-    let inner = inner.trim();
-    if inner.is_empty() {
-        // `{}` selects everything — valid TraceQL, no filters.
-        return Ok(Vec::new());
-    }
-
-    let mut conditions = Vec::new();
-    for clause in split_top_level_and(inner) {
-        conditions.push(parse_traceql_clause(clause.trim())?);
-    }
-    Ok(conditions)
-}
-
-/// Split on `&&` outside of double quotes.
-fn split_top_level_and(input: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut in_quotes = false;
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => in_quotes = !in_quotes,
-            b'&' if !in_quotes && i + 1 < bytes.len() && bytes[i + 1] == b'&' => {
-                parts.push(&input[start..i]);
-                i += 2;
-                start = i;
-                continue;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    parts.push(&input[start..]);
-    parts
-}
-
-/// Parse one `selector = value` clause of the TraceQL subset.
-fn parse_traceql_clause(clause: &str) -> Result<Condition, QuerierError> {
-    for unsupported in ["!=", ">=", "<=", "=~", "!~", ">", "<"] {
-        if clause.contains(unsupported) {
-            return Err(QuerierError::Unsupported(format!(
-                "TraceQL operator '{unsupported}' is not supported yet (clause: '{clause}')"
-            )));
-        }
-    }
-    let (lhs, rhs) = clause.split_once('=').ok_or_else(|| {
-        QuerierError::Unsupported(format!(
-            "Unsupported TraceQL clause '{clause}': only equality matchers are supported"
-        ))
-    })?;
-    let lhs = lhs.trim();
-    let rhs = rhs.trim();
-
-    let selector = if lhs == "name" {
-        Selector::SpanName
-    } else if lhs == "status" {
-        Selector::Status
-    } else if lhs == "kind" {
-        Selector::Kind
-    } else if lhs == "duration" {
-        return Err(QuerierError::Unsupported(
-            "TraceQL 'duration' matchers are not supported; use minDuration/maxDuration"
-                .to_string(),
-        ));
-    } else if lhs == "resource.service.name" || lhs == ".service.name" {
-        Selector::ServiceName
-    } else if let Some(key) = lhs.strip_prefix("span.") {
-        Selector::SpanAttribute(key.to_string())
-    } else if let Some(key) = lhs.strip_prefix("resource.") {
-        Selector::ResourceAttribute(key.to_string())
-    } else if let Some(key) = lhs.strip_prefix('.') {
-        unscoped_selector(key)
-    } else {
-        return Err(QuerierError::Unsupported(format!(
-            "Unsupported TraceQL selector '{lhs}'"
-        )));
-    };
-
-    let value = parse_traceql_value(rhs)?;
-    Ok(Condition { selector, value })
-}
-
-fn parse_traceql_value(raw: &str) -> Result<FilterValue, QuerierError> {
-    if let Some(quoted) = raw.strip_prefix('"') {
-        let inner = quoted.strip_suffix('"').ok_or_else(|| {
-            QuerierError::InvalidInput(format!("Unterminated string literal '{raw}'"))
-        })?;
-        if inner.contains('"') {
-            return Err(QuerierError::InvalidInput(format!(
-                "Unsupported escaped string literal '{raw}'"
-            )));
-        }
-        return Ok(FilterValue::String(inner.to_string()));
-    }
-    if raw == "true" || raw == "false" {
-        return Ok(FilterValue::Bool(raw == "true"));
-    }
-    if !raw.is_empty()
-        && raw
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.' || c == '-')
-    {
-        return Ok(FilterValue::Number(raw.to_string()));
-    }
-    // Bare identifiers are only meaningful for `status`/`kind`.
-    if !raw.is_empty() && raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Ok(FilterValue::String(raw.to_string()));
-    }
-    Err(QuerierError::InvalidInput(format!(
-        "Unsupported TraceQL value '{raw}'"
-    )))
 }
 
 #[cfg(test)]
@@ -420,59 +284,18 @@ mod tests {
         assert!(matches!(parse_tags(""), Err(QuerierError::InvalidInput(_))));
     }
 
+    /// The parser's rejection classes must reach the caller as the statuses
+    /// they imply: unparseable input is a client error, an unimplemented
+    /// construct is not.
     #[test]
-    fn traceql_equality_subset_parses() {
-        let conditions =
-            parse_traceql(r#"{ resource.service.name = "api" && span.http.method = "GET" }"#)
-                .unwrap();
-        assert_eq!(conditions.len(), 2);
-        assert_eq!(conditions[0].selector, Selector::ServiceName);
-        assert_eq!(
-            conditions[1].selector,
-            Selector::SpanAttribute("http.method".to_string())
-        );
-    }
+    fn parse_errors_map_to_their_status_class() {
+        let syntax: QuerierError = traceql::parse(r#"name = "no-braces""#).unwrap_err().into();
+        assert!(matches!(syntax, QuerierError::InvalidInput(_)), "{syntax}");
 
-    #[test]
-    fn traceql_intrinsics_and_numbers() {
-        let conditions = parse_traceql(
-            r#"{ name = "GET /api" && status = error && span.http.status_code = 500 }"#,
-        )
-        .unwrap();
-        assert_eq!(conditions[0].selector, Selector::SpanName);
-        assert_eq!(conditions[1].selector, Selector::Status);
-        assert_eq!(conditions[2].value, FilterValue::Number("500".to_string()));
-    }
-
-    #[test]
-    fn traceql_empty_spanset_matches_everything() {
-        assert!(parse_traceql("{}").unwrap().is_empty());
-        assert!(parse_traceql("{   }").unwrap().is_empty());
-    }
-
-    #[test]
-    fn traceql_unsupported_operators_are_rejected_as_unsupported() {
-        for q in [
-            r#"{ duration > 100ms }"#,
-            r#"{ span.x != "y" }"#,
-            r#"{ span.x =~ "y.*" }"#,
-            r#"{ span.a = "1" || span.b = "2" }"#,
-            r#"name = "no-braces""#,
-        ] {
-            assert!(
-                matches!(parse_traceql(q), Err(QuerierError::Unsupported(_))),
-                "expected Unsupported for {q}"
-            );
-        }
-    }
-
-    #[test]
-    fn traceql_ampersand_inside_quotes_is_preserved() {
-        let conditions = parse_traceql(r#"{ span.query = "a && b" }"#).unwrap();
-        assert_eq!(conditions.len(), 1);
-        assert_eq!(
-            conditions[0].value,
-            FilterValue::String("a && b".to_string())
+        let unsupported: QuerierError = traceql::parse(r#"{ span.x != "y" }"#).unwrap_err().into();
+        assert!(
+            matches!(unsupported, QuerierError::Unsupported(_)),
+            "{unsupported}"
         );
     }
 
@@ -482,7 +305,7 @@ mod tests {
             selector: Selector::Status,
             value: FilterValue::String("error".to_string()),
         };
-        let expr = condition.to_expr(&AttrContext::default()).unwrap();
+        let expr = to_expr(&condition, &AttrContext::default()).unwrap();
         assert!(format!("{expr:?}").contains("Error"));
 
         let bad = Condition {
@@ -490,20 +313,9 @@ mod tests {
             value: FilterValue::String("bogus".to_string()),
         };
         assert!(matches!(
-            bad.to_expr(&AttrContext::default()),
+            to_expr(&bad, &AttrContext::default()),
             Err(QuerierError::InvalidInput(_))
         ));
-    }
-
-    #[test]
-    fn traceql_kind_intrinsic_parses() {
-        let conditions = parse_traceql(r#"{ kind = server }"#).unwrap();
-        assert_eq!(conditions.len(), 1);
-        assert_eq!(conditions[0].selector, Selector::Kind);
-        assert_eq!(
-            conditions[0].value,
-            FilterValue::String("server".to_string())
-        );
     }
 
     #[test]
@@ -512,7 +324,7 @@ mod tests {
             selector: Selector::Kind,
             value: FilterValue::String("server".to_string()),
         };
-        let expr = condition.to_expr(&AttrContext::default()).unwrap();
+        let expr = to_expr(&condition, &AttrContext::default()).unwrap();
         assert!(format!("{expr:?}").contains("Server"));
 
         let bad = Condition {
@@ -520,7 +332,7 @@ mod tests {
             value: FilterValue::String("bogus".to_string()),
         };
         assert!(matches!(
-            bad.to_expr(&AttrContext::default()),
+            to_expr(&bad, &AttrContext::default()),
             Err(QuerierError::InvalidInput(_))
         ));
     }
@@ -531,7 +343,10 @@ mod tests {
             selector: Selector::SpanAttribute("http.method".to_string()),
             value: FilterValue::String("GET".to_string()),
         };
-        let rendered = format!("{:?}", condition.to_expr(&AttrContext::default()).unwrap());
+        let rendered = format!(
+            "{:?}",
+            to_expr(&condition, &AttrContext::default()).unwrap()
+        );
         assert!(rendered.contains(r#""http.method":"GET""#), "{rendered}");
 
         // Numbers match both bare (real OTLP int) and quoted forms.
@@ -539,7 +354,7 @@ mod tests {
             selector: Selector::SpanAttribute("http.status_code".to_string()),
             value: FilterValue::Number("200".to_string()),
         };
-        let rendered = format!("{:?}", numeric.to_expr(&AttrContext::default()).unwrap());
+        let rendered = format!("{:?}", to_expr(&numeric, &AttrContext::default()).unwrap());
         assert!(rendered.contains(r#""http.status_code":200"#), "{rendered}");
         assert!(
             rendered.contains(r#""http.status_code":"200""#),
@@ -558,7 +373,7 @@ mod tests {
             selector: Selector::AnyAttribute("namespace".to_string()),
             value: FilterValue::String("prod".to_string()),
         };
-        let rendered = format!("{:?}", condition.to_expr(&ctx).unwrap());
+        let rendered = format!("{:?}", to_expr(&condition, &ctx).unwrap());
         assert!(rendered.contains("GetFieldFunc"), "{rendered}");
         assert!(!rendered.contains("ContainsFunc"), "{rendered}");
 
@@ -567,7 +382,7 @@ mod tests {
             selector: Selector::SpanAttribute("http.status_code".to_string()),
             value: FilterValue::Number("200".to_string()),
         };
-        let rendered = format!("{:?}", numeric.to_expr(&ctx).unwrap());
+        let rendered = format!("{:?}", to_expr(&numeric, &ctx).unwrap());
         assert!(rendered.contains(r#"Utf8("200")"#), "{rendered}");
     }
 
@@ -578,7 +393,10 @@ mod tests {
             value: FilterValue::String("prod".to_string()),
         };
         // Without the column: JSON substring across both attribute columns.
-        let json = format!("{:?}", condition.to_expr(&AttrContext::default()).unwrap());
+        let json = format!(
+            "{:?}",
+            to_expr(&condition, &AttrContext::default()).unwrap()
+        );
         assert!(json.contains(r#""namespace":"prod""#), "{json}");
 
         // With the column: exact equality on `label_namespace`.
@@ -586,7 +404,7 @@ mod tests {
             materialized: ["label_namespace".to_string()].into_iter().collect(),
             ..Default::default()
         };
-        let rendered = format!("{:?}", condition.to_expr(&ctx).unwrap());
+        let rendered = format!("{:?}", to_expr(&condition, &ctx).unwrap());
         assert!(rendered.contains("label_namespace"), "{rendered}");
         assert!(!rendered.contains("span_attributes"), "{rendered}");
     }

@@ -28,6 +28,35 @@ authentication headers described in [Authentication](authentication.md)
 | GET    | `/api/metrics/query`              | **501**     | TraceQL metrics not implemented                                                                                                                                                                                                                                                                      |
 | GET    | `/api/metrics/query_range`        | **501**     | TraceQL metrics not implemented                                                                                                                                                                                                                                                                      |
 
+## TraceQL: the supported subset
+
+`GET /api/search`'s `q` parameter accepts a single spanset of `&&`-conjoined
+equality matchers. `{}` is valid and selects everything.
+
+```
+{ resource.service.name = "api" && span.http.method = "GET" }
+```
+
+- **Intrinsics**: `name`, `status`, `kind`, and service name spelled either
+  `resource.service.name` or `.service.name`.
+- **Attributes**: `span.<key>`, `resource.<key>`, or unscoped `.<key>`.
+- **Values**: double-quoted strings, bare numbers, `true`/`false`, and bare
+  identifiers (meaningful only for `status`/`kind`).
+
+Anything outside the subset is rejected rather than silently dropped — a
+partially applied filter would return _more_ traces than you asked for while
+still looking like a successful search. Which rejection you get tells you
+whose problem it is:
+
+| Your `q`                                                | Status  | Meaning                                         |
+| ------------------------------------------------------- | ------- | ----------------------------------------------- |
+| `{ .a != "b" }`, `=~`, `>=`, `\|\|`, `duration > 100ms` | **501** | Valid TraceQL. SignalDB does not execute it yet |
+| `notbraces`, `{ foo }`, `{ zzz = 1 }`                   | **400** | Not TraceQL. Fix the query                      |
+
+> **Changed:** unparseable `q` values previously returned 501. They are now
+> 400, so a client can tell a malformed query from an unimplemented one.
+> Valid-but-unimplemented constructs still return 501, unchanged.
+
 ## Tag discovery time window
 
 The tag-name endpoints (`/api/search/tags`, `/api/v2/search/tags`) and the
@@ -76,15 +105,15 @@ timings (`Server-Timing` with `traceparent`, `querier`/`convert`/`total`
 
 ## Error mapping
 
-| HTTP status | Meaning                                                                                                                                |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| 400         | Invalid search parameters, including `start`/`end` values that are not unix seconds (missing/invalid headers also yield 400 from auth) |
-| 401 / 403   | Authentication or authorization failure                                                                                                |
-| 404         | Trace not found                                                                                                                        |
-| 429         | Per-tenant query rate limit exceeded — carries `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Burst` (see below)                     |
-| 501         | Feature not implemented (TraceQL metrics)                                                                                              |
-| 503         | No querier service available                                                                                                           |
-| 504         | Query deadline exceeded (server-side budget, or the caller's own deadline)                                                             |
+| HTTP status | Meaning                                                                                                                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400         | Invalid search parameters, including `start`/`end` values that are not unix seconds, malformed `tags`, and a `q` that is not valid TraceQL (missing/invalid headers also yield 400 from auth) |
+| 401 / 403   | Authentication or authorization failure                                                                                                                                                       |
+| 404         | Trace not found                                                                                                                                                                               |
+| 429         | Per-tenant query rate limit exceeded — carries `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Burst` (see below)                                                                            |
+| 501         | Feature not implemented: TraceQL metrics, or a `q` that is valid TraceQL using a construct SignalDB does not execute yet                                                                      |
+| 503         | No querier service available                                                                                                                                                                  |
+| 504         | Query deadline exceeded (server-side budget, or the caller's own deadline)                                                                                                                    |
 
 A query that runs out of time is always a 504, never a 500 — whether the
 querier's `query_timeout` fired or the router's Flight channel deadline did.
