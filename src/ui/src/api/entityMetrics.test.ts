@@ -2,20 +2,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildObservedMetricNamesDoc,
   discoverObservedMetricNames,
+  fetchEntityMetricNames,
   fetchMetricDefinitions,
-  metricsForEntity,
   nameSegments,
 } from "./entityMetrics";
-import type { EntityTypeDef } from "../features/catalog/entityTypes";
 import { runIrQuery } from "./queryIr";
-import { searchMetrics } from "../features/schema/api";
+import { resolveEntity, searchMetrics } from "../features/schema/api";
 import type { MetricHit } from "../features/schema/api";
 
 vi.mock("./queryIr", () => ({ runIrQuery: vi.fn() }));
 vi.mock("../features/schema/api", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../features/schema/api")>();
-  return { ...actual, searchMetrics: vi.fn() };
+  return { ...actual, searchMetrics: vi.fn(), resolveEntity: vi.fn() };
 });
 
 afterEach(() => {
@@ -164,68 +163,33 @@ describe("metric definition lookup", () => {
   });
 });
 
-describe("filtering definitions to an entity type", () => {
-  const defs = [
-    metric("system.cpu.time", ["host"], "counter"),
-    metric("system.memory.usage", ["host"], "updowncounter"),
-    metric("process.cpu.utilization", ["process"]),
-    metric("otelcol_receiver_accepted_spans", []),
-    metric("signaldb.wal.entries_processed", []),
-  ];
+describe("the registry's own metric list for an entity", () => {
+  it("asks the entity, which is where the association is recorded", async () => {
+    // The registry records the association on the entity, so it can simply be
+    // read — no guessing prefixes from what happens to be observed, and no
+    // missing a family whose names look nothing like the entity's own
+    // (`host` is described by `nfs.*` as well as `system.*`).
+    vi.mocked(resolveEntity).mockResolvedValue({
+      key: "host",
+      hits: [
+        { metrics: ["system.cpu.time", "nfs.server.io"] },
+        { metrics: ["system.cpu.time", "custom.host.temp"] },
+      ] as never,
+    });
 
-  it("keeps the metrics the entity is associated with", () => {
-    const host: EntityTypeDef = {
-      id: "host",
-      label: "Hosts",
-      singular: "host",
-      identity: ["host.name"],
-      registryEntity: "host",
-    };
-
-    expect(metricsForEntity(defs, host).map((d) => d.name)).toEqual([
+    expect(await fetchEntityMetricNames("host")).toEqual([
       "system.cpu.time",
-      "system.memory.usage",
+      "nfs.server.io",
+      "custom.host.temp",
     ]);
   });
 
-  it("drops metrics that associate with nothing", () => {
-    // `otelcol_*` and `signaldb.*` measure a collector and this database, not
-    // any entity the catalog knows — the correct answer, not a special case.
-    const process: EntityTypeDef = {
-      id: "process",
-      label: "Processes",
-      singular: "process",
-      identity: ["process.pid"],
-      registryEntity: "process",
-    };
+  it("is empty for an entity no registry associates a metric with", async () => {
+    vi.mocked(resolveEntity).mockResolvedValue({
+      key: "telemetry.sdk",
+      hits: [{ metrics: [] } as never],
+    });
 
-    expect(metricsForEntity(defs, process).map((d) => d.name)).toEqual([
-      "process.cpu.utilization",
-    ]);
-  });
-
-  it("finds nothing for an entity type no registry declares", () => {
-    // A curated type the registry never mentions carries no registry name, so
-    // there is no association to look up — and no panel to draw.
-    const database: EntityTypeDef = {
-      id: "database",
-      label: "Databases",
-      singular: "database",
-      identity: ["db.namespace"],
-    };
-
-    expect(metricsForEntity(defs, database)).toEqual([]);
-  });
-
-  it("finds nothing for an entity type nothing associates with", () => {
-    const sdk: EntityTypeDef = {
-      id: "telemetry_sdk",
-      label: "Telemetry sdks",
-      singular: "telemetry sdk",
-      identity: ["telemetry.sdk.name"],
-      registryEntity: "telemetry.sdk",
-    };
-
-    expect(metricsForEntity(defs, sdk)).toEqual([]);
+    expect(await fetchEntityMetricNames("telemetry.sdk")).toEqual([]);
   });
 });

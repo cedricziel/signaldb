@@ -3,18 +3,16 @@
  *
  * Two fetches with deliberately different lifetimes. What a window holds is a
  * fact about the window, so the observed-name discovery is keyed by range.
- * What a metric *measures* is a fact about the registry, so the definition
- * lookup is keyed by tenant and dataset only — re-reading it on every range
- * change would re-fetch an identical answer.
- *
- * See `api/entityMetrics.ts` for why the join runs data-first.
+ * Which metrics describe an entity is a fact about the registry, so that half
+ * is keyed by tenant and entity — re-reading it on every range change would
+ * re-fetch an identical answer.
  */
 import { useQuery } from "@tanstack/react-query";
 import {
   discoverObservedMetricNames,
+  fetchEntityMetricNames,
   fetchMetricDefinitions,
   METRIC_SOURCES,
-  metricsForEntity,
 } from "../../api/entityMetrics";
 import type { MetricHit } from "../schema/api";
 import type { ResolvedRange } from "../../lib/time";
@@ -62,14 +60,27 @@ export function useEntityMetrics(
 
   const names = observed.data ?? [];
   const definitions = useQuery({
-    queryKey: ["entity-metric-definitions", tenantScope(rangeKey), names],
-    queryFn: () => fetchMetricDefinitions(names),
+    queryKey: [
+      "entity-metric-definitions",
+      tenantScope(rangeKey),
+      entity.registryEntity,
+      names,
+    ],
+    queryFn: async () => {
+      // The registry says which metrics describe this entity; the window says
+      // which of them exist. The panel wants the intersection, and asking for
+      // definitions of only that intersection keeps the prefix searches down
+      // to the families the entity actually uses.
+      const associated = await fetchEntityMetricNames(entity.registryEntity!);
+      const inWindow = new Set(names);
+      return fetchMetricDefinitions(associated.filter((n) => inWindow.has(n)));
+    },
     enabled: enabled && observed.isSuccess,
     staleTime: 10 * 60_000,
   });
 
   return {
-    metrics: metricsForEntity(definitions.data ?? [], entity),
+    metrics: definitions.data ?? [],
     isPending: enabled && (observed.isPending || definitions.isPending),
     isError: observed.isError || definitions.isError,
   };

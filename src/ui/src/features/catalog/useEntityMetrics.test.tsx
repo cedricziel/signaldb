@@ -12,6 +12,7 @@ vi.mock("../../api/entityMetrics", async (importOriginal) => {
   return {
     ...actual,
     discoverObservedMetricNames: vi.fn(),
+    fetchEntityMetricNames: vi.fn(),
     fetchMetricDefinitions: vi.fn(),
   };
 });
@@ -21,6 +22,9 @@ const discoverObservedMetricNames = vi.mocked(
 );
 const fetchMetricDefinitions = vi.mocked(
   entityMetricsApi.fetchMetricDefinitions,
+);
+const fetchEntityMetricNames = vi.mocked(
+  entityMetricsApi.fetchEntityMetricNames,
 );
 
 const host: EntityTypeDef = {
@@ -48,12 +52,18 @@ function metric(name: string, entities: string[]): MetricHit {
 
 beforeEach(() => {
   discoverObservedMetricNames.mockReset();
+  fetchEntityMetricNames.mockReset();
   fetchMetricDefinitions.mockReset();
   discoverObservedMetricNames.mockResolvedValue(["system.cpu.time"]);
-  fetchMetricDefinitions.mockResolvedValue([
-    metric("system.cpu.time", ["host"]),
-    metric("otelcol_receiver_accepted_spans", []),
+  // The registry describes `host` with a metric the window holds and one it
+  // does not — only the first should be asked about.
+  fetchEntityMetricNames.mockResolvedValue([
+    "system.cpu.time",
+    "system.paging.faults",
   ]);
+  fetchMetricDefinitions.mockImplementation(async (names: string[]) =>
+    names.map((n) => metric(n, ["host"])),
+  );
 });
 
 afterEach(() => {
@@ -65,6 +75,8 @@ const r2 = { fromMs: 2_000_000, toMs: 4_600_000 };
 
 describe("useEntityMetrics", () => {
   it("reports the entity's associated metrics that the window holds", async () => {
+    // The intersection, not either side: the registry lists a metric this
+    // deployment never wrote, and it must not be charted.
     const { result } = renderHook(
       () => useEntityMetrics(host, r1, "1h|acme|prod"),
       { wrapper: clientWrapper() },

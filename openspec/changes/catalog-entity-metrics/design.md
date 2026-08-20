@@ -9,10 +9,16 @@ See proposal.md — Why. What shapes the approach:
   `process`, all 45 `system.*` → `host`, all 13 `container.*` → `container`.
 - That endpoint takes only a name `prefix` and a limit the server clamps to
   200, with no cursor and no filter by association (`search_metrics` in
-  `src/router/src/endpoints/schema.rs`). So a client can neither enumerate all
-  definitions nor ask "which metrics describe `host`" — and the entity name is
-  no help as a prefix, since `host`'s metrics are `system.*`. This constraint
-  is what decides the selection strategy below.
+  `src/router/src/endpoints/schema.rs`), so it cannot be enumerated or asked
+  about an entity.
+- **But the entity endpoint can be.** `GET /api/v1/schema/entities/{name}`
+  returns a `metrics` array — every metric name describing that entity, merged
+  across visible registries (`metrics_for_entity` in
+  `src/common/src/schema_registry/mod.rs`), and already surfaced on
+  `EntityHit` in the generated clients. A live `host` returns 61 names,
+  `nfs.*` among them: a family no prefix guessed from the entity's own name or
+  from what happens to be observed would ever reach. This is the association
+  lookup, and it decides the selection strategy below.
 - The Catalog's entity types are already registry-derived (`deriveEntityTypes`),
   keyed by the registry's entity `name` with dots mapped to underscores. So an
   entity type's registry name — the join key to `entity_associations` — is
@@ -60,40 +66,47 @@ or the other alone.
 - Observation alone would sweep in every metric that happens to carry the
   entity's resource attributes — for a host, that is nearly the whole tenant.
 
-Since the registry cannot be asked "which metrics describe this entity" (see
-Context), the join runs the other way — from the data toward the registry:
+Both halves are asked directly, and intersected:
 
-1. **What is observed.** One IR query over the window,
+1. **What describes this entity.** `GET /api/v1/schema/entities/{name}` returns
+   the entity's `metrics` array — the registry's own answer, merged across
+   visible registries. 61 names for a live `host`.
+2. **What the window holds.** One IR query,
    `aggregate by ["metric.name"]`, returns the tenant's observed metric names.
-   Measured against a live deployment: 80 distinct names, falling into 6
-   distinct first segments (`otelcol` 35, `system` 14, `container` 13,
-   `signaldb` 11, `process` 6, `http` 1).
-2. **What those names mean.** One prefix search per distinct first segment —
-   six calls, not one per metric — collects their definitions. The segment
-   ends at the first dot _or underscore_: OTel names are dotted, but anything
-   scraped from a Prometheus exporter is not, and splitting on the dot alone
-   made all 35 `otelcol_*` metrics their own prefix — 39 requests per page
-   instead of six, restoring exactly the fan-out this step exists to avoid.
-   The search is a plain string prefix, so the first word covers the family,
-   and an over-broad prefix only widens a response that is filtered back to
-   the observed names anyway.
-3. **Which belong to this entity.** Keep the definitions whose
-   `entity_associations` contain the entity type's registry name.
+   80 distinct names on the same deployment.
+3. **Definitions for the intersection.** One prefix search per distinct name
+   segment of that intersection — for a host, just `system` — collects the
+   `instrument` and `unit` each tile needs. The segment ends at the first dot
+   _or underscore_, because OTel names are dotted but anything scraped from a
+   Prometheus exporter is not; splitting on the dot alone made every
+   `otelcol_*` metric its own prefix. Narrowing to the intersection first is
+   what keeps this step to one or two calls rather than one per namespace the
+   tenant happens to emit.
 
-The bound that matters: every step is sized by what the tenant actually emits,
-never by how large the registry is. `otelcol_*` and `signaldb.*` fall out at
-step 3 for carrying no associations, which is the correct answer rather than a
-special case.
+The bound that matters: the association is read rather than reconstructed, and
+the definition lookup is sized by the intersection — not by the registry, and
+not by everything the tenant emits. `otelcol_*` and `signaldb.*` never enter,
+because the registry does not say they describe anything catalogable.
+
+**Superseded approach**, recorded because the working code took it for a
+while: with the entity endpoint's `metrics` array overlooked, the join ran
+data-first — discover every observed name, fetch definitions for all of them
+by prefix, then filter on each definition's `entity_associations`. It produced
+the right answer for `system.*`, but it could only ever find metrics whose
+names the tenant was already writing _and_ whose namespace a prefix guess
+reached, and it paid for definitions of every metric in the tenant to use a
+handful. The premise it rested on — "the registry cannot be asked" — was never
+checked against the entity endpoint.
 
 Steps 1 and 2 are cached beyond a range change on the same terms as the
 Catalog's other metadata; step 1 is window-scoped and keyed accordingly.
 
 **Alternative considered:** an `?entity=<name>` filter on
-`/api/v1/schema/metrics`. It is the better API and would collapse step 2, but
-it does not remove step 1 — the registry can never say what a deployment
-actually emits — so it is an optimization of one step, not a substitute for the
-approach. Worth having on its own merits (MCP and the CLI could answer the same
-question), and filed as #1360 rather than blocking a UI-only change.
+`/api/v1/schema/metrics` (#1360). Now redundant for the association itself,
+which the entity endpoint already answers. What would still help is a `keys=`
+parameter on the metrics search, mirroring the one attributes already have:
+step 3 would then fetch definitions for an exact name set instead of widening
+to a prefix and filtering back. That is the re-scoped remainder of #1360.
 
 **Alternative considered:** a metric-name discovery call on the Prometheus
 compat surface (`/prometheus/api/v1/label_values/__name__`). Rejected: the IR
