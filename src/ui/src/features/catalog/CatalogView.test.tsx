@@ -367,6 +367,9 @@ describe("registry-derived entity types", () => {
     });
 
     expect(fetchCatalogEntities).not.toHaveBeenCalled();
+    // Asserted positively: absence alone is also satisfied by a blank page,
+    // which is the regression this test exists to catch.
+    expect(screen.getByText("Loading entity types…")).toBeInTheDocument();
     expect(
       screen.queryByRole("navigation", { name: "Breadcrumb" }),
     ).not.toBeInTheDocument();
