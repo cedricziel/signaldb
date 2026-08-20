@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EntitySparkline } from "./EntitySparkline";
 
 /** A series as the IR envelope carries it: `[timestampNs, value]` pairs. */
@@ -16,33 +16,51 @@ function series(values: number[]) {
 }
 
 describe("EntitySparkline", () => {
-  it("shows the value under the pointer through the shared tooltip", () => {
-    // The cell is small enough to read as decoration; the tooltip is what
-    // makes it data. Every other panel in the UI reads through this same
-    // component, and a chart nobody can interrogate is a picture.
+  it("reports the point under the pointer, for the table's tooltip", () => {
+    // The cell sets `overflow: hidden` for its ellipsis, so a tooltip drawn
+    // in here would be clipped to 80x18. This reports; the table renders.
+    const onHover = vi.fn();
     render(
-      <EntitySparkline series={series([1, 5, 3])} label="system.cpu.time" />,
+      <EntitySparkline
+        series={series([1, 5, 3])}
+        label="system.cpu.time"
+        onHover={onHover}
+      />,
     );
 
-    const marks = screen.getAllByRole("button");
-    fireEvent.pointerEnter(marks[1]!);
+    fireEvent.pointerEnter(document.querySelectorAll("rect")[1]!);
 
-    const tip = screen.getByRole("tooltip");
-    expect(tip).toHaveTextContent("system.cpu.time");
-    expect(tip).toHaveTextContent("5");
+    expect(onHover).toHaveBeenCalledWith(
+      expect.objectContaining({ v: 5, max: 5, stepMs: 60_000 }),
+      expect.anything(),
+    );
   });
 
-  it("drops the tooltip when the pointer leaves", () => {
+  it("reports the pointer leaving", () => {
+    const onHover = vi.fn();
     render(
-      <EntitySparkline series={series([1, 5, 3])} label="system.cpu.time" />,
+      <EntitySparkline
+        series={series([1, 5, 3])}
+        label="system.cpu.time"
+        onHover={onHover}
+      />,
     );
 
-    const marks = screen.getAllByRole("button");
-    fireEvent.pointerEnter(marks[1]!);
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    fireEvent.pointerLeave(document.querySelectorAll("rect")[1]!);
 
-    fireEvent.pointerLeave(marks[1]!);
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(onHover).toHaveBeenLastCalledWith(null);
+  });
+
+  it("leaves its hit bands unpainted", () => {
+    // An SVG rect with no fill defaults to opaque black, which paints over
+    // the line and the whole cell with it.
+    render(<EntitySparkline series={series([1, 5, 3])} label="x" />);
+
+    for (const rect of document.querySelectorAll("rect")) {
+      expect(rect).toHaveClass("entity-sparkline-hit");
+      expect(rect.getAttribute("fill")).toBeNull();
+    }
+    expect(screen.getByRole("img")).toBeInTheDocument();
   });
 
   it("draws nothing for a row the window holds no points for", () => {

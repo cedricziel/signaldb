@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   fetchCatalogEntities,
@@ -31,7 +32,12 @@ import {
 } from "./entityTypes";
 import { useCatalogEntityTypes } from "./useEntityTypes";
 import { useSparklineColumn } from "./useEntityMetrics";
-import { EntitySparkline } from "./EntitySparkline";
+import {
+  EntitySparkline,
+  type SparklinePoint,
+} from "./EntitySparkline";
+import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 import "./catalog.css";
 
 interface Props {
@@ -355,13 +361,28 @@ export function EntityTable({
     sparkline,
   );
 
+  // One tooltip for the whole table, anchored here rather than in a cell: a
+  // cell clips to its own box for the ellipsis, so a tooltip inside one is
+  // trapped in 80x18.
+  const hostRef = useRef<HTMLDivElement>(null);
+  const pointer = useVizPointer(hostRef);
+  const [hovered, setHovered] = useState<SparklinePoint | null>(null);
+  const onHover = (
+    point: SparklinePoint | null,
+    e?: { clientX: number; clientY: number },
+  ) => {
+    setHovered(point);
+    if (point && e) pointer.track(e);
+    else pointer.clear();
+  };
+
   const pending = result.isPending;
   const rows = result.data?.entities ?? [];
   const columns = entity.identity.length + 5 + (sparklineLabel ? 1 : 0);
   const done = !pending && result.data !== undefined;
 
   return (
-    <div className="catalog-main">
+    <div className="catalog-main viz-host" ref={hostRef}>
       <div className="catalog-headline">
         <span className="catalog-title">{entity.label}</span>
         <span className="catalog-sub">
@@ -457,6 +478,7 @@ export function EntityTable({
                     <EntitySparkline
                       series={byRow.get(compositeKey(g.values)) ?? []}
                       label={sparklineLabel}
+                      onHover={onHover}
                     />
                   </td>
                 )}
@@ -465,6 +487,21 @@ export function EntityTable({
           )}
         </tbody>
       </table>
+      {hovered && sparklineLabel && pointer.anchor && (
+        <VizTooltip
+          anchor={pointer.anchor}
+          host={pointer.host}
+          title={formatTimeBucket(hovered.tMs, hovered.stepMs)}
+          rows={[
+            {
+              swatch: "var(--accent)",
+              label: sparklineLabel,
+              value: formatValue(hovered.v),
+            },
+          ]}
+          valueWidthCh={formatValue(hovered.max).length}
+        />
+      )}
       {done && rows.length === 0 && (
         <EmptyEntityState entity={entity} range={range} />
       )}

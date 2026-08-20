@@ -5,28 +5,36 @@
 // while implying the metric counts occurrences. `ErrorSparkline` is the bar
 // version, for the counts it is right for.
 //
-// No axes and no legend — the cell has no room and the entity's own page has
-// the readable chart. It does read through the shared `VizTooltip`, though:
-// without it the cell is a picture rather than data, and every other
-// visualization in the UI is interrogable the same way.
-import { useRef, useState } from "react";
-import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
-import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
+// Presentational only — it reports what the pointer is over and draws no
+// tooltip itself. A table cell sets `overflow: hidden` for its ellipsis, so a
+// tooltip rendered in here is clipped to 80x18; the table owns one instead,
+// anchored somewhere with room (see `EntityTable`).
+import type { PointerEvent as ReactPointerEvent } from "react";
+
+/** What the pointer is over, in terms the tooltip can render. */
+export interface SparklinePoint {
+  tMs: number;
+  v: number;
+  stepMs: number;
+  /** The series' peak, so the tooltip can reserve a stable value width. */
+  max: number;
+}
 
 interface Props {
   /** Series as the IR envelope carries them — `[timestampNs, value]` pairs. */
   series: { points: unknown[][] }[];
   label: string;
+  /** Called with the hovered point, or null when the pointer leaves. */
+  onHover?: (
+    point: SparklinePoint | null,
+    event?: ReactPointerEvent<SVGElement>,
+  ) => void;
 }
 
 const WIDTH = 80;
 const HEIGHT = 18;
 
-export function EntitySparkline({ series, label }: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const pointer = useVizPointer(hostRef);
-  const [active, setActive] = useState<number | null>(null);
-
+export function EntitySparkline({ series, label, onHover }: Props) {
   // The query groups by the entity's identity alone, so a row is one series.
   // Concatenating several would draw a line through unrelated measurements.
   const points = (series[0]?.points ?? [])
@@ -44,73 +52,38 @@ export function EntitySparkline({ series, label }: Props) {
   // a zero range.
   const span = max - min || 1;
   const step = WIDTH / (points.length - 1);
-  const stepMs = points.length > 1 ? points[1]!.tMs - points[0]!.tMs : 0;
+  const stepMs = points[1]!.tMs - points[0]!.tMs;
   const line = points
     .map((p, i) => `${i * step},${HEIGHT - ((p.v - min) / span) * HEIGHT}`)
     .join(" ");
 
-  const hit = points[active ?? -1];
-
   return (
-    <div className="entity-sparkline-host viz-host" ref={hostRef}>
-      <svg
-        className="entity-sparkline"
-        width={WIDTH}
-        height={HEIGHT}
-        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        role="img"
-        aria-label={`${label} over the selected window`}
-        preserveAspectRatio="none"
-      >
-        <polyline points={line} fill="none" strokeWidth="1" />
-        {points.map((p, i) => (
-          // Invisible hit bands, one per point: the line itself is a pixel
-          // wide and impossible to hover.
-          <rect
-            key={p.tMs}
-            className="entity-sparkline-hit"
-            x={i * step - step / 2}
-            y={0}
-            width={step}
-            height={HEIGHT}
-            role="button"
-            tabIndex={-1}
-            aria-label={`${label} at ${formatTimeBucket(p.tMs, stepMs)}`}
-            onPointerEnter={(e) => {
-              setActive(i);
-              pointer.track(e);
-            }}
-            onPointerMove={pointer.track}
-            onPointerLeave={() => {
-              setActive((a) => (a === i ? null : a));
-              pointer.clear();
-            }}
-            onFocus={(e) => {
-              setActive(i);
-              pointer.anchorTo(e.currentTarget);
-            }}
-            onBlur={() => {
-              setActive((a) => (a === i ? null : a));
-              pointer.clear();
-            }}
-          />
-        ))}
-      </svg>
-      {hit && pointer.anchor && (
-        <VizTooltip
-          anchor={pointer.anchor}
-          host={pointer.host}
-          title={formatTimeBucket(hit.tMs, stepMs)}
-          rows={[
-            {
-              swatch: "var(--accent)",
-              label,
-              value: formatValue(hit.v),
-            },
-          ]}
-          valueWidthCh={formatValue(max).length}
+    <svg
+      className="entity-sparkline"
+      width={WIDTH}
+      height={HEIGHT}
+      viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+      role="img"
+      aria-label={`${label} over the selected window`}
+      preserveAspectRatio="none"
+    >
+      <polyline points={line} fill="none" strokeWidth="1" />
+      {points.map((p, i) => (
+        // Hit bands, one per point: the line is a pixel wide and impossible
+        // to hover. They carry no fill — an SVG rect defaults to opaque
+        // black, which paints over the whole cell.
+        <rect
+          key={p.tMs}
+          className="entity-sparkline-hit"
+          x={i * step - step / 2}
+          y={0}
+          width={step}
+          height={HEIGHT}
+          onPointerEnter={(e) => onHover?.({ ...p, stepMs, max }, e)}
+          onPointerMove={(e) => onHover?.({ ...p, stepMs, max }, e)}
+          onPointerLeave={() => onHover?.(null)}
         />
-      )}
-    </div>
+      ))}
+    </svg>
   );
 }

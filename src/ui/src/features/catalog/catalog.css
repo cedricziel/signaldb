@@ -290,3 +290,9 @@
   stroke: var(--accent);
   vector-effect: non-scaling-stroke;
 }
+
+/* An SVG rect with no fill paints opaque black. These exist only to catch a
+   pointer the one-pixel line cannot. */
+.entity-sparkline-hit {
+  fill: transparent;
+}

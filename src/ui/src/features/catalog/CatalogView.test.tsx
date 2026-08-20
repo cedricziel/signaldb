@@ -1,4 +1,9 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -529,6 +534,48 @@ describe("the entity list's sparkline column", () => {
 
     await screen.findByText("db-01");
     expect(fetchEntitySparklines).not.toHaveBeenCalled();
+  });
+
+  it("renders the sparkline tooltip outside the cell that would clip it", async () => {
+    // A table cell sets `overflow: hidden` for its ellipsis, so a tooltip
+    // rendered inside one is trapped in the 80x18 column. The table owns it.
+    fetchEntityMetricNames.mockResolvedValue([]);
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        group(["gateway", "edge"], 10, 0, 1, 2, "1700000000000000000"),
+      ],
+      truncated: false,
+    });
+    fetchEntityActivity.mockResolvedValue(
+      new Map([
+        [
+          compositeKey(["gateway", "edge"]),
+          [
+            {
+              labels: {},
+              points: [
+                ["1700000000000000000", 4],
+                ["1700000060000000000", 9],
+              ],
+            },
+          ],
+        ],
+      ]),
+    );
+
+    renderView();
+    await screen.findByText("spans");
+
+    const bands = await waitFor(() => {
+      const found = document.querySelectorAll(".entity-sparkline-hit");
+      expect(found.length).toBeGreaterThan(0);
+      return found;
+    });
+    fireEvent.pointerEnter(bands[1]!, { clientX: 10, clientY: 10 });
+
+    const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveTextContent("spans");
+    expect(tip.closest("td")).toBeNull();
   });
 
   it("charts the entity's activity when the registry names no metric", async () => {
