@@ -232,3 +232,67 @@
 .dep-swatch.dep-other::before {
   background: var(--faint);
 }
+
+/* Entity metrics panel — a tile grid that stays legible from two tiles to the
+   cap, so a process page and a host page read the same way. */
+.metric-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.metric-tile {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 0;
+}
+
+.metric-tile figcaption {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.metric-tile-name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Instrument and unit: what keeps a cumulative counter from reading as a
+   rate while the IR has no range stage. */
+.metric-tile-meta {
+  font-size: 11px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+/* Sparkline column — a shape at cell size, deliberately without axes or
+   legend; the entity's own page carries the readable chart. */
+.entity-sparkline-cell {
+  width: 88px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.entity-sparkline {
+  display: block;
+  overflow: visible;
+}
+
+.entity-sparkline polyline {
+  stroke: var(--accent);
+  vector-effect: non-scaling-stroke;
+}
+
+/* An SVG rect with no fill paints opaque black. These exist only to catch a
+   pointer the one-pixel line cannot. */
+.entity-sparkline-hit {
+  fill: transparent;
+}

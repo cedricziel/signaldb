@@ -7,7 +7,18 @@ See proposal.md — Why. What shapes the approach:
   names that metric measures. Coverage in the bundled OTel 1.43 registry is
   concentrated exactly where the Catalog is blindest: all 13 `process.*` →
   `process`, all 45 `system.*` → `host`, all 13 `container.*` → `container`.
-  The endpoint pages at 200 hits and takes a name `prefix`.
+- That endpoint takes only a name `prefix` and a limit the server clamps to
+  200, with no cursor and no filter by association (`search_metrics` in
+  `src/router/src/endpoints/schema.rs`), so it cannot be enumerated or asked
+  about an entity.
+- **But the entity endpoint can be.** `GET /api/v1/schema/entities/{name}`
+  returns a `metrics` array — every metric name describing that entity, merged
+  across visible registries (`metrics_for_entity` in
+  `src/common/src/schema_registry/mod.rs`), and already surfaced on
+  `EntityHit` in the generated clients. A live `host` returns 61 names,
+  `nfs.*` among them: a family no prefix guessed from the entity's own name or
+  from what happens to be observed would ever reach. This is the association
+  lookup, and it decides the selection strategy below.
 - The Catalog's entity types are already registry-derived (`deriveEntityTypes`),
   keyed by the registry's entity `name` with dots mapped to underscores. So an
   entity type's registry name — the join key to `entity_associations` — is
@@ -38,8 +49,10 @@ See proposal.md — Why. What shapes the approach:
 - Adding a range/rate stage to the Query IR. Counters are charted as what the
   IR can currently return; see Risks.
 - Alerting, thresholds, or anomaly marking on these charts.
-- A metrics panel on the _breakdown_ drill-in depth. A breakdown row is a
-  dimension within the entity, not an entity with its own resource attributes.
+- Metrics _of a breakdown row_. A breakdown row is a dimension within the
+  entity, not an entity with its own resource attributes, so there are no
+  metrics that describe it. The panel stays visible at that depth and keeps
+  describing the entity, pinned to the entity's identity.
 
 ## Decisions
 
@@ -53,19 +66,59 @@ or the other alone.
 - Observation alone would sweep in every metric that happens to carry the
   entity's resource attributes — for a host, that is nearly the whole tenant.
 
-The intersection is computed by _asking_ for the associated set and letting the
-query answer with what exists, rather than by a separate discovery call — see
-the next decision.
+Both halves are asked directly, and intersected:
 
-**Alternative considered:** a metric-name discovery call
-(`/prometheus/api/v1/label_values/__name__`) intersected client-side, then one
-query per survivor. Rejected: an extra round trip on the compat surface plus up
-to 45 follow-up queries, to learn something the single grouped query below
-already tells us.
+1. **What describes this entity.** `GET /api/v1/schema/entities/{name}` returns
+   the entity's `metrics` array — the registry's own answer, merged across
+   visible registries. 61 names for a live `host`.
+2. **What the window holds.** One IR query,
+   `aggregate by ["metric.name"]`, returns the tenant's observed metric names.
+   80 distinct names on the same deployment.
+3. **Definitions for the intersection.** One prefix search per distinct name
+   segment of that intersection — for a host, just `system` — collects the
+   `instrument` and `unit` each tile needs. The segment ends at the first dot
+   _or underscore_, because OTel names are dotted but anything scraped from a
+   Prometheus exporter is not; splitting on the dot alone made every
+   `otelcol_*` metric its own prefix. Narrowing to the intersection first is
+   what keeps this step to one or two calls rather than one per namespace the
+   tenant happens to emit.
 
-### Fetch: one grouped IR query per source, regex-alternated over the names
+The bound that matters: the association is read rather than reconstructed, and
+the definition lookup is sized by the intersection — not by the registry, and
+not by everything the tenant emits. `otelcol_*` and `signaldb.*` never enter,
+because the registry does not say they describe anything catalogable.
 
-Per source (`metrics`, `metrics_histogram`), one IR document:
+**Superseded approach**, recorded because the working code took it for a
+while: with the entity endpoint's `metrics` array overlooked, the join ran
+data-first — discover every observed name, fetch definitions for all of them
+by prefix, then filter on each definition's `entity_associations`. It produced
+the right answer for `system.*`, but it could only ever find metrics whose
+names the tenant was already writing _and_ whose namespace a prefix guess
+reached, and it paid for definitions of every metric in the tenant to use a
+handful. The premise it rested on — "the registry cannot be asked" — was never
+checked against the entity endpoint.
+
+Steps 1 and 2 are cached beyond a range change on the same terms as the
+Catalog's other metadata; step 1 is window-scoped and keyed accordingly.
+
+**Alternative considered:** an `?entity=<name>` filter on
+`/api/v1/schema/metrics` (#1360). Now redundant for the association itself,
+which the entity endpoint already answers. What would still help is a `keys=`
+parameter on the metrics search, mirroring the one attributes already have:
+step 3 would then fetch definitions for an exact name set instead of widening
+to a prefix and filtering back. That is the re-scoped remainder of #1360.
+
+**Alternative considered:** a metric-name discovery call on the Prometheus
+compat surface (`/prometheus/api/v1/label_values/__name__`). Rejected: the IR
+is this project's own query surface, and the same IR query that discovers the
+names is the one the panel already needs.
+
+### Fetch: grouped IR queries, regex-alternated over the names
+
+Per source (`metrics`, `metrics_histogram`) and per aggregation kind, one IR
+document. A document carries a single `aggregate` spec, so metrics that must be
+aggregated differently (see below) cannot share one — which bounds the panel at
+two documents per source, not one, and still nothing like one per metric:
 
 ```
 from: <source>
@@ -81,12 +134,35 @@ observed-set filter — no separate existence check, and no zero-filled series t
 suppress. Splitting the response by its `metric.name` label yields one chart
 per metric.
 
+Verified against a live querier before building on it: regex alternation on
+`metric.name`, `aggregate by ["metric.name"]` with a step, and an identity pin
+on `host.name` all answer as assumed.
+
 **Alternative considered:** one IR document per metric. Rejected: 45 concurrent
 queries for a host page, each repeating the same scan predicates.
 
 The name list is chunked when the alternation would grow unreasonable, and the
 tile grid is capped with an explicit "showing N of M" — a silently truncated
 panel would read as "this is everything the host reports".
+
+### The instrument also decides which source can answer
+
+A `metrics_histogram` row is a whole bucketed histogram, not a scalar — it
+carries no value column at all, so a scalar aggregate against it is not merely
+wrong but rejected (`aggregate 'avg' requires a numeric field, got string`).
+Sending every associated metric to both sources, as the first implementation
+did, therefore fails the whole panel the moment a tenant has one histogram.
+
+The registry's `instrument` is what routes each metric to the source that can
+answer for it: histogram and exponentialhistogram to `metrics_histogram`
+through a `histogram_quantile` stage, everything else to `metrics` through the
+scalar aggregate. Nothing is ever asked of a source that cannot answer.
+
+Charting a histogram means charting a quantile — buckets have no single level
+to plot — so the panel takes p95, the number a duration histogram exists to
+answer. The stage's default `rate` mode is also the correct reading of the
+cumulative temporality most histogram instrumentation emits, which makes
+histograms, ironically, the one instrument the panel charts _correctly_ today.
 
 ### Aggregation follows the instrument, from the registry
 

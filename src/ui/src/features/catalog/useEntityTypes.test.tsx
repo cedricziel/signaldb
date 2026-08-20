@@ -56,6 +56,34 @@ describe("toRegistryEntities", () => {
 });
 
 describe("useCatalogEntityTypes", () => {
+  it("names the registry entity even when no source has been analyzed", async () => {
+    // Which metrics measure a host is a fact about the registry, not about
+    // what compaction has indexed. Withholding the registry name until field
+    // metadata lands would leave an un-compacted deployment with no metrics
+    // panel and no sparklines over data it is already storing.
+    fetchAllSourceFields.mockResolvedValue(new Map());
+    searchEntities.mockResolvedValue([
+      {
+        name: "host",
+        brief: "",
+        group_id: "entity.host",
+        identifying: [],
+        descriptive: [{ key: "host.name", role: "descriptive" }],
+      },
+    ] as never);
+
+    const { result } = render();
+
+    // `analyzed` is already false before either fetch lands, so waiting on it
+    // would assert against the pre-fetch state.
+    await waitFor(() =>
+      expect(
+        result.current.types.find((e) => e.id === "host")?.registryEntity,
+      ).toBe("host"),
+    );
+    expect(result.current.analyzed).toBe(false);
+  });
+
   it("keeps the entity types some source carries", async () => {
     fetchAllSourceFields.mockResolvedValue(
       new Map([

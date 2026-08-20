@@ -1,5 +1,10 @@
+import { useRef, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { fetchCatalogEntities, type EntityPin } from "../../api/catalog";
+import {
+  fetchCatalogEntities,
+  pinsKey,
+  type EntityPin,
+} from "../../api/catalog";
 import { GROUP_BUDGET, type GroupSort } from "../../api/traceGroups";
 import { fetchFieldValueSketch } from "../../api/sourceFields";
 import { SkeletonRows } from "../explore/Skeleton";
@@ -26,6 +31,13 @@ import {
   type EntityTypeDef,
 } from "./entityTypes";
 import { useCatalogEntityTypes } from "./useEntityTypes";
+import { useSparklineColumn } from "./useEntityMetrics";
+import {
+  EntitySparkline,
+  type SparklinePoint,
+} from "./EntitySparkline";
+import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 import "./catalog.css";
 
 interface Props {
@@ -113,6 +125,7 @@ export function CatalogView({ state, update }: Props) {
         range={range}
         rangeKey={rangeKey}
         rangeSeconds={catalogRangeSeconds(range)}
+        sparkline
         onRowClick={(values) =>
           update({ catalogPrimary: compositeKey(values) }, { push: true })
         }
@@ -236,7 +249,7 @@ export function entityQueryKey(
     rangeKey,
     sort.key,
     sort.dir,
-    pinned.map((p) => `${p.field}=${p.value}`).join(","),
+    pinsKey(pinned),
   ];
 }
 
@@ -314,6 +327,7 @@ export function EntityTable({
   rangeKey,
   rangeSeconds,
   pinned,
+  sparkline = false,
   onRowClick,
 }: {
   entity: EntityTypeDef;
@@ -321,6 +335,14 @@ export function EntityTable({
   rangeKey: string;
   rangeSeconds: number;
   pinned?: EntityPin[];
+  /**
+   * Whether this table wants the entity type's headline-metric sparkline.
+   *
+   * Opt-in rather than inferred: this component is shared with the detail
+   * page's breakdown and top-values tables, whose entity types are synthetic
+   * and describe a dimension rather than an entity.
+   */
+  sparkline?: boolean;
   /** Omit for a read-only table (e.g. a `topValues` ranking with nothing
    * to drill into) — rows render without a click affordance. */
   onRowClick?: (values: (string | null)[]) => void;
@@ -332,13 +354,35 @@ export function EntityTable({
       fetchCatalogEntities(entity, range, sort as GroupSort, pinned),
   });
 
+  const { label: sparklineLabel, byRow } = useSparklineColumn(
+    entity,
+    range,
+    rangeKey,
+    sparkline,
+  );
+
+  // One tooltip for the whole table, anchored here rather than in a cell: a
+  // cell clips to its own box for the ellipsis, so a tooltip inside one is
+  // trapped in 80x18.
+  const hostRef = useRef<HTMLDivElement>(null);
+  const pointer = useVizPointer(hostRef);
+  const [hovered, setHovered] = useState<SparklinePoint | null>(null);
+  const onHover = (
+    point: SparklinePoint | null,
+    e?: { clientX: number; clientY: number },
+  ) => {
+    setHovered(point);
+    if (point && e) pointer.track(e);
+    else pointer.clear();
+  };
+
   const pending = result.isPending;
   const rows = result.data?.entities ?? [];
-  const columns = entity.identity.length + 5;
+  const columns = entity.identity.length + 5 + (sparklineLabel ? 1 : 0);
   const done = !pending && result.data !== undefined;
 
   return (
-    <div className="catalog-main">
+    <div className="catalog-main viz-host" ref={hostRef}>
       <div className="catalog-headline">
         <span className="catalog-title">{entity.label}</span>
         <span className="catalog-sub">
@@ -394,6 +438,11 @@ export function EntityTable({
               toggle={toggle}
               firstDir="desc"
             />
+            {/* Named, not decorative: the reader must know which metric the
+                shape belongs to without opening the entity. */}
+            {sparklineLabel && (
+              <th title={sparklineLabel}>{sparklineLabel}</th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -424,11 +473,35 @@ export function EntityTable({
                 <td className="num">{redDuration(g.red, "p50Ms")}</td>
                 <td className="num">{redDuration(g.red, "p95Ms")}</td>
                 <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
+                {sparklineLabel && (
+                  <td className="entity-sparkline-cell">
+                    <EntitySparkline
+                      series={byRow.get(compositeKey(g.values)) ?? []}
+                      label={sparklineLabel}
+                      onHover={onHover}
+                    />
+                  </td>
+                )}
               </tr>
             ))
           )}
         </tbody>
       </table>
+      {hovered && sparklineLabel && pointer.anchor && (
+        <VizTooltip
+          anchor={pointer.anchor}
+          host={pointer.host}
+          title={formatTimeBucket(hovered.tMs, hovered.stepMs)}
+          rows={[
+            {
+              swatch: "var(--accent)",
+              label: sparklineLabel,
+              value: formatValue(hovered.v),
+            },
+          ]}
+          valueWidthCh={formatValue(hovered.max).length}
+        />
+      )}
       {done && rows.length === 0 && (
         <EmptyEntityState entity={entity} range={range} />
       )}

@@ -131,7 +131,7 @@ describe("irSeriesToPromSeries", () => {
         },
       ],
     };
-    expect(irSeriesToPromSeries(res)).toEqual([
+    expect(irSeriesToPromSeries(res.series ?? [])).toEqual([
       {
         labels: { service_name: "signaldb" },
         points: [
@@ -147,6 +147,6 @@ describe("irSeriesToPromSeries", () => {
       result: "series",
       window: { start_ns: 0, end_ns: 1000 },
     };
-    expect(irSeriesToPromSeries(res)).toEqual([]);
+    expect(irSeriesToPromSeries(res.series ?? [])).toEqual([]);
   });
 });

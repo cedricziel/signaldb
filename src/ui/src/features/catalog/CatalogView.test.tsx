@@ -1,15 +1,28 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
+import { resolveRange } from "../../lib/time";
 import { renderWithClient } from "../../test/render";
-import { CatalogView, drillFilters, isDrillable } from "./CatalogView";
+import {
+  CatalogView,
+  drillFilters,
+  EntityTable,
+  isDrillable,
+} from "./CatalogView";
 import { compositeKey } from "../../lib/traceGroups";
 import { ENTITY_TYPES, type EntityTypeDef } from "./entityTypes";
 import * as catalogApi from "../../api/catalog";
 import * as sourceFieldsApi from "../../api/sourceFields";
 import * as membersApi from "../../api/traceGroupMembers";
 import * as entityTypesHook from "./useEntityTypes";
+import * as sparklineApi from "../../api/entitySparkline";
+import * as entityMetricsApi from "../../api/entityMetrics";
 import type { CatalogEntity, EntityObservation } from "../../api/catalog";
 
 // The entity table is a server-side aggregate (see api/catalog) — mocked at
@@ -33,6 +46,25 @@ vi.mock("../../api/traceGroupMembers", async (importOriginal) => {
 // The observed set is two metadata fetches away (see useEntityTypes); what
 // this view owes is resolving the URL's entity type against whatever that
 // hook reports, so the hook is the boundary to control here.
+vi.mock("../../api/entitySparkline", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/entitySparkline")>();
+  return {
+    ...actual,
+    fetchEntitySparklines: vi.fn(),
+    fetchEntityActivity: vi.fn(),
+  };
+});
+vi.mock("../../api/entityMetrics", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/entityMetrics")>();
+  return {
+    ...actual,
+    discoverObservedMetricNames: vi.fn(),
+    fetchEntityMetricNames: vi.fn(),
+    fetchMetricDefinitions: vi.fn(),
+  };
+});
 vi.mock("./useEntityTypes", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./useEntityTypes")>();
   return { ...actual, useCatalogEntityTypes: vi.fn() };
@@ -42,6 +74,33 @@ const fetchCatalogEntities = vi.mocked(catalogApi.fetchCatalogEntities);
 const fetchFieldValueSketch = vi.mocked(sourceFieldsApi.fetchFieldValueSketch);
 const fetchTraceGroupMembers = vi.mocked(membersApi.fetchTraceGroupMembers);
 const useCatalogEntityTypes = vi.mocked(entityTypesHook.useCatalogEntityTypes);
+const fetchEntitySparklines = vi.mocked(sparklineApi.fetchEntitySparklines);
+const fetchEntityActivity = vi.mocked(sparklineApi.fetchEntityActivity);
+const discoverObservedMetricNames = vi.mocked(
+  entityMetricsApi.discoverObservedMetricNames,
+);
+const fetchEntityMetricNames = vi.mocked(
+  entityMetricsApi.fetchEntityMetricNames,
+);
+const fetchMetricDefinitions = vi.mocked(
+  entityMetricsApi.fetchMetricDefinitions,
+);
+
+/** A registry metric definition, as the association lookup returns it. */
+function metricDef(name: string) {
+  return {
+    name,
+    brief: "",
+    group_id: `metric.${name}`,
+    instrument: "gauge",
+    unit: "1",
+    attributes: [],
+    entity_associations: ["host"],
+    namespace: "otel",
+    source: "bundled",
+    version: "1.43.0",
+  } as never;
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -54,6 +113,16 @@ beforeEach(() => {
   fetchFieldValueSketch.mockResolvedValue(undefined);
   fetchTraceGroupMembers.mockReset();
   fetchTraceGroupMembers.mockResolvedValue([]);
+  fetchEntitySparklines.mockReset();
+  fetchEntitySparklines.mockResolvedValue(new Map());
+  fetchEntityActivity.mockReset();
+  fetchEntityActivity.mockResolvedValue(new Map());
+  discoverObservedMetricNames.mockReset();
+  fetchEntityMetricNames.mockReset();
+  fetchMetricDefinitions.mockReset();
+  discoverObservedMetricNames.mockResolvedValue([]);
+  fetchEntityMetricNames.mockResolvedValue([]);
+  fetchMetricDefinitions.mockResolvedValue([]);
   useCatalogEntityTypes.mockReset();
   // The curated list, unanalyzed: what a deployment reports before any field
   // metadata has landed.
@@ -383,6 +452,151 @@ describe("registry-derived entity types", () => {
     // unfiltered trace list.
     expect(isDrillable(serviceInstance)).toBe(false);
     expect(drillFilters(serviceInstance, ["7f3c-instance"])).toEqual([]);
+  });
+});
+
+describe("the entity list's sparkline column", () => {
+  it("charts the entity type's headline metric, named in the header", async () => {
+    // An entity type no trace ever carried reads as entirely unmeasured
+    // otherwise — four dashes and nothing else.
+    // The observed set carries the registry name, which is the join key the
+    // association lookup needs (see `withRegistryNames`).
+    useCatalogEntityTypes.mockReturnValue({
+      types: ENTITY_TYPES.map((e) =>
+        e.id === "host" ? { ...e, registryEntity: "host" } : e,
+      ),
+      isPending: false,
+      analyzed: false,
+    });
+    discoverObservedMetricNames.mockResolvedValue(["system.cpu.utilization"]);
+    fetchEntityMetricNames.mockResolvedValue(["system.cpu.utilization"]);
+    fetchMetricDefinitions.mockResolvedValue([
+      metricDef("system.cpu.utilization"),
+    ]);
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        unmeasured(
+          ["db-01"],
+          [{ source: "metrics", count: 12 }],
+          "1700000000000000000",
+        ),
+      ],
+      truncated: false,
+    });
+    fetchEntitySparklines.mockResolvedValue(
+      new Map([["db-01", [{ labels: { host_name: "db-01" }, points: [] }]]]),
+    );
+
+    renderView({ catalogEntity: "host" });
+
+    expect(
+      await screen.findByText("system.cpu.utilization"),
+    ).toBeInTheDocument();
+  });
+
+  it("stays out of a table that did not ask for it", async () => {
+    // EntityTable is shared with the breakdown and top-values tables, whose
+    // entity types are synthetic. Today those happen to carry no registry
+    // name — but that is a coincidence in another file, not a guarantee, so
+    // the column is opt-in and the detail page's tables do not opt in.
+    discoverObservedMetricNames.mockResolvedValue(["system.cpu.utilization"]);
+    fetchEntityMetricNames.mockResolvedValue(["system.cpu.utilization"]);
+    fetchMetricDefinitions.mockResolvedValue([
+      metricDef("system.cpu.utilization"),
+    ]);
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        unmeasured(
+          ["db-01"],
+          [{ source: "metrics", count: 12 }],
+          "1700000000000000000",
+        ),
+      ],
+      truncated: false,
+    });
+
+    renderWithClient(
+      <EntityTable
+        entity={{
+          id: "host::span.name",
+          label: "Operations",
+          singular: "Operations",
+          identity: ["span.name"],
+          // Deliberately set: the guard must be the caller's opt-in, not the
+          // absence of this field.
+          registryEntity: "host",
+        }}
+        range={resolveRange(DEFAULT_STATE.range, Date.now())}
+        rangeKey="1h|acme|prod"
+        rangeSeconds={3600}
+      />,
+    );
+
+    await screen.findByText("db-01");
+    expect(fetchEntitySparklines).not.toHaveBeenCalled();
+  });
+
+  it("renders the sparkline tooltip outside the cell that would clip it", async () => {
+    // A table cell sets `overflow: hidden` for its ellipsis, so a tooltip
+    // rendered inside one is trapped in the 80x18 column. The table owns it.
+    fetchEntityMetricNames.mockResolvedValue([]);
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        group(["gateway", "edge"], 10, 0, 1, 2, "1700000000000000000"),
+      ],
+      truncated: false,
+    });
+    fetchEntityActivity.mockResolvedValue(
+      new Map([
+        [
+          compositeKey(["gateway", "edge"]),
+          [
+            {
+              labels: {},
+              points: [
+                ["1700000000000000000", 4],
+                ["1700000060000000000", 9],
+              ],
+            },
+          ],
+        ],
+      ]),
+    );
+
+    renderView();
+    await screen.findByText("spans");
+
+    const bands = await waitFor(() => {
+      const found = document.querySelectorAll(".entity-sparkline-hit");
+      expect(found.length).toBeGreaterThan(0);
+      return found;
+    });
+    fireEvent.pointerEnter(bands[1]!, { clientX: 10, clientY: 10 });
+
+    const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveTextContent("spans");
+    expect(tip.closest("td")).toBeNull();
+  });
+
+  it("charts the entity's activity when the registry names no metric", async () => {
+    // Services are the case this exists for: OTel associates no metric with
+    // the `service` entity at all, so a registry-only column would be
+    // permanently empty on the catalog's most-used page. The header says what
+    // is drawn, so a count is never read as the metric it is not.
+    fetchEntityMetricNames.mockResolvedValue([]);
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        group(["gateway", "edge"], 10, 0, 1, 2, "1700000000000000000"),
+      ],
+      truncated: false,
+    });
+
+    renderView();
+
+    await screen.findByText("gateway");
+    await waitFor(() => expect(fetchEntityActivity).toHaveBeenCalled());
+    expect(screen.getByText("spans")).toBeInTheDocument();
+    expect(fetchEntitySparklines).not.toHaveBeenCalled();
   });
 });
 

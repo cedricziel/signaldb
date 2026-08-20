@@ -219,7 +219,7 @@ const irSeriesLabel = (s: PromSeries) => labelString(s.labels);
  * reuse the metrics chart, so it carries the same cursor tooltip.
  */
 function SeriesChart({ data }: { data: QueryIrResponse }) {
-  const series = useMemo(() => irSeriesToPromSeries(data), [data]);
+  const series = useMemo(() => irSeriesToPromSeries(data.series ?? []), [data]);
   return (
     <div className="ir-series">
       {series.length === 0 && <div>No series</div>}

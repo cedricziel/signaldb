@@ -17,6 +17,7 @@ import type { ResolvedRange } from "../../lib/time";
 import {
   deriveEntityTypes,
   observedEntityTypes,
+  withRegistryNames,
   type RegistryEntity,
 } from "./deriveEntityTypes";
 import { ENTITY_TYPES, type EntityTypeDef } from "./entityTypes";
@@ -96,8 +97,20 @@ export function useCatalogEntityTypes(
   // nothing about what is present, and filtering on that emptiness would
   // delete every entity type from the nav and report a working deployment as
   // having none. Fall back to the curated list and say it is unanalyzed.
+  // The registry is a separate fetch from the field metadata, and answers a
+  // separate question — so the curated types still get their registry names
+  // here, which is what keeps registry-derived features (an entity's metrics)
+  // working on a deployment that has never been compacted.
   if (!analyzed) {
-    return { types: ENTITY_TYPES, isPending, analyzed: false, asOf };
+    return {
+      types: withRegistryNames(
+        ENTITY_TYPES,
+        toRegistryEntities(registry.data ?? []),
+      ),
+      isPending,
+      analyzed: false,
+      asOf,
+    };
   }
 
   const derived = deriveEntityTypes(

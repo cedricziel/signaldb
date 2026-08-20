@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { compositeKey } from "../../lib/traceGroups";
@@ -10,6 +10,8 @@ import { entityType, type EntityTypeDef } from "./entityTypes";
 import * as catalogApi from "../../api/catalog";
 import * as membersApi from "../../api/traceGroupMembers";
 import * as dependencyBreakdownApi from "../../api/dependencyBreakdown";
+import * as entityMetricSeriesApi from "../../api/entityMetricSeries";
+import * as entityMetricsHook from "./useEntityMetrics";
 import type { CatalogEntity } from "../../api/catalog";
 import type { TraceGroupMember } from "../../api/traceGroupMembers";
 
@@ -27,12 +29,25 @@ vi.mock("../../api/dependencyBreakdown", async (importOriginal) => {
     await importOriginal<typeof import("../../api/dependencyBreakdown")>();
   return { ...actual, fetchDependencyBreakdown: vi.fn() };
 });
+vi.mock("../../api/entityMetricSeries", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/entityMetricSeries")>();
+  return { ...actual, fetchEntityMetricSeries: vi.fn() };
+});
+vi.mock("./useEntityMetrics", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./useEntityMetrics")>();
+  return { ...actual, useEntityMetrics: vi.fn() };
+});
 
 const fetchCatalogEntities = vi.mocked(catalogApi.fetchCatalogEntities);
 const fetchTraceGroupMembers = vi.mocked(membersApi.fetchTraceGroupMembers);
 const fetchDependencyBreakdown = vi.mocked(
   dependencyBreakdownApi.fetchDependencyBreakdown,
 );
+const fetchEntityMetricSeries = vi.mocked(
+  entityMetricSeriesApi.fetchEntityMetricSeries,
+);
+const useEntityMetrics = vi.mocked(entityMetricsHook.useEntityMetrics);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -45,6 +60,21 @@ beforeEach(() => {
   fetchCatalogEntities.mockResolvedValue({ entities: [], truncated: false });
   fetchTraceGroupMembers.mockResolvedValue([]);
   fetchDependencyBreakdown.mockResolvedValue([]);
+  fetchEntityMetricSeries.mockReset();
+  fetchEntityMetricSeries.mockResolvedValue(new Map());
+  useEntityMetrics.mockReset();
+  useEntityMetrics.mockReturnValue({
+    metrics: [
+      {
+        name: "process.cpu.utilization",
+        instrument: "gauge",
+        unit: "1",
+        entity_associations: ["service"],
+      } as never,
+    ],
+    isPending: false,
+    isError: false,
+  });
 });
 
 function group(
@@ -318,6 +348,33 @@ describe("EntityDetail", () => {
       await screen.findByText("Recent matching spans");
       expect(screen.queryByText("Time by dependency")).not.toBeInTheDocument();
       expect(fetchDependencyBreakdown).not.toHaveBeenCalled();
+    });
+
+    it("keeps the metrics panel describing the entity, not the breakdown row", async () => {
+      // A breakdown row is a dimension *within* the entity — an operation, a
+      // statement — not something a resource attribute identifies. Pinning
+      // the panel to it would ask for metrics that cannot exist.
+      fetchCatalogEntities.mockImplementation(async (entityType) => {
+        if (entityType.identity[0] === "span.name") {
+          return {
+            entities: [
+              group(["GET /health"], 400, 0, 5, 9, "1700000000000000000"),
+            ],
+            truncated: false,
+          };
+        }
+        return { entities: [], truncated: false };
+      });
+      renderView({ catalogSecondary: "GET /health" });
+
+      await screen.findByText("Recent matching spans");
+      await waitFor(() => expect(fetchEntityMetricSeries).toHaveBeenCalled());
+      for (const call of fetchEntityMetricSeries.mock.calls) {
+        expect(call[1]).toEqual([
+          { field: "service.name", value: "gateway" },
+          { field: "service.namespace", value: "edge" },
+        ]);
+      }
     });
 
     it("is hidden at the breakdown drill-in depth", async () => {

@@ -5,9 +5,14 @@
 // (catalogSecondary) — same component, same query mechanism, just a
 // different pinned identity.
 import { useQuery } from "@tanstack/react-query";
-import { fetchCatalogEntities, type EntityPin } from "../../api/catalog";
+import {
+  fetchCatalogEntities,
+  pinsKey,
+  type EntityPin,
+} from "../../api/catalog";
 import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
 import { DependencyBreakdown } from "./DependencyBreakdown";
+import { EntityMetricsPanel } from "./EntityMetricsPanel";
 import {
   formatTimestamp,
   nanosToMs,
@@ -102,9 +107,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
           },
         ]
       : primaryPinned;
-  const currentPinKey = currentPinned
-    .map((p) => `${p.field}=${p.value}`)
-    .join(",");
+  const currentPinKey = pinsKey(currentPinned);
 
   const kpiQuery = useQuery({
     queryKey: ["catalog-entity-kpi", current.id, rangeKey, currentPinKey],
@@ -232,6 +235,16 @@ export function EntityDetail({ entity, range, state, update }: Props) {
           <div className="traces-note">No matching spans in this window.</div>
         )
       )}
+
+      {/* Pinned to the entity, never to `currentPinned`: a breakdown row is a
+          dimension within the entity, not something a resource attribute
+          identifies, so metrics pinned to it could not exist. */}
+      <EntityMetricsPanel
+        entity={entity}
+        pinned={primaryPinned}
+        range={range}
+        rangeKey={rangeKey}
+      />
 
       {!atSecondary && breakdownEntity && (
         <EntityTable

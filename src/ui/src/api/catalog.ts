@@ -32,6 +32,13 @@ export interface EntityPin {
   value: string;
 }
 
+/** A pin set as one cache-key element. Spelled in one place so that a change
+ * to the shape — escaping a value that contains `,` or `=`, say — cannot
+ * leave some call sites on the old spelling and others on the new. */
+export function pinsKey(pinned: EntityPin[]): string {
+  return pinned.map((p) => `${p.field}=${p.value}`).join(",");
+}
+
 const NANOS_PER_MS = 1_000_000;
 
 /** The time column a source's rows carry - `traces` rows key off the span's
