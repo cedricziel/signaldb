@@ -6,8 +6,10 @@ edition.workspace = true
 # Grafana Tempo is AGPL-3.0, and proto/tempo.proto is a copy of its tempopb
 # definitions, from which src/generated/tempopb.rs is built. See openspec D2.
 license = "AGPL-3.0"
-# No publication metadata yet, and its build.rs writes into the package dir
-# and reads a submodule outside the crate root — neither survives packaging.
+# Packages and builds standalone since proto generation moved to
+# `cargo xtask generate` — the build script that wrote into this directory and
+# read a submodule outside the crate root is gone. Still unpublished: that is a
+# separate decision, and the manifest has no publication metadata yet.
 publish = false
 
 [dependencies]
@@ -20,13 +22,9 @@ prost.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 
-[build-dependencies]
-tonic-prost-build.workspace = true
 
 [features]
 default = []
 client = []
 server = []
 
-[package.metadata.cargo-machete]
-ignored = ["tonic-prost-build"]

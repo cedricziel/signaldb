@@ -127,6 +127,12 @@ publish` rejects as a dirty package — and it reads
   it shares no file with this one, and a proto-generation regression must not be
   able to block a parser extraction.
 
+  **Done in a follow-up** (`xtask/src/tempopb.rs`): the build script is gone,
+  generation is an explicit command whose four committed outputs `xtask check`
+  verifies, and `cargo package -p tempo-api` now builds the packaged copy
+  standalone. It stays `publish = false` — packaging was the blocker, publishing
+  is a separate decision.
+
 - **`prometheus-api`: `AGPL-3.0` → `Apache-2.0`**, tracking Prometheus. Stricter
   than upstream is legal and harmless, but the rule is "track the equivalent",
   and applying it selectively only where it tightens would not be the rule.
@@ -136,9 +142,11 @@ are corrected here because the rule that motivates the change applies to them
 and the fix is trivial. `loki-api` and `pyroscope-api` are already correct.
 
 **`query-ir` is out of the rule entirely.** It is SignalDB's own query surface,
-not a re-implementation of anyone's language, so it tracks nothing: it stays
-AGPL-3.0 and stays inside `common`. This change neither extracts it nor
-relicenses it (see the proposal's scope-out).
+not a re-implementation of anyone's language, so it tracks nothing and stays
+AGPL-3.0. This change does not touch it. (A follow-up did extract it from
+`common` into its own leaf crate — for the purity reason, not the licence one —
+and left it `publish = false`: nobody outside SignalDB has a use for SignalDB's
+own query surface.)
 
 ### D3 — The boundary is the AST; errors carry the 400/501 distinction
 

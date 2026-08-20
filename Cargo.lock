@@ -7559,7 +7559,6 @@ dependencies = [
  "serde_json",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "utoipa",
 ]
 
@@ -9270,6 +9269,7 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 3.0.3",
+ "tonic-prost-build",
 ]
 
 [[package]]
