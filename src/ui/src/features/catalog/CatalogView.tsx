@@ -348,7 +348,7 @@ export function EntityTable({
       fetchCatalogEntities(entity, range, sort as GroupSort, pinned),
   });
 
-  const { headline, byRow } = useSparklineColumn(
+  const { label: sparklineLabel, byRow } = useSparklineColumn(
     entity,
     range,
     rangeKey,
@@ -357,7 +357,7 @@ export function EntityTable({
 
   const pending = result.isPending;
   const rows = result.data?.entities ?? [];
-  const columns = entity.identity.length + 5 + (headline ? 1 : 0);
+  const columns = entity.identity.length + 5 + (sparklineLabel ? 1 : 0);
   const done = !pending && result.data !== undefined;
 
   return (
@@ -419,7 +419,9 @@ export function EntityTable({
             />
             {/* Named, not decorative: the reader must know which metric the
                 shape belongs to without opening the entity. */}
-            {headline && <th title={headline.name}>{headline.name}</th>}
+            {sparklineLabel && (
+              <th title={sparklineLabel}>{sparklineLabel}</th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -450,11 +452,11 @@ export function EntityTable({
                 <td className="num">{redDuration(g.red, "p50Ms")}</td>
                 <td className="num">{redDuration(g.red, "p95Ms")}</td>
                 <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
-                {headline && (
+                {sparklineLabel && (
                   <td className="entity-sparkline-cell">
                     <EntitySparkline
                       series={byRow.get(compositeKey(g.values)) ?? []}
-                      label={headline.name}
+                      label={sparklineLabel}
                     />
                   </td>
                 )}

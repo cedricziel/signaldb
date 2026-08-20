@@ -9,6 +9,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import {
+  fetchEntityActivity,
   fetchEntitySparklines,
   headlineMetric,
 } from "../../api/entitySparkline";
@@ -30,6 +31,12 @@ import { tenantScope } from "./useEntityTypes";
 
 /** Points per sparkline — enough shape to read a trend at cell size. */
 const SPARKLINE_POINTS = 40;
+
+export interface SparklineColumn {
+  /** What the column charts, for its header. Absent means no column. */
+  label?: string;
+  byRow: Map<string, IrSeries>;
+}
 
 export interface EntityMetrics {
   /** The entity's associated metric definitions observed in this window. */
@@ -115,21 +122,44 @@ export function useSparklineColumn(
   range: ResolvedRange,
   rangeKey: string,
   wanted: boolean,
-): { headline?: MetricHit; byRow: Map<string, IrSeries> } {
-  const { metrics } = useEntityMetrics(entity, range, rangeKey, wanted);
+): SparklineColumn {
+  const { metrics, isPending } = useEntityMetrics(
+    entity,
+    range,
+    rangeKey,
+    wanted,
+  );
   const headline = wanted ? headlineMetric(metrics) : undefined;
+  // Fall back only once the lookup has answered: charting activity while the
+  // metric is still arriving would swap the column out from under the reader.
+  const activity = wanted && !isPending && headline === undefined;
 
+  const step = durationToSeconds(stepForRange(range, SPARKLINE_POINTS)) ?? 60;
   const series = useQuery({
-    queryKey: ["entity-sparklines", entity.id, rangeKey, headline?.name],
+    queryKey: [
+      "entity-sparklines",
+      entity.id,
+      rangeKey,
+      headline?.name ?? (activity ? "activity" : undefined),
+    ],
     queryFn: () =>
-      fetchEntitySparklines(
-        headline!,
-        entity.identity,
-        range,
-        durationToSeconds(stepForRange(range, SPARKLINE_POINTS)) ?? 60,
-      ),
-    enabled: headline !== undefined,
+      headline
+        ? fetchEntitySparklines(headline, entity.identity, range, step)
+        : fetchEntityActivity(entity, range, step),
+    enabled: headline !== undefined || activity,
   });
 
-  return { headline, byRow: series.data ?? new Map() };
+  return {
+    // The header names what is drawn, so a count is never mistaken for the
+    // metric an entity type with associations would have shown.
+    label: headline?.name ?? (activity ? activityLabel(entity) : undefined),
+    byRow: series.data ?? new Map(),
+  };
+}
+
+/** What the activity column is counting, in the reader's terms. */
+function activityLabel(entity: EntityTypeDef): string {
+  const sources = entity.sources ?? ["traces"];
+  const source = sources.includes("traces") ? "traces" : sources[0]!;
+  return source === "traces" ? "spans" : `${source} points`;
 }

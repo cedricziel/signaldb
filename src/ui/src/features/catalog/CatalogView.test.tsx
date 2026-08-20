@@ -44,7 +44,11 @@ vi.mock("../../api/traceGroupMembers", async (importOriginal) => {
 vi.mock("../../api/entitySparkline", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../api/entitySparkline")>();
-  return { ...actual, fetchEntitySparklines: vi.fn() };
+  return {
+    ...actual,
+    fetchEntitySparklines: vi.fn(),
+    fetchEntityActivity: vi.fn(),
+  };
 });
 vi.mock("../../api/entityMetrics", async (importOriginal) => {
   const actual =
@@ -66,6 +70,7 @@ const fetchFieldValueSketch = vi.mocked(sourceFieldsApi.fetchFieldValueSketch);
 const fetchTraceGroupMembers = vi.mocked(membersApi.fetchTraceGroupMembers);
 const useCatalogEntityTypes = vi.mocked(entityTypesHook.useCatalogEntityTypes);
 const fetchEntitySparklines = vi.mocked(sparklineApi.fetchEntitySparklines);
+const fetchEntityActivity = vi.mocked(sparklineApi.fetchEntityActivity);
 const discoverObservedMetricNames = vi.mocked(
   entityMetricsApi.discoverObservedMetricNames,
 );
@@ -105,6 +110,8 @@ beforeEach(() => {
   fetchTraceGroupMembers.mockResolvedValue([]);
   fetchEntitySparklines.mockReset();
   fetchEntitySparklines.mockResolvedValue(new Map());
+  fetchEntityActivity.mockReset();
+  fetchEntityActivity.mockResolvedValue(new Map());
   discoverObservedMetricNames.mockReset();
   fetchEntityMetricNames.mockReset();
   fetchMetricDefinitions.mockReset();
@@ -524,7 +531,11 @@ describe("the entity list's sparkline column", () => {
     expect(fetchEntitySparklines).not.toHaveBeenCalled();
   });
 
-  it("shows no column at all for an entity type with no associated metric", async () => {
+  it("charts the entity's activity when the registry names no metric", async () => {
+    // Services are the case this exists for: OTel associates no metric with
+    // the `service` entity at all, so a registry-only column would be
+    // permanently empty on the catalog's most-used page. The header says what
+    // is drawn, so a count is never read as the metric it is not.
     fetchEntityMetricNames.mockResolvedValue([]);
     fetchCatalogEntities.mockResolvedValue({
       entities: [
@@ -536,6 +547,8 @@ describe("the entity list's sparkline column", () => {
     renderView();
 
     await screen.findByText("gateway");
+    await waitFor(() => expect(fetchEntityActivity).toHaveBeenCalled());
+    expect(screen.getByText("spans")).toBeInTheDocument();
     expect(fetchEntitySparklines).not.toHaveBeenCalled();
   });
 });

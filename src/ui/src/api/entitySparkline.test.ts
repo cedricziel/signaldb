@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildActivityDoc,
   buildSparklineDoc,
   fetchEntitySparklines,
   headlineMetric,
 } from "./entitySparkline";
+import type { EntityTypeDef } from "../features/catalog/entityTypes";
 import { runIrQuery } from "./queryIr";
 import type { MetricHit } from "../features/schema/api";
 
@@ -91,6 +93,55 @@ describe("buildSparklineDoc", () => {
         as: "p95",
       },
     });
+  });
+});
+
+describe("buildActivityDoc", () => {
+  const service: EntityTypeDef = {
+    id: "service",
+    label: "Services",
+    singular: "service",
+    identity: ["service.name", "service.namespace"],
+    spanKindScope: "Server",
+    sources: ["traces", "logs", "metrics"],
+  };
+
+  it("counts the entity's own activity over time, for a type with no metric", () => {
+    // Services carry no registry metric association at all, so the column
+    // would be permanently empty. Their activity is a real measurement the
+    // catalog already shows as a number — this is that number's shape.
+    const doc = buildActivityDoc(service, range, 300);
+
+    expect(doc.from).toBe("traces");
+    expect(doc.pipeline!.at(-1)).toEqual({
+      aggregate: {
+        by: ["service.name", "service.namespace"],
+        aggs: [{ fn: "count", as: "n" }],
+        step: "300s",
+      },
+    });
+  });
+
+  it("scopes to the same span kind the entity's rate column uses", () => {
+    // Otherwise the sparkline counts a service's outbound calls as well as
+    // its inbound requests, and disagrees with the Rate beside it.
+    const doc = buildActivityDoc(service, range, 300);
+
+    expect(doc.pipeline![0]).toEqual({
+      where: { field: "span_kind", op: "eq", value: "Server" },
+    });
+  });
+
+  it("uses the entity's own source when traces cannot describe it", () => {
+    const container: EntityTypeDef = {
+      id: "container",
+      label: "Containers",
+      singular: "container",
+      identity: ["container.name"],
+      sources: ["metrics", "logs"],
+    };
+
+    expect(buildActivityDoc(container, range, 300).from).toBe("metrics");
   });
 });
 
