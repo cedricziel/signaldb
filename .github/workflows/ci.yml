@@ -302,7 +302,7 @@ jobs:
       # `cargo publish --dry-run` checks — it accepts `datafusion = "54"`
       # without complaint (verified) — so purity gets its own assertion.
       - name: Check QL parser crates are pure
-        run: ./scripts/check-ql-purity.sh
+        run: ./scripts/check-leaf-purity.sh
 
       # Catches missing publication metadata, packaging problems, and bare
       # path dependencies on the PR that introduces them rather than during a

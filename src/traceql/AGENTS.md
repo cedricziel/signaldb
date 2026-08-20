@@ -19,7 +19,7 @@ keeps its own selector vocabulary in the querier rather than calling in here:
 the two agree today by coincidence, and sharing one function would let a new
 TraceQL intrinsic silently redefine a frozen wire format.
 
-`scripts/check-ql-purity.sh` enforces this in CI. `cargo publish --dry-run`
+`scripts/check-leaf-purity.sh` enforces this in CI. `cargo publish --dry-run`
 does **not** — it accepts `datafusion = "54"` happily.
 
 ## Doctests on every public item

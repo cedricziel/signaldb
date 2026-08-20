@@ -348,9 +348,7 @@ impl InferCtx<'_> {
     }
 
     fn require_filterable(&self, field: &str) -> Result<(), IrError> {
-        if self.resolver.filterability(self.source, field)
-            == crate::schema::logical::Filterability::RetrievalOnly
-        {
+        if !self.resolver.is_filterable(self.source, field) {
             return Err(IrError::UnfilterableField {
                 field: field.to_string(),
             });
@@ -970,7 +968,7 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_ir::resolver::InMemoryResolver;
+    use crate::resolver::InMemoryResolver;
     use serde_json::json;
 
     fn logs_resolver() -> InMemoryResolver {
@@ -990,7 +988,7 @@ mod tests {
                 "structured.payload",
                 "log_attributes",
                 ValueType::String,
-                false,
+                None,
             )
             .with_retrieval_only("logs", "structured.payload")
             .with_attribute(
@@ -998,7 +996,7 @@ mod tests {
                 "deployment.environment",
                 "log_attributes",
                 ValueType::String,
-                false,
+                None,
             )
             .with_column(
                 "traces",
@@ -1033,7 +1031,7 @@ mod tests {
                 "resource.deployment.environment",
                 "resource_attributes",
                 ValueType::String,
-                false,
+                None,
             )
     }
 

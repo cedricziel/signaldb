@@ -1295,6 +1295,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prost",
  "pyroscope",
+ "query-ir",
  "rand 0.10.2",
  "rustc-hash",
  "schema-model",
@@ -5642,6 +5643,17 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "query-ir"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

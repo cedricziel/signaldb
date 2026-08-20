@@ -856,7 +856,7 @@ mod tests {
                 "http.route",
                 "span_attributes",
                 common::query_ir::ValueType::String,
-                false,
+                None,
             ),
         )
         .expect("the sampled value query validates");

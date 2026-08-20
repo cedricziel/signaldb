@@ -9,7 +9,7 @@ sources:
   - src/prometheus-api/**
   - src/pyroscope-api/**
   - src/tempo-api/**
-  - scripts/check-ql-purity.sh
+  - scripts/check-leaf-purity.sh
   - release-please-config.json
 ---
 
@@ -42,8 +42,10 @@ grammar and the querier lowers it.
 
 Not by review. Two CI checks in `Check & Lint`:
 
-- **`./xtask/ql-purity.sh`** reads `cargo metadata` and fails if a QL crate
-  depends on a workspace member, a `path`/`git` source, or the FDAP stack.
+- **`./scripts/check-leaf-purity.sh`** reads `cargo metadata` and fails if a
+  leaf crate depends on a workspace member, a `path`/`git` source, or the FDAP
+  stack. It covers `logql-parser`, `traceql-parser`, and `query-ir` — the same
+  invariant for all three, whether or not the crate is published.
 - **`cargo publish --dry-run`** fails on missing metadata or packaging problems.
 
 Both are needed. The dry-run is _not_ a purity check — it accepts
@@ -76,8 +78,11 @@ project's licence**, not the one convenient for us.
 | `pyroscope-api`        | Grafana Pyroscope | AGPL-3.0   |
 | `prometheus-api`       | Prometheus        | Apache-2.0 |
 
-First-party crates — `common`, the query IR, the services — are SignalDB's own
-design, re-implement nobody, and stay AGPL-3.0 regardless.
+First-party crates — `common`, `query-ir`, the services — are SignalDB's own
+design, re-implement nobody, and stay AGPL-3.0 regardless. `query-ir` is a
+separate crate for the same reason the parsers are (a document can be built and
+validated without the query engine), but it is **not published**: nobody outside
+SignalDB has a use for SignalDB's own query surface.
 
 AGPL narrows who can depend on a published crate. That is the correct
 consequence of implementing an AGPL project's language, not a problem to

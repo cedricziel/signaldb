@@ -18,7 +18,6 @@
 use std::collections::{HashMap, HashSet};
 
 use super::value::ValueType;
-use crate::schema::logical::Filterability;
 
 /// Where a logical field physically lives, with its canonical type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,8 +87,14 @@ pub trait FieldResolver: Send + Sync {
         false
     }
 
-    fn filterability(&self, _source: &str, _field: &str) -> Filterability {
-        Filterability::Filterable
+    /// Whether a predicate, grouping, or ordering may address this field.
+    ///
+    /// A `bool` rather than the schema layer's richer filterability vocabulary:
+    /// the IR asks one yes/no question, and answering it must not require this
+    /// crate to know how the caller classifies its fields. A caller with such a
+    /// vocabulary maps it here.
+    fn is_filterable(&self, _source: &str, _field: &str) -> bool {
+        true
     }
 }
 
@@ -101,12 +106,13 @@ enum Entry {
         physical: String,
         value_type: ValueType,
     },
-    /// An attribute stored in `container`; resolves to a `Column` (the
-    /// materialized name) when `promoted`, else to a `JsonPath` extraction.
+    /// An attribute stored in `container`; resolves to a `Column` when the
+    /// caller has named the physical column it was promoted to, else to a
+    /// `JsonPath` extraction. Both denote the same logical field.
     Attribute {
         container: String,
         value_type: ValueType,
-        promoted: bool,
+        promoted_column: Option<String>,
     },
 }
 
@@ -151,16 +157,21 @@ impl InMemoryResolver {
         self
     }
 
-    /// Declare an attribute for `source`, stored in `container`. `promoted`
-    /// selects whether it currently resolves to a materialized column or a
-    /// JSON-path extraction — the two promotion states of the same field.
+    /// Declare an attribute for `source`, stored in `container`.
+    ///
+    /// `promoted_column` names the physical column the attribute currently
+    /// materializes to, or `None` while it is served from `container`. The
+    /// caller supplies the name rather than this crate deriving it: how a
+    /// promoted attribute is spelled physically is the storage layer's
+    /// convention, and the IR's promotion-invariance guarantee holds whatever
+    /// that convention is.
     pub fn with_attribute(
         mut self,
         source: &str,
         logical: &str,
         container: &str,
         value_type: ValueType,
-        promoted: bool,
+        promoted_column: Option<String>,
     ) -> Self {
         self.physical_names
             .entry(source.to_string())
@@ -171,7 +182,7 @@ impl InMemoryResolver {
             Entry::Attribute {
                 container: container.to_string(),
                 value_type,
-                promoted,
+                promoted_column,
             },
         );
         self
@@ -206,14 +217,13 @@ impl FieldResolver for InMemoryResolver {
             Entry::Attribute {
                 container,
                 value_type,
-                promoted,
+                promoted_column,
             } => {
-                if *promoted {
-                    // Promoted attributes materialize to `label_<sanitized>`
-                    // columns — resolution shifts from JSON path to column,
-                    // meaning unchanged (promotion invariance).
+                if let Some(column) = promoted_column {
+                    // Resolution shifts from JSON path to column while the
+                    // meaning stays identical — promotion invariance.
                     Some(Resolved::Column {
-                        name: crate::schema::materialized_column_name(field),
+                        name: column.clone(),
                         value_type: value_type.clone(),
                     })
                 } else {
@@ -233,15 +243,10 @@ impl FieldResolver for InMemoryResolver {
             .is_some_and(|names| names.contains(field))
     }
 
-    fn filterability(&self, source: &str, field: &str) -> Filterability {
-        if self
+    fn is_filterable(&self, source: &str, field: &str) -> bool {
+        !self
             .retrieval_only
             .contains(&(source.to_string(), field.to_string()))
-        {
-            Filterability::RetrievalOnly
-        } else {
-            Filterability::Filterable
-        }
     }
 }
 
@@ -275,7 +280,7 @@ mod tests {
             "deployment.environment",
             "log_attributes",
             ValueType::String,
-            false,
+            None,
         );
         assert_eq!(
             r.resolve("logs", "deployment.environment"),
@@ -294,15 +299,12 @@ mod tests {
             "deployment.environment",
             "log_attributes",
             ValueType::String,
-            true,
+            Some("label_deployment_environment".to_string()),
         );
         match r.resolve("logs", "deployment.environment") {
             Some(Resolved::Column { name, value_type }) => {
                 assert_eq!(value_type, ValueType::String);
-                assert_eq!(
-                    name,
-                    crate::schema::materialized_column_name("deployment.environment")
-                );
+                assert_eq!(name, "label_deployment_environment");
             }
             other => panic!("expected a column, got {other:?}"),
         }

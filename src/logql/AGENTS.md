@@ -16,7 +16,7 @@ Lowering a parsed query onto columns lives in `src/querier/src/query/logql.rs`
 and `logql_metric.rs`. If a change here needs to know what a column is, it
 belongs there instead.
 
-`scripts/check-ql-purity.sh` enforces this in CI. `cargo publish --dry-run`
+`scripts/check-leaf-purity.sh` enforces this in CI. `cargo publish --dry-run`
 does **not** — it accepts `datafusion = "54"` happily.
 
 ## Doctests on every public item

@@ -300,7 +300,7 @@ pub fn is_expression_string(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_ir::{ComparisonOp, Leaf};
+    use crate::{ComparisonOp, Leaf};
     use serde_json::json;
 
     #[test]

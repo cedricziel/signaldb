@@ -1,5 +1,10 @@
 //! # Query IR — the versioned, structured query contract
 //!
+//! A leaf crate: `serde` and `serde_json`, nothing else. A caller can build,
+//! validate, and version an IR document without a catalog, a tenant, or a
+//! query engine — the same reason the compatibility parsers are their own
+//! crates. Executing a document is the querier's job.
+//!
 //! SignalDB's native query surface. A [`Document`] is a **versioned** JSON
 //! query over a **registered source** with a defined type system: value types
 //! and coercion ([`value`]), three-valued absent semantics ([`value::Truth`]),
