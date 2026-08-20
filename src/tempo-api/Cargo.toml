@@ -3,8 +3,12 @@ name = "tempo-api"
 description = "Grafana Tempo API models"
 version = "0.1.2"
 edition.workspace = true
-license = "Apache-2.0"
-publish = true
+# Grafana Tempo is AGPL-3.0, and proto/tempo.proto is a copy of its tempopb
+# definitions, from which src/generated/tempopb.rs is built. See openspec D2.
+license = "AGPL-3.0"
+# No publication metadata yet, and its build.rs writes into the package dir
+# and reads a submodule outside the crate root — neither survives packaging.
+publish = false
 
 [dependencies]
 serde.workspace = true

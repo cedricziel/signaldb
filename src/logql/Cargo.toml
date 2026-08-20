@@ -1,9 +1,21 @@
+# Published to crates.io as `logql-parser`: a bare `logql` was taken in 2022 by
+# an unrelated project. The *import* path stays `logql` via `[lib] name`, so no
+# call site spells the package name. See openspec design D1.
 [package]
-name = "logql"
+name = "logql-parser"
 version = "0.1.2"
 edition = "2024"
-description = "LogQL lexer and parser for SignalDB's Loki-compatible query interface"
+description = "LogQL lexer and parser"
+# Grafana Loki, whose language this implements, is AGPL-3.0. See design D2.
 license = "AGPL-3.0"
+repository = "https://github.com/cedricziel/signaldb"
+readme = "README.md"
+documentation = "https://docs.rs/logql-parser"
+keywords = ["logql", "loki", "parser", "observability", "logs"]
+categories = ["parser-implementations", "development-tools"]
+
+[lib]
+name = "logql"
 
 [dependencies]
 thiserror.workspace = true

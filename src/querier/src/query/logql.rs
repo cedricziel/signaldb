@@ -38,6 +38,21 @@ use logql::{
 
 use super::error::QuerierError;
 
+/// The error for a construct the `logql` crate parsed but this build does not
+/// lower.
+///
+/// The parser is published and released independently of the querier
+/// (openspec design D9), so its AST types are `#[non_exhaustive]` and a
+/// newer parser can hand us a variant this build predates. Every wildcard arm
+/// in this module and in [`super::logql_metric`] funnels here rather than
+/// guessing at a filter — a wrong filter returns wrong rows silently, while
+/// this returns an honest "not implemented".
+pub(super) fn unlowerable(what: &str, construct: &impl std::fmt::Debug) -> QuerierError {
+    QuerierError::Unsupported(format!(
+        "LogQL {what} {construct:?} is recognised by the parser but not lowered by this build"
+    ))
+}
+
 /// The set of materialized `label_<key>` columns present in the table being
 /// queried. A label in this set routes to its dedicated column (exact,
 /// regex, and ordered comparisons); anything else falls back to the
@@ -95,6 +110,10 @@ fn matcher_expr(matcher: &LabelMatcher, ctx: &AttrContext) -> Result<Expr, Queri
         MatchOp::Neq => FilterOp::Neq,
         MatchOp::Re => FilterOp::Re,
         MatchOp::Nre => FilterOp::Nre,
+        // The logql crate releases on its own cadence (openspec D9), so it can
+        // parse a construct this build does not lower. Reporting that beats
+        // filtering on a guess. Same for every other wildcard in this module.
+        ref other => return Err(unlowerable("stream matcher operator", other)),
     };
     label_expr(
         &matcher.name,
@@ -124,6 +143,7 @@ fn stage_expr(stage: &PipelineStage, ctx: &AttrContext) -> Result<Option<Expr>, 
         PipelineStage::Unwrap(_) => Err(QuerierError::Unsupported(
             "unwrap outside a metric query".to_string(),
         )),
+        other => Err(unlowerable("pipeline stage", other)),
     }
 }
 
@@ -140,6 +160,7 @@ fn line_filter_expr(f: &LineFilter) -> Result<Expr, QuerierError> {
         LineFilterOp::NotContains => not(contains(body, lit(f.value.clone()))),
         LineFilterOp::Regex => regexp_like(body, lit(f.value.clone()), None),
         LineFilterOp::NotRegex => not(regexp_like(body, lit(f.value.clone()), None)),
+        ref other => return Err(unlowerable("line-filter operator", other)),
     })
 }
 
@@ -151,6 +172,7 @@ fn label_filter_expr(expr: &LabelFilterExpr, ctx: &AttrContext) -> Result<Expr, 
             Ok(label_filter_expr(a, ctx)?.and(label_filter_expr(b, ctx)?))
         }
         LabelFilterExpr::Or(a, b) => Ok(label_filter_expr(a, ctx)?.or(label_filter_expr(b, ctx)?)),
+        other => Err(unlowerable("label-filter expression", other)),
     }
 }
 
@@ -250,6 +272,7 @@ fn map_attribute_expr(key: &str, op: FilterOp, value: &FilterValue) -> Result<Ex
             };
             both(&cmp)
         }
+        ref other => return Err(unlowerable("label-filter operator", other)),
     })
 }
 
@@ -284,6 +307,7 @@ fn materialized_label_expr(
                 _ => unreachable!(),
             }
         }
+        ref other => return Err(unlowerable("label-filter operator", other)),
     })
 }
 
@@ -305,6 +329,7 @@ fn numeric_value(value: &FilterValue) -> Result<f64, QuerierError> {
                 "ordered comparison on an ip() value".to_string(),
             ));
         }
+        other => return Err(unlowerable("filter value", other)),
     })
 }
 
@@ -322,6 +347,7 @@ fn column_expr(column: &str, op: FilterOp, value: &FilterValue) -> Result<Expr, 
                 "ordered comparison on log label column '{column}'"
             )));
         }
+        ref other => return Err(unlowerable("label-filter operator", other)),
     })
 }
 
@@ -356,6 +382,7 @@ fn attribute_fragment(key: &str, value: &FilterValue) -> Result<String, QuerierE
                 "ip() label filter is not supported yet".to_string(),
             ));
         }
+        other => return Err(unlowerable("filter value", other)),
     };
     Ok(format!("{json_key}:{json_value}"))
 }
@@ -372,6 +399,7 @@ fn string_value(value: &FilterValue) -> Result<String, QuerierError> {
                 "ip() label filter is not supported yet".to_string(),
             ));
         }
+        other => return Err(unlowerable("filter value", other)),
     })
 }
 

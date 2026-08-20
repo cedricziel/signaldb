@@ -99,7 +99,7 @@ This is the shared foundation. Key modules:
 | `main.rs`                | `src/router/src/main.rs`                | Standalone router binary                                                       |
 | `discovery.rs`           | `src/router/src/discovery.rs`           | Cached service discovery for the router                                        |
 | `endpoints/tempo.rs`     | `src/router/src/endpoints/tempo.rs`     | Tempo-compatible API handlers                                                  |
-| `endpoints/logql.rs`     | `src/router/src/endpoints/logql.rs`     | Loki-compatible API handlers under `/loki` (stubs until LogQL execution lands) |
+| `endpoints/logql.rs`     | `src/router/src/endpoints/logql.rs`     | Loki-compatible API handlers under `/loki` — log and metric queries, labels, values, series, `detected_fields`; dispatches Flight tickets to the querier |
 | `endpoints/pyroscope.rs` | `src/router/src/endpoints/pyroscope.rs` | Pyroscope-compatible profile query handlers                                    |
 | `endpoints/admin.rs`     | `src/router/src/endpoints/admin.rs`     | Admin API for tenant/key/dataset CRUD                                          |
 | `endpoints/tenant.rs`    | `src/router/src/endpoints/tenant.rs`    | Tenant self-service API                                                        |

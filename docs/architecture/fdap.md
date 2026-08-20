@@ -122,14 +122,10 @@ crate — deliberately free of Arrow/DataFusion so the schema registry can be
 built and validated without the query engine.
 
 The compatibility **query languages** sit outside the stack for the same
-reason. `logql` and `traceql` lex, parse, and syntax-check their languages and
-nothing else: no Arrow, no DataFusion, no SignalDB crate at all. Whether a
-query is valid is a property of the query text, so answering it must not
-require a catalog, a tenant, or a running querier. Lowering a parsed query onto
-columns — where promotion, attribute maps, and the JSON fallback live — is the
-querier's job and stays there. Both crates publish independently
-(`logql-parser`, `traceql-parser`), which is what keeps the rule enforced:
-a crate that grew a product dependency could no longer be published.
+reason: `logql` and `traceql` carry no Arrow, no DataFusion, and no SignalDB
+dependency, so a query can be parsed and validated without the query engine.
+Lowering a parsed query onto columns stays in the querier. See
+[Compatibility crates](../contributing/compat-crates.md).
 
 **One version rule.** Arrow, Parquet, and DataFusion evolve together and
 must agree on versions. SignalDB therefore always imports Arrow and

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 /// A parsed LogQL metric query.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum MetricQuery {
     /// A range aggregation over a log selector, e.g. `rate({a="b"}[5m])`.
     Range(Box<RangeAggregation>),
@@ -65,6 +66,7 @@ pub struct RangeAggregation {
 
 /// Range aggregation functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RangeFunction {
     Rate,
     RateCounter,
@@ -127,6 +129,7 @@ pub struct VectorAggregation {
 
 /// Vector aggregation functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AggregationFunction {
     Sum,
     Avg,
@@ -200,6 +203,7 @@ pub struct VectorMatch {
 
 /// Binary operators, grouped by precedence tier (see the parser).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BinOp {
     // Arithmetic
     Add,

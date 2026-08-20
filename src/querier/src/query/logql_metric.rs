@@ -279,6 +279,9 @@ pub fn plan_metric_query(query: &MetricQuery) -> Result<MetricPlan, QuerierError
             });
             Ok(plan)
         }
+        // The logql crate releases independently (openspec D9), so it can
+        // parse a metric query this build does not plan.
+        other => Err(super::logql::unlowerable("metric query", other)),
     }
 }
 

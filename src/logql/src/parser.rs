@@ -20,14 +20,18 @@ use crate::token::{SpannedToken, Token};
 /// A top-level LogQL expression: either a log query (returns log lines)
 /// or a metric query (returns numeric samples).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Expr {
     Log(LogQuery),
     Metric(MetricQuery),
 }
 
 /// Parse error with 1-based source position.
+///
+/// `#[non_exhaustive]` for the same reason as [`crate::LexError`].
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("{message} at line {line}, column {col}")]
+#[non_exhaustive]
 pub struct ParseError {
     pub message: String,
     pub line: u32,

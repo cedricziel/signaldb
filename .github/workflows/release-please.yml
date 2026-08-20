@@ -29,6 +29,12 @@ jobs:
       grafana-plugin--release_created: ${{ steps.release.outputs['src/grafana-plugin--release_created'] }}
       grafana-plugin--tag_name: ${{ steps.release.outputs['src/grafana-plugin--tag_name'] }}
       grafana-plugin--version: ${{ steps.release.outputs['src/grafana-plugin--version'] }}
+      # The QL parsers carry `separate-pull-requests: true` in the config, so
+      # they get their own release PRs and release without waiting on — or
+      # dragging along — a signaldb-core release. Everything else still shares
+      # one release PR.
+      logql--release_created: ${{ steps.release.outputs['src/logql--release_created'] }}
+      traceql--release_created: ${{ steps.release.outputs['src/traceql--release_created'] }}
     steps:
       - name: Run release-please
         id: release
@@ -37,6 +43,33 @@ jobs:
           token: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # The compatibility query-language parsers are published libraries, not
+  # service artifacts: no binaries, no images, nothing to attach to a release.
+  # Each is gated on its own output so releasing one never republishes the
+  # other, and both are leaf crates, so there is no publish ordering.
+  publish-ql-crates:
+    name: Publish QL Parser Crates
+    runs-on: ubuntu-latest
+    needs: release-please
+    if: ${{ needs.release-please.outputs['logql--release_created'] == 'true' || needs.release-please.outputs['traceql--release_created'] == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish logql-parser
+        if: ${{ needs.release-please.outputs['logql--release_created'] == 'true' }}
+        run: cargo publish -p logql-parser
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish traceql-parser
+        if: ${{ needs.release-please.outputs['traceql--release_created'] == 'true' }}
+        run: cargo publish -p traceql-parser
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   build-release:
     name: Build Release Binaries

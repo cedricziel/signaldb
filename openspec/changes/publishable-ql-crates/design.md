@@ -288,71 +288,53 @@ expensive.
 The publish step is driven by the QL crates' own release train (D9), so a parser
 release does not wait on the monorepo's.
 
-### D9 — A standalone release train for the QL crates
+### D9 — Standalone release PRs for the QL crates
 
 The QL crates are already half-independent: `include-component-in-tag` is `true`
-(tags read `logql-v0.1.2`) and neither is in the `linked-versions`
-`signaldb-core` group, so their versions already move on their own — `logql` is
-at 0.1.2 while the core group is at 0.3.0. What they share with everything else
-is the release _PR_: `separate-pull-requests` is `false`, so all 21 packages
-release together.
+(tags read `logql-parser-v0.1.2`) and neither is in the `linked-versions`
+`signaldb-core` group, so their versions already move on their own — `logql`
+reached 0.1.2 while the core group sat at 0.3.0, *while sharing the main
+config*. What they share with everything else is the release _PR_.
 
-**Rejected: flipping `separate-pull-requests` to `true`.** It is a root-level
-option. Turning it on splits every package in the repo into its own release PR
-— a change to the whole project's release process, arriving as a side effect of
-adding two crates. Out of proportion, and out of scope.
+**`separate-pull-requests` is a per-package option**, not root-only. The schema
+settles it: `packages.*` refs `ReleaserConfigOptions`, and
+`separate-pull-requests` is one of its 34 properties. So the two crates can be
+marked standalone inside the existing config while the other eighteen keep
+sharing a single release PR.
 
-**Decision: a second release-please instance**, scoped to the QL crates alone.
+**Decision: one config, two packages marked standalone.**
 
-```text
-  .github/workflows/release-please.yml          .github/workflows/release-ql-crates.yml
-    config:   release-please-config.json          config:   release-please-config.ql.json
-    manifest: .release-please-manifest.json       manifest: .release-please-manifest.ql.json
-    packages: 20 (src/logql removed)              packages: src/logql, src/traceql
-    label:    autorelease: pending (default)      label:    autorelease-ql: pending
-    on release → binaries, images, plugin         on release → cargo publish
+```json
+"src/logql":   { "release-type": "rust", "component": "logql-parser",
+                 "separate-pull-requests": true },
+"src/traceql": { "release-type": "rust", "component": "traceql-parser",
+                 "separate-pull-requests": true }
 ```
 
-`src/logql` moves out of the main config and manifest into the QL pair; its
-current version (`0.1.2`) carries over verbatim, so release-please continues
-from where it is with no version surgery and no retagging.
+`.github/workflows/release-please.yml` gains a `publish-ql-crates` job gated on
+the per-package `src/logql--release_created` / `src/traceql--release_created`
+outputs — each crate on its own, so releasing one never republishes the other.
+Both are leaves, so there is no publish ordering. The heavy jobs (musl, docker,
+UI, plugin) stay gated on `src/signaldb-bin--release_created` and skip when only
+a parser releases.
 
-Two gotchas that will otherwise cost a debugging cycle each:
+`"release-type": "rust"` is stated explicitly on both: manifest mode defaults to
+the Node strategy, which would look for a `package.json` instead of
+`Cargo.toml`.
 
-1. **Both instances label their release PRs.** release-please finds its own PRs
-   by label, and two instances sharing the default `autorelease: pending` will
-   each try to manage the other's PR. The distinct labels go **at the root of
-   `release-please-config.ql.json`**, not on the workflow step —
-   `release-please-action@v5` exposes no `label`/`release-label` inputs (its
-   inputs are `token`, `release-type`, `path`, `target-branch`, `config-file`,
-   `manifest-file`, `repo-url`, `github-api-url`, `github-graphql-url`, `fork`,
-   `include-component-in-tag`, `proxy-server`, `skip-github-release`,
-   `skip-github-pull-request`, `skip-labeling`, `changelog-host`,
-   `versioning-strategy`, `release-as`):
+**Rejected: a second release-please instance** with its own config, manifest,
+and workflow. It was built that way first, on the mistaken belief that
+`separate-pull-requests` was root-only. Everything that made it awkward was
+self-inflicted by the split: the two instances would each try to manage the
+other's release PR unless given distinct `label`/`release-label` values, the
+`cargo-workspace` plugin could not be carried over without proposing bumps for
+packages the main train owns, and two configs plus two manifests had to be kept
+from ever listing the same package. A per-package flag has none of that.
 
-   ```json
-   "label": "autorelease-ql: pending",
-   "release-label": "autorelease-ql: tagged"
-   ```
-
-2. **The `cargo-workspace` plugin stops seeing these crates.** It lives in the
-   main config and bumps dependents when a workspace crate's version moves; once
-   `logql` is in the other config, a `logql` bump no longer nudges `querier` or
-   `router`. That is harmless here — both depend on it by `path`, and neither is
-   published — but it is exactly the kind of silent decoupling that surprises
-   someone later. It is recorded here and in the proposal, **not** as a comment
-   in the config: both release-please files are strict JSON, where a comment is
-   a parse error.
-
-Each package entry in the new config needs `"release-type": "rust"` explicitly.
-Manifest mode defaults to the Node strategy, which would update a
-`package.json` that does not exist instead of `Cargo.toml`.
-
-Everything else the QL crates need is already per-package and carries over
-unchanged: `release-type: rust`, `include-component-in-tag`,
-`bump-minor-pre-major`, `prerelease: true`, and the shared `changelog-sections`.
-Add an explicit `component` (`logql-parser`, `traceql-parser`) so tags match the
-crates.io names rather than the directory names.
+**What the split would have bought**, and this loses: a parser release is now
+blocked if the shared release *PR* is unmergeable. Except it is not — that is
+the whole point of `separate-pull-requests` on these two packages: they get
+their own PR, which merges independently of the core one.
 
 ### D8 — Enforcing the rule after the change lands
 
@@ -361,13 +343,16 @@ increasing order of strictness:
 
 - `cargo publish --dry-run` in CI (D7) — catches an unpublishable _package_: a
   bare `path` dependency, missing metadata, uncommitted files.
-- **An explicit purity assertion, because the dry-run is not one.** A dry-run
-  happily accepts `datafusion = "54"` or any other crates.io dependency — it
-  checks that the crate _can_ be published, not that it stayed pure. The guard
-  that actually enforces the rule reads `cargo metadata` for each QL crate and
-  fails if any dependency is a workspace member, has a `path`/`git` source, or
-  is in the FDAP set (`datafusion`, `arrow*`, `parquet`). Without it, the
-  boundary is enforced by reviewer attention, which is what D8 exists to avoid.
+- **An explicit purity assertion, because the dry-run is not one.**
+  **Verified during implementation:** with `datafusion.workspace = true` added
+  to `src/traceql/Cargo.toml`, `cargo publish --dry-run -p traceql-parser`
+  reports `Packaged 9 files` and exits clean. The dry-run checks that a crate
+  _can_ be published, not that it stayed pure — and a dependency on the query
+  engine is perfectly publishable. The guard that actually enforces the rule
+  (`xtask/ql-purity.sh`) reads `cargo metadata` and fails if any dependency is
+  a workspace member, has a `path`/`git` source, or is in the FDAP set. It was
+  proven red against the same probe before being wired into CI. Without it, the
+  boundary rests on reviewer attention, which is what D8 exists to avoid.
 
 `cargo deny` needs no allowlist work: AGPL-3.0 and Apache-2.0 are both already
 present in the workspace, and D2 introduces no new licence identifier.

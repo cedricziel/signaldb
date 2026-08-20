@@ -1,10 +1,10 @@
 //! # TraceQL Front-End
 //!
-//! Lexing, parsing, and syntactic validation for the subset of Grafana Tempo's
-//! TraceQL that SignalDB answers. This crate recognises a query; it does not
-//! execute one. It knows nothing about columns, catalogs, tenants, or storage,
-//! and it has no dependency on any SignalDB component — the same query string
-//! parses identically no matter which deployment it is aimed at.
+//! Lexing, parsing, and syntactic validation for a subset of Grafana Tempo's
+//! TraceQL. This crate recognises a query; it does not execute one. It knows
+//! nothing about columns, catalogs, tenants, or storage, and depends on nothing
+//! but `thiserror` — so the same query string parses identically whatever
+//! backend it is aimed at, and validity can be checked without one at all.
 //!
 //! Published as **`traceql-parser`**; the library is imported as `traceql`.
 //!

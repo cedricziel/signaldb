@@ -12,12 +12,13 @@
   "src/writer": "0.3.0",
   "src/signaldb-cli": "0.3.0",
   "tests-integration": "0.1.5",
-  "src/logql": "0.1.2",
   "src/loki-api": "0.1.2",
   "src/prometheus-api": "0.1.3",
   "src/pyroscope-api": "0.1.2",
   "src/signaldb-api": "0.2.0",
   "src/signaldb-sdk": "0.2.0",
   "src/ui": "0.2.0",
-  "src/mcp-server": "0.2.0"
+  "src/mcp-server": "0.2.0",
+  "src/logql": "0.1.2",
+  "src/traceql": "0.1.0"
 }
