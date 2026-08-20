@@ -2,7 +2,7 @@
 
 The workspace's internal dependency graph is already clean at the leaves:
 
-```
+```text
 logql          -> (none)          loki-api       -> (none)
 tempo-api      -> (none)          prometheus-api -> (none)
 schema-model   -> (none)          pyroscope-api  -> (none)
@@ -142,7 +142,7 @@ relicenses it (see the proposal's scope-out).
 
 ### D3 — The boundary is the AST; errors carry the 400/501 distinction
 
-```
+```text
    ┌─────────────────────────────────────────────────────────────┐
    │  traceql  (leaf: thiserror only)                            │
    │                                                             │
@@ -207,16 +207,37 @@ HTTP concern in a language crate.
 It stays in `querier`, importing the AST from `traceql`. If it ever wants a
 home of its own, that home is `tempo-api` (wire-format types), not `traceql`.
 
-### D5 — `#[non_exhaustive]` on every public enum, before first publish
+### D5 — `#[non_exhaustive]` before first publish, but not on everything
 
 `Selector`, `FilterValue`, `ParseError`, and LogQL's `Token`, `PipelineStage`,
-`RangeFunction`, `AggregationFunction`, `BinOp`, `LabelMatcher` are all public
-enums that the LogQL/TraceQL parity work adds variants to. Post-publication,
-each added variant is a breaking release unless the enum is `#[non_exhaustive]`.
+`RangeFunction`, `AggregationFunction`, `BinOp`, `MatchOp`, `LineFilterOp`,
+`FilterOp` are public enums that the LogQL/TraceQL parity work adds variants to.
+Post-publication each added variant is a breaking release unless the enum is
+`#[non_exhaustive]`. That is free now and impossible later, so it is a task in
+this change rather than a note for the future.
 
-This is free now and impossible later, so it is a task in this change rather
-than a note for the future. Internal matches on our own crates are unaffected;
-downstream matchers gain a required wildcard arm, which is the intended contract.
+**Structs need the same question asked, with the opposite answer in most
+cases.** `#[non_exhaustive]` on a struct forbids downstream literal
+construction, so it is not a free win — it depends on whether consumers build
+the type or only read it:
+
+| Type                                                                | Marked? | Why                                                                                |
+| ------------------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `LexError`, `ParseError` (LogQL)                                    | yes     | errors gain context; nobody constructs them                                        |
+| `traceql::Condition`                                                | no      | a matcher _is_ a selector and a value; the Tempo `tags` path builds them           |
+| LogQL AST structs (`LogQuery`, `StreamSelector`, `LabelMatcher`, …) | no      | building a query by hand is a legitimate use; `querier/query/logs.rs` already does |
+
+Sealing the AST structs would break `logs.rs` at compile time and would remove
+a real capability from the published crate for no benefit. Adding a field to
+them stays a breaking change, which at 0.x is a minor bump and an honest signal.
+
+**The cost lands on our own lowering.** Every `#[non_exhaustive]` enum forces a
+wildcard arm wherever the querier matches it — eleven of them in
+`query/logql.rs` and `query/logql_metric.rs`. Those arms return "recognised but
+not lowered by this build" rather than guessing, which is correct precisely
+_because_ of D9: the parsers release on their own train, so the querier really
+can be compiled against a parser that is ahead of it. Without D9 this would be
+speculative future-proofing and the compile error would be the better outcome.
 
 ### D6 — Parse-only, and what that forgoes
 
@@ -276,7 +297,7 @@ adding two crates. Out of proportion, and out of scope.
 
 **Decision: a second release-please instance**, scoped to the QL crates alone.
 
-```
+```text
   .github/workflows/release-please.yml          .github/workflows/release-ql-crates.yml
     config:   release-please-config.json          config:   release-please-config.ql.json
     manifest: .release-please-manifest.json       manifest: .release-please-manifest.ql.json

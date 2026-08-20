@@ -49,19 +49,33 @@ is malformed with respect to the language, or is well-formed in the language but
 outside the subset SignalDB implements. Callers SHALL be able to act on that
 distinction without inspecting message text.
 
+Two classes, and the compatibility APIs SHALL map them to fixed statuses:
+malformed input to **HTTP 400**, an unimplemented construct to **HTTP 501**. The
+exact codes are part of the contract, not an implementation detail — external
+clients branch on them.
+
 #### Scenario: Malformed input is reported as invalid
 
 - **WHEN** a client submits a query that is not well-formed in the language
 - **THEN** it is rejected as invalid input, and the compatibility API answers
-  with a client-error status
+  with HTTP 400
 
 #### Scenario: Well-formed but unimplemented syntax is reported as unsupported
 
 - **WHEN** a client submits a query that is valid in the language but uses a
   construct SignalDB does not implement
 - **THEN** it is rejected as unsupported, distinctly from malformed input, and
-  the compatibility API answers with a not-implemented status rather than a
-  client error
+  the compatibility API answers with HTTP 501 rather than 400
+
+#### Scenario: A construct that is valid but unlexable stays a client error
+
+- **WHEN** a construct is well-formed in the language but the front-end's lexer
+  cannot read it, and that construct was already rejected as a client error
+  before the front-end was extracted
+- **THEN** it continues to be reported as invalid input rather than moving to
+  the unimplemented class, because no rejection may become less specific
+- **AND** the front-end documents the exception on the variant that carries it,
+  so the deviation from the general rule is discoverable rather than surprising
 
 #### Scenario: Unsupported constructs are never silently ignored
 

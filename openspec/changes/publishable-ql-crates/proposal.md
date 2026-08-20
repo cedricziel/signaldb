@@ -87,22 +87,26 @@ is born AGPL-3.0. AGPL narrows who can depend on the published crates, and that
 is the correct consequence of implementing an AGPL project's language — not a
 cost to engineer around.
 
-**`tempo-api` needs a look, and this change does not fix it.** It declares
-`license = "Apache-2.0"` and `publish = true`, while Grafana Tempo is AGPL-3.0
-— and `src/tempo-api/proto/tempo.proto` is a copy of Tempo's `tempopb`
-definitions, from which `src/tempo-api/src/generated/tempopb.rs` is generated.
-A vendored file from an AGPL repository re-declared as Apache-2.0 is a
-discrepancy that should be resolved before anything in this repo is published,
-including by the machinery this change adds. It is called out here, and left to
-its own change: the two QL crates do not depend on `tempo-api`, so nothing in
-§1–6 is blocked on it. **Task 5.4 sets `publish = false` on `tempo-api` in the
-meantime**, so the new publish job cannot ship it by accident.
+**`tempo-api` is the one genuine discrepancy, and this change corrects it.** It
+declares `license = "Apache-2.0"` while Grafana Tempo is AGPL-3.0 — and
+`src/tempo-api/proto/tempo.proto` is a copy of Tempo's `tempopb` definitions,
+from which `src/tempo-api/src/generated/tempopb.rs` is generated. A vendored
+file from an AGPL repository re-declared as Apache-2.0 must not survive into
+anything this repo publishes, least of all through machinery this change adds.
+Task 5.2 moves it to AGPL-3.0.
+
+What is **not** in scope is making `tempo-api` publishable. It carries
+`publish = true` today and cannot actually package: its `build.rs` writes
+generated files into the package directory and reads the `opentelemetry-proto`
+submodule from outside the crate root. Task 5.4 sets `publish = false` until
+that is fixed, which is its own change (see D2). The two QL crates do not
+depend on `tempo-api`, so nothing in §1–6 is blocked on it.
 
 ## One blocker found while scoping
 
 ### The name `logql` is taken on crates.io
 
-```
+```text
 crates.io/crates/logql   created 2022-01-24, last updated 2022-05-19
                          11,305 downloads, 44 recent, unrelated project
 ```

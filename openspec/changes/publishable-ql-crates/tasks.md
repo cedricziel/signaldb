@@ -24,7 +24,10 @@
 - [ ] 2.1 Create `src/traceql` (`traceql-parser` package, `[lib] name =
 "traceql"`, `thiserror` only). Add to workspace `members` and
       `default-members`. Empty `lib.rs`; confirm `cargo build -p traceql-parser`
-      succeeds and `cargo tree -p traceql-parser` shows no workspace crate.
+      succeeds and that `cargo tree -p traceql-parser` lists only `thiserror`
+      and its proc-macro chain — no workspace crate, no FDAP crate. (This is
+      the eyeball version of the check task 6.9 automates; 6.9 is what CI
+      enforces.)
 - [ ] 2.2 **Failing test first**: port the parse-only tests from 1.2 into
       `src/traceql/tests/`, plus two new ones asserting
       `ParseError::Syntax` vs `ParseError::Unsupported` are returned for a
@@ -112,11 +115,14 @@ InvalidInput` and `Unsupported → Unsupported`.
 - [ ] 6.3 Add `.github/workflows/release-ql-crates.yml`: `release-please-action@v5`
       with `config-file`/`manifest-file` pointing at the `.ql` pair. The labels
       come from the config (6.1) — the action exposes no `label` input.
-- [ ] 6.4 In that workflow, add an `actions/checkout` step, then a `cargo publish`
-      step per crate gated on `steps.release.outputs['src/logql--release_created']`
-      and `steps.release.outputs['src/traceql--release_created']`, with
-      `CARGO_REGISTRY_TOKEN` from the repository secret. Both crates are leaves —
-      no publish ordering.
+- [ ] 6.4 In that workflow, give the release-please step `id: release` (the
+      per-package outputs are addressed through it), add an `actions/checkout`
+      step, then a `cargo publish` step per crate gated on
+      `steps.release.outputs['src/logql--release_created']` and
+      `steps.release.outputs['src/traceql--release_created']`, with
+      `CARGO_REGISTRY_TOKEN` from the repository secret. Gate each crate on its
+      *own* output: releasing one must not republish the other. Both are leaves,
+      so there is no publish ordering.
 - [ ] 6.5 Add `cargo publish --dry-run -p logql-parser -p traceql-parser` to
       `.github/workflows/ci.yml` (D7). Verify it fails when a `path`
       dependency on a workspace crate is added, then revert the probe.
@@ -131,10 +137,14 @@ InvalidInput` and `Unsupported → Unsupported`.
       `cargo clippy --workspace --all-targets --all-features`,
       `cargo deny check`.
 - [ ] 6.8 After the first release: verify `cargo add logql-parser` /
-      `traceql-parser` works from an empty scratch crate outside the workspace,
-      that `cargo tree` shows no SignalDB dependency, and that the main release
-      train is unaffected (its next release PR still covers the other packages
-      and does not reference the QL crates).
+      `traceql-parser` works from an empty scratch crate outside the workspace
+      and that `cargo tree` shows no SignalDB dependency.
+- [ ] 6.10 Verify the two trains are actually isolated, in both directions:
+      a commit touching only `src/logql`/`src/traceql` must produce a QL release
+      PR and **no** main release PR, and a commit touching only a service must
+      produce a main release PR that neither lists nor version-bumps the QL
+      crates. Check the labels differ (`autorelease-ql: pending` vs
+      `autorelease: pending`) so neither instance adopts the other's PR.
 
 ## 7. Docs and skills
 
