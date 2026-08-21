@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787200438009,
+  "lastUpdate": 1787286271796,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -1135,6 +1135,244 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1116152,
             "range": "± 24353",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]",
+            "email": "49699333+dependabot[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a4897e85bbe372ac8f60a315f5bc0f70ffaf27ff",
+          "message": "chore(deps-dev): bump @swc/core in the build-tools group (#1370)\n\nBumps the build-tools group with 1 update: [@swc/core](https://github.com/swc-project/swc/tree/HEAD/packages/core).\n\n\nUpdates `@swc/core` from 1.15.47 to 1.16.0\n- [Release notes](https://github.com/swc-project/swc/releases)\n- [Changelog](https://github.com/swc-project/swc/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/swc-project/swc/commits/v1.16.0/packages/core)\n\n---\nupdated-dependencies:\n- dependency-name: \"@swc/core\"\n  dependency-version: 1.16.0\n  dependency-type: direct:development\n  update-type: version-update:semver-minor\n  dependency-group: build-tools\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-08-20T23:32:28Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/a4897e85bbe372ac8f60a315f5bc0f70ffaf27ff"
+        },
+        "date": 1787286270350,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1538657,
+            "range": "± 24247",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 921666,
+            "range": "± 3066",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 559762,
+            "range": "± 20981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1257032,
+            "range": "± 14557",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 606394,
+            "range": "± 2786",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1446178,
+            "range": "± 17444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 889335,
+            "range": "± 10349",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1110978,
+            "range": "± 5265",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2039732,
+            "range": "± 5363",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 9892249,
+            "range": "± 69053",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 94193831,
+            "range": "± 3890604",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 3185540,
+            "range": "± 9741",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 6573272,
+            "range": "± 55868",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 12167610,
+            "range": "± 233384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 24181029,
+            "range": "± 335055",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 712830,
+            "range": "± 4681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 1899763,
+            "range": "± 32050",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 2765432,
+            "range": "± 105586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 5472152,
+            "range": "± 122050",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 469188,
+            "range": "± 7861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 18438186,
+            "range": "± 488506",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 24990273,
+            "range": "± 692100",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 23700559,
+            "range": "± 1398942",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 23401518,
+            "range": "± 359715",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 23472917,
+            "range": "± 219900",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 5918508,
+            "range": "± 182192",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 14073306,
+            "range": "± 361266",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 29418973,
+            "range": "± 386249",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 25206216,
+            "range": "± 1143306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 5783681,
+            "range": "± 303024",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 61816493,
+            "range": "± 1301475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 109215646,
+            "range": "± 2466149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 116440338,
+            "range": "± 2049961",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 803947,
+            "range": "± 27770",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 813136,
+            "range": "± 8569",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 858731,
+            "range": "± 11896",
             "unit": "ns/iter"
           }
         ]
