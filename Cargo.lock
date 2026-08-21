@@ -5604,6 +5604,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ql-ir"
+version = "0.1.0"
+dependencies = [
+ "logql-parser",
+ "query-ir",
+ "serde_json",
+ "thiserror 2.0.20",
+ "traceql-parser",
+]
+
+[[package]]
 name = "quad-rand"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
