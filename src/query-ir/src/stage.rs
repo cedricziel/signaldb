@@ -19,6 +19,16 @@ pub enum AggFn {
     Min,
     Max,
     Quantile,
+    /// Population standard deviation (`irVersion` 5).
+    Stddev,
+    /// Population variance (`irVersion` 5).
+    Stdvar,
+    /// The earliest value in the group by the source's time column
+    /// (`irVersion` 5).
+    First,
+    /// The latest value in the group by the source's time column
+    /// (`irVersion` 5).
+    Last,
 }
 
 impl AggFn {
@@ -32,6 +42,16 @@ impl AggFn {
         matches!(self, AggFn::Quantile)
     }
 
+    /// The `irVersion` that introduced this function. Documents declaring an
+    /// older version are rejected rather than silently coerced, so a client
+    /// never believes a query ran that its server could not have planned.
+    pub fn min_ir_version(self) -> i64 {
+        match self {
+            AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::Quantile => 1,
+            AggFn::Stddev | AggFn::Stdvar | AggFn::First | AggFn::Last => 5,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             AggFn::Count => "count",
@@ -40,6 +60,10 @@ impl AggFn {
             AggFn::Min => "min",
             AggFn::Max => "max",
             AggFn::Quantile => "quantile",
+            AggFn::Stddev => "stddev",
+            AggFn::Stdvar => "stdvar",
+            AggFn::First => "first",
+            AggFn::Last => "last",
         }
     }
 }
@@ -56,6 +80,15 @@ pub struct Agg {
     /// A numeric argument (e.g. the quantile in `[0,1]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arg: Option<f64>,
+    /// Divide the aggregate's value by this scalar, so a measure can be
+    /// reported per unit rather than absolute (`irVersion` 5).
+    ///
+    /// This is what a rate is: a count over a window, divided by the window.
+    /// Named for the operation rather than for time — dividing an aggregate
+    /// by a scalar is not inherently temporal, and this IR is
+    /// signal-agnostic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divisor: Option<f64>,
     /// The output column name — the only thing later stages may reference.
     #[serde(rename = "as")]
     pub as_name: String,
@@ -358,6 +391,7 @@ mod tests {
             func: AggFn::Count,
             of: None,
             arg: None,
+            divisor: None,
             as_name: "errors".to_string(),
             scope: Some(Predicate::Leaf(Leaf {
                 field: "status.code".to_string(),

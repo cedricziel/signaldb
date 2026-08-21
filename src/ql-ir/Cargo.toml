@@ -1,0 +1,20 @@
+[package]
+name = "ql-ir"
+version = "0.1.0"
+edition = "2024"
+description = "Lowers parsed compatibility query languages onto SignalDB's query IR"
+license = "AGPL-3.0"
+# Not published. How LogQL or TraceQL maps onto *SignalDB's* IR is a SignalDB
+# decision, not part of either language — which is exactly why it lives here
+# rather than in the parser crates, and why it has no audience outside this
+# repository. Keeping it separate is also what lets `logql-parser` and
+# `traceql-parser` stay publishable: a published crate cannot depend on an
+# unpublished path dependency, and `query-ir` is `publish = false`.
+publish = false
+
+[dependencies]
+logql.workspace = true
+traceql.workspace = true
+query-ir = { path = "../query-ir" }
+thiserror.workspace = true
+serde_json.workspace = true

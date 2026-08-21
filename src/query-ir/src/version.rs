@@ -13,7 +13,7 @@ use super::stage::{AggFn, Parser};
 /// The lowest IR document version this server understands.
 pub const MIN_IR_VERSION: i64 = 1;
 /// The highest IR document version this server understands.
-pub const MAX_IR_VERSION: i64 = 4;
+pub const MAX_IR_VERSION: i64 = 5;
 
 /// Whether `version` is within the supported range.
 pub fn is_supported(version: i64) -> bool {
@@ -92,7 +92,8 @@ mod tests {
         assert!(is_supported(2));
         assert!(is_supported(3));
         assert!(is_supported(4));
-        assert!(!is_supported(5));
+        assert!(is_supported(5));
+        assert!(!is_supported(6));
     }
 
     #[test]
