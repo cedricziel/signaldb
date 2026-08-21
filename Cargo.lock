@@ -5642,6 +5642,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
  "promql-parser",
+ "ql-ir",
  "regex",
  "serde",
  "serde_json",
