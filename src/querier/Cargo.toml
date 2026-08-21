@@ -8,6 +8,7 @@ license.workspace = true
 common = { path = "../common" }
 logql.workspace = true
 traceql.workspace = true
+ql-ir = { path = "../ql-ir" }
 tempo-api = { path = "../tempo-api", features = ["server"] }
 
 async-trait.workspace = true
