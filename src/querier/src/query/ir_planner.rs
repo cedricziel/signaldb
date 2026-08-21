@@ -47,7 +47,10 @@ use datafusion::functions::core::expr_fn::{coalesce, get_field};
 use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
-use datafusion::functions_aggregate::expr_fn::{approx_percentile_cont, avg, count, max, min, sum};
+use datafusion::functions_aggregate::expr_fn::{
+    approx_percentile_cont, avg, count, first_value, last_value, max, min, stddev_pop, sum, var_pop,
+};
+use datafusion::logical_expr::SortExpr;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ExprFunctionExt, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
@@ -1645,6 +1648,31 @@ impl Lowering<'_> {
                 let q = a.arg.unwrap_or(0.5);
                 approx_percentile_cont(self.numeric_of(a)?.sort(true, false), lit(q), None)
             }
+            AggFn::Stddev => stddev_pop(self.numeric_of(a)?),
+            AggFn::Stdvar => var_pop(self.numeric_of(a)?),
+            // Population, not sample: LogQL's stddev_over_time/stdvar_over_time
+            // describe the window they were given rather than estimating a
+            // wider distribution from it, and the compat path already uses the
+            // population form.
+            // Ordered by the source's own time column — `timestamp` on most
+            // sources, `start_time_unix_nano` on traces — so "first" means
+            // earliest rather than whatever order the scan produced.
+            AggFn::First => first_value(
+                self.value_expr(a.of.as_deref().unwrap_or_default())?,
+                vec![SortExpr::new(col(self.source.time_col), true, true)],
+            ),
+            AggFn::Last => last_value(
+                self.value_expr(a.of.as_deref().unwrap_or_default())?,
+                vec![SortExpr::new(col(self.source.time_col), false, true)],
+            ),
+        };
+
+        // `divisor` reports the aggregate per unit instead of absolute — the
+        // whole of what a rate is. Applied here rather than as a later stage so
+        // it composes with the scoping filter below and needs no new stage.
+        let expr = match a.divisor {
+            None => expr,
+            Some(d) => expr / lit(d),
         };
         // A scoping predicate narrows this aggregate alone, as a per-aggregate
         // FILTER on the one grouping — not a `Filter` node, which would narrow

@@ -147,6 +147,7 @@ pub fn validate(
         source: &doc.from,
         source_def,
         resolver,
+        ir_version: doc.ir_version,
         relation: RelationType::RowSet(RowSet {
             source: doc.from.clone(),
             columns: Vec::new(),
@@ -193,6 +194,10 @@ struct InferCtx<'a> {
     /// The document's declared result envelope, needed by stages whose
     /// legality depends on it (e.g. `flamegraph` only composes with `where`).
     declared_result: ResultEnvelope,
+    /// The document's declared `irVersion`. Operands nested inside a stage —
+    /// an aggregate function, a `divisor` — gate on it here rather than in the
+    /// up-front scans, which only see stage kinds.
+    ir_version: i64,
 }
 
 impl InferCtx<'_> {
@@ -668,6 +673,29 @@ impl InferCtx<'_> {
                 a.func.as_str()
             )));
         }
+        if a.func.min_ir_version() > self.ir_version {
+            return Err(IrError::Invalid(format!(
+                "aggregate '{}' requires irVersion {} (document declares {})",
+                a.func.as_str(),
+                a.func.min_ir_version(),
+                self.ir_version
+            )));
+        }
+        if let Some(divisor) = a.divisor {
+            if self.ir_version < 5 {
+                return Err(IrError::Invalid(format!(
+                    "aggregate `divisor` requires irVersion 5 (document declares {})",
+                    self.ir_version
+                )));
+            }
+            // Zero has no quotient and a negative window is not a window;
+            // rejecting here beats planning something that yields infinity.
+            if !divisor.is_finite() || divisor <= 0.0 {
+                return Err(IrError::Invalid(format!(
+                    "aggregate `divisor` must be finite and greater than zero, got {divisor}"
+                )));
+            }
+        }
         if a.func.needs_arg() {
             let arg = a.arg.ok_or_else(|| {
                 IrError::Invalid(format!(
@@ -683,8 +711,10 @@ impl InferCtx<'_> {
         }
 
         // Numeric requirement for sum/avg/quantile.
-        if matches!(a.func, AggFn::Sum | AggFn::Avg | AggFn::Quantile)
-            && let Some(t) = &of_type
+        if matches!(
+            a.func,
+            AggFn::Sum | AggFn::Avg | AggFn::Quantile | AggFn::Stddev | AggFn::Stdvar
+        ) && let Some(t) = &of_type
             && !is_numeric(t)
         {
             return Err(IrError::Invalid(format!(
@@ -695,8 +725,17 @@ impl InferCtx<'_> {
 
         let out_ty = match a.func {
             AggFn::Count => ValueType::Int64,
-            AggFn::Avg | AggFn::Quantile => ValueType::Float64,
-            AggFn::Sum | AggFn::Min | AggFn::Max => of_type.unwrap_or(ValueType::Float64),
+            AggFn::Avg | AggFn::Quantile | AggFn::Stddev | AggFn::Stdvar => ValueType::Float64,
+            AggFn::Sum | AggFn::Min | AggFn::Max | AggFn::First | AggFn::Last => {
+                of_type.unwrap_or(ValueType::Float64)
+            }
+        };
+        // A divided aggregate is fractional whatever it divided: a count per
+        // 300 seconds is not an Int64.
+        let out_ty = if a.divisor.is_some() {
+            ValueType::Float64
+        } else {
+            out_ty
         };
         Ok(Column::new(a.as_name.clone(), out_ty))
     }
@@ -1953,13 +1992,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(5, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(6, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 5,
-                    max: 4,
+                    found: 6,
+                    max: 5,
                     ..
                 }
             ),
