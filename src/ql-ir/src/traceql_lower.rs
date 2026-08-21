@@ -11,7 +11,7 @@
 //! `span.http.method` addresses the span container in both, and a bare name
 //! coalesces in both.
 
-use query_ir::{ComparisonOp, Document, Leaf, Predicate, Range, ResultEnvelope, Stage};
+use query_ir::{ComparisonOp, Document, Leaf, Predicate, ResultEnvelope, Stage};
 
 use crate::LowerError;
 
@@ -42,10 +42,7 @@ pub fn traceql_to_ir(query: &str, from: &str, to: &str) -> Result<Document, Lowe
     Ok(Document {
         ir_version: IR_VERSION,
         from: "traces".to_string(),
-        range: Range {
-            from: serde_json::Value::String(from.to_string()),
-            to: serde_json::Value::String(to.to_string()),
-        },
+        range: crate::ir_range(from, to),
         result: ResultEnvelope::Rows,
         // No curated projection: the server's bounded default for `traces` is
         // what a Tempo-shaped caller wants, and naming columns here would

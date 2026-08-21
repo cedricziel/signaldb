@@ -75,6 +75,48 @@ pub struct Document {
     pub pipeline: Vec<Stage>,
 }
 
+impl Document {
+    /// The lowest `irVersion` that can carry this document's features.
+    ///
+    /// A builder should declare *this* rather than the server's maximum, so a
+    /// document needing nothing recent stays executable by an older server.
+    ///
+    /// The rule lives here because it is a property of the IR, not of whoever
+    /// constructs one: `ql-ir` previously asserted "a divisor means 5" itself,
+    /// which made the same fact true in three places and free to drift apart.
+    /// `validate` rejects a document declaring less than this.
+    pub fn minimum_ir_version(&self) -> i64 {
+        use super::stage::Stage;
+
+        let mut needed = 1;
+        if self.result == ResultEnvelope::Heatmap {
+            needed = needed.max(2);
+        }
+        if self.result == ResultEnvelope::Metadata {
+            needed = needed.max(4);
+        }
+        for stage in &self.pipeline {
+            needed = needed.max(match stage {
+                Stage::Heatmap(_) => 2,
+                Stage::HistogramQuantile(_) => 3,
+                Stage::Describe(_) => 4,
+                Stage::Aggregate(a) => a
+                    .aggs
+                    .iter()
+                    .map(|agg| {
+                        agg.func
+                            .min_ir_version()
+                            .max(if agg.divisor.is_some() { 5 } else { 1 })
+                    })
+                    .max()
+                    .unwrap_or(1),
+                _ => 1,
+            });
+        }
+        needed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

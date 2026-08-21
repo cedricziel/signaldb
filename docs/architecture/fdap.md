@@ -138,8 +138,10 @@ promotion invisible to the IR.
 document, and because all three of its dependencies are themselves FDAP-free,
 so is it. That is what makes client-side query *construction* possible rather
 than only client-side syntax checking — turning query text into something
-executable has never needed the engine that executes it. Only TraceQL is
-lowered today; see design D6 in the archived `publishable-ql-crates` change.
+executable has never needed the engine that executes it. TraceQL and LogQL both lower today; what
+remains out of reach is cross-series arithmetic (`a / b`, `label_replace`),
+which needs computation between series rather than within one aggregate. See
+design D6 in the archived `publishable-ql-crates` change.
 
 **One version rule.** Arrow, Parquet, and DataFusion evolve together and
 must agree on versions. SignalDB therefore always imports Arrow and

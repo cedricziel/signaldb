@@ -20,56 +20,75 @@
 //! collapses two parallel lowerings (compat → DataFusion, IR → DataFusion)
 //! into one.
 //!
-//! ## Status: TraceQL lowers; LogQL is blocked on the IR
+//! ## Status
 //!
-//! TraceQL's supported subset lowers completely — it is equality matchers over
-//! a single spanset, which is exactly a `where` stage.
+//! **TraceQL** — the supported subset lowers completely. It is equality
+//! matchers over one spanset, which is exactly a `where` stage, and TraceQL's
+//! scopes survive as the IR's container qualifiers.
 //!
-//! LogQL does not, and the gap was measured rather than assumed. The IR
-//! offers `count`/`sum`/`avg`/`min`/`max`/`quantile` aggregates with a `step`
-//! bucket and `by` grouping, plus `topk`/`bottomk`/`order` stages. Against
-//! LogQL's surface:
+//! **LogQL log queries** — stream selectors and line filters lower. Parser and
+//! formatter stages (`| json`, `| line_format`) reshape rather than narrow, so
+//! they contribute no predicate; expressing them needs the IR's `extract`
+//! stage and is separate work.
 //!
-//! | LogQL | Count | Maps to the IR today |
-//! |-------|-------|----------------------|
-//! | range functions | 15 | 7 — `count`/`sum`/`avg`/`min`/`max`/`quantile`/`bytes`_over_time |
-//! | vector aggregations | 11 | 9 — all but `stddev`/`stdvar` |
+//! **LogQL metric queries** — `count_over_time`, `rate`, and the
+//! `sum`/`avg`/`min`/`max`/`stddev`/`stdvar`/`first`/`last` `_over_time`
+//! family lower to a stepped `aggregate`, with `by` grouping from a vector
+//! aggregation. `rate` is a `count` carrying a `divisor` — which is why
+//! `irVersion` 5 added one.
 //!
-//! The eight unmapped range functions split into two kinds, and the
-//! distinction decides how much work finishing this crate is:
+//! ### What is still inexpressible
 //!
-//! **Additive.** `stddev_over_time`, `stdvar_over_time`, `first_over_time`,
-//! `last_over_time`, `absent_over_time` and the `stddev`/`stdvar` vector
-//! aggregations need new `AggFn` variants and nothing else. No structural
-//! change; a minor IR version.
+//! Each of these is refused by name rather than lowered to something narrower,
+//! because a partially-applied query returns more rows than asked for while
+//! looking like a success:
 //!
-//! **Structural.** `rate`, `bytes_rate` and `rate_counter` are a per-bucket
-//! count divided by the window width — and **the IR has no arithmetic at
-//! all**: no stage computes over another stage's output. The same absence
-//! blocks binary operations between series (`a / b`) and `label_replace`.
-//! Closing it means giving the IR a way to express computation over aggregate
-//! results, which is a design change to SignalDB's own query surface, not a
-//! lowering detail.
+//! - **Cross-series arithmetic** (`sum(rate(a)) / sum(rate(b))`) and
+//!   `label_replace`. These need computation *between* series; the IR computes
+//!   within one aggregate. This is the real remaining gap, and closing it is a
+//!   design question about SignalDB's query surface rather than a lowering
+//!   detail.
+//! - **`without` grouping.** The IR groups by naming fields; naming the
+//!   complement of a label set requires knowing the set, which is not
+//!   available until the data is read.
+//! - **`topk`/`bottomk` as vector aggregations**, `ip()` filters, `unwrap`,
+//!   `irate`, `absent_over_time`.
 //!
-//! `rate` is the most-used LogQL metric function, so "most of LogQL" is not a
-//! useful partial state. Until the IR can express arithmetic, this crate can
-//! serve TraceQL and the log-query (non-metric) half of LogQL; the metric half
-//! has to wait for that decision. See design D6 in the archived
-//! `publishable-ql-crates` change.
+//! Documents claim the lowest version that carries them: a query needing no v5
+//! feature declares v1 and stays executable by an older server.
 
+mod logql_lower;
 mod traceql_lower;
 
+/// An IR range from two literal bounds.
+///
+/// Passed through unresolved: the router resolves relative anchors such as
+/// `now-1h` to one absolute window at the ticket boundary, and resolving them
+/// here too would let the two disagree.
+fn ir_range(from: &str, to: &str) -> query_ir::Range {
+    query_ir::Range {
+        from: serde_json::Value::String(from.to_string()),
+        to: serde_json::Value::String(to.to_string()),
+    }
+}
+
+pub use logql_lower::logql_to_ir;
 pub use traceql_lower::traceql_to_ir;
 
 /// Why a query could not be lowered.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum LowerError {
-    /// The text is not the language. Carries the parser's own error so the
-    /// caller keeps the malformed-versus-unimplemented distinction that
-    /// decides an HTTP status.
+    /// The text is not TraceQL. Carries the parser's own error so the caller
+    /// keeps the malformed-versus-unimplemented distinction that decides an
+    /// HTTP status.
     #[error("{0}")]
     Parse(#[from] traceql::ParseError),
+
+    /// The text is not LogQL. Carries the parser's error, which reports a
+    /// 1-based position.
+    #[error("{0}")]
+    ParseLogql(#[from] logql::ParseError),
 
     /// The query parses, but says something the IR cannot express. Distinct
     /// from a parse failure: the language is fine, our target is not rich
