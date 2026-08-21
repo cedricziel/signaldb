@@ -212,6 +212,12 @@ pub async fn create_session<S: RouterState>(
 /// The tenants a user may act in: instance admins may select any tenant
 /// (as admin); other users get their stored memberships, with display
 /// names resolved config-first to mirror the Authenticator's precedence.
+// The error *is* the response we would send — the ordinary shape for a route
+// helper, and what lets the caller `?` straight out of a handler. Boxing it to
+// satisfy `result_large_err` would push a deref onto every call site and buy
+// nothing: an axum `Response` is large by construction. Same call the querier
+// makes in `flight.rs`.
+#[allow(clippy::result_large_err)]
 async fn list_session_memberships<S: RouterState>(
     state: &S,
     user: &common::catalog::UserRecord,
