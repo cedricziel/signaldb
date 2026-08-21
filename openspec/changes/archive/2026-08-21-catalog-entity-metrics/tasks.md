@@ -71,18 +71,18 @@ from the data toward the registry — see design.md, Selection.
 
 ## 5. Entity list sparkline (PR 2)
 
-- [ ] 5.1 Add a failing test for choosing the column's metric: the first
+- [x] 5.1 Add a failing test for choosing the column's metric: the first
       associated metric observed for that entity type in the window
-- [ ] 5.2 Add a failing test that one query serves the whole column — series
+- [x] 5.2 Add a failing test that one query serves the whole column — series
       aggregated by the entity type's identity dimensions plus step, indexed
       back onto rows
-- [ ] 5.3 Add a failing test: an entity type with no associated metric shows no
+- [x] 5.3 Add a failing test: an entity type with no associated metric shows no
       sparkline column at all
-- [ ] 5.4 Add a failing test: a row with no data for the column's metric leaves
+- [x] 5.4 Add a failing test: a row with no data for the column's metric leaves
       the cell empty rather than drawing a flat line
-- [ ] 5.5 Add a failing test that the column header names the metric being drawn
-- [ ] 5.6 Implement the column against those tests
-- [ ] 5.7 Run typecheck, lint, tests; update the docs' entity-list description;
+- [x] 5.5 Add a failing test that the column header names the metric being drawn
+- [x] 5.6 Implement the column against those tests
+- [x] 5.7 Run typecheck, lint, tests; update the docs' entity-list description;
       run `/simplify`; commit and open PR 2 on top of PR 1
 
 ## 6. Verification against real data
@@ -92,6 +92,6 @@ from the data toward the registry — see design.md, Selection.
       host
 - [x] 6.2 Confirm an entity type with no associations (e.g. a database) still
       renders exactly as it does today
-- [ ] 6.3 Run the docs-freshness gate after committing, and again after any fix
-- [ ] 6.4 Sync the delta spec into `openspec/specs/explore-ui-catalog/` and
+- [x] 6.3 Run the docs-freshness gate after committing, and again after any fix
+- [x] 6.4 Sync the delta spec into `openspec/specs/explore-ui-catalog/` and
       archive the change
