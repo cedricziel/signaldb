@@ -90,6 +90,11 @@ single-key object naming the stage:
 | `limit`            | integer                          | bound the row count                              |
 | `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate    |
 
+`irVersion` 5 adds four aggregate functions and an aggregate `divisor` — see
+[Aggregate functions](#aggregate-functions). Every earlier document keeps its
+exact meaning; a document using a v5 feature while declaring a lower version
+is rejected naming the version it needs, never silently upgraded.
+
 An unknown stage, or a stage illegal for the source (e.g. `extract` on
 `traces`), is rejected by name during validation — never silently dropped.
 
@@ -219,6 +224,40 @@ thing a later stage may reference:
 ]}},
 { "topk": { "n": 10, "of": "max_dur" } }
 ```
+
+### Aggregate functions
+
+| `fn`                        | `of` | `arg` | Since | Output    |
+| --------------------------- | ---- | ----- | ----- | --------- |
+| `count`                     | —    | —     | v1    | integer   |
+| `sum` / `min` / `max`       | yes  | —     | v1    | the field's type |
+| `avg`                       | yes  | —     | v1    | float     |
+| `quantile`                  | yes  | `[0,1]` | v1  | float     |
+| `stddev` / `stdvar`         | yes  | —     | **v5** | float    |
+| `first` / `last`            | yes  | —     | **v5** | the field's type |
+
+`first` and `last` order by the source's own time column, so they mean
+earliest and latest — not whichever row the scan happened to produce first.
+
+### Reporting a rate: `divisor` (v5)
+
+An aggregate may carry an optional `divisor`, which divides its value by that
+scalar. That is all a rate is — a count over a window, divided by the window:
+
+```jsonc
+{ "aggregate": {
+  "by": ["service.name"],
+  "step": "1m",
+  "aggs": [
+    { "fn": "count", "as": "errors_per_second", "divisor": 60 }
+  ]
+}}
+```
+
+It is named for the operation rather than `per_seconds` because dividing an
+aggregate by a scalar is not inherently about time. The divisor must be
+greater than zero; a divided aggregate is always a float, even when the
+function it divided returns an integer.
 
 ### Scoping an aggregate to a subset
 
