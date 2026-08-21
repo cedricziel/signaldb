@@ -2566,10 +2566,15 @@ impl CompletionSource {
         }
     }
 
+    /// The error is boxed because `signaldb_sdk::Error` is large (136 bytes),
+    /// and clippy's `result_large_err` rejects carrying that inline through a
+    /// `Result` — every caller pays the size on the success path too. The one
+    /// caller only formats it into a log line, so the indirection costs
+    /// nothing that matters here.
     async fn fetch(
         &self,
         client: &signaldb_sdk::Client,
-    ) -> Result<Vec<String>, signaldb_sdk::Error<()>> {
+    ) -> Result<Vec<String>, Box<signaldb_sdk::Error<()>>> {
         match self {
             Self::ServiceName => {
                 let resp = client
