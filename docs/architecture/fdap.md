@@ -134,6 +134,13 @@ check a query without the engine that will run it. Field resolution enters
 through a trait the querier implements, which is what keeps attribute
 promotion invisible to the IR.
 
+`ql-ir` joins the two: it lowers a parsed LogQL or TraceQL query into an IR
+document, and because all three of its dependencies are themselves FDAP-free,
+so is it. That is what makes client-side query *construction* possible rather
+than only client-side syntax checking — turning query text into something
+executable has never needed the engine that executes it. Only TraceQL is
+lowered today; see design D6 in the archived `publishable-ql-crates` change.
+
 **One version rule.** Arrow, Parquet, and DataFusion evolve together and
 must agree on versions. SignalDB therefore always imports Arrow and
 Parquet types through DataFusion's re-exports — the rule and rationale
