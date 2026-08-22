@@ -347,49 +347,6 @@ pub fn prometheus_router(
         ))
 }
 
-/// Shared state for the OTLP/HTTP profiles endpoint
-#[derive(Clone)]
-pub struct ProfilesHandlerState {
-    pub handler: Arc<ProfileHandler>,
-    pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
-    pub storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
-}
-
-/// Create a router for the OTLP/HTTP profiles ingestion endpoint with authentication
-///
-/// Handles `POST /v1development/profiles` (the OTLP development endpoint for
-/// the profiles signal) with protobuf or JSON request bodies. Per-tenant
-/// ingest rate limits and storage quotas are enforced with HTTP 429; both
-/// are unlimited unless configured.
-pub fn profiles_http_router(
-    authenticator: Arc<Authenticator>,
-    profile_handler: Arc<ProfileHandler>,
-    rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
-    storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
-) -> Router {
-    use axum::middleware;
-
-    let state = ProfilesHandlerState {
-        handler: profile_handler,
-        rate_limiter,
-        storage_quota,
-    };
-
-    Router::new()
-        .route("/v1development/profiles", post(handle_http_profiles))
-        .layer(Extension(state))
-        .layer(middleware::from_fn(move |req, next| {
-            let auth = authenticator.clone();
-            async move { auth_middleware(auth, req, next).await }
-        }))
-        .layer(middleware::from_fn(
-            common::self_monitoring::http_metrics_middleware,
-        ))
-        .layer(middleware::from_fn(
-            common::self_monitoring::http_trace_context_middleware,
-        ))
-}
-
 /// Shared per-signal state for OTLP/HTTP export endpoints
 pub struct OtlpHttpState<H> {
     pub handler: Arc<H>,
@@ -415,6 +372,8 @@ pub type TracesHandlerState = OtlpHttpState<TraceHandler>;
 pub type LogsHandlerState = OtlpHttpState<LogHandler>;
 /// Shared state for the OTLP/HTTP metrics endpoint
 pub type MetricsHandlerState = OtlpHttpState<MetricsHandler>;
+/// Shared state for the OTLP/HTTP profiles endpoint
+pub type ProfilesHandlerState = OtlpHttpState<ProfileHandler>;
 
 /// Mount a single OTLP/HTTP export route behind the shared auth middleware
 /// and HTTP self-monitoring metrics.
@@ -541,6 +500,33 @@ pub fn metrics_http_router(
         authenticator,
         OtlpHttpState {
             handler: metrics_handler,
+            rate_limiter,
+            storage_quota,
+        },
+    )
+}
+
+/// Create a router for the OTLP/HTTP profiles ingestion endpoint with authentication
+///
+/// Handles `POST /v1development/profiles` (the OTLP development endpoint for
+/// the profiles signal) with protobuf or JSON request bodies, matching the
+/// OTLP/HTTP specification like every other signal — including answering in
+/// the request's own encoding (finding M4: this used to always answer with
+/// `application/json`, breaking OTLP/HTTP's same-encoding rule for
+/// protobuf requests). Per-tenant ingest rate limits and storage quotas are
+/// enforced with HTTP 429; both are unlimited unless configured.
+pub fn profiles_http_router(
+    authenticator: Arc<Authenticator>,
+    profile_handler: Arc<ProfileHandler>,
+    rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
+    storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
+) -> Router {
+    otlp_signal_router(
+        "/v1development/profiles",
+        post(handle_http_profiles),
+        authenticator,
+        OtlpHttpState {
+            handler: profile_handler,
             rate_limiter,
             storage_quota,
         },
@@ -761,7 +747,12 @@ fn otlp_http_content_type_is_json(headers: &axum::http::HeaderMap) -> bool {
 }
 
 /// OTLP/HTTP profiles export: decode by content type, hand off to the
-/// profile handler, and answer with an empty export response.
+/// profile handler (WAL durability + Flight forward), and answer with an
+/// `ExportProfilesServiceResponse` in the request's encoding — same shared
+/// plumbing as traces/logs/metrics (finding M4: this used to hand-roll its
+/// own request/response handling and always answered `application/json`
+/// with an empty `{}` body, which is a protobuf-encoding response to a
+/// protobuf-encoded request, violating the OTLP/HTTP same-encoding rule).
 #[tracing::instrument(
     skip_all,
     fields(
@@ -775,71 +766,22 @@ async fn handle_http_profiles(
     crate::middleware::TenantContextExtractor(tenant_context): crate::middleware::TenantContextExtractor,
     body: axum::body::Bytes,
 ) -> axum::response::Response<axum::body::Body> {
-    use opentelemetry_proto::tonic::collector::profiles::v1development::ExportProfilesServiceRequest;
-    use prost::Message;
+    use opentelemetry_proto::tonic::collector::profiles::v1development::ExportProfilesServiceResponse;
 
-    // Per-tenant ingest rate limiting (HTTP 429 with the reason)
-    if let Err(e) = state
-        .rate_limiter
-        .check_ingest(&tenant_context.tenant_id, body.len())
-    {
-        return otlp_http_rate_limit_error(&e);
-    }
-
-    // Per-tenant storage quota: a tenant at or over max_storage_bytes
-    // must free space (or get a raised quota) before ingesting more.
-    if let Err(e) = state.storage_quota.check_ingest(&tenant_context.tenant_id) {
-        return otlp_http_error(axum::http::StatusCode::TOO_MANY_REQUESTS, e.to_string());
-    }
-
-    let request = if otlp_http_content_type_is_json(&headers) {
-        match serde_json::from_slice::<ExportProfilesServiceRequest>(&body) {
-            Ok(request) => request,
-            Err(e) => {
-                return otlp_http_error(
-                    axum::http::StatusCode::BAD_REQUEST,
-                    format!("invalid OTLP/JSON profiles payload: {e}"),
-                );
-            }
-        }
-    } else {
-        match ExportProfilesServiceRequest::decode(body.as_ref()) {
-            Ok(request) => request,
-            Err(e) => {
-                return otlp_http_error(
-                    axum::http::StatusCode::BAD_REQUEST,
-                    format!("invalid OTLP/protobuf profiles payload: {e}"),
-                );
-            }
-        }
-    };
-
-    match state
-        .handler
-        .handle_grpc_otlp_profiles(&tenant_context, request)
-        .await
-    {
-        Ok(()) => axum::response::Response::builder()
-            .status(axum::http::StatusCode::OK)
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(axum::body::Body::from("{}"))
-            .expect("static response must build"),
-        // Classify the failure (finding M3): see handle_otlp_http_export.
-        Err(crate::handler::IngestError::Invalid(e)) => {
-            tracing::warn!(error = %e, "Rejecting profiles export via HTTP: invalid payload");
-            otlp_http_error(
-                axum::http::StatusCode::BAD_REQUEST,
-                format!("invalid profiles payload: {e:#}"),
-            )
-        }
-        Err(crate::handler::IngestError::Unavailable(e)) => {
-            tracing::error!(error = %e, "Failed to durably accept profiles export via HTTP");
-            otlp_http_error(
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                format!("failed to durably accept profiles export: {e:#}"),
-            )
-        }
-    }
+    handle_otlp_http_export::<_, ExportProfilesServiceResponse, _, _>(
+        "profiles",
+        &state.rate_limiter,
+        &state.storage_quota,
+        &tenant_context,
+        &headers,
+        body,
+        |request| {
+            state
+                .handler
+                .handle_grpc_otlp_profiles(&tenant_context, request)
+        },
+    )
+    .await
 }
 
 fn otlp_http_error(
