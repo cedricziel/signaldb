@@ -104,7 +104,8 @@
 ## 7. Ship
 
 - [ ] 7.1 Run `/simplify` over the changed code.
-- [ ] 7.2 File the tracking issue this change lacks; add `Closes #N` to the PR.
+- [x] 7.2 File the tracking issue this change lacks; add `Closes #N` to the PR.
+      (Filed as #1382; the final PR of the stack carries `Closes #1382`.)
 - [ ] 7.3 Split into a stack: §1–2 (seam + harness), §3 (traces), §4 (logs),
       §5 (deletion). Each is independently revertible, which is the point of
       the ordering.
