@@ -1,12 +1,23 @@
-//! gRPC authentication interceptor for Tonic
+//! gRPC authentication layer for Tonic
 //!
-//! This module provides an interceptor for extracting and validating
-//! authentication headers on gRPC/OTLP requests.
+//! [`GrpcAuthLayer`] is an async tower layer, applied once around the whole
+//! `tonic::transport::Server` stack (mirroring [`crate::middleware::GrpcTraceLayer`]),
+//! that extracts and validates authentication headers on every gRPC/OTLP
+//! request and injects the resulting [`TenantContext`] into the request's
+//! extensions before it reaches a service.
+//!
+//! This replaces a prior synchronous [`tonic::service::Interceptor`] that
+//! called the async `Authenticator::authenticate` via
+//! `tokio::task::block_in_place` + `Handle::block_on` per request — a
+//! worker-thread migration to the blocking pool for every single RPC, and
+//! an outright panic on a current-thread runtime (`block_in_place` is only
+//! valid on a multi-thread runtime). A tower layer can simply be `async`.
 
 use common::auth::{
     AuthError, Authenticator, TenantContext, validate_dataset_id, validate_tenant_id,
 };
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use tonic::{Request, Status};
 
 /// Extract authentication headers from gRPC metadata
@@ -57,71 +68,136 @@ fn auth_error_to_status(err: AuthError) -> Status {
     }
 }
 
-/// gRPC interceptor function for authentication
+/// Layer applying [`GrpcAuth`] to the tonic server stack.
 ///
-/// This interceptor validates authentication headers and inserts TenantContext
-/// into the request extensions. Returns Status::unauthenticated or
-/// Status::permission_denied on authentication failure.
+/// Model this the same way as [`crate::middleware::GrpcTraceLayer`]: apply
+/// once around the whole `Server::builder()`, inside the trace layer so
+/// the RPC SERVER span covers authentication too.
 ///
 /// # Usage
 ///
 /// ```ignore
 /// let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 /// let server = tonic::transport::Server::builder()
-///     .layer(tower::ServiceBuilder::new()
-///         .layer(tonic::service::interceptor(move |req| {
-///             grpc_auth_interceptor(authenticator.clone(), req)
-///         })))
+///     .layer(crate::middleware::GrpcTraceLayer)
+///     .layer(GrpcAuthLayer::new(authenticator))
 ///     .add_service(service)
 ///     .serve(addr);
 /// ```
-#[allow(clippy::result_large_err)]
-pub fn grpc_auth_interceptor<T>(
+#[derive(Clone)]
+pub struct GrpcAuthLayer {
     authenticator: Arc<Authenticator>,
-    mut request: Request<T>,
-) -> Result<Request<T>, Status> {
-    // Extract authentication headers
-    let (api_key, tenant_id, dataset_id) =
-        extract_grpc_auth_headers(request.metadata()).map_err(auth_error_to_status)?;
+}
 
-    // Authenticate using the Authenticator (blocking version)
-    // Note: We need to use blocking context here since interceptors are not async
-    let tenant_context = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async {
-            authenticator
-                .authenticate(&api_key, &tenant_id, dataset_id.as_deref())
-                .await
-        })
-    })
-    .map_err(|err| {
-        tracing::warn!(
-            tenant_id = %tenant_id,
-            error = %err.message,
-            "gRPC authentication failed"
-        );
-        auth_error_to_status(err)
-    })?;
+impl GrpcAuthLayer {
+    pub fn new(authenticator: Arc<Authenticator>) -> Self {
+        Self { authenticator }
+    }
+}
 
-    // Anti-loop guard: don't emit exportable auth telemetry for the
-    // _system tenant's own requests.
-    let log_auth = || {
-        tracing::debug!(
-            tenant_id = %tenant_context.tenant_id,
-            dataset_id = %tenant_context.dataset_id,
-            source = %tenant_context.source,
-            "Authenticated gRPC request"
-        );
-    };
-    if common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
-        common::self_monitoring::suppress_self_telemetry_sync(log_auth);
-    } else {
-        log_auth();
+impl<S> tower::Layer<S> for GrpcAuthLayer {
+    type Service = GrpcAuth<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        GrpcAuth {
+            inner,
+            authenticator: self.authenticator.clone(),
+        }
+    }
+}
+
+/// Service wrapper authenticating every inbound gRPC call and injecting
+/// [`TenantContext`] into its extensions before it reaches `inner`.
+#[derive(Clone)]
+pub struct GrpcAuth<S> {
+    inner: S,
+    authenticator: Arc<Authenticator>,
+}
+
+impl<S, ReqBody, ResBody> tower::Service<tonic::codegen::http::Request<ReqBody>> for GrpcAuth<S>
+where
+    S: tower::Service<
+            tonic::codegen::http::Request<ReqBody>,
+            Response = tonic::codegen::http::Response<ResBody>,
+        > + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+    ReqBody: Send + 'static,
+    ResBody: Send + Default + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = std::pin::Pin<
+        Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>,
+    >;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
     }
 
-    // Insert TenantContext into request extensions
-    request.extensions_mut().insert(tenant_context);
+    fn call(&mut self, req: tonic::codegen::http::Request<ReqBody>) -> Self::Future {
+        let authenticator = self.authenticator.clone();
+        // Standard tower pattern for async pre-call work: the returned
+        // future must be 'static, so it cannot borrow `&mut self.inner`.
+        // Clone the (cheap, tonic-generated) service and swap it in,
+        // leaving `self.inner` ready for the next `call`.
+        let clone = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, clone);
 
-    Ok(request)
+        Box::pin(async move {
+            let (mut parts, body) = req.into_parts();
+
+            let metadata = tonic::metadata::MetadataMap::from_headers(parts.headers.clone());
+            let (api_key, tenant_id, dataset_id) =
+                match extract_grpc_auth_headers(&metadata).map_err(auth_error_to_status) {
+                    Ok(v) => v,
+                    Err(status) => return Ok(status.into_http()),
+                };
+
+            let tenant_context = match authenticator
+                .authenticate(&api_key, &tenant_id, dataset_id.as_deref())
+                .await
+            {
+                Ok(ctx) => ctx,
+                Err(err) => {
+                    tracing::warn!(
+                        tenant_id = %tenant_id,
+                        error = %err.message,
+                        "gRPC authentication failed"
+                    );
+                    return Ok(auth_error_to_status(err).into_http());
+                }
+            };
+
+            // Anti-loop guard: don't emit exportable auth telemetry for the
+            // _system tenant's own requests.
+            let log_auth = async {
+                tracing::debug!(
+                    tenant_id = %tenant_context.tenant_id,
+                    dataset_id = %tenant_context.dataset_id,
+                    source = %tenant_context.source,
+                    "Authenticated gRPC request"
+                );
+            };
+            if common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
+                common::self_monitoring::suppress_self_telemetry(log_auth).await;
+            } else {
+                log_auth.await;
+            }
+
+            // Insert TenantContext into the request extensions; tonic
+            // carries `http::Request` extensions through into the
+            // `tonic::Request<T>` it decodes, so services read this back
+            // via `get_tenant_context`.
+            parts.extensions.insert(tenant_context);
+
+            inner
+                .call(tonic::codegen::http::Request::from_parts(parts, body))
+                .await
+        })
+    }
 }
 
 /// Helper to extract TenantContext from gRPC request extensions
@@ -278,93 +354,148 @@ mod tests {
         assert!(err.message.contains("Bearer"));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_grpc_auth_interceptor_success() {
-        // Setup authenticator
-        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
-        let auth_config = AuthConfig {
-            tenants: vec![TenantConfig {
-                id: "acme".to_string(),
-                slug: "acme".to_string(),
-                name: "Acme Corp".to_string(),
-                default_dataset: Some("production".to_string()),
-                datasets: vec![DatasetConfig {
-                    id: "production".to_string(),
-                    slug: "production".to_string(),
-                    is_default: true,
-                    storage: None,
+    mod layer_tests {
+        use super::*;
+        use std::sync::Mutex;
+        use tonic::codegen::http;
+        use tower::{ServiceBuilder, ServiceExt};
+
+        /// Authenticator with one tenant ("acme", key "test-key-123",
+        /// default dataset "production"), shared by the layer tests below.
+        async fn test_authenticator() -> Arc<Authenticator> {
+            let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+            let auth_config = AuthConfig {
+                tenants: vec![TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme Corp".to_string(),
+                    default_dataset: Some("production".to_string()),
+                    datasets: vec![DatasetConfig {
+                        id: "production".to_string(),
+                        slug: "production".to_string(),
+                        is_default: true,
+                        storage: None,
+                    }],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "test-key-123".to_string(),
+                        name: Some("test-key".to_string()),
+                    }],
+                    schema_config: None,
+                    limits: None,
                 }],
-                api_keys: vec![ApiKeyConfig {
-                    key: "test-key-123".to_string(),
-                    name: Some("test-key".to_string()),
-                }],
-                schema_config: None,
-                limits: None,
-            }],
-            ..Default::default()
-        };
-        let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+                ..Default::default()
+            };
+            Arc::new(Authenticator::new(auth_config, catalog))
+        }
 
-        // Create test request
-        let mut request = Request::new(());
-        request.metadata_mut().insert(
-            "authorization",
-            MetadataValue::from_static("Bearer test-key-123"),
-        );
-        request
-            .metadata_mut()
-            .insert("x-tenant-id", MetadataValue::from_static("acme"));
+        /// Mock inner gRPC service that records the `TenantContext` it saw
+        /// (or its absence) into `captured`, so a test can assert on what
+        /// the auth layer injected without needing a real tonic service.
+        fn mock_service(
+            captured: Arc<Mutex<Option<TenantContext>>>,
+        ) -> impl tower::Service<
+            http::Request<String>,
+            Response = http::Response<String>,
+            Error = std::convert::Infallible,
+            Future: Send + 'static,
+        > + Clone {
+            tower::service_fn(move |req: http::Request<String>| {
+                let captured = captured.clone();
+                async move {
+                    *captured.lock().unwrap() = req.extensions().get::<TenantContext>().cloned();
+                    Ok::<_, std::convert::Infallible>(
+                        http::Response::builder()
+                            .status(200)
+                            .body(String::new())
+                            .unwrap(),
+                    )
+                }
+            })
+        }
 
-        // Test interceptor
-        let result = grpc_auth_interceptor(authenticator, request);
-        assert!(result.is_ok());
+        fn request_with_headers(headers: &[(&str, &str)]) -> http::Request<String> {
+            let mut builder = http::Request::builder().uri("/svc/Method");
+            for (name, value) in headers {
+                builder = builder.header(*name, *value);
+            }
+            builder.body(String::new()).unwrap()
+        }
 
-        let request = result.unwrap();
-        let tenant_ctx = get_tenant_context(&request).unwrap();
-        assert_eq!(tenant_ctx.tenant_id, "acme");
-        assert_eq!(tenant_ctx.dataset_id, "production");
-    }
+        /// `#[tokio::test]`'s default flavor is a **current-thread**
+        /// runtime — exactly where the old `block_in_place`-based
+        /// interceptor would panic ("can call blocking only when running
+        /// on the multi-threaded runtime"). This test's flavor is the
+        /// regression check for finding M2: it merely needs to run to
+        /// completion without panicking.
+        #[tokio::test]
+        async fn authenticates_without_blocking_the_runtime() {
+            let authenticator = test_authenticator().await;
+            let captured = Arc::new(Mutex::new(None));
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_grpc_auth_interceptor_missing_header() {
-        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
-        let auth_config = AuthConfig {
-            tenants: vec![],
-            ..Default::default()
-        };
-        let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+            let svc = ServiceBuilder::new()
+                .layer(GrpcAuthLayer::new(authenticator))
+                .service(mock_service(captured.clone()));
 
-        // Create request missing headers
-        let request = Request::new(());
+            let request = request_with_headers(&[
+                ("authorization", "Bearer test-key-123"),
+                ("x-tenant-id", "acme"),
+            ]);
+            let response = svc.oneshot(request).await.unwrap();
 
-        let result = grpc_auth_interceptor(authenticator, request);
-        assert!(result.is_err());
-        let status = result.unwrap_err();
-        assert_eq!(status.code(), tonic::Code::Unauthenticated);
-    }
+            assert_eq!(response.status(), 200);
+            let ctx = captured.lock().unwrap().clone();
+            let ctx = ctx.expect("authenticated request must carry a TenantContext");
+            assert_eq!(ctx.tenant_id, "acme");
+            assert_eq!(ctx.dataset_id, "production");
+        }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_grpc_auth_interceptor_invalid_key() {
-        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
-        let auth_config = AuthConfig {
-            tenants: vec![],
-            ..Default::default()
-        };
-        let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+        #[tokio::test]
+        async fn missing_headers_is_rejected_before_reaching_inner_service() {
+            let authenticator = test_authenticator().await;
+            let captured = Arc::new(Mutex::new(None));
 
-        // Create request with invalid API key
-        let mut request = Request::new(());
-        request.metadata_mut().insert(
-            "authorization",
-            MetadataValue::from_static("Bearer invalid-key"),
-        );
-        request
-            .metadata_mut()
-            .insert("x-tenant-id", MetadataValue::from_static("acme"));
+            let svc = ServiceBuilder::new()
+                .layer(GrpcAuthLayer::new(authenticator))
+                .service(mock_service(captured.clone()));
 
-        let result = grpc_auth_interceptor(authenticator, request);
-        assert!(result.is_err());
-        let status = result.unwrap_err();
-        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+            let response = svc.oneshot(request_with_headers(&[])).await.unwrap();
+
+            let status_header = response
+                .headers()
+                .get("grpc-status")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<i32>().ok())
+                .map(tonic::Code::from_i32);
+            assert_eq!(status_header, Some(tonic::Code::Unauthenticated));
+            assert!(
+                captured.lock().unwrap().is_none(),
+                "rejected request must never reach the inner service"
+            );
+        }
+
+        #[tokio::test]
+        async fn invalid_key_is_rejected_before_reaching_inner_service() {
+            let authenticator = test_authenticator().await;
+            let captured = Arc::new(Mutex::new(None));
+
+            let svc = ServiceBuilder::new()
+                .layer(GrpcAuthLayer::new(authenticator))
+                .service(mock_service(captured.clone()));
+
+            let request = request_with_headers(&[
+                ("authorization", "Bearer invalid-key"),
+                ("x-tenant-id", "acme"),
+            ]);
+            let response = svc.oneshot(request).await.unwrap();
+
+            let status_header = response
+                .headers()
+                .get("grpc-status")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<i32>().ok())
+                .map(tonic::Code::from_i32);
+            assert_eq!(status_header, Some(tonic::Code::Unauthenticated));
+            assert!(captured.lock().unwrap().is_none());
+        }
     }
 }

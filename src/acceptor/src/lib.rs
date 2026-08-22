@@ -19,7 +19,6 @@ use opentelemetry_proto::tonic::collector::{
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tonic::codec::CompressionEncoding;
-use tonic::service::interceptor::InterceptedService;
 // Service bootstrap and configuration
 use common::config::Configuration;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
@@ -35,7 +34,6 @@ use crate::handler::otlp_profiles_handler::ProfileHandler;
 use crate::handler::{PrometheusHandler, PrometheusHandlerState};
 use crate::handler::{WalManager, WalRetryConsumer};
 use crate::middleware::auth_middleware;
-use crate::middleware::grpc_auth::grpc_auth_interceptor;
 use crate::services::{
     otlp_log_service::LogAcceptorService, otlp_metric_service::MetricsAcceptorService,
     otlp_profile_service::ProfileAcceptorService, otlp_trace_service::TraceAcceptorService,
@@ -205,58 +203,45 @@ pub async fn serve_otlp_grpc(
         storage_usage,
     } = config.resources;
 
-    // Set up OTLP/gRPC services with handler pattern, WAL Manager integration, and auth interceptor
+    // Set up OTLP/gRPC services with handler pattern and WAL Manager
+    // integration. Authentication is a single tower layer applied once
+    // around the whole server below (crate::middleware::GrpcAuthLayer),
+    // not a per-service interceptor.
     let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
     let log_service = LogAcceptorService::new(log_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
-    let auth_for_logs = authenticator.clone();
-    let log_server = InterceptedService::new(
-        LogsServiceServer::new(log_service)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd)
-            .max_decoding_message_size(max_decoding_message_size),
-        move |req| grpc_auth_interceptor(auth_for_logs.clone(), req),
-    );
+    let log_server = LogsServiceServer::new(log_service)
+        .accept_compressed(CompressionEncoding::Gzip)
+        .accept_compressed(CompressionEncoding::Zstd)
+        .max_decoding_message_size(max_decoding_message_size);
 
     let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
     let trace_service = TraceAcceptorService::new(trace_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
-    let auth_for_traces = authenticator.clone();
-    let trace_server = InterceptedService::new(
-        TraceServiceServer::new(trace_service)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd)
-            .max_decoding_message_size(max_decoding_message_size),
-        move |req| grpc_auth_interceptor(auth_for_traces.clone(), req),
-    );
+    let trace_server = TraceServiceServer::new(trace_service)
+        .accept_compressed(CompressionEncoding::Gzip)
+        .accept_compressed(CompressionEncoding::Zstd)
+        .max_decoding_message_size(max_decoding_message_size);
 
     let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager.clone());
     let metrics_service = MetricsAcceptorService::new(metrics_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
-    let auth_for_metrics = authenticator.clone();
-    let metric_server = InterceptedService::new(
-        MetricsServiceServer::new(metrics_service)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd)
-            .max_decoding_message_size(max_decoding_message_size),
-        move |req| grpc_auth_interceptor(auth_for_metrics.clone(), req),
-    );
+    let metric_server = MetricsServiceServer::new(metrics_service)
+        .accept_compressed(CompressionEncoding::Gzip)
+        .accept_compressed(CompressionEncoding::Zstd)
+        .max_decoding_message_size(max_decoding_message_size);
 
     let profile_handler = ProfileHandler::new(flight_transport.clone(), wal_manager.clone());
     let profile_service = ProfileAcceptorService::new(profile_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
-    let auth_for_profiles = authenticator.clone();
-    let profile_server = InterceptedService::new(
-        ProfilesServiceServer::new(profile_service)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd)
-            .max_decoding_message_size(max_decoding_message_size),
-        move |req| grpc_auth_interceptor(auth_for_profiles.clone(), req),
-    );
+    let profile_server = ProfilesServiceServer::new(profile_service)
+        .accept_compressed(CompressionEncoding::Gzip)
+        .accept_compressed(CompressionEncoding::Zstd)
+        .max_decoding_message_size(max_decoding_message_size);
 
     // Bind before signaling init: sending init_tx first would let the CLI
     // log "listening" for a port that turned out to be unbindable (e.g.
@@ -279,6 +264,7 @@ pub async fn serve_otlp_grpc(
 
     tonic::transport::Server::builder()
         .layer(crate::middleware::GrpcTraceLayer)
+        .layer(crate::middleware::GrpcAuthLayer::new(authenticator))
         .add_service(log_server)
         .add_service(trace_server)
         .add_service(metric_server)
