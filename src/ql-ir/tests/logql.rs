@@ -343,3 +343,29 @@ fn subsecond_ranges_keep_their_precision() {
         assert_eq!(agg.step.as_deref(), Some(*expected), "{query}");
     }
 }
+
+/// `unwrap` means two different things depending on where it appears, and the
+/// docs now claim both. Pinned, because that claim was wrong once already.
+#[test]
+fn unwrap_is_supported_only_where_it_feeds_an_aggregate() {
+    // Supplying a range aggregate's field: supported, and the field lands.
+    let d = doc(r#"sum_over_time({a="b"} | unwrap duration [5m])"#);
+    let agg = d
+        .pipeline
+        .iter()
+        .find_map(|s| match s {
+            Stage::Aggregate(a) => Some(a.clone()),
+            _ => None,
+        })
+        .expect("an aggregate");
+    assert_eq!(agg.aggs[0].of.as_deref(), Some("duration"));
+
+    // In a bare log query there is no aggregate for it to feed, so it is
+    // refused rather than silently ignored.
+    let err = ql_ir::logql_to_ir(r#"{a="b"} | unwrap duration"#, "now-1h", "now")
+        .expect_err("a bare unwrap has nothing to unwrap into");
+    assert!(
+        matches!(err, ql_ir::LowerError::Inexpressible(_)),
+        "got {err:?}"
+    );
+}

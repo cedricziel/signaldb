@@ -51,8 +51,15 @@
 //! - **`without` grouping.** The IR groups by naming fields; naming the
 //!   complement of a label set requires knowing the set, which is not
 //!   available until the data is read.
-//! - **`topk`/`bottomk` as vector aggregations**, `ip()` filters, `unwrap`,
-//!   `irate`, `absent_over_time`.
+//! - **Vector aggregations that do not collapse.** The IR aggregates once and
+//!   LogQL twice, so an outer function is only accepted when applying it to
+//!   partial results reproduces the inner one over their union — `sum` of
+//!   counts, `min` of minima. `avg` of counts is not a count.
+//! - **`topk`/`bottomk` as vector aggregations**, `ip()` filters, `irate`,
+//!   `absent_over_time`.
+//! - **`unwrap` in a bare log query.** It *is* supported where it supplies a
+//!   range aggregate's field, which is the only place LogQL gives it a
+//!   meaning this crate can carry.
 //!
 //! Documents claim the lowest version that carries them: a query needing no v5
 //! feature declares v1 and stays executable by an older server.
