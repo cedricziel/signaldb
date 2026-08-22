@@ -47,6 +47,13 @@ pub(crate) fn plan_document(
 `IrService` keeps its Flight-ticket entry and calls the same function, so there
 is one planner rather than a planner and a compat-planner.
 
+In the shipped signature `resolver` is not actually a parameter: the real code
+builds it internally, from the _scanned table's_ schema
+(`SchemaResolver::new(base.schema(), &source)`), and that is deliberate — a
+resolver built from anything other than the schema DataFusion just returned
+could disagree with what got promoted, which is exactly the invariant this
+change must not weaken.
+
 **Rejected: exposing `lower_predicate` alone.** It is a method needing
 `col_of`, `derived_types` and `resolver`, so a caller would have to assemble
 planner internals to use it. That is the coupling this change exists to remove,
