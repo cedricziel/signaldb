@@ -1996,3 +1996,101 @@ async fn adversarial_unscoped_attribute_combining_semantics_diverge_at_endpoint(
         "if this now matches, the D8 combining-semantics gap was closed at the endpoint level — update the triage table, don't just delete this assertion"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 2.3b (logs half): endpoint-level agreement — `LogsService::query_metric`
+// with the `logql_via_ir` switch on vs off. Pins the two schema-parity
+// corrections `LogsService::query_metric_via_ir` applies post-`plan_document`
+// (see its doc comment) — a regression in either would otherwise only show up
+// as silently-wrong numbers at the router, not a planning error.
+// ---------------------------------------------------------------------------
+
+/// D5/4.1: `ql_ir::logql_to_ir` sets a range aggregate's bucket width from the
+/// LogQL range literal (`[1h]` here), not the caller's `step` parameter —
+/// `query_metric_via_ir` overrides it post-lowering so both paths bucket
+/// identically. Demonstrated with a `step` (10ns) far finer than the `[1h]`
+/// literal: the fixture's two `api` rows land at `timestamp` 10 and 20, ten
+/// nanoseconds apart, so a `step`-correct plan produces two one-nanosecond-
+/// resolution buckets (one row each) on both paths. If the override were
+/// dropped, the new path would instead bucket by `~1h` in nanoseconds — both
+/// rows would collapse into a single bucket of count 2, diverging from the
+/// old path.
+#[tokio::test]
+async fn query_metric_via_ir_buckets_by_the_callers_step_not_the_range_literal() {
+    let ctx = logs_fixture();
+    let old_svc = LogsService::new(clone_ctx(&ctx));
+    let new_svc = LogsService::new(clone_ctx(&ctx)).with_logql_via_ir(true);
+    let params = MetricQueryParams {
+        query: r#"count_over_time({service_name="api"}[1h])"#.to_string(),
+        start: FROM,
+        end: TO,
+        step: 10,
+    };
+    let old_batches = old_svc
+        .query_metric(&params, TENANT, DATASET)
+        .await
+        .unwrap();
+    let new_batches = new_svc
+        .query_metric(&params, TENANT, DATASET)
+        .await
+        .unwrap();
+    let group_cols = ["service_name", "severity_text"];
+    let old_rows = metric_rows(&old_batches, &group_cols, "value");
+    let new_rows = metric_rows(&new_batches, &group_cols, "value");
+    assert_eq!(
+        old_rows.len(),
+        2,
+        "old path: a step of 10ns should split the two api rows (10ns apart) into two buckets"
+    );
+    assert_eq!(
+        old_rows, new_rows,
+        "if this now diverges, the step override regressed — the new path is bucketing by the range literal again"
+    );
+}
+
+/// D5/4.1: `ir_planner::agg_expr`'s `count` aggregate is Arrow `Int64`
+/// (uncast) unless a `rate` divisor promotes it, but the old path
+/// (`execute_plan`) always casts the matrix's `value` column to `Float64` —
+/// which is also what the router's `batches_to_matrix` requires
+/// (`downcast_ref::<Float64Array>`, silently reading `0.0` for any other
+/// type). `query_metric_via_ir` casts explicitly post-plan; this pins that
+/// the cast actually lands, not just that the *numbers* happen to compare
+/// equal after `metric_rows`' own defensive cast (which would mask exactly
+/// this regression).
+#[tokio::test]
+async fn query_metric_via_ir_value_column_is_float64_like_the_old_path() {
+    let ctx = logs_fixture();
+    let old_svc = LogsService::new(clone_ctx(&ctx));
+    let new_svc = LogsService::new(clone_ctx(&ctx)).with_logql_via_ir(true);
+    let params = MetricQueryParams {
+        query: r#"count_over_time({service_name="api"}[1h])"#.to_string(),
+        start: FROM,
+        end: TO,
+        step: 1_000,
+    };
+    let old_batches = old_svc
+        .query_metric(&params, TENANT, DATASET)
+        .await
+        .unwrap();
+    let new_batches = new_svc
+        .query_metric(&params, TENANT, DATASET)
+        .await
+        .unwrap();
+    let value_type = |batches: &[RecordBatch]| -> Option<DataType> {
+        batches.iter().find_map(|b| {
+            b.schema()
+                .column_with_name("value")
+                .map(|(_, f)| f.data_type().clone())
+        })
+    };
+    assert_eq!(
+        value_type(&new_batches),
+        Some(DataType::Float64),
+        "new path's value column must be Float64, matching what the router requires"
+    );
+    assert_eq!(
+        value_type(&old_batches),
+        value_type(&new_batches),
+        "old and new paths must agree on the value column's type"
+    );
+}

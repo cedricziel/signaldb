@@ -34,7 +34,7 @@
       plan-only harness cannot see. Assert the same accept/reject decision and
       the same error class — the 400-vs-501 split `publishable-ql-crates`
       established is user-visible and must survive.
-- [ ] 2.3b Compare **endpoint responses** for a fixture dataset on the queries
+- [x] 2.3b Compare **endpoint responses** for a fixture dataset on the queries
       that reach one. Identical plans are strong evidence and not proof: the
       compat layer assembles Tempo and Loki shapes downstream of the plan, and
       a projection or column-name change would pass a plan diff while altering
@@ -42,7 +42,15 @@
       (traces: done in §3 — `tests-integration::router_tempo_endpoints::test_search_filters_are_applied_via_ir`
       and the `query::trace::tests::search_via_ir_matches_old_path_for_*`
       unit tests exercise `find_traces_with_tenant` end to end with the
-      switch both ways; logs: §4.)
+      switch both ways; logs: §4 —
+      `tests-integration::logql_queries`'s three `_via_ir` twins exercise
+      `query_logs`/`query_metric` end to end through the full HTTP/Loki stack,
+      and `differential::query_metric_via_ir_buckets_by_the_callers_step_not_the_range_literal`/
+      `query_metric_via_ir_value_column_is_float64_like_the_old_path` pin the
+      two schema-parity corrections `query_metric_via_ir` applies — exactly
+      the "plan is identical but the assembled response would differ" case
+      this task exists to catch, since a plan diff alone can't see a
+      post-`plan_document` projection.)
       (Completed per signal in §3/§4, where the switch makes both paths
       reachable from the endpoint.)
 - [x] 2.4 Run it and triage every difference. Each is a finding about one of
