@@ -1,3 +1,11 @@
+//! # OTLP Trace Handler
+//!
+//! Converts an `ExportTraceServiceRequest` to Arrow, writes it to the
+//! tenant/dataset's traces WAL, and forwards it to a writer via Flight.
+//! Named `otlp_grpc` for its original gRPC-only origin; both the gRPC
+//! (`services::otlp_trace_service`) and HTTP (`lib::handle_http_traces`)
+//! surfaces share this one handler.
+
 use std::sync::Arc;
 
 use anyhow::Context;

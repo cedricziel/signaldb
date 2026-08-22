@@ -1,3 +1,6 @@
+//! gRPC `MetricsService` implementation — see `services` module docs for
+//! the shared shape every OTLP signal's gRPC service follows.
+
 use opentelemetry_proto::tonic::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
     metrics_service_server::MetricsService,

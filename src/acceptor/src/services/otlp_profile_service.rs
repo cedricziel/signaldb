@@ -1,3 +1,6 @@
+//! gRPC `ProfilesService` implementation — see `services` module docs for
+//! the shared shape every OTLP signal's gRPC service follows.
+
 use opentelemetry_proto::tonic::collector::profiles::v1development::{
     ExportProfilesServiceRequest, ExportProfilesServiceResponse,
     profiles_service_server::ProfilesService,

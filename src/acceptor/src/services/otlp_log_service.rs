@@ -1,3 +1,6 @@
+//! gRPC `LogsService` implementation — see `services` module docs for the
+//! shared shape every OTLP signal's gRPC service follows.
+
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
 };

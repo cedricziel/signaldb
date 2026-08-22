@@ -1,3 +1,20 @@
+//! # Acceptor
+//!
+//! OTLP ingestion service: the gRPC (`serve_otlp_grpc`) and HTTP
+//! (`serve_otlp_http`) servers that terminate traces, logs, metrics, and
+//! profiles exports, plus Prometheus remote_write. Every ingest surface
+//! follows the same shape: authenticate ([`middleware`]), enforce
+//! per-tenant rate limits and storage quotas, decode the wire payload,
+//! hand off to a per-signal [`handler`] that writes it to the WAL and
+//! forwards it to a writer via Flight, and answer once the data is
+//! durable — not once it's forwarded (WAL-before-ACK; see
+//! `handler::forward` and `handler::wal_retry` for the retry path when a
+//! forward fails after durability).
+//!
+//! [`services`] holds the four generated gRPC service implementations;
+//! this module builds their HTTP/2 server and the routers for the HTTP
+//! surface.
+
 pub mod cli;
 pub mod handler;
 pub mod middleware;

@@ -1,3 +1,6 @@
+//! gRPC `TraceService` implementation — see `services` module docs for the
+//! shared shape every OTLP signal's gRPC service follows.
+
 use opentelemetry_proto::tonic::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse, trace_service_server::TraceService,
 };
