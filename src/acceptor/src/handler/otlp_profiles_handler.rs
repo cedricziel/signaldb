@@ -49,10 +49,6 @@ impl MockProfileHandler {
             .push(request);
         Ok(())
     }
-
-    pub fn expect_handle_grpc_otlp_profiles(&mut self) -> &mut Self {
-        self
-    }
 }
 
 impl ProfileHandler {

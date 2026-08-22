@@ -49,10 +49,6 @@ impl MockTraceHandler {
             .push(request);
         Ok(())
     }
-
-    pub fn expect_handle_grpc_otlp_traces(&mut self) -> &mut Self {
-        self
-    }
 }
 
 impl TraceHandler {

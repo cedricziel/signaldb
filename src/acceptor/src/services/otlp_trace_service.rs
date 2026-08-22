@@ -358,8 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_trace_acceptor_service() {
-        let mut mock_handler = MockTraceHandler::new();
-        mock_handler.expect_handle_grpc_otlp_traces();
+        let mock_handler = MockTraceHandler::new();
 
         let service = TraceAcceptorService::new(mock_handler);
 
