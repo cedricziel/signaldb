@@ -448,6 +448,7 @@ async fn main() -> Result<()> {
     let grpc_config = GrpcAcceptorConfig {
         addr: grpc_addr,
         resources: grpc_resources,
+        max_decoding_message_size: config.acceptor.max_request_body_bytes as usize,
     };
     let grpc_handle = tokio::spawn(async move {
         serve_otlp_grpc(
@@ -473,6 +474,7 @@ async fn main() -> Result<()> {
             .frontend
             .enabled
             .then(|| config.self_monitoring.frontend.allowed_origins.clone()),
+        max_request_body_bytes: config.acceptor.max_request_body_bytes as usize,
     };
     let http_handle = tokio::spawn(async move {
         serve_otlp_http(

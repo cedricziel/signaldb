@@ -131,8 +131,12 @@ The HTTP server on port 4318 ingests **traces** at `POST /v1/traces`,
 `application/json` (protojson encoding: trace and span IDs are hex
 strings) request bodies, require the same auth headers as gRPC, and
 enforce per-tenant rate limits and storage quotas. Compressed
-(`Content-Encoding: gzip`) request bodies are not supported — export
-uncompressed.
+(`Content-Encoding: gzip` or `zstd`) request bodies are accepted and
+transparently decompressed; rate limiting and storage-quota accounting are
+based on the decompressed size. Every route enforces a maximum decoded
+body size (`[acceptor].max_request_body_bytes` in `signaldb.toml`,
+default 64MB, applied after decompression) — a request over the limit
+gets `413 Payload Too Large`.
 
 A successful export returns `200 OK` with an `Export*ServiceResponse`
 body in the same encoding as the request. Error responses:
@@ -142,6 +146,7 @@ body in the same encoding as the request. Error responses:
 | `400 Bad Request`       | Malformed payload, or malformed `Authorization` / `X-Tenant-ID` headers                                                                                                                                                                          |
 | `401 Unauthorized`      | Missing `Authorization` / `X-Tenant-ID` headers, or API key wrong or revoked                                                                                                                                                                     |
 | `403 Forbidden`         | Key does not belong to the tenant/dataset you named                                                                                                                                                                                              |
+| `413 Payload Too Large` | Decoded request body exceeds `[acceptor].max_request_body_bytes`                                                                                                                                                                                 |
 | `429 Too Many Requests` | Per-tenant ingest rate limit or storage quota hit; a rate-limit `429` carries `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` computed from the tenant's actual budget state, so a client can back off precisely instead of guessing |
 
 To use OTLP/HTTP from the OpenTelemetry Collector:
@@ -153,7 +158,7 @@ exporters:
     headers:
       authorization: "Bearer sk-acme-prod-key-123"
       x-tenant-id: "acme"
-    compression: none # gzip request bodies are not supported
+    compression: gzip # the default; SignalDB decompresses gzip and zstd
 
 service:
   pipelines:
@@ -177,3 +182,4 @@ service:
 | `RESOURCE_EXHAUSTED` mentioning `quota_exceeded`            | Tenant is at or over its storage quota (`max_storage_bytes`)          | Retrying will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator |
 | `429 Too Many Requests` on an OTLP/HTTP endpoint            | HTTP analog of the two `RESOURCE_EXHAUSTED` cases above               | Back off and retry (rate limit), or talk to your operator (quota)                                                |
 | `400 Bad Request` on an OTLP/HTTP endpoint with a JSON body | Payload is not valid protojson (e.g. base64 trace IDs instead of hex) | Use a protojson-compliant encoder; trace/span IDs must be hex strings                                            |
+| `413 Payload Too Large`                                     | Decoded body exceeds `[acceptor].max_request_body_bytes`              | Split the batch, or raise the limit (also raises gRPC's `max_decoding_message_size`)                             |

@@ -384,6 +384,34 @@ impl Default for WalConfig {
     }
 }
 
+/// Acceptor transport limits (change: acceptor-transport-hardening).
+///
+/// Both the OTLP/HTTP body limit and the OTLP/gRPC decode limit are driven
+/// from this single value, so raising it for large payloads (e.g. profiles)
+/// is one decision rather than two limits that can drift apart. Axum's
+/// undocumented 2 MiB default and tonic's 4 MiB default are both too small
+/// for the WAL's own segment tuning (`[wal]`), which expects up to 256 MiB
+/// profile segments; this makes the ceiling explicit instead of inherited.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AcceptorConfig {
+    /// Maximum decoded request body size, in bytes, accepted on any OTLP/HTTP
+    /// or Prometheus remote_write ingest route, and the equivalent
+    /// `max_decoding_message_size` applied to every OTLP/gRPC service. This
+    /// limit applies to the *decoded* body — see the gzip/zstd decompression
+    /// note on the OTLP/HTTP routers for why.
+    /// Env: SIGNALDB__ACCEPTOR__MAX_REQUEST_BODY_BYTES
+    pub max_request_body_bytes: u64,
+}
+
+impl Default for AcceptorConfig {
+    fn default() -> Self {
+        Self {
+            max_request_body_bytes: 64 * 1024 * 1024, // 64MB
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompactorConfig {
     /// Enable compactor service (enabled by default)
@@ -1170,6 +1198,9 @@ pub struct Configuration {
     /// Writer commit-coalescing policy
     #[serde(default)]
     pub writer: WriterConfig,
+    /// Acceptor transport limits (request body / gRPC decode size)
+    #[serde(default)]
+    pub acceptor: AcceptorConfig,
     /// MCP (Model Context Protocol) server configuration
     #[serde(default)]
     pub mcp: McpConfig,
@@ -1323,6 +1354,7 @@ impl Default for Configuration {
             compactor: CompactorConfig::default(),
             querier: QuerierConfig::default(),
             writer: WriterConfig::default(),
+            acceptor: AcceptorConfig::default(),
             mcp: McpConfig::default(),
         }
     }
