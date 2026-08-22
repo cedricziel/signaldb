@@ -83,17 +83,27 @@ pub fn extract_flight_metadata(metadata: &[u8]) -> Result<FlightMetadata> {
     })
 }
 
-/// Determine WalOperation from signal_type metadata
-pub fn determine_wal_operation(signal_type: Option<&str>) -> common::wal::WalOperation {
+/// `signal_type` metadata this writer does not recognize. Deterministic in
+/// its input, so the same value fails identically on every retry: it must be
+/// rejected as `invalid_argument` at ingest, never silently defaulted to
+/// `WriteTraces` — the previous fallback accepted a batch into the wrong
+/// WAL, where it would fail transform/coercion on every commit cycle
+/// (#1060 class).
+#[derive(Debug, thiserror::Error)]
+#[error("unknown signal_type {0:?}")]
+pub struct UnknownSignalType(pub Option<String>);
+
+/// Determine the WAL operation for a batch's `signal_type` metadata, or
+/// reject it as unroutable.
+pub fn determine_wal_operation(
+    signal_type: Option<&str>,
+) -> Result<common::wal::WalOperation, UnknownSignalType> {
     match signal_type {
-        Some("traces") => common::wal::WalOperation::WriteTraces,
-        Some("logs") => common::wal::WalOperation::WriteLogs,
-        Some("metrics") => common::wal::WalOperation::WriteMetrics,
-        Some("profiles") => common::wal::WalOperation::WriteProfiles,
-        _ => {
-            tracing::warn!("Unknown signal_type: {signal_type:?}, defaulting to WriteTraces");
-            common::wal::WalOperation::WriteTraces // Default fallback
-        }
+        Some("traces") => Ok(common::wal::WalOperation::WriteTraces),
+        Some("logs") => Ok(common::wal::WalOperation::WriteLogs),
+        Some("metrics") => Ok(common::wal::WalOperation::WriteMetrics),
+        Some("profiles") => Ok(common::wal::WalOperation::WriteProfiles),
+        other => Err(UnknownSignalType(other.map(str::to_string))),
     }
 }
 
@@ -2222,10 +2232,9 @@ pub fn transform_for_signal(
         (Some("metrics"), Some("metrics_summary")) => {
             transform_metrics_summary_v1_to_iceberg(batch, &m.metrics)
         }
-        (Some("metrics"), Some(other)) => {
-            tracing::warn!("No transform for metrics target_table={other}, passing through");
-            Ok(batch)
-        }
+        // An unknown metrics `target_table` is rejected by `routing::route`
+        // before `do_put` reaches this transform (W4), so this arm is
+        // unreachable from the ingest path. No other caller exists.
         _ => Ok(batch),
     }
 }
@@ -2635,9 +2644,18 @@ mod tests {
     #[test]
     fn determine_wal_operation_maps_profiles() {
         assert!(matches!(
-            determine_wal_operation(Some("profiles")),
+            determine_wal_operation(Some("profiles")).unwrap(),
             common::wal::WalOperation::WriteProfiles
         ));
+    }
+
+    /// W4: an unrecognized `signal_type` must be rejected, not silently
+    /// routed to `WriteTraces` — that batch can never commit under a
+    /// signal it did not ask for.
+    #[test]
+    fn determine_wal_operation_rejects_unknown_signal_type() {
+        assert!(determine_wal_operation(Some("foo")).is_err());
+        assert!(determine_wal_operation(None).is_err());
     }
 
     #[test]

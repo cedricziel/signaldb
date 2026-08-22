@@ -11,10 +11,26 @@
 //! reimplements a piece of it.
 
 use common::auth::validation::{self, ValidationError};
+use common::iceberg::schemas::TableSchema;
 use common::wal::WalOperation;
 
 /// The table a metrics batch goes to when its metadata names none.
 const DEFAULT_METRICS_TABLE: &str = "metrics_gauge";
+
+/// Whether `table_name` is one of the metrics signal tables — the only
+/// tables a `WriteMetrics` batch may target.
+fn is_known_metrics_table(table_name: &str) -> bool {
+    matches!(
+        TableSchema::from_table_name(table_name),
+        Some(
+            TableSchema::MetricsGauge
+                | TableSchema::MetricsSum
+                | TableSchema::MetricsHistogram
+                | TableSchema::MetricsExponentialHistogram
+                | TableSchema::MetricsSummary
+        )
+    )
+}
 
 /// A batch's destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +69,8 @@ pub enum RoutingError {
     },
     #[error("Flush operations should not be routed as table writes")]
     NotRoutable,
+    #[error("unknown metrics table {0:?}")]
+    UnknownTable(String),
 }
 
 /// Route one batch.
@@ -76,9 +94,13 @@ pub fn route(
         WalOperation::WriteTraces => "traces".to_string(),
         WalOperation::WriteLogs => "logs".to_string(),
         WalOperation::WriteProfiles => "profiles".to_string(),
-        WalOperation::WriteMetrics => present(metadata.target_table)
-            .unwrap_or(DEFAULT_METRICS_TABLE)
-            .to_string(),
+        WalOperation::WriteMetrics => {
+            let table = present(metadata.target_table).unwrap_or(DEFAULT_METRICS_TABLE);
+            if !is_known_metrics_table(table) {
+                return Err(RoutingError::UnknownTable(table.to_string()));
+            }
+            table.to_string()
+        }
         // A `Flush` marker carries no data; the processor force-commits its
         // scope and marks it processed without ever routing it.
         WalOperation::Flush => return Err(RoutingError::NotRoutable),
@@ -209,6 +231,27 @@ mod tests {
             );
             assert_eq!(target.table_name, DEFAULT_METRICS_TABLE);
         }
+    }
+
+    /// W4: an unknown `target_table` can never commit (`IcebergTableWriter`
+    /// fails to open it on every cycle), so it must be rejected at routing
+    /// time rather than accepted and dead-lettered later.
+    #[test]
+    fn unknown_metrics_table_is_rejected() {
+        let err = route(
+            &WalOperation::WriteMetrics,
+            RouteMetadata {
+                target_table: Some("metrics_bogus"),
+                ..Default::default()
+            },
+            DEFAULT_TENANT_ID,
+            DEFAULT_DATASET_ID,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, RoutingError::UnknownTable(ref t) if t == "metrics_bogus"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

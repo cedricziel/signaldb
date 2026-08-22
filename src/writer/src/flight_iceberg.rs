@@ -218,6 +218,37 @@ fn log_received_data(metadata: &FlightMetadata) {
     );
 }
 
+/// Parse a `do_put` FlightData message's `app_metadata` (called only when
+/// non-empty), or reject the batch.
+///
+/// A non-empty `app_metadata` that isn't the expected JSON is the sender's
+/// fault, and the same bytes fail identically on every retry: it must be
+/// `invalid_argument`, never the retryable `internal` the acceptor reserves
+/// for "this writer is down" (#1060). This previously synthesized a "v1
+/// traces, default tenant" fallback instead of rejecting, silently
+/// misrouting the batch (W3).
+fn parse_flight_metadata(app_metadata: &[u8]) -> Result<FlightMetadata, Status> {
+    extract_flight_metadata(app_metadata)
+        .map_err(|e| Status::invalid_argument(format!("Flight metadata: {e}")))
+}
+
+/// Decode a `do_put` request's collected FlightData into Arrow batches, or
+/// reject it.
+///
+/// An undecodable stream (corrupt IPC framing, dictionary mismatch, version
+/// skew) is the sender's fault, and the same bytes fail identically on every
+/// retry: it must be `invalid_argument`, never the retryable `internal`
+/// (#1060) — `internal` tells the acceptor's WAL retry consumer this writer
+/// is transiently down, which head-of-line-blocks every later entry behind
+/// this one (W3).
+async fn decode_put_batches(
+    data_vec: Vec<FlightData>,
+) -> Result<Vec<datafusion::arrow::record_batch::RecordBatch>, Status> {
+    flight_data_vec_to_batches(data_vec)
+        .await
+        .map_err(|e| Status::invalid_argument(format!("Undecodable FlightData: {e}")))
+}
+
 #[tonic::async_trait]
 impl FlightService for IcebergWriterFlightService {
     type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
@@ -279,23 +310,7 @@ impl FlightService for IcebergWriterFlightService {
 
             // Extract full metadata from the first FlightData message (which contains metadata)
             if flight_metadata.is_none() && !d.app_metadata.is_empty() {
-                match extract_flight_metadata(&d.app_metadata) {
-                    Ok(metadata) => {
-                        flight_metadata = Some(metadata);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to extract metadata, using defaults");
-                        flight_metadata = Some(FlightMetadata {
-                            schema_version: "v1".to_string(),
-                            signal_type: Some("traces".to_string()),
-                            target_table: None,
-                            tenant_id: None,
-                            dataset_id: None,
-                            traceparent: None,
-                            tracestate: None,
-                        });
-                    }
-                }
+                flight_metadata = Some(parse_flight_metadata(&d.app_metadata)?);
             }
 
             data_vec.push(d);
@@ -347,9 +362,7 @@ impl FlightService for IcebergWriterFlightService {
         // Convert FlightData stream into Arrow RecordBatches. Dictionary-aware
         // (#951): a hand-rolled decode via `arrow_flight::utils::flight_data_to_batches`
         // silently assumes no dictionary batches are present.
-        let batches = flight_data_vec_to_batches(data_vec)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let batches = decode_put_batches(data_vec).await?;
 
         {
             let app_metrics = common::self_monitoring::app_metrics();
@@ -365,14 +378,44 @@ impl FlightService for IcebergWriterFlightService {
             app_metrics.ingest_batch_size.record(rows, &[]);
         }
 
-        // Determine WAL operation from metadata
+        // Determine WAL operation from metadata. An unrecognized signal_type
+        // is the sender's fault and recurs identically on every retry, so it
+        // must be `invalid_argument`, never a silent fallback to
+        // `WriteTraces` that then fails transform/coercion on every commit
+        // cycle (#1060 class, W4).
         let wal_operation = if let Some(ref metadata) = flight_metadata {
             determine_wal_operation(metadata.signal_type.as_deref())
+                .map_err(|e| Status::invalid_argument(format!("Flight metadata: {e}")))?
         } else {
             WalOperation::WriteTraces // Default fallback
         };
 
         tracing::debug!(operation = ?wal_operation, "Using WAL operation");
+
+        // Route before transforming: an unknown metrics `target_table` can
+        // never be committed (`IcebergTableWriter::new` fails to open it on
+        // every cycle), so it must be rejected here rather than transformed
+        // for a table that doesn't exist (#1060 class, W4). Routing also
+        // validates tenant/dataset (below) and goes through the same
+        // function the commit path uses, so the WAL a batch lands in and the
+        // table it is later committed to cannot disagree about what its
+        // metadata meant (#1319).
+        let route_metadata = flight_metadata.as_ref();
+        let RouteTarget {
+            tenant_id: wal_tenant,
+            dataset_id: wal_dataset,
+            ..
+        } = routing::route(
+            &wal_operation,
+            RouteMetadata {
+                tenant_id: route_metadata.and_then(|m| m.tenant_id.as_deref()),
+                dataset_id: route_metadata.and_then(|m| m.dataset_id.as_deref()),
+                target_table: route_metadata.and_then(|m| m.target_table.as_deref()),
+            },
+            common::bootstrap::DEFAULT_TENANT_ID,
+            common::bootstrap::DEFAULT_DATASET_ID,
+        )
+        .map_err(|e| Status::invalid_argument(format!("Flight metadata: {e}")))?;
 
         let transformed_batches = if let Some(ref metadata) = flight_metadata {
             if metadata.schema_version == "v1" {
@@ -434,31 +477,9 @@ impl FlightService for IcebergWriterFlightService {
         //
         // These ids become path components of the WAL directory, and this
         // Flight surface can be configured without authentication, so they
-        // are validated (in `routing::route`) as well as inside `get_wal`. A
-        // malformed id is the sender's fault and recurs identically on every
-        // retry, so it must be `invalid_argument`; a WAL that fails to open
-        // for any other reason (a full or unwritable disk) is `internal` and
-        // retryable.
-        //
-        // Routing goes through the same function the commit path uses, so the
-        // WAL a batch lands in and the table it is later committed to cannot
-        // disagree about what its metadata meant (#1319).
-        let metadata = flight_metadata.as_ref();
-        let RouteTarget {
-            tenant_id: wal_tenant,
-            dataset_id: wal_dataset,
-            ..
-        } = routing::route(
-            &wal_operation,
-            RouteMetadata {
-                tenant_id: metadata.and_then(|m| m.tenant_id.as_deref()),
-                dataset_id: metadata.and_then(|m| m.dataset_id.as_deref()),
-                target_table: metadata.and_then(|m| m.target_table.as_deref()),
-            },
-            common::bootstrap::DEFAULT_TENANT_ID,
-            common::bootstrap::DEFAULT_DATASET_ID,
-        )
-        .map_err(|e| Status::invalid_argument(format!("Flight metadata: {e}")))?;
+        // were validated above (in `routing::route`) as well as inside
+        // `get_wal`. A WAL that fails to open for any other reason (a full or
+        // unwritable disk) is `internal` and retryable.
         let wal = self
             .wal_manager
             .get_wal(&wal_tenant, &wal_dataset, wal_operation.signal())
@@ -867,5 +888,66 @@ mod tests {
         }
         // The uncommitted entry remains for retry.
         assert_eq!(wal.get_unprocessed_entries().await.unwrap().len(), 1);
+    }
+
+    /// A trivial one-column batch, encoded the way a real `do_put` client
+    /// would (schema message + data message).
+    fn valid_put_flight_data() -> Vec<FlightData> {
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        common::flight::batches_to_compressed_flight_data(&schema, vec![batch]).unwrap()
+    }
+
+    /// W3: a FlightData stream that cannot be decoded (corrupt IPC framing,
+    /// dictionary mismatch, version skew) fails identically on every retry.
+    /// It must be `invalid_argument`, never the retryable `internal` the
+    /// acceptor treats as "this writer is down" (#1060) — reported as
+    /// `internal` before this fix, wedging every later WAL entry behind it.
+    #[tokio::test]
+    async fn decode_put_batches_rejects_undecodable_flight_data() {
+        let garbage = vec![FlightData {
+            data_header: Bytes::from_static(b"not a valid IPC schema message"),
+            data_body: Bytes::from_static(b"garbage"),
+            app_metadata: Bytes::new(),
+            flight_descriptor: None,
+        }];
+
+        let err = decode_put_batches(garbage).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn decode_put_batches_accepts_a_valid_batch() {
+        let batches = decode_put_batches(valid_put_flight_data()).await.unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 3);
+    }
+
+    /// W3: a non-empty `app_metadata` that isn't the expected JSON is the
+    /// sender's fault and fails identically on every retry. It must be
+    /// `invalid_argument`; previously it silently fell back to "v1 traces,
+    /// default tenant" instead of being rejected.
+    #[test]
+    fn parse_flight_metadata_rejects_unparseable_bytes() {
+        let err = parse_flight_metadata(b"not json").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn parse_flight_metadata_accepts_valid_json() {
+        let metadata = parse_flight_metadata(
+            br#"{"schema_version":"v1","signal_type":"traces","tenant_id":"acme"}"#,
+        )
+        .unwrap();
+        assert_eq!(metadata.signal_type.as_deref(), Some("traces"));
+        assert_eq!(metadata.tenant_id.as_deref(), Some("acme"));
     }
 }
