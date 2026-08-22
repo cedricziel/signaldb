@@ -588,47 +588,99 @@ impl FlightService for IcebergWriterFlightService {
         &self,
         request: Request<arrow_flight::Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
-        // The flush scope is taken from the request's tenant metadata (below),
-        // so extract it before consuming the request.
+        // The flush scope and suppression tenant are taken from the request's
+        // metadata (below), so extract it before consuming the request.
         let metadata = request.metadata().clone();
+        let remote_addr = request.remote_addr();
         let action = request.into_inner();
-        match action.r#type.as_str() {
-            // Read-your-writes drain: force-commit the pending groups for the
-            // requesting tenant (optionally a single dataset), bypassing the
-            // coalescing floor for that scope only. Used by tests and by clients
-            // that need their just-ingested data queryable at once. The scope is
-            // taken from the request's `x-tenant-id` / `x-dataset-id` metadata
-            // (the tenant identity the caller is already acting as); an unscoped
-            // request is rejected so one caller cannot force-commit — and amplify
-            // catalog writes for — every tenant on this writer.
-            FLUSH_ACTION => {
-                let scope = parse_flush_scope(&metadata)?;
-                // Bound the flush: force_commit_pending drives Iceberg/catalog
-                // commits while holding the processor mutex, so a stuck catalog
-                // or object store must not hang this client-facing RPC (and the
-                // background loop behind it) indefinitely.
-                let flush = async {
-                    self.processor
-                        .lock()
-                        .await
-                        .force_commit_pending(scope)
-                        .await
-                };
-                match tokio::time::timeout(FLUSH_TIMEOUT, flush).await {
-                    Ok(Ok(())) => {
-                        let out = stream::empty().boxed();
-                        Ok(Response::new(out))
+
+        // Anti-loop guard (#760): force-flushing the _system tenant's own
+        // telemetry must not emit logs/spans that get exported and
+        // re-ingested as _system telemetry.
+        let suppress = metadata
+            .get("x-tenant-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .is_some_and(common::self_monitoring::is_self_monitoring_tenant);
+
+        // Process within a semconv RPC SERVER span that joins the caller's
+        // distributed trace (parent must be set before the span is first
+        // entered). `detail` stays the one known, bounded-cardinality action
+        // name — never the caller-supplied string for an unrecognized one.
+        let detail = (action.r#type.as_str() == FLUSH_ACTION).then_some(FLUSH_ACTION);
+        let make_span = || {
+            common::self_monitoring::spans::rpc_server_span(
+                common::self_monitoring::spans::FLIGHT_DO_ACTION,
+                detail,
+            )
+        };
+        let span = if suppress {
+            common::self_monitoring::suppress_self_telemetry_sync(make_span)
+        } else {
+            make_span()
+        };
+        common::flight::trace_context::set_parent_from_metadata(&span, &metadata);
+        common::self_monitoring::spans::record_network_peer_from_addr(&span, remote_addr);
+        let record_span = span.clone();
+
+        let result = common::self_monitoring::maybe_suppress_self_telemetry(
+            suppress,
+            Box::pin(
+                async move {
+                    match action.r#type.as_str() {
+                        // Read-your-writes drain: force-commit the pending groups for the
+                        // requesting tenant (optionally a single dataset), bypassing the
+                        // coalescing floor for that scope only. Used by tests and by clients
+                        // that need their just-ingested data queryable at once. The scope is
+                        // taken from the request's `x-tenant-id` / `x-dataset-id` metadata
+                        // (the tenant identity the caller is already acting as); an unscoped
+                        // request is rejected so one caller cannot force-commit — and amplify
+                        // catalog writes for — every tenant on this writer.
+                        FLUSH_ACTION => {
+                            let scope = parse_flush_scope(&metadata)?;
+                            // Bound the flush: force_commit_pending drives Iceberg/catalog
+                            // commits while holding the processor mutex, so a stuck catalog
+                            // or object store must not hang this client-facing RPC (and the
+                            // background loop behind it) indefinitely.
+                            let flush = async {
+                                self.processor
+                                    .lock()
+                                    .await
+                                    .force_commit_pending(scope)
+                                    .await
+                            };
+                            match tokio::time::timeout(FLUSH_TIMEOUT, flush).await {
+                                Ok(Ok(())) => {
+                                    let out = stream::empty().boxed();
+                                    Ok(Response::new(out))
+                                }
+                                Ok(Err(e)) => Err(Status::internal(format!("Flush failed: {e}"))),
+                                Err(_) => Err(Status::deadline_exceeded(format!(
+                                    "Flush did not complete within {FLUSH_TIMEOUT:?}"
+                                ))),
+                            }
+                        }
+                        other => Err(Status::unimplemented(format!(
+                            "do_action does not support {other:?}"
+                        ))),
                     }
-                    Ok(Err(e)) => Err(Status::internal(format!("Flush failed: {e}"))),
-                    Err(_) => Err(Status::deadline_exceeded(format!(
-                        "Flush did not complete within {FLUSH_TIMEOUT:?}"
-                    ))),
                 }
-            }
-            other => Err(Status::unimplemented(format!(
-                "do_action does not support {other:?}"
-            ))),
-        }
+                .instrument(span),
+            ),
+        )
+        .await;
+
+        let code = result
+            .as_ref()
+            .err()
+            .map(|s| s.code())
+            .unwrap_or(tonic::Code::Ok);
+        common::self_monitoring::spans::record_rpc_result(
+            &record_span,
+            common::self_monitoring::spans::RpcBoundary::Server,
+            code,
+        );
+        result
     }
     type ListActionsStream = BoxStream<'static, Result<arrow_flight::ActionType, Status>>;
     async fn list_actions(
@@ -949,5 +1001,80 @@ mod tests {
         .unwrap();
         assert_eq!(metadata.signal_type.as_deref(), Some("traces"));
         assert_eq!(metadata.tenant_id.as_deref(), Some("acme"));
+    }
+
+    /// W7: `do_action` used to run outside any RPC boundary span. It must
+    /// now emit the same semconv RPC SERVER span `do_put` does — matching
+    /// method name, `rpc.*` attributes, and a recorded outcome — and keep
+    /// an unrecognized action's caller-supplied name out of the span
+    /// (unbounded cardinality), unlike the known `flush` action.
+    #[tokio::test]
+    async fn do_action_emits_semconv_rpc_server_span() {
+        use opentelemetry::trace::{SpanKind, TracerProvider as _};
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+
+        let temp_dir = tempdir().unwrap();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let (manager, _wal) = test_wal_manager(temp_dir.path()).await;
+        let service = IcebergWriterFlightService::new(
+            catalog_manager,
+            object_store,
+            manager,
+            &WriterConfig::default(),
+        );
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        async {
+            let unknown = Request::new(arrow_flight::Action {
+                r#type: "nope".to_string(),
+                body: Bytes::new(),
+            });
+            let result = service.do_action(unknown).await;
+            assert!(result.is_err());
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let names: Vec<_> = spans.iter().map(|s| s.name.to_string()).collect();
+        let span = spans
+            .iter()
+            .find(|s| {
+                s.name
+                    .starts_with("arrow.flight.protocol.FlightService/DoAction")
+            })
+            .unwrap_or_else(|| panic!("no RPC server span; exported = {names:?}"));
+
+        assert_eq!(
+            span.name, "arrow.flight.protocol.FlightService/DoAction",
+            "an unrecognized action name must not appear in the span name"
+        );
+        assert_eq!(span.span_kind, SpanKind::Server);
+        let attr = |key: &str| {
+            span.attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| kv.value.as_str().to_string())
+        };
+        assert_eq!(attr("rpc.system.name").as_deref(), Some("grpc"));
+        assert_eq!(
+            attr("rpc.method").as_deref(),
+            Some("arrow.flight.protocol.FlightService/DoAction")
+        );
+        assert_eq!(
+            attr("rpc.response.status_code").as_deref(),
+            Some("UNIMPLEMENTED")
+        );
     }
 }
