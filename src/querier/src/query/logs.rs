@@ -69,8 +69,11 @@ const KNOWN_LABELS: &[&str] = &[
     "trace_id",
 ];
 
-/// Columns whose distinct values define a series' identity.
-const SERIES_COLUMNS: &[&str] = &["service_name", "severity_text"];
+/// Columns whose distinct values define a series' identity. Pinned against
+/// `ql_ir::STREAM_IDENTITY` (design D7 of `ir-single-lowering`) by
+/// `differential::ql_ir_stream_identity_matches_series_columns`, so the two
+/// constants cannot drift apart unnoticed.
+pub(super) const SERIES_COLUMNS: &[&str] = &["service_name", "severity_text"];
 
 /// Scan direction for a log query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

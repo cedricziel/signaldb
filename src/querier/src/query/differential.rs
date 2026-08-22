@@ -64,12 +64,12 @@
 //! | Query | Outcome | Note |
 //! |---|---|---|
 //! | `{ status = error }`, `{ kind = server }` | **(1) `ql_ir` was wrong, fixed** | `traceql_to_ir` passed the TraceQL spelling through verbatim; the traces table stores these enums Title-cased (`status_code_to_str`/`span_kind_to_str`). Fixed in `ql-ir::traceql_lower` (see `normalize_status`/`normalize_kind`); the pinned `ql-ir` unit test was updated to the corrected values. Commit: `fix(ql-ir): normalize TraceQL status/kind values to their stored casing`. |
-//! | **Every LogQL line filter** (`|=`/`!=`/`|~`/`!~`) | **(3) the biggest open finding — reported, not picked** | `ql_ir::logql_lower::line_filter` lowers to `Leaf{field:"body", op:Contains}`, but `LogicalSchema::core()` marks `logs.body` `RetrievalOnly` (deliberately, per `ir_planner`'s own `retrieval_only_metadata_cannot_be_used_in_predicates` test) — `plan_document`'s validation rejects every one of these documents. This is *not* the D5 fallback case: `logql_to_ir` returns `Ok`, not `Inexpressible`, so the rejection surfaces only after the point a §4 fallback switch would check. `ql-ir`'s own `every_lowered_document_validates` test missed this because it validates against a permissive `InMemoryResolver`, never the real `SchemaResolver`. Pinned in `logql_line_filter_is_rejected_by_the_real_schema`. Whoever builds §4 needs to decide: relax `body`'s retrievability (for `contains`/`regex` ops only?), or add a plan-time-Inexpressible-equivalent the switch can also fall back on. |
-//! | A LogQL stream-selector `!=` against a key some rows lack | **(3) genuinely different meaning — reported, not picked** | The old LogQL lowering's `!=`/`!~` explicitly matches an absent key (`e.is_null().or(e.not_eq(...))`, documented "mirroring the JSON path"); `ir_planner`'s `Predicate::Not` is a plain `not(...)`, which is NULL for a NULL input — the IR's stated Kleene semantics ("absent satisfies neither `field = x` nor `not(field = x)`"). Pinned as `adversarial_absent_value_semantics_diverge` below, which asserts the *divergence* rather than agreement. Reported for a product decision (does the compat surface promise Loki's negation-matches-absent behaviour, or the IR's three-valued one) rather than silently choosing a side. |
+//! | **Every LogQL line filter** (`|=`/`!=`/`|~`/`!~`) | **(1) `LogicalSchema` was wrong, fixed in §4 (D6)** | `ql_ir::logql_lower::line_filter` lowers to `Leaf{field:"body", op:Contains}`, but `LogicalSchema::core()` marked `logs.body` `RetrievalOnly` — `plan_document`'s validation rejected every one of these documents. This was *not* the D5 fallback case: `logql_to_ir` returns `Ok`, not `Inexpressible`, so the rejection surfaced only after the point a §4 fallback switch would check. Fixed in `LogicalSchema::core()` (task 4.0a): `body` is filterable for string operators now, resolving to `ValueType::String` like any other string field — ordered/numeric operators get no special allowance. Pinned in `logql_line_filter_agrees_on_optimized_plan`. Commit: `feat(query-ir): make the log body filterable for string operators`. |
+//! | A LogQL stream-selector `!=`/`!~`/`=""` against a key some rows lack | **(1) `ql_ir` was wrong, fixed in §4 (D9)** | The old LogQL lowering's `!=`/`!~` explicitly matches an absent key (`e.is_null().or(e.not_eq(...))`, documented "mirroring the JSON path"); `ir_planner`'s `Predicate::Not` was a plain `not(...)`, which is NULL for a NULL input — the IR's stated Kleene semantics ("absent satisfies neither `field = x` nor `not(field = x)`"), not what Loki's compat surface promises. Fixed in `ql_ir::logql_lower::matcher` (task 4.0c): a negative matcher now ORs in "the field does not exist" explicitly — `!=` → `or[ne, not(exists)]`, `!~` → `or[not(regex), not(exists)]`, `=""` → `or[eq "", not(exists)]` (the old path never special-cased plain `Eq` against `""`, so that one is a new-path-only regression test, not an old/new pin — see `empty_string_equality_matches_an_absent_field_on_the_new_path`). `=~` stays a plain `regex`, the one documented corner. Pinned in `adversarial_absent_value_semantics_agrees` and `absent_value_semantics_also_agree_for_negative_regex`. Commit: `fix(ql-ir): keep Loki's absent-matches semantics for negative matchers`. |
 //! | `{ .service.name = "api" }`, `{ .http.method = "GET" }` (TraceQL, unscoped), `{k8s_namespace="prod"}` (LogQL, no known column) | **(3) genuinely different meaning — reported, not picked** | The old path ORs the match across every container (`map_attribute_expr("span_attributes",..).or(map_attribute_expr("resource_attributes",..))`) — matches if *any* container has the value. `ir_planner`'s bare-name resolution COALESCEs across containers by priority (span/log, then scope, then resource) and compares *once* — if a higher-priority container has the key at all (regardless of value), lower-priority containers are never consulted. Pinned in `adversarial_unscoped_attribute_combining_semantics_diverge` with a fixture where the same key holds *different* values in two containers, which the corpus's own fixture data happened not to exercise (both sides agreed there only because one container lacked the key entirely). The LogQL corpus's `{k8s_namespace="prod"}` hits the identical mechanism (skipped via `KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG`, no separate pinned test). Reported: which combining rule the compat surface should keep is a product question. |
 //! | `{ span.http.method = "GET" }` against a table with a promoted `label_http_method` column | **(1) `ir_planner` was wrong, fixed in §3** | `search_filter::to_expr` checks `materialized_column_name(key)` against the **bare** attribute key (`"http.method"` → `label_http_method`), matching how the compactor actually names promoted columns (`attr_promotion::materialized_keys_of` keys off the raw `attr_key`, never the TraceQL-scoped spelling). `ir_planner::SchemaResolver::column_for` used to compute `materialized_column_name(field)` against the **scope-qualified** logical field (`"span.http.method"` → `label_span_http_method`), which no real promoted column is ever named — so `ir_planner` always took the `get_field` (JsonPath) branch for a scope-qualified attribute, never the promoted column, even when one existed. Fixed in `ir_planner::SchemaResolver::column_for` (task 3.0): strip the scope qualifier before materializing, the same way `Lowering::qualified_attr` already does for the unpromoted extraction path. The pin moved from a row-level comparison to a plan-level one, now that the plans genuinely agree — see `adversarial_promoted_attribute_agrees_on_plan`. Commit: `fix(querier): resolve promoted columns for scope-qualified IR fields`. |
 //! | `sum by (StatusCode) (count_over_time(...))` (mixed-case attribute grouping) | **(1) old path is wrong, still open** | #1070's fix (`ident()` not `col()` for a group-column alias) only touched `ir_planner.rs`. The *old* LogQL metric path (`logs.rs`'s `execute_plan`) has the identical unfixed bug for grouping by a mixed-case attribute label. New path (routed through `plan_document`) already handles it correctly. Pinned in `adversarial_mixed_case_grouping_label_old_path_still_has_1070`; reported as a still-open bug in `logs.rs`, independent of this change, not fixed here. |
-//! | `count_over_time(...)`/`rate(...)`/`sum_over_time(...)` etc. with **no** outer `by` | **(3) genuinely different meaning — reported, not picked** | Real Loki returns one series per matching *stream* for a bare range aggregation. The old path approximates this by defaulting the range aggregate's grouping to `SERIES_COLUMNS` (`service_name`, `severity_text`) when ungrouped. `ql_ir::logql_to_ir` emits `by: []` for the same shape, and `ir_planner` groups by nothing — collapsing every matching row into one count. Pinned in `adversarial_ungrouped_range_aggregation_default_grouping_diverges` (two `api` rows of different severities: old produces 2 rows, new produces 1). This is likely the single biggest behavioural gap for real dashboards (per-stream matrices are the common case), and — like the line-filter finding above — needs a design decision (does the IR need a "natural series identity" default?) rather than a pick made here. |
+//! | `count_over_time(...)`/`rate(...)`/`sum_over_time(...)` etc. with **no** outer `by` | **(1) `ql_ir` was wrong, fixed in §4 (D7)** | Real Loki returns one series per matching *stream* for a bare range aggregation. The old path implemented that by defaulting the range aggregate's grouping to `SERIES_COLUMNS` (`service_name`, `severity_text`) when ungrouped. `ql_ir::logql_to_ir` used to emit `by: []` for the same shape, collapsing every matching row into one count. Fixed in `ql_ir::logql_lower::lower_metric_query` (task 4.0b): an empty grouping now defaults to `ql_ir::STREAM_IDENTITY` (`["service.name", "severity_text"]`), pinned against `logs.rs::SERIES_COLUMNS` through the real `SchemaResolver` by `ql_ir_stream_identity_matches_series_columns` (this crate has no access to the real schema, so the mapping is asserted on the querier side). Pinned in `adversarial_ungrouped_range_aggregation_default_grouping_agrees` (two `api` rows of different severities: both paths now produce 2 rows). Commit: `fix(ql-ir): group an ungrouped range aggregation by the stream identity`. |
 //! | every other corpus query | **match** | See the `*_corpus_*` tests below. |
 //!
 //! ## `KNOWN_INEXPRESSIBLE_LOGQL` (task 2.3a)
@@ -121,13 +121,13 @@ use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
 use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
 use datafusion::prelude::{DataFrame, SessionContext, col, lit};
 
-use common::query_ir::{Document, Range, ResultEnvelope, Stage};
+use common::query_ir::{Document, FieldResolver, Range, Resolved, ResultEnvelope, Stage};
 use logql::Expr as LogqlExpr;
 
 use super::MetricQueryParams;
 use super::SearchQueryParams;
 use super::error::QuerierError;
-use super::ir_planner::plan_document;
+use super::ir_planner::{SchemaResolver, SourcePlan, plan_document};
 use super::logql::{AttrContext, log_query_filter_with_columns};
 use super::logs::{LogsService, materialized_columns_of};
 use super::search_filter;
@@ -945,17 +945,6 @@ async fn logql_log_corpus_rejections_agree() {
     }
 }
 
-/// Corpus queries whose plans are known, triaged exceptions rather than
-/// agreement — every LogQL **line filter** (`|=`, `!=`, `|~`, `!~`), pinned
-/// by `logql_line_filter_is_rejected_by_the_real_schema` below rather than
-/// compared here (the new path does not produce a plan for these at all).
-const KNOWN_PLAN_DIVERGENCE_LOGQL_LOG: &[&str] = &[
-    r#"{service_name="api"} |= "boom""#,
-    r#"{service_name="api"} |~ "err.*""#,
-    r#"{service_name="api"} !="boom""#,
-    r#"{service_name="api", level="error"} |= "timeout""#,
-];
-
 /// `{k8s_namespace="prod"}` is the same OR-vs-COALESCE combining-semantics
 /// divergence `adversarial_unscoped_attribute_combining_semantics_diverge`
 /// pins for TraceQL: `k8s_namespace` has no dedicated column or logical
@@ -964,14 +953,16 @@ const KNOWN_PLAN_DIVERGENCE_LOGQL_LOG: &[&str] = &[
 /// pinned test — the mechanism is identical and already demonstrated there.
 const KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG: &[&str] = &[r#"{k8s_namespace="prod"}"#];
 
+/// Every LogQL **line filter** (`|=`, `!=`, `|~`, `!~`) — D6 fixed the
+/// finding this corpus used to pin (`logql_line_filter_agrees_on_optimized_plan`
+/// below), so these agree at the plan level like every other corpus query
+/// and need no special-case skip here anymore.
 #[tokio::test]
 async fn logql_log_corpus_filters_agree_on_optimized_plan() {
     let ctx = logs_fixture();
     let fields = ["timestamp", "body"];
     for q in LOGQL_LOG_CORPUS {
-        if KNOWN_PLAN_DIVERGENCE_LOGQL_LOG.contains(q)
-            || KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG.contains(q)
-        {
+        if KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG.contains(q) {
             continue;
         }
         if old_logql_log_class(q, &AttrContext::default()) != Class::Accept {
@@ -989,54 +980,53 @@ async fn logql_log_corpus_filters_agree_on_optimized_plan() {
     }
 }
 
-/// **The most consequential finding this harness produced.** Every LogQL
+/// **Was the harness's most consequential finding, now fixed.** Every LogQL
 /// line filter (`|=`/`!=`/`|~`/`!~` — LogQL's defining feature) lowers, via
 /// `ql_ir::logql_lower::line_filter`, to a `Leaf { field: "body", op:
-/// Contains, .. }` predicate. `LogicalSchema::core()` marks `logs.body`
-/// `RetrievalOnly` (pinned by `ir_planner`'s own
-/// `retrieval_only_metadata_cannot_be_used_in_predicates` test), so
-/// `query_ir::validate` — called from `plan_document`, which every compat
-/// query would route through once §4 lands — rejects the resulting document
-/// outright: `InvalidInput("field 'body' is retrievable but cannot be used
-/// in a predicate")`.
+/// Contains, .. }` predicate. `LogicalSchema::core()` used to mark
+/// `logs.body` `RetrievalOnly`, so `query_ir::validate` rejected the
+/// resulting document outright — `InvalidInput("field 'body' is retrievable
+/// but cannot be used in a predicate")` — even though `ql_ir::logql_to_ir`
+/// itself returned `Ok`, not `Inexpressible` (so this was never the D5
+/// fallback case; the rejection surfaced only at `plan_document`'s
+/// validation, after the point a fallback switch would check).
 ///
-/// This is not the D5 fallback case: `ql_ir::logql_to_ir` returns `Ok`, not
-/// `Inexpressible` — the rejection only surfaces later, at `plan_document`'s
-/// validation, which is *after* the point §4's per-signal switch was
-/// designed to check for a fallback trigger. `ql-ir`'s own
-/// `every_lowered_document_validates` test (src/ql-ir/tests/logql.rs)
-/// validates the same shape of document successfully only because it uses a
-/// permissive `InMemoryResolver` that does not mark `body` retrieval-only —
-/// it never exercises the real `LogicalSchema::core()`/`SchemaResolver` this
-/// harness does, so it could not have caught this.
-///
-/// Reported, not fixed: relaxing `body`'s retrieval-only status changes a
-/// deliberate, tested guard in `query-ir-core`'s filterability contract, and
-/// deciding how (loosen it for `contains`/`regex` ops only? add an
-/// IR-plan-time Inexpressible-equivalent so §4's switch can still fall back?)
-/// is a design decision for whoever builds §4, not this change.
+/// Fixed in §4 (D6, task 4.0a): `body` is filterable for string operators —
+/// `LogicalSchema::core()` no longer marks it `RetrievalOnly`. These four
+/// queries now plan identically on both paths, pinned here at the
+/// optimized-plan level like `adversarial_promoted_attribute_agrees_on_plan`
+/// pins D10's fix.
 #[tokio::test]
-async fn logql_line_filter_is_rejected_by_the_real_schema() {
+async fn logql_line_filter_agrees_on_optimized_plan() {
     let ctx = logs_fixture();
-    for q in KNOWN_PLAN_DIVERGENCE_LOGQL_LOG {
-        let doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS).unwrap_or_else(|e| {
-            panic!("{q}: ql_ir should still lower this (Ok, not Inexpressible): {e}")
-        });
-        let err = plan_document(&ctx, &doc, TENANT, DATASET, 0)
-            .await
-            .expect_err(&format!(
-                "{q}: if this now plans, body's retrievability was relaxed — update the triage table, don't just delete this assertion"
-            ));
-        assert!(
-            matches!(err, QuerierError::InvalidInput(ref msg) if msg.contains("body")),
-            "{q}: expected the body-retrievability rejection, got {err}"
-        );
-        // The old path, unaffected, still accepts every one of these.
+    let fields = ["timestamp", "body"];
+    for q in [
+        r#"{service_name="api"} |= "boom""#,
+        r#"{service_name="api"} |~ "err.*""#,
+        r#"{service_name="api"} !="boom""#,
+        r#"{service_name="api", level="error"} |= "timeout""#,
+    ] {
         assert_eq!(
             old_logql_log_class(q, &AttrContext::default()),
             Class::Accept,
             "{q}: old path should still accept this query"
         );
+        assert_eq!(
+            new_logql_log_class(q),
+            Class::Accept,
+            "{q}: ql_ir should still lower this (Ok, not Inexpressible)"
+        );
+        let old = old_logql_log_plan(&ctx, q, &fields)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("{q}: old path should accept per its own classification: {e}")
+            });
+        let new = new_logql_log_plan(&ctx, q, &fields).await.unwrap_or_else(|e| {
+            panic!(
+                "{q}: if this rejects again, body's filterability regressed — update the triage table, don't just delete this assertion: {e}"
+            )
+        });
+        assert_plans_match(q, &old, &new);
     }
 }
 
@@ -1153,13 +1143,14 @@ fn metric_rows(batches: &[RecordBatch], group_cols: &[&str], value_col: &str) ->
     rows
 }
 
-/// Corpus metric queries with no explicit outer `by` grouping — pinned by
-/// `adversarial_ungrouped_range_aggregation_default_grouping_diverges`
-/// rather than compared here, since the two sides disagree on how many
-/// output rows an ungrouped query even produces (see that test's doc).
+/// Corpus metric queries with no explicit outer `by` grouping that still
+/// need a skip here — not for the grouping default anymore (D7 fixed that;
+/// `count_over_time`/`rate` moved to the real comparison below, pinned
+/// separately by `adversarial_ungrouped_range_aggregation_default_grouping_agrees`),
+/// but because their `unwrap duration` target is a field `LogicalSchema::core()`
+/// declares only for `traces`, not `logs` (see `SKIPPED_LOGQL_METRIC_UNWRAP_GROUPED`'s
+/// doc — the identical pre-existing gap, independent of D7).
 const KNOWN_GROUPING_DIVERGENCE_LOGQL_METRIC: &[&str] = &[
-    r#"count_over_time({service_name="api"}[1h])"#,
-    r#"rate({service_name="api"}[5m])"#,
     r#"sum_over_time({service_name="api"} | unwrap duration [5m])"#,
     r#"avg_over_time({service_name="api"} | unwrap duration [5m])"#,
 ];
@@ -1244,23 +1235,19 @@ async fn logql_metric_corpus_row_level_equivalence() {
 /// vector aggregation (`count_over_time(...)` alone, not `sum by (..)
 /// (count_over_time(...))`) is, in real Loki, one series *per matching
 /// stream* — every distinct label combination the selector matches gets its
-/// own point. The old path approximates this by defaulting
+/// own point. The old path implemented that by defaulting
 /// `range_group_cols` to `SERIES_COLUMNS` (`service_name`, `severity_text`)
-/// when `group_labels` is empty (`logs.rs::execute_plan`). `ql_ir`'s
-/// `logql_to_ir` emits `Aggregate { by: vec![], .. }` for the same query —
-/// `Lowering::lower_aggregate` groups by nothing, collapsing every matching
-/// row into one overall count. Demonstrated here: the fixture's two `api`
-/// rows (one `ERROR`, one `INFO` — two distinct `service_name`+
-/// `severity_text` streams) produce two rows of count 1 on the old path and
-/// one row of count 2 on the new path.
+/// when `group_labels` is empty (`logs.rs::execute_plan`).
 ///
-/// Reported, not fixed: giving the IR an implicit "natural series identity"
-/// grouping is a real design question (which columns constitute a
-/// "stream"? every dedicated LogQL label column, always? does an IR-native
-/// `count_over_time`-shaped query want the same default?) well beyond this
-/// harness's job of finding the gap.
+/// Fixed in §4 (D7, task 4.0b): `ql_ir::logql_to_ir` now defaults an
+/// ungrouped range aggregation's `by` to the same stream identity
+/// (`ql_ir::STREAM_IDENTITY`, pinned against `SERIES_COLUMNS` by
+/// `ql_ir_stream_identity_matches_series_columns` below) instead of emitting
+/// `by: vec![]`. Demonstrated here: the fixture's two `api` rows (one
+/// `ERROR`, one `INFO` — two distinct `service_name`+`severity_text`
+/// streams) now produce two rows on both paths.
 #[tokio::test]
-async fn adversarial_ungrouped_range_aggregation_default_grouping_diverges() {
+async fn adversarial_ungrouped_range_aggregation_default_grouping_agrees() {
     let ctx = logs_fixture();
     let q = r#"count_over_time({service_name="api"}[1h])"#;
 
@@ -1278,7 +1265,6 @@ async fn adversarial_ungrouped_range_aggregation_default_grouping_diverges() {
         )
         .await
         .unwrap_or_else(|e| panic!("{q}: old path failed: {e}"));
-    let old_row_count: usize = old_batches.iter().map(|b| b.num_rows()).sum();
 
     let doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS).unwrap_or_else(|e| panic!("{q}: {e}"));
     let (df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
@@ -1289,31 +1275,68 @@ async fn adversarial_ungrouped_range_aggregation_default_grouping_diverges() {
         .collect()
         .await
         .unwrap_or_else(|e| panic!("{q}: new path failed to execute: {e}"));
-    let new_row_count: usize = new_batches.iter().map(|b| b.num_rows()).sum();
 
+    let group_cols = ["service_name", "severity_text"];
+    let old_rows = metric_rows(&old_batches, &group_cols, "value");
+    let new_rows = metric_rows(&new_batches, &group_cols, "value");
     assert_eq!(
-        old_row_count, 2,
+        old_rows.len(),
+        2,
         "old path: one row per (service_name, severity_text) stream — two api rows, two severities"
     );
     assert_eq!(
-        new_row_count, 1,
-        "if this now matches the old path's per-stream row count, the default-grouping gap was closed — update the triage table, don't just delete this assertion"
+        old_rows, new_rows,
+        "if this now diverges, the default-grouping fix regressed — update the triage table, don't just delete this assertion"
+    );
+}
+
+/// Pins `ql_ir::STREAM_IDENTITY` (D7's default grouping) against
+/// `logs.rs::SERIES_COLUMNS` (the old path's stream-identity constant),
+/// resolved through the real `SchemaResolver`/`LogicalSchema` rather than
+/// compared as string literals — so a rename on either side that breaks the
+/// mapping fails here, not silently at query time. `ql-ir` has no access to
+/// the real schema (it lowers to logical names only), so this pin lives on
+/// the querier side.
+#[tokio::test]
+async fn ql_ir_stream_identity_matches_series_columns() {
+    let ctx = logs_fixture();
+    let df = optional_table(&ctx, TENANT, DATASET, "logs")
+        .await
+        .unwrap()
+        .expect("logs table is registered");
+    let source = SourcePlan::for_source("logs").expect("logs source plan");
+    let resolver = SchemaResolver::new(df.schema(), &source);
+    let resolved: Vec<String> = ql_ir::STREAM_IDENTITY
+        .iter()
+        .map(|field| match resolver.resolve("", field) {
+            Some(Resolved::Column { name, .. }) => name,
+            other => panic!("{field}: expected a direct column resolution, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        resolved,
+        super::logs::SERIES_COLUMNS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        "ql_ir::STREAM_IDENTITY must resolve to exactly logs.rs::SERIES_COLUMNS, in order"
     );
 }
 
 /// The `by` grouping labels a metric document declares, aliased the way
 /// `Lowering::lower_aggregate` names them (`safe_ident`, which is the
 /// identity for an already-valid identifier such as `service_name`).
+/// Every corpus metric query below either groups explicitly by
+/// `service_name` (one column) or, ungrouped, now defaults to the stream
+/// identity (D7: `service_name`, `severity_text` — two columns, exactly
+/// `logs.rs::SERIES_COLUMNS`) rather than collapsing to none.
 fn grouping_columns(doc: &mut Document) -> Vec<&'static str> {
     for stage in &doc.pipeline {
         if let common::query_ir::Stage::Aggregate(agg) = stage {
-            // Every corpus metric query below groups by `service_name` when
-            // it groups at all; an ungrouped query collapses to one series
-            // with no group columns in its output at all.
-            return if agg.by.is_empty() {
-                Vec::new()
-            } else {
-                vec!["service_name"]
+            return match agg.by.len() {
+                0 => Vec::new(),
+                1 => vec!["service_name"],
+                _ => vec!["service_name", "severity_text"],
             };
         }
     }
@@ -1626,28 +1649,21 @@ async fn adversarial_mixed_case_grouping_label_old_path_still_has_1070() {
     );
 }
 
-/// The pinned divergence (triage table case 3): old LogQL's `!=` explicitly
-/// matches rows where the key is absent; `ir_planner`'s `not(...)` follows
-/// Kleene semantics, where an absent key satisfies neither `=` nor `!=`.
-/// This asserts the *difference*, not agreement — see the module doc; this
-/// is the one finding this change reports rather than resolves.
+/// **Was the pinned divergence (triage table case 3), now fixed by D9.** Old
+/// LogQL's `!=` explicitly matches rows where the key is absent
+/// (`is_null().or(not_eq(...))`); `ir_planner`'s plain `not(...)` follows
+/// Kleene semantics, where an absent key satisfies neither `=` nor `!=`. The
+/// two paths' *plans* still legitimately differ in shape (`or[ne,
+/// not(exists)]` vs. `is_null().or(not_eq(...))` are not the same
+/// expression tree), so this compares row-level output — same rule D2
+/// applies to the metric path — rather than optimized-plan text.
 #[tokio::test]
-async fn adversarial_absent_value_semantics_diverge() {
+async fn adversarial_absent_value_semantics_agrees() {
     let ctx = logs_fixture();
     // Row 2 ("slow response", service `web`) has no `region` key at all —
     // the other two rows (service `api`) both have `region="eu"`.
     let q = r#"{region!="eu"}"#;
-    let fields = ["body"];
 
-    let old = old_logql_log_plan(&ctx, q, &fields).await.unwrap();
-    let new = new_logql_log_plan(&ctx, q, &fields).await.unwrap();
-    assert_ne!(
-        old, new,
-        "if this now matches, the semantics were reconciled — update the triage table, don't just delete this assertion:\n{old}"
-    );
-
-    // Concretely: row 2 (no `region` key) is absent from a row's map. Old
-    // includes it (absent satisfies `!=`); new excludes it (Kleene).
     let old_bodies = old_logql_log_bodies(&ctx, q).await;
     let new_bodies = new_logql_log_bodies(&ctx, q).await;
     assert!(
@@ -1655,8 +1671,61 @@ async fn adversarial_absent_value_semantics_diverge() {
         "old path's != should include the row with no `region` key at all: {old_bodies:?}"
     );
     assert!(
-        !new_bodies.contains(&"slow response".to_string()),
-        "new path's != should exclude the row with no `region` key at all (Kleene semantics): {new_bodies:?}"
+        new_bodies.contains(&"slow response".to_string()),
+        "if this now excludes the absent-key row, D9's fix regressed — update the triage table, don't just delete this assertion: {new_bodies:?}"
+    );
+    let mut old_sorted = old_bodies.clone();
+    old_sorted.sort();
+    let mut new_sorted = new_bodies.clone();
+    new_sorted.sort();
+    assert_eq!(
+        old_sorted, new_sorted,
+        "{q}: old/new row sets disagree beyond the absent-key case"
+    );
+}
+
+/// The same D9 fix for `!~` (`materialized_label_expr`'s `Nre` branch is
+/// `is_null().or(not(regexp_like(...)))` on the old path too, so this is a
+/// genuine old/new agreement, unlike `=""` below).
+#[tokio::test]
+async fn absent_value_semantics_also_agree_for_negative_regex() {
+    let ctx = logs_fixture();
+    let q = r#"{region!~"e.*"}"#;
+    let old_bodies = old_logql_log_bodies(&ctx, q).await;
+    let new_bodies = new_logql_log_bodies(&ctx, q).await;
+    assert!(
+        old_bodies.contains(&"slow response".to_string()),
+        "{q}: old path should include the row with no `region` key at all: {old_bodies:?}"
+    );
+    assert!(
+        new_bodies.contains(&"slow response".to_string()),
+        "{q}: new path should also include the absent-key row (D9): {new_bodies:?}"
+    );
+    let mut old_sorted = old_bodies.clone();
+    old_sorted.sort();
+    let mut new_sorted = new_bodies.clone();
+    new_sorted.sort();
+    assert_eq!(
+        old_sorted, new_sorted,
+        "{q}: old/new row sets disagree beyond the absent-key case"
+    );
+}
+
+/// `{region=""}` is *not* an old/new agreement case: the old path's `Eq`
+/// branch (`map_attribute_expr`/`materialized_label_expr`) has no
+/// absent-matching special case at all — only `Neq`/`Nre` do — so
+/// `region=""` against a row missing `region` entirely evaluates to NULL on
+/// the old path and is excluded. D9 gives the *new* path real Loki
+/// semantics here (`or[eq "", not(exists)]`) without claiming the old path
+/// ever matched; this is a forward-looking regression test on the new path
+/// alone, not a pinned agreement.
+#[tokio::test]
+async fn empty_string_equality_matches_an_absent_field_on_the_new_path() {
+    let ctx = logs_fixture();
+    let new_bodies = new_logql_log_bodies(&ctx, r#"{region=""}"#).await;
+    assert!(
+        new_bodies.contains(&"slow response".to_string()),
+        "new path's region=\"\" should include the row with no `region` key at all (D9): {new_bodies:?}"
     );
 }
 

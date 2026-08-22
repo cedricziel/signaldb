@@ -95,16 +95,25 @@
 
 ## 4. Logs
 
-- [ ] 4.0a Make `logs.body` filterable for string operators (D6): `LogicalSchema::core()`
+- [x] 4.0a Make `logs.body` filterable for string operators (D6): `LogicalSchema::core()`
       and its tests, the planner's retrieval-only test (use `span_events`),
       `docs/users/querying-ir.md`, any generated schema listing. Failing test
       first: a `where body contains` document plans and executes. The harness's
       `logql_line_filter_is_rejected_by_the_real_schema` pin flips to agreement.
-- [ ] 4.0b `ql-ir`: default an ungrouped range aggregation's `by` to the stream
+      (Renamed to `logql_line_filter_agrees_on_optimized_plan`; new planner
+      tests `body_is_filterable_for_string_operators` added.)
+- [x] 4.0b `ql-ir`: default an ungrouped range aggregation's `by` to the stream
       identity (D7), pinned in the querier against `logs.rs::SERIES_COLUMNS`.
       The harness's ungrouped-aggregation pin flips to agreement.
-- [ ] 4.0c `ql-ir`: encode Loki's absent-matches semantics for `!=`, `!~`, `=""`
+      (`ql_ir::STREAM_IDENTITY` added and pinned by
+      `ql_ir_stream_identity_matches_series_columns` through the real
+      `SchemaResolver`; the divergence test renamed to
+      `adversarial_ungrouped_range_aggregation_default_grouping_agrees`.)
+- [x] 4.0c `ql-ir`: encode Loki's absent-matches semantics for `!=`, `!~`, `=""`
       (D9). The harness's absent-value pin flips to agreement.
+      (`=""` has no old-path precedent — see
+      `empty_string_equality_matches_an_absent_field_on_the_new_path`'s doc —
+      so it is a new-path-only regression test, not an old/new pin.)
 - [ ] 4.0d File an issue for the #1070 bug still present in `logs.rs::execute_plan`
       (mixed-case attribute grouping on the old metric path); reference it from 4.2.
 - [ ] 4.1 Route LogQL through `ql_ir::logql_to_ir` for what it covers, behind
