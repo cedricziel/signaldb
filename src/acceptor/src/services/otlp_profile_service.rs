@@ -193,8 +193,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_profile_acceptor_service() {
-        let mut mock_handler = MockProfileHandler::new();
-        mock_handler.expect_handle_grpc_otlp_profiles();
+        let mock_handler = MockProfileHandler::new();
 
         let service = ProfileAcceptorService::new(mock_handler);
 

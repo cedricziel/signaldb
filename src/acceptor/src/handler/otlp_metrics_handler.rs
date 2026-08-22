@@ -50,10 +50,6 @@ impl MockMetricsHandler {
             .push(request);
         Ok(())
     }
-
-    pub fn expect_handle_grpc_otlp_metrics(&mut self) -> &mut Self {
-        self
-    }
 }
 
 impl MetricsHandler {

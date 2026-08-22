@@ -46,10 +46,6 @@ impl MockLogHandler {
         self.handle_grpc_otlp_logs_calls.lock().await.push(request);
         Ok(())
     }
-
-    pub fn expect_handle_grpc_otlp_logs(&mut self) -> &mut Self {
-        self
-    }
 }
 
 impl LogHandler {
