@@ -152,25 +152,70 @@
 
 ## 5. Delete the duplication
 
-- [ ] 5.0 Close #1395 before 5.2 (design.md's "Open pre-deletion gate" under
+- [x] 5.0 Close #1395 before 5.2 (design.md's "Open pre-deletion gate" under
       D5's fallback set): `ql_ir` accepts `unwrap <label>` on any field name,
       but `plan_document` rejects an unregistered unwrap target as
       `InvalidInput`, which task 4.1's narrowed fallback (`Inexpressible`
       only) now propagates instead of masking — a currently-working `unwrap`
       query must not turn into an error once §5 deletes the old path that
-      silently absorbed it. Either (a) `ir_planner`'s aggregate `of`-field
-      resolution falls back to a bare physical-column reference for an
-      unregistered field, or (b) `ql_ir::logql_lower` refuses it as
-      `Inexpressible` explicitly, joining the enumerated fallback set.
-- [ ] 5.1 With both switches on and differential evidence green, delete
+      silently absorbed it.
+      (Resolved via **attribute resolution**, not the physical-column
+      fallback the brief's option (a) was first read as: LogQL `unwrap
+    <label>` names an _attribute_ field (container-coalesced, cast to
+      float at plan time) — it never named a physical column even on the
+      old path, whose `unwrap_value`/`column_for_label` (`logs.rs`) is a
+      bare `col(label)` reference with zero type or registration checking,
+      which only ever worked because the label it was given happened to
+      match a physical column name. The actual gap was that a numeric
+      aggregate's `of` operand rejected an attribute-resolved field
+      (`Resolved::JsonPath`/`EventAttribute`) outright, even though such a
+      field is exactly what `unwrap` addresses — filed and fixed as #1395:
+      `Resolved::is_advisory_type()` (`query-ir/src/resolver.rs`) marks a
+      resolution's type as advisory (unpromoted attribute, no canonical
+      type until the attribute-registry work lands) versus authoritative
+      (a real column); `check_agg` (`query-ir/src/validate.rs`) accepts an
+      advisory-typed String operand for the five numeric aggregates,
+      coercing to a number at plan time with a non-numeric value going
+      absent, while a _registered_ String column stays rejected. Landed as
+      its own PR ahead of this one (`fix(query-ir): accept an attribute as
+    a numeric aggregate operand`, #1403) since it's a real product bug
+      independent of this change. Option (b) — `ql_ir::logql_lower`
+      refusing an unresolvable `unwrap` as `Inexpressible` — stays
+      available for a target that resolves to nothing at all (no
+      attribute, no column), which is the correct, permanent behavior for
+      that case; see design.md's updated write-up for the residual-case
+      analysis (no unregistered numeric physical column exists in the logs
+      schema today that a user could plausibly want to `unwrap`, so that
+      residual rejection is by design, not a gap). The `logql.rs` test
+      harness fixture that originally exposed this (`unwrap duration`) was
+      corrected to carry `duration` as a log _attribute_, matching real
+      `unwrap` usage.)
+- [x] 5.1 With both switches on and differential evidence green, delete
       `search_filter.rs`'s lowering half. Keep `parse_tags` and `take_value`.
+      (`to_expr`/`string_value`/`materialized_expr`/`map_attribute_expr`/
+      `stored_string`/`attribute_expr` deleted along with their shape tests;
+      `trace.rs`'s old `build_search_dataframe` body and the
+      `trace_search_via_ir` field/switch deleted — the IR-routed twin is now
+      the only path. `differential.rs`'s TraceQL/tags comparisons converted
+      to single-path expected-result pins, task 5.4's trace half — see the
+      module's new "Status after §5" doc section and commit
+      `refactor(querier): make the IR planner the only trace-search
+  lowering`.)
 - [ ] 5.2 Delete the portion of `logql.rs`/`logql_metric.rs` that `ql-ir`
       covers. What backs the 4.2 fallback set stays.
 - [ ] 5.3 Remove both switches and their config keys (D3 — a rollout switch
-      that outlives its rollout is a second untested path).
+      that outlives its rollout is a second untested path). (Partially done:
+      `TraceService`'s switch and its `flight.rs` wiring were removed in 5.1
+      out of compilation necessity; `QuerierConfig::trace_search_via_ir`/
+      `logql_via_ir`, `signaldb.dist.toml`, the configuration/tempo-api
+      skills, and collapsing the `_via_ir` integration test twins remain.)
 - [ ] 5.4 Confirm the harness still passes against the remaining fallback path,
       then decide whether to keep it as a permanent regression test or retire
       it with the code it compared. Say which, and why, in the PR.
+      (Trace half done in 5.1: `differential.rs` keeps its name — a
+      permanent regression suite, and still a real differential for the
+      LogQL D5 fallback set until a future change closes that gap. Logs half
+      pending 5.2.)
 
 ## 6. Docs and skills
 
