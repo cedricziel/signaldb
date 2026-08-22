@@ -5,6 +5,7 @@ pub mod services;
 
 use std::{net::SocketAddr, sync::Arc};
 
+use anyhow::Context;
 use axum::{
     Extension, Router,
     routing::{get, post},
@@ -257,6 +258,15 @@ pub async fn serve_otlp_grpc(
         move |req| grpc_auth_interceptor(auth_for_profiles.clone(), req),
     );
 
+    // Bind before signaling init: sending init_tx first would let the CLI
+    // log "listening" for a port that turned out to be unbindable (e.g.
+    // already in use), and a bind failure surfaced only as a panic in the
+    // spawned task instead of a startup error the CLI could fail fast on.
+    let listener = tokio::net::TcpListener::bind(config.addr)
+        .await
+        .with_context(|| format!("Failed to bind OTLP/gRPC listener on {}", config.addr))?;
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
     init_tx
         .send(())
         .expect("Unable to send init signal for OTLP/gRPC");
@@ -267,12 +277,12 @@ pub async fn serve_otlp_grpc(
         .add_service(trace_server)
         .add_service(metric_server)
         .add_service(profile_server)
-        .serve_with_shutdown(config.addr, async {
+        .serve_with_incoming_shutdown(incoming, async {
             shutdown_rx.await.ok();
             tracing::info!("Shutting down OTLP/gRPC acceptor");
         })
         .await
-        .expect("Unable to start OTLP acceptor");
+        .context("OTLP/gRPC server error")?;
 
     stopped_tx
         .send(())
@@ -998,11 +1008,15 @@ pub async fn serve_otlp_http(
     tracing::info!("Prometheus remote_write endpoint enabled at POST /api/v1/write");
     tracing::info!("OTLP profiles endpoint enabled at POST /v1development/profiles");
 
+    // Bind before signaling init: sending init_tx first would let the CLI
+    // log "listening" for a port that turned out to be unbindable (e.g.
+    // already in use).
+    let listener = TcpListener::bind(config.addr).await?;
+
     init_tx
         .send(())
         .expect("Unable to send init signal for OTLP/HTTP");
 
-    let listener = TcpListener::bind(config.addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
