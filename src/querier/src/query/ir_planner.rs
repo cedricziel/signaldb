@@ -4334,8 +4334,9 @@ mod tests {
         // `body` moved off the retrieval-only list (`ir-single-lowering` D6);
         // `span_events` is the retrieval-only example now — see
         // `span_events_is_retrieval_only` for the dedicated coverage of that
-        // field's own normalization behaviour, and `body_is_filterable_for_string_operators`/
-        // `body_ordered_operators_are_still_rejected` below for `body`.
+        // field's own normalization behaviour, and
+        // `body_is_filterable_for_string_operators`/
+        // `body_ordered_operators_compare_lexically` below for `body`.
         let svc = IrService::new(traces_events_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
@@ -4388,6 +4389,50 @@ mod tests {
             .await
             .unwrap_or_else(|e| panic!("body exists should plan: {e}"))
             .expect("logs table is registered");
+    }
+
+    /// D6 (`ir-single-lowering`), review finding on #1393: `body` gets no
+    /// special-cased operator allowlist — an ordered operator (`gt`) on
+    /// `body` is not rejected, it compares *lexically*, the same as any
+    /// other string field (`Lowering::ordered` only casts to a number when
+    /// the field's resolved `ValueType` is numeric; `body` resolves to
+    /// `ValueType::String`). This is not a numeric-comparison capability
+    /// for `body` — it is the absence of a special case, in either
+    /// direction.
+    #[tokio::test]
+    async fn body_ordered_operators_compare_lexically() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["body"],
+            "pipeline": [{ "where": { "field": "body", "op": "gt", "value": "a" } }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap_or_else(|e| panic!("body gt should plan: {e}"))
+            .expect("logs table is registered");
+        let batches = df.collect().await.unwrap();
+        let mut bodies: Vec<String> = batches
+            .iter()
+            .flat_map(|b| {
+                let col = b
+                    .column_by_name("body")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                (0..b.num_rows()).map(|i| col.value(i).to_string())
+            })
+            .collect();
+        bodies.sort();
+        // `logs_ctx()`'s body values are "a", "b", "c", "d"; `> "a"` keeps
+        // the three lexically greater than "a".
+        assert_eq!(
+            bodies,
+            vec!["b".to_string(), "c".to_string(), "d".to_string()]
+        );
     }
 
     /// Collect the LogicalPlan node types, root-first, following each node's
