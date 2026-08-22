@@ -1,3 +1,14 @@
+//! # OTLP Metrics Handler
+//!
+//! Partitions an `ExportMetricsServiceRequest` by metric type (see
+//! [`super::metrics_partition`]; each type has its own table/schema),
+//! converts each partition to Arrow, writes it to the tenant/dataset's
+//! metrics WAL, and forwards it to a writer via Flight. Shared by both the
+//! gRPC (`services::otlp_metric_service`) and HTTP
+//! (`lib::handle_http_metrics`) surfaces. `handler::prometheus_handler`
+//! reuses [`super::metrics_partition`] directly for the same reason after
+//! converting Prometheus remote_write to OTEL metrics.
+
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -49,10 +60,6 @@ impl MockMetricsHandler {
             .await
             .push(request);
         Ok(())
-    }
-
-    pub fn expect_handle_grpc_otlp_metrics(&mut self) -> &mut Self {
-        self
     }
 }
 

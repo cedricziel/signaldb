@@ -1,3 +1,10 @@
+//! # OTLP Log Handler
+//!
+//! Converts an `ExportLogsServiceRequest` to Arrow, writes it to the
+//! tenant/dataset's logs WAL, and forwards it to a writer via Flight.
+//! Shared by both the gRPC (`services::otlp_log_service`) and HTTP
+//! (`lib::handle_http_logs`) surfaces.
+
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -45,10 +52,6 @@ impl MockLogHandler {
     ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_logs_calls.lock().await.push(request);
         Ok(())
-    }
-
-    pub fn expect_handle_grpc_otlp_logs(&mut self) -> &mut Self {
-        self
     }
 }
 

@@ -18,7 +18,8 @@ pub use password::{
 };
 pub use session::{SESSION_COOKIE, session_token_from_headers};
 pub use validation::{
-    ValidationError, validate_dataset_id, validate_id, validate_scopes, validate_tenant_id,
+    ValidationError, parse_bearer_token, validate_dataset_id, validate_id, validate_scopes,
+    validate_tenant_id,
 };
 
 /// Hash a high-entropy credential (API key, session token, OAuth token) with

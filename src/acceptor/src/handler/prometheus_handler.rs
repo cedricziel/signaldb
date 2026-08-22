@@ -37,7 +37,6 @@ use common::{
 };
 use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
-use tracing;
 
 use super::WalManager;
 use super::forward::forward_batch_to_writer;
@@ -137,7 +136,7 @@ impl PrometheusHandler {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("0.1.0");
 
-        tracing::info!(
+        tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset = %tenant_context.dataset_id,
             version = %version,
@@ -200,7 +199,7 @@ impl PrometheusHandler {
         self.persist_partitions(tenant_context, &wal, partitions, otlp_metrics_to_arrow)
             .await?;
 
-        tracing::info!(
+        tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             "Completed Prometheus remote_write processing"
         );

@@ -34,14 +34,14 @@ pub(crate) fn partition_metrics_by_type(
                     Data::Sum(_) => "sum",
                     Data::Histogram(_) => "histogram",
                     Data::ExponentialHistogram(_) => {
-                        tracing::info!(
+                        tracing::debug!(
                             metric_name = %metric.name,
                             "Processing ExponentialHistogram metric with full exponential metadata (scale, zero_count, positive/negative buckets)"
                         );
                         "exponential_histogram"
                     }
                     Data::Summary(_) => {
-                        tracing::info!(
+                        tracing::debug!(
                             metric_name = %metric.name,
                             "Processing Summary metric with quantile values"
                         );
