@@ -66,10 +66,12 @@
 //! | `{ status = error }`, `{ kind = server }` | **(1) `ql_ir` was wrong, fixed** | `traceql_to_ir` passed the TraceQL spelling through verbatim; the traces table stores these enums Title-cased (`status_code_to_str`/`span_kind_to_str`). Fixed in `ql-ir::traceql_lower` (see `normalize_status`/`normalize_kind`); the pinned `ql-ir` unit test was updated to the corrected values. Commit: `fix(ql-ir): normalize TraceQL status/kind values to their stored casing`. |
 //! | **Every LogQL line filter** (`|=`/`!=`/`|~`/`!~`) | **(1) `LogicalSchema` was wrong, fixed in §4 (D6)** | `ql_ir::logql_lower::line_filter` lowers to `Leaf{field:"body", op:Contains}`, but `LogicalSchema::core()` marked `logs.body` `RetrievalOnly` — `plan_document`'s validation rejected every one of these documents. This was *not* the D5 fallback case: `logql_to_ir` returns `Ok`, not `Inexpressible`, so the rejection surfaced only after the point a §4 fallback switch would check. Fixed in `LogicalSchema::core()` (task 4.0a): `body` is filterable for string operators now, resolving to `ValueType::String` like any other string field — ordered/numeric operators get no special allowance. Pinned in `logql_line_filter_agrees_on_optimized_plan`. Commit: `feat(query-ir): make the log body filterable for string operators`. |
 //! | A LogQL stream-selector `!=`/`!~`/`=""` against a key some rows lack | **(1) `ql_ir` was wrong, fixed in §4 (D9)** | The old LogQL lowering's `!=`/`!~` explicitly matches an absent key (`e.is_null().or(e.not_eq(...))`, documented "mirroring the JSON path"); `ir_planner`'s `Predicate::Not` was a plain `not(...)`, which is NULL for a NULL input — the IR's stated Kleene semantics ("absent satisfies neither `field = x` nor `not(field = x)`"), not what Loki's compat surface promises. Fixed in `ql_ir::logql_lower::matcher` (task 4.0c): a negative matcher now ORs in "the field does not exist" explicitly — `!=` → `or[ne, not(exists)]`, `!~` → `or[not(regex), not(exists)]`, `=""` → `or[eq "", not(exists)]` (the old path never special-cased plain `Eq` against `""`, so that one is a new-path-only regression test, not an old/new pin — see `empty_string_equality_matches_an_absent_field_on_the_new_path`). `=~` stays a plain `regex`, the one documented corner. Pinned in `adversarial_absent_value_semantics_agrees` and `absent_value_semantics_also_agree_for_negative_regex`. Commit: `fix(ql-ir): keep Loki's absent-matches semantics for negative matchers`. |
+//! | A LogQL stream-selector `!=`/`!~` against a **dedicated-column** label (`service_name`, `level`, `trace_id`, `span_id`) whose column is NULL on some rows | **(1) old path was wrong, fixed in §4 (review finding on #1393)** | D9 was applied to the JSON/map-attribute path (`map_attribute_expr`) and the materialized-label path (`materialized_label_expr`) but not to `logql.rs::column_expr`, the third of the three — its `Neq`/`Nre` lowered as plain `not_eq`/`not(regexp_like)` with no NULL handling, so a NULL dedicated column silently stayed excluded from a negative match while its two siblings (and the new path, which applies D9 uniformly regardless of which container a label resolves to) already included it. This was the *old* path's own inconsistency between three near-identical functions, not a genuine new-vs-old difference — Loki's absent-matches promise carries no dedicated-column exception. Fixed in `column_expr` to match its siblings. Pinned in `dedicated_column_negative_matchers_also_match_a_null_row`. Commit: `fix(querier): match absent dedicated columns for negative LogQL matchers`. |
 //! | `{ .service.name = "api" }`, `{ .http.method = "GET" }` (TraceQL, unscoped), `{k8s_namespace="prod"}` (LogQL, no known column) | **(3) genuinely different meaning — reported, not picked** | The old path ORs the match across every container (`map_attribute_expr("span_attributes",..).or(map_attribute_expr("resource_attributes",..))`) — matches if *any* container has the value. `ir_planner`'s bare-name resolution COALESCEs across containers by priority (span/log, then scope, then resource) and compares *once* — if a higher-priority container has the key at all (regardless of value), lower-priority containers are never consulted. Pinned in `adversarial_unscoped_attribute_combining_semantics_diverge` with a fixture where the same key holds *different* values in two containers, which the corpus's own fixture data happened not to exercise (both sides agreed there only because one container lacked the key entirely). The LogQL corpus's `{k8s_namespace="prod"}` hits the identical mechanism (skipped via `KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG`, no separate pinned test). Reported: which combining rule the compat surface should keep is a product question. |
 //! | `{ span.http.method = "GET" }` against a table with a promoted `label_http_method` column | **(1) `ir_planner` was wrong, fixed in §3** | `search_filter::to_expr` checks `materialized_column_name(key)` against the **bare** attribute key (`"http.method"` → `label_http_method`), matching how the compactor actually names promoted columns (`attr_promotion::materialized_keys_of` keys off the raw `attr_key`, never the TraceQL-scoped spelling). `ir_planner::SchemaResolver::column_for` used to compute `materialized_column_name(field)` against the **scope-qualified** logical field (`"span.http.method"` → `label_span_http_method`), which no real promoted column is ever named — so `ir_planner` always took the `get_field` (JsonPath) branch for a scope-qualified attribute, never the promoted column, even when one existed. Fixed in `ir_planner::SchemaResolver::column_for` (task 3.0): strip the scope qualifier before materializing, the same way `Lowering::qualified_attr` already does for the unpromoted extraction path. The pin moved from a row-level comparison to a plan-level one, now that the plans genuinely agree — see `adversarial_promoted_attribute_agrees_on_plan`. Commit: `fix(querier): resolve promoted columns for scope-qualified IR fields`. |
 //! | `sum by (StatusCode) (count_over_time(...))` (mixed-case attribute grouping) | **(1) old path is wrong, still open (issue #1392)** | #1070's fix (`ident()` not `col()` for a group-column alias) only touched `ir_planner.rs`. The *old* LogQL metric path (`logs.rs`'s `execute_plan`) has the identical unfixed bug for grouping by a mixed-case attribute label. New path (routed through `plan_document`) already handles it correctly. Pinned in `adversarial_mixed_case_grouping_label_old_path_still_has_1070`; filed as issue #1392 (task 4.0d), not fixed here — closes along with the old lowering once §5 deletes it. |
 //! | `count_over_time(...)`/`rate(...)`/`sum_over_time(...)` etc. with **no** outer `by` | **(1) `ql_ir` was wrong, fixed in §4 (D7)** | Real Loki returns one series per matching *stream* for a bare range aggregation. The old path implemented that by defaulting the range aggregate's grouping to `SERIES_COLUMNS` (`service_name`, `severity_text`) when ungrouped. `ql_ir::logql_to_ir` used to emit `by: []` for the same shape, collapsing every matching row into one count. Fixed in `ql_ir::logql_lower::lower_metric_query` (task 4.0b): an empty grouping now defaults to `ql_ir::STREAM_IDENTITY` (`["service.name", "severity_text"]`), pinned against `logs.rs::SERIES_COLUMNS` through the real `SchemaResolver` by `ql_ir_stream_identity_matches_series_columns` (this crate has no access to the real schema, so the mapping is asserted on the querier side). Pinned in `adversarial_ungrouped_range_aggregation_default_grouping_agrees` (two `api` rows of different severities: both paths now produce 2 rows). Commit: `fix(ql-ir): group an ungrouped range aggregation by the stream identity`. |
+//! | `sum(count_over_time(...))` (an **explicit** vector aggregation with no `by()`) | **(1) `ql_ir` was wrong, fixed (CodeRabbit review on #1393); old path also wrong, filed as #1394** | D7's stream-identity default was first applied too broadly: `lower_metric_query` treated *any* empty grouping — including `vector_grouping`'s `Ok(Vec::new())` for an explicit `v.grouping == None` — as "apply the default", when an explicit ungrouped vector aggregation means the opposite (collapse to one series, same as an empty `by` anywhere else). Fixed by applying `STREAM_IDENTITY` only in the bare-`MetricQuery::Range` arm, pinned in `ql-ir`'s `explicitly_ungrouped_vector_aggregation_collapses_to_one_series`. Checking that fix against the old path (not assumed) surfaced a *second*, independent finding: `logs.rs::execute_plan` never collapses an ungrouped `sum(...)` either — `sum`'s `outer_agg` stays `None` ("folds into the grouped range aggregate"), so the old path's grouping branch treats it identically to a bare range aggregation (`SERIES_COLUMNS`, no reduction pass), producing one row per stream instead of one row total. This is the old path's *own* bug (filed as #1394, sibling to #1392), not a new-vs-old difference to reconcile — the new path's collapse here is correct on its own merits. Pinned as a divergence in `explicitly_ungrouped_vector_aggregation_diverges_old_path_never_collapses`. |
 //! | every other corpus query | **match** | See the `*_corpus_*` tests below. |
 //!
 //! ## `KNOWN_INEXPRESSIBLE_LOGQL` (task 2.3a)
@@ -1290,6 +1292,81 @@ async fn adversarial_ungrouped_range_aggregation_default_grouping_agrees() {
     );
 }
 
+/// CodeRabbit finding on #1393: distinct from a *bare* range aggregation
+/// (above), an *explicit* vector aggregation with no `by()` —
+/// `sum(count_over_time(...))` — must not default to the stream identity;
+/// `vector_grouping` returning an empty grouping for `v.grouping == None`
+/// means "collapse", not "no grouping specified yet". `lower_metric_query`
+/// is fixed to keep the two cases distinct (task, this commit).
+///
+/// Checking that fix against the old path empirically (not assumed, per
+/// CodeRabbit's own suggestion) surfaced a *second*, independent finding:
+/// the old path does not actually collapse this query at all.
+/// `logql_metric.rs::plan_metric_query` documents that `sum`'s
+/// `outer_agg` stays `None` ("folds into the grouped range aggregate"), so
+/// `logs.rs::execute_plan`'s grouping branch (`None if
+/// out_group_cols.is_empty() => SERIES_COLUMNS`) treats an ungrouped
+/// `sum(...)` identically to a *bare* range aggregation — same
+/// `SERIES_COLUMNS` grouping, no second reduction pass — producing one row
+/// per stream instead of one row total. This is the old path's own bug
+/// (filed as #1394, sibling to #1392), not a genuine old-vs-new difference
+/// to reconcile: the *new* path's collapse here is correct Loki semantics
+/// on its own merits and must not regress to match it. Pinned as a
+/// divergence, the same pattern as
+/// `adversarial_mixed_case_grouping_label_old_path_still_has_1070`.
+#[tokio::test]
+async fn explicitly_ungrouped_vector_aggregation_diverges_old_path_never_collapses() {
+    let ctx = logs_fixture();
+    let q = r#"sum(count_over_time({service_name="api"}[1h]))"#;
+
+    let old_svc = LogsService::new(clone_ctx(&ctx));
+    let old_batches = old_svc
+        .query_metric(
+            &MetricQueryParams {
+                query: q.to_string(),
+                start: FROM,
+                end: TO,
+                step: 1_000,
+            },
+            TENANT,
+            DATASET,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{q}: old path failed: {e}"));
+
+    let doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS).unwrap_or_else(|e| panic!("{q}: {e}"));
+    let (df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
+        .await
+        .unwrap_or_else(|e| panic!("{q}: new path failed to plan: {e}"))
+        .expect("logs table is registered");
+    let new_batches = df
+        .collect()
+        .await
+        .unwrap_or_else(|e| panic!("{q}: new path failed to execute: {e}"));
+
+    // No group columns declared either way (an explicit, ungrouped vector
+    // aggregation), so compare on (bucket, value) alone.
+    let old_rows = metric_rows(&old_batches, &[], "value");
+    let new_rows = metric_rows(&new_batches, &[], "value");
+    assert_eq!(
+        old_rows.len(),
+        2,
+        "old path (issue #1394): never collapses an ungrouped sum(...), one row per stream instead of one row total: {old_rows:?}"
+    );
+    assert_eq!(
+        new_rows,
+        vec![MetricRow {
+            key: vec!["0".to_string()],
+            value: 2.0
+        }],
+        "new path should correctly collapse to one row (the sum across both api streams): {new_rows:?}"
+    );
+    assert_ne!(
+        old_rows, new_rows,
+        "if this now agrees, either the old path's #1394 bug was fixed or the new path regressed — update this test and the triage table, don't just delete the assertion"
+    );
+}
+
 /// Pins `ql_ir::STREAM_IDENTITY` (D7's default grouping) against
 /// `logs.rs::SERIES_COLUMNS` (the old path's stream-identity constant),
 /// resolved through the real `SchemaResolver`/`LogicalSchema` rather than
@@ -1727,6 +1804,77 @@ async fn empty_string_equality_matches_an_absent_field_on_the_new_path() {
         new_bodies.contains(&"slow response".to_string()),
         "new path's region=\"\" should include the row with no `region` key at all (D9): {new_bodies:?}"
     );
+}
+
+/// A `logs` table with a NULL `severity_text` on one row — pins D9's
+/// absent-matches fix for the **well-known dedicated-column** labels
+/// (`service_name`/`level`/`trace_id`/`span_id`, resolved by
+/// `logs.rs::column_for_label`), as distinct from the JSON/map-attribute
+/// path `logs_fixture()`'s `region` case already covers.
+fn logs_null_dedicated_column_fixture() -> SessionContext {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("body", DataType::Utf8, true),
+        Field::new("service_name", DataType::Utf8, true),
+        Field::new("severity_text", DataType::Utf8, true),
+        Field::new("trace_id", DataType::Utf8, true),
+        Field::new("span_id", DataType::Utf8, true),
+        map_field_named("log_attributes"),
+        map_field_named("resource_attributes"),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20])),
+            Arc::new(StringArray::from(vec!["has severity", "no severity"])),
+            Arc::new(StringArray::from(vec!["api", "api"])),
+            Arc::new(StringArray::from(vec![Some("ERROR"), None])),
+            Arc::new(StringArray::from(vec![Some("t1"), Some("t2")])),
+            Arc::new(StringArray::from(vec![Some("s1"), Some("s2")])),
+            build_map(&[&[], &[]]),
+            build_map(&[&[], &[]]),
+        ],
+    )
+    .unwrap();
+    let ctx = SessionContext::new();
+    register(&ctx, "logs", schema, batch);
+    ctx
+}
+
+/// Review finding on #1393: `logql.rs::column_expr` (used for the
+/// dedicated-column labels `column_for_label` resolves — `service_name`,
+/// `level`/`severity`/`detected_level`, `trace_id`, `span_id`) lowered
+/// `!=`/`!~` as a plain `not_eq`/`not(regexp_like)` with no NULL handling,
+/// unlike its siblings `map_attribute_expr` (attributes) and
+/// `materialized_label_expr` (materialized labels), which both already
+/// match absent via `is_null().or(...)`. D9 promises Loki's absent-matches
+/// semantics uniformly — "a missing label is the empty string" carries no
+/// exception for a dedicated column — so this was the *old* path's own bug
+/// (triage table outcome 1), not a genuine difference from the new path
+/// (which already applies D9 uniformly via `ql_ir::logql_lower::matcher`,
+/// regardless of whether a label resolves to a dedicated column). Fixed in
+/// `column_expr`.
+#[tokio::test]
+async fn dedicated_column_negative_matchers_also_match_a_null_row() {
+    let ctx = logs_null_dedicated_column_fixture();
+    for q in [r#"{level!="ERROR"}"#, r#"{level!~"ERR.*"}"#] {
+        let mut old_bodies = old_logql_log_bodies(&ctx, q).await;
+        let mut new_bodies = new_logql_log_bodies(&ctx, q).await;
+        old_bodies.sort();
+        new_bodies.sort();
+        assert!(
+            old_bodies.contains(&"no severity".to_string()),
+            "{q}: old path should include the row with a NULL severity_text: {old_bodies:?}"
+        );
+        assert_eq!(
+            old_bodies, new_bodies,
+            "{q}: old/new row sets disagree on the NULL-severity_text row"
+        );
+    }
 }
 
 /// The `body` values a document's `Rows` plan produces, in row order.
