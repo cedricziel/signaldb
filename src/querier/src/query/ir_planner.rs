@@ -725,6 +725,25 @@ fn arrow_to_value_type(dt: &DataType) -> Option<ValueType> {
     })
 }
 
+/// Split a container-qualified field into `(container, bare key)`, or
+/// `None` for an already-bare name (no known qualifier). Shared by
+/// `SchemaResolver::column_for` (only needs the bare key, to materialize a
+/// promoted column's name the way the compactor does) and
+/// `Lowering::qualified_attr` (additionally needs the container, for the
+/// map-extraction fallback).
+fn strip_scope_qualifier<'f>(
+    attr_prefixes: &'static [(&'static str, &'static str)],
+    field: &'f str,
+) -> Option<(&'static str, &'f str)> {
+    attr_prefixes.iter().find_map(|(prefix, container)| {
+        field
+            .strip_prefix(prefix)
+            // A bare prefix with nothing after it is not a field.
+            .filter(|rest| !rest.is_empty())
+            .map(|rest| (*container, rest))
+    })
+}
+
 /// A [`FieldResolver`] whose client-visible built-ins come from the canonical
 /// logical schema. The scanned Arrow schema only verifies a logical field's
 /// current physical realization and discovers promoted attributes.
@@ -733,6 +752,10 @@ pub(crate) struct SchemaResolver {
     physical_names: std::collections::HashSet<String>,
     container: String,
     aliases: &'static [(&'static str, &'static str)],
+    /// Logical scope qualifiers (`span.`, `resource.`, ...) this source
+    /// recognizes — see `column_for`'s use, which strips one before
+    /// materializing a promoted column's name.
+    attr_prefixes: &'static [(&'static str, &'static str)],
     source: String,
     logical_schema: LogicalSchema,
 }
@@ -752,6 +775,7 @@ impl SchemaResolver {
             physical_names,
             container: source.containers[0].to_string(),
             aliases: source.aliases,
+            attr_prefixes: source.attr_prefixes,
             source: source.name.to_string(),
             logical_schema: LogicalSchema::core(),
         }
@@ -766,7 +790,15 @@ impl SchemaResolver {
         {
             return Some((physical.to_string(), value_type));
         }
-        let materialized = common::schema::materialized_column_name(field);
+        // A promoted attribute column is materialized from the *bare*
+        // attribute key (`attr_promotion::materialized_keys_of` keys off the
+        // raw `attr_key` the compactor sees, never a TraceQL-scoped
+        // spelling) — strip a `span.`/`resource.`/... qualifier first, the
+        // same way `Lowering::qualified_attr` does for the unpromoted
+        // extraction path, or a scope-qualified field would never find its
+        // promoted column (D10 of `ir-single-lowering`).
+        let bare = strip_scope_qualifier(self.attr_prefixes, field).map_or(field, |(_, bare)| bare);
+        let materialized = common::schema::materialized_column_name(bare);
         if let Some(vt) = self.columns.get(&materialized) {
             return Some((materialized, vt.clone()));
         }
@@ -1793,16 +1825,7 @@ impl Lowering<'_> {
     /// Split a container-qualified field into `(container column, bare key)`.
     /// Returns `None` for an unqualified name, which coalesces instead.
     fn qualified_attr<'f>(&self, field: &'f str) -> Option<(&'static str, &'f str)> {
-        self.source
-            .attr_prefixes
-            .iter()
-            .find_map(|(prefix, container)| {
-                field
-                    .strip_prefix(prefix)
-                    // A bare prefix with nothing after it is not a field.
-                    .filter(|rest| !rest.is_empty())
-                    .map(|rest| (*container, rest))
-            })
+        strip_scope_qualifier(self.source.attr_prefixes, field)
     }
 
     fn lower_predicate(&self, pred: &Predicate) -> Result<Expr, QuerierError> {
@@ -4458,6 +4481,85 @@ mod tests {
             .value(0);
         assert_eq!(count_p, count_u, "promotion changed the result");
         assert_eq!(count_p, 3); // three rows have env=prod
+    }
+
+    // Task 3.0 (D10, `ir-single-lowering`) — a *scope-qualified* attribute
+    // field must resolve to its promoted column exactly like the unscoped
+    // case `promotion_invariance_same_result` already covers. Before the
+    // fix, `SchemaResolver::column_for` computed `materialized_column_name`
+    // from the scope-qualified field itself (`"span.http.method"` →
+    // `label_span_http_method`), which no real promoted column is ever
+    // named — the compactor promotes off the bare attribute key
+    // (`attr_promotion::materialized_keys_of`), never the TraceQL-scoped
+    // spelling — so the resolver always took the `get_field` extraction
+    // path for a scope-qualified field, even when `label_http_method`
+    // existed. Fixed by stripping the scope prefix first, the way
+    // `Lowering::qualified_attr` already does for the unpromoted path.
+    #[tokio::test]
+    async fn scope_qualified_attribute_resolves_to_promoted_column() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new("status_code", DataType::Utf8, true),
+            map_field_named("span_attributes"),
+            // The promoted column: keyed off the *bare* attribute key
+            // (`http.method`), never the scope-qualified spelling.
+            Field::new("label_http_method", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t1"])),
+                Arc::new(StringArray::from(vec!["s0", "s1"])),
+                Arc::new(StringArray::from(vec![None::<&str>, None])),
+                Arc::new(StringArray::from(vec!["GET /a", "POST /b"])),
+                Arc::new(StringArray::from(vec!["api", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 100])),
+                Arc::new(StringArray::from(vec![Some("OK"), Some("OK")])),
+                build_map(&[&[("http.method", "GET")], &[("http.method", "POST")]]),
+                Arc::new(StringArray::from(vec![Some("GET"), Some("POST")])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["trace_id"],
+            "pipeline": [{ "where": { "field": "span.http.method", "op": "eq", "value": "GET" } }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains("label_http_method"),
+            "expected the promoted column to be referenced:\n{plan}"
+        );
+        assert!(
+            !plan.contains("get_field"),
+            "unexpected json-path extraction once a promoted column exists:\n{plan}"
+        );
+        let batches = df.collect().await.unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 1, "only the GET row should match");
     }
 
     /// A traces table with the real v2 column names, for the single-signal

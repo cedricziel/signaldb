@@ -67,7 +67,7 @@
 //! | **Every LogQL line filter** (`|=`/`!=`/`|~`/`!~`) | **(3) the biggest open finding — reported, not picked** | `ql_ir::logql_lower::line_filter` lowers to `Leaf{field:"body", op:Contains}`, but `LogicalSchema::core()` marks `logs.body` `RetrievalOnly` (deliberately, per `ir_planner`'s own `retrieval_only_metadata_cannot_be_used_in_predicates` test) — `plan_document`'s validation rejects every one of these documents. This is *not* the D5 fallback case: `logql_to_ir` returns `Ok`, not `Inexpressible`, so the rejection surfaces only after the point a §4 fallback switch would check. `ql-ir`'s own `every_lowered_document_validates` test missed this because it validates against a permissive `InMemoryResolver`, never the real `SchemaResolver`. Pinned in `logql_line_filter_is_rejected_by_the_real_schema`. Whoever builds §4 needs to decide: relax `body`'s retrievability (for `contains`/`regex` ops only?), or add a plan-time-Inexpressible-equivalent the switch can also fall back on. |
 //! | A LogQL stream-selector `!=` against a key some rows lack | **(3) genuinely different meaning — reported, not picked** | The old LogQL lowering's `!=`/`!~` explicitly matches an absent key (`e.is_null().or(e.not_eq(...))`, documented "mirroring the JSON path"); `ir_planner`'s `Predicate::Not` is a plain `not(...)`, which is NULL for a NULL input — the IR's stated Kleene semantics ("absent satisfies neither `field = x` nor `not(field = x)`"). Pinned as `adversarial_absent_value_semantics_diverge` below, which asserts the *divergence* rather than agreement. Reported for a product decision (does the compat surface promise Loki's negation-matches-absent behaviour, or the IR's three-valued one) rather than silently choosing a side. |
 //! | `{ .service.name = "api" }`, `{ .http.method = "GET" }` (TraceQL, unscoped), `{k8s_namespace="prod"}` (LogQL, no known column) | **(3) genuinely different meaning — reported, not picked** | The old path ORs the match across every container (`map_attribute_expr("span_attributes",..).or(map_attribute_expr("resource_attributes",..))`) — matches if *any* container has the value. `ir_planner`'s bare-name resolution COALESCEs across containers by priority (span/log, then scope, then resource) and compares *once* — if a higher-priority container has the key at all (regardless of value), lower-priority containers are never consulted. Pinned in `adversarial_unscoped_attribute_combining_semantics_diverge` with a fixture where the same key holds *different* values in two containers, which the corpus's own fixture data happened not to exercise (both sides agreed there only because one container lacked the key entirely). The LogQL corpus's `{k8s_namespace="prod"}` hits the identical mechanism (skipped via `KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG`, no separate pinned test). Reported: which combining rule the compat surface should keep is a product question. |
-//! | `{ span.http.method = "GET" }` against a table with a promoted `label_http_method` column | **(2) both correct, plans differ** | `search_filter::to_expr` checks `materialized_column_name(key)` against the **bare** attribute key (`"http.method"` → `label_http_method`), matching how the compactor actually names promoted columns (`attr_promotion::materialized_keys_of` keys off the raw `attr_key`, never the TraceQL-scoped spelling). `ir_planner::SchemaResolver::column_for` computes `materialized_column_name(field)` against the **scope-qualified** logical field (`"span.http.method"` → `label_span_http_method`), which no real promoted column is ever named — so `ir_planner` always takes the `get_field` (JsonPath) branch for a scope-qualified attribute, never the promoted column, even when one exists. This is a real gap in `ir_planner`'s promotion-invariance claim, but not a *result* difference: promotion duplicates a value into a column without removing it from the source attribute map (`schema_transform.rs`), so the map extraction the IR takes returns the identical value the old path's column reference would. Pinned in `adversarial_promoted_attribute_agrees_on_result` (row-level, not plan-level, comparison — the plans legitimately differ: one references the column, the other calls `get_field`). Recorded here as a real perf/promotion-invariance gap in `ir_planner` for `§3`/a follow-up to fix (scope-strip the field before materializing, the same way `Lowering::qualified_attr` already does for the *unpromoted* extraction path) — out of scope for this harness change, since fixing it changes no query's result. |
+//! | `{ span.http.method = "GET" }` against a table with a promoted `label_http_method` column | **(1) `ir_planner` was wrong, fixed in §3** | `search_filter::to_expr` checks `materialized_column_name(key)` against the **bare** attribute key (`"http.method"` → `label_http_method`), matching how the compactor actually names promoted columns (`attr_promotion::materialized_keys_of` keys off the raw `attr_key`, never the TraceQL-scoped spelling). `ir_planner::SchemaResolver::column_for` used to compute `materialized_column_name(field)` against the **scope-qualified** logical field (`"span.http.method"` → `label_span_http_method`), which no real promoted column is ever named — so `ir_planner` always took the `get_field` (JsonPath) branch for a scope-qualified attribute, never the promoted column, even when one existed. Fixed in `ir_planner::SchemaResolver::column_for` (task 3.0): strip the scope qualifier before materializing, the same way `Lowering::qualified_attr` already does for the unpromoted extraction path. The pin moved from a row-level comparison to a plan-level one, now that the plans genuinely agree — see `adversarial_promoted_attribute_agrees_on_plan`. Commit: `fix(querier): resolve promoted columns for scope-qualified IR fields`. |
 //! | `sum by (StatusCode) (count_over_time(...))` (mixed-case attribute grouping) | **(1) old path is wrong, still open** | #1070's fix (`ident()` not `col()` for a group-column alias) only touched `ir_planner.rs`. The *old* LogQL metric path (`logs.rs`'s `execute_plan`) has the identical unfixed bug for grouping by a mixed-case attribute label. New path (routed through `plan_document`) already handles it correctly. Pinned in `adversarial_mixed_case_grouping_label_old_path_still_has_1070`; reported as a still-open bug in `logs.rs`, independent of this change, not fixed here. |
 //! | `count_over_time(...)`/`rate(...)`/`sum_over_time(...)` etc. with **no** outer `by` | **(3) genuinely different meaning — reported, not picked** | Real Loki returns one series per matching *stream* for a bare range aggregation. The old path approximates this by defaulting the range aggregate's grouping to `SERIES_COLUMNS` (`service_name`, `severity_text`) when ungrouped. `ql_ir::logql_to_ir` emits `by: []` for the same shape, and `ir_planner` groups by nothing — collapsing every matching row into one count. Pinned in `adversarial_ungrouped_range_aggregation_default_grouping_diverges` (two `api` rows of different severities: old produces 2 rows, new produces 1). This is likely the single biggest behavioural gap for real dashboards (per-stream matrices are the common case), and — like the line-filter finding above — needs a design decision (does the IR need a "natural series identity" default?) rather than a pick made here. |
 //! | every other corpus query | **match** | See the `*_corpus_*` tests below. |
@@ -1360,70 +1360,32 @@ async fn logql_metric_known_inexpressible_matches_old_path_accepts() {
 // Adversarial cases (task 2.2)
 // ---------------------------------------------------------------------------
 
-/// Promoted vs. unpromoted attribute: the same TraceQL filter against a
-/// table where `http.method` is materialized as `label_http_method`. See the
-/// triage table's case (2) — the plans legitimately differ (old references
-/// the column, new does a `get_field` extraction), but the *result* must
-/// still agree, since the map still carries the value the promotion was
-/// taken from.
+/// Promoted attribute, scope-qualified field: after the D10 fix
+/// (`ir_planner::SchemaResolver::column_for` strips the scope qualifier
+/// before materializing a promoted column's name, task 3.0), both paths
+/// resolve `span.http.method` to the promoted `label_http_method` column —
+/// this moved from triage table case (2) "both correct, plans differ" to
+/// case (1) "`ir_planner` was wrong, fixed in §3", so the comparison is now
+/// at the optimized-plan level, like every other agreeing case, rather than
+/// the weaker row-level one it needed while the plans still legitimately
+/// differed.
 #[tokio::test]
-async fn adversarial_promoted_attribute_agrees_on_result() {
+async fn adversarial_promoted_attribute_agrees_on_plan() {
     let ctx = traces_promoted_fixture();
     let q = r#"{ span.http.method = "GET" }"#;
     let fields = ["trace_id"];
 
-    let conditions = traceql::parse(q).unwrap();
-    let mut old_df = optional_table(&ctx, TENANT, DATASET, "traces")
-        .await
-        .unwrap()
-        .unwrap();
-    let attr_ctx = AttrContext {
-        materialized: materialized_columns_of(&old_df),
-        map_attrs: true,
-        attr_tokens: false,
-    };
+    let old = old_traceql_plan(&ctx, q, &fields).await.unwrap();
+    let new = new_traceql_plan(&ctx, q, &fields).await.unwrap();
     assert!(
-        attr_ctx.materialized.contains("label_http_method"),
-        "fixture must expose the promoted column"
+        old.contains("label_http_method") && new.contains("label_http_method"),
+        "both paths should route to the promoted column:\nold:\n{old}\nnew:\n{new}"
     );
-    for c in &conditions {
-        old_df = old_df
-            .filter(search_filter::to_expr(c, &attr_ctx).unwrap())
-            .unwrap();
-    }
-    let old_plan = optimized_plan_text(old_df.clone().select_columns(&fields).unwrap());
     assert!(
-        old_plan.contains("label_http_method"),
-        "old path should route to the promoted column:\n{old_plan}"
+        !old.contains("get_field") && !new.contains("get_field"),
+        "neither path should fall back to json-path extraction once a promoted column exists:\nold:\n{old}\nnew:\n{new}"
     );
-    let old_rows = old_df
-        .select_columns(&fields)
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-
-    let mut doc = ql_ir::traceql_to_ir(q, FROM_NS, TO_NS).unwrap();
-    set_fields(&mut doc, &fields);
-    let (new_df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
-        .await
-        .unwrap()
-        .unwrap();
-    let new_plan = optimized_plan_text(new_df.clone());
-    // Documents the gap in the triage table: `ir_planner` never takes the
-    // promoted-column branch for a scope-qualified field. If this ever
-    // starts failing, `ir_planner`'s promotion invariance improved and this
-    // assertion (and the triage table entry) should be deleted, not fixed.
-    assert!(
-        new_plan.contains("get_field"),
-        "expected ir_planner to still miss scope-qualified promotion (tracked gap):\n{new_plan}"
-    );
-    let new_rows = new_df.collect().await.unwrap();
-
-    assert_eq!(
-        old_rows, new_rows,
-        "{q}: promoted-column and get_field extraction must still agree on the result"
-    );
+    assert_plans_match(q, &old, &new);
 }
 
 /// An attribute key colliding with a physical column name
