@@ -12,6 +12,7 @@ pub mod promql;
 pub mod search_filter;
 pub mod table_lookup;
 pub mod table_ref;
+pub(crate) mod tags_to_ir;
 pub mod trace;
 
 /// Parameters carried in the `query_logs` Flight ticket (JSON-encoded).
