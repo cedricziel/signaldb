@@ -9,6 +9,7 @@ use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 
 use super::WalManager;
 use super::forward::forward_batch_to_writer;
+use super::ingest_error::IngestError;
 
 pub struct LogHandler {
     /// Flight transport for forwarding telemetry
@@ -41,7 +42,7 @@ impl MockLogHandler {
         &self,
         _tenant_context: &TenantContext,
         request: ExportLogsServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_logs_calls.lock().await.push(request);
         Ok(())
     }
@@ -79,7 +80,7 @@ impl LogHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportLogsServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
@@ -95,11 +96,15 @@ impl LogHandler {
                 "logs",
             )
             .await
-            .context("Failed to get WAL")?;
+            .context("Failed to get WAL")
+            .map_err(IngestError::Unavailable)?;
 
         // Convert OTLP logs to Arrow RecordBatch. A conversion failure
         // must reject the export (client retries) instead of ACKing an
-        // empty batch — that would be silent data loss (issue #926).
+        // empty batch — that would be silent data loss (issue #926). It is
+        // also deterministic, not a WAL/durability problem, so it is
+        // rejected as Invalid rather than Unavailable (finding M3):
+        // retrying the same bytes will fail again.
         let record_batch = otlp_logs_to_arrow(&request)
             .inspect_err(|error| {
                 tracing::error!(
@@ -110,7 +115,8 @@ impl LogHandler {
                     "OTLP to Arrow conversion failed - rejecting export"
                 );
             })
-            .context("Failed to convert OTLP logs to Arrow")?;
+            .context("Failed to convert OTLP logs to Arrow")
+            .map_err(IngestError::Invalid)?;
 
         // Add schema version metadata (v1 for OTLP conversion)
         let mut metadata = serde_json::json!({
@@ -132,16 +138,21 @@ impl LogHandler {
         let metadata_str = serde_json::to_string(&metadata).ok();
 
         // Step 1: Write to WAL first for durability
-        let batch_bytes =
-            record_batch_to_bytes(&record_batch).context("Failed to serialize record batch")?;
+        let batch_bytes = record_batch_to_bytes(&record_batch)
+            .context("Failed to serialize record batch")
+            .map_err(IngestError::Unavailable)?;
 
         let wal_entry_id = wal
             .append(WalOperation::WriteLogs, batch_bytes, metadata_str.clone())
             .await
-            .context("Failed to write logs to WAL")?;
+            .context("Failed to write logs to WAL")
+            .map_err(IngestError::Unavailable)?;
 
         // Flush WAL to ensure durability
-        wal.flush().await.context("Failed to flush WAL")?;
+        wal.flush()
+            .await
+            .context("Failed to flush WAL")
+            .map_err(IngestError::Unavailable)?;
 
         tracing::debug!(entry_id = %wal_entry_id, "Logs written to WAL");
 

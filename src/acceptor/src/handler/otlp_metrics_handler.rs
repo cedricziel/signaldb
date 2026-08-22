@@ -9,6 +9,7 @@ use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequ
 
 use super::WalManager;
 use super::forward::forward_batch_to_writer;
+use super::ingest_error::IngestError;
 use super::metrics_partition;
 
 pub struct MetricsHandler {
@@ -42,7 +43,7 @@ impl MockMetricsHandler {
         &self,
         _tenant_context: &TenantContext,
         request: ExportMetricsServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_metrics_calls
             .lock()
             .await
@@ -88,7 +89,7 @@ impl MetricsHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportMetricsServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
@@ -104,7 +105,8 @@ impl MetricsHandler {
                 "metrics",
             )
             .await
-            .context("Failed to get WAL")?;
+            .context("Failed to get WAL")
+            .map_err(IngestError::Unavailable)?;
 
         // Partition metrics by type to prevent schema conflicts
         let partitions = metrics_partition::partition_metrics_by_type(&request);
@@ -114,7 +116,13 @@ impl MetricsHandler {
             return Ok(());
         }
 
-        // Metric types that failed before reaching WAL durability
+        // Metric types that failed conversion (deterministic — Invalid) vs.
+        // failed to reach WAL durability (transient — Unavailable). A
+        // durability failure anywhere in the batch takes priority in the
+        // final classification: it is always safe to ask the client to
+        // retry, whereas telling it to retry a batch that only had
+        // conversion failures would spin forever (finding M3).
+        let mut invalid: Vec<String> = Vec::new();
         let mut undurable: Vec<String> = Vec::new();
 
         tracing::debug!(
@@ -146,7 +154,7 @@ impl MetricsHandler {
                         error = %error,
                         "OTLP to Arrow conversion failed - rejecting export"
                     );
-                    undurable.push(metric_type.clone());
+                    invalid.push(metric_type.clone());
                     continue;
                 }
             };
@@ -251,11 +259,21 @@ impl MetricsHandler {
             }
         }
 
+        // A durability failure anywhere wins the classification: it is
+        // always safe to tell the client to retry (some partitions may not
+        // yet be durable), whereas Invalid would tell it to give up on a
+        // batch that could still partially succeed on retry.
         if !undurable.is_empty() {
-            anyhow::bail!(
+            return Err(IngestError::Unavailable(anyhow::anyhow!(
                 "Failed to durably accept metrics for types: {}",
                 undurable.join(", ")
-            );
+            )));
+        }
+        if !invalid.is_empty() {
+            return Err(IngestError::Invalid(anyhow::anyhow!(
+                "Failed to convert metrics for types: {}",
+                invalid.join(", ")
+            )));
         }
 
         tracing::debug!("Completed processing metrics request for all types");

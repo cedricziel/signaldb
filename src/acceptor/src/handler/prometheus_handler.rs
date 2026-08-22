@@ -347,8 +347,12 @@ impl std::error::Error for PrometheusError {}
 impl IntoResponse for PrometheusError {
     fn into_response(self) -> axum::response::Response {
         let status = match &self {
-            Self::DecodeError(_) => StatusCode::BAD_REQUEST,
-            Self::ConversionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            // A conversion failure is deterministic: the same bytes will
+            // fail again, so this is a client error (400), not a 500
+            // (finding M3) — a remote_write client backing off and
+            // retrying a batch that can never succeed just backs up its
+            // queue forever.
+            Self::DecodeError(_) | Self::ConversionError(_) => StatusCode::BAD_REQUEST,
             Self::SerializationError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::WalError(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::RateLimited(_) | Self::QuotaExceeded(_) => StatusCode::TOO_MANY_REQUESTS,
@@ -383,12 +387,13 @@ mod tests {
     }
 
     #[test]
-    fn conversion_error_maps_to_http_500() {
-        // A failed OTLP → Arrow conversion must surface as a server error
-        // so the remote-write client retries instead of dropping its copy.
+    fn conversion_error_maps_to_http_400() {
+        // Finding M3: a failed OTLP → Arrow conversion is deterministic —
+        // retrying the same bytes will fail again — so it must surface as
+        // a client error (400), not a 500 that invites endless retries.
         let response =
             PrometheusError::ConversionError("arrow batch assembly failed".into()).into_response();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     fn sample_rate_limit_exceeded(
