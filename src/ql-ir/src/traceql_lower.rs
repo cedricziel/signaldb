@@ -32,9 +32,14 @@ pub fn traceql_to_ir(query: &str, from: &str, to: &str) -> Result<Document, Lowe
         // `{}` selects everything. No predicate at all, rather than one that
         // is vacuously true: an empty `and` would be a claim about the rows.
         0 => Vec::new(),
-        1 => vec![Stage::Where(leaf(&conditions[0])?)],
+        1 => vec![Stage::Where(traceql_condition_to_predicate(
+            &conditions[0],
+        )?)],
         _ => {
-            let parts = conditions.iter().map(leaf).collect::<Result<Vec<_>, _>>()?;
+            let parts = conditions
+                .iter()
+                .map(traceql_condition_to_predicate)
+                .collect::<Result<Vec<_>, _>>()?;
             vec![Stage::Where(Predicate::And(parts))]
         }
     };
@@ -52,11 +57,24 @@ pub fn traceql_to_ir(query: &str, from: &str, to: &str) -> Result<Document, Lowe
     })
 }
 
-/// One matcher becomes one equality leaf.
+/// Lower one TraceQL condition to an IR equality leaf.
+///
+/// Public so callers with a [`traceql::Condition`] but no TraceQL text of
+/// their own — Tempo's `tags` HTTP parameter, lowered by the querier's
+/// `tags_to_ir` shim (design D4 of `ir-single-lowering`) — can reuse this
+/// exact field-naming and status/kind normalization instead of rendering a
+/// condition back into TraceQL text and re-parsing it. A round trip through
+/// text is unsound: TraceQL's own string-literal grammar has no escape
+/// syntax (see `traceql::parser::parse_value`), so a value containing a
+/// backslash, an embedded quote, or (via an unescaped key) `&&` either
+/// silently changes value or corrupts the parsed structure. Lowering the
+/// already-parsed `Condition` directly has no such step.
 ///
 /// `status`/`kind` get their value normalized rather than passed through
 /// [`literal`] — see [`normalize_status`]/[`normalize_kind`].
-fn leaf(condition: &traceql::Condition) -> Result<Predicate, LowerError> {
+pub fn traceql_condition_to_predicate(
+    condition: &traceql::Condition,
+) -> Result<Predicate, LowerError> {
     let value = match condition.selector {
         traceql::Selector::Status => {
             serde_json::Value::String(normalize_status(&condition.value)?.to_string())
