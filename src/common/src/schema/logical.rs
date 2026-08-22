@@ -214,7 +214,13 @@ impl LogicalSchema {
             LogicalField::record_metadata("logs", "trace_flags", LogicalType::Int64),
             LogicalField::record_metadata("logs", "event_name", LogicalType::String),
             LogicalField::record_metadata("logs", "dropped_attributes_count", LogicalType::Int64),
-            LogicalField::record_metadata("logs", "body", LogicalType::AnyValue).retrieval_only(),
+            // Filterable for string operators (`contains`/`regex`/`eq`/`ne`/
+            // `exists`) since `ir-single-lowering` D6: every LogQL line
+            // filter lowers to a predicate on `body`, and the IR is our own
+            // query surface, not a fallback to a compat endpoint. Ordered/
+            // numeric operators get no special allowance — `body` resolves
+            // to `ValueType::String` like any other string field.
+            LogicalField::record_metadata("logs", "body", LogicalType::AnyValue),
             LogicalField::record_metadata("traces", "dropped_attributes_count", LogicalType::Int64),
             LogicalField::record_metadata("traces", "dropped_events_count", LogicalType::Int64),
             LogicalField::record_metadata("traces", "dropped_links_count", LogicalType::Int64),
@@ -432,7 +438,16 @@ mod tests {
         );
         assert_eq!(
             schema.resolve("logs", "body").unwrap().filterability,
-            Filterability::RetrievalOnly
+            Filterability::Filterable,
+            "body is filterable for string operators (ir-single-lowering D6)"
+        );
+        assert_eq!(
+            schema
+                .resolve("traces", "span_events")
+                .unwrap()
+                .filterability,
+            Filterability::RetrievalOnly,
+            "span_events (the whole events list) stays retrieval-only"
         );
         assert_eq!(
             schema.resolve("traces", "trace_id").unwrap().kind,

@@ -120,9 +120,13 @@ Operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `between`, `contains`,
 
 Some logical fields are **retrieval-only**: they can appear in `fields`
 projections but are rejected in predicates, `aggregate.by`, `topk.of`,
-`bottomk.of`, and `order` keys. The log `body` and the trace `span_events`
-are retrieval-only today. A retrieval-only field used in a predicate raises an
+`bottomk.of`, and `order` keys. The trace `span_events` is retrieval-only
+today. A retrieval-only field used in a predicate raises an
 `UnfilterableField` error.
+
+The log `body` is filterable for string operators (`contains`, `regex`, `eq`,
+`ne`, `exists`) — it resolves to a string value like any other string field,
+so ordered and numeric operators get no special allowance for it.
 
 `span_events` on `traces` is the span's whole events list as a JSON string:
 `[{"name", "timestamp_unix_nano", "attributes": {...}}, ...]`, `null` for a
@@ -227,14 +231,14 @@ thing a later stage may reference:
 
 ### Aggregate functions
 
-| `fn`                        | `of` | `arg` | Since | Output    |
-| --------------------------- | ---- | ----- | ----- | --------- |
-| `count`                     | —    | —     | v1    | integer   |
-| `sum` / `min` / `max`       | yes  | —     | v1    | the field's type |
-| `avg`                       | yes  | —     | v1    | float     |
-| `quantile`                  | yes  | `[0,1]` | v1  | float     |
-| `stddev` / `stdvar`         | yes  | —     | **v5** | float    |
-| `first` / `last`            | yes  | —     | **v5** | the field's type |
+| `fn`                  | `of` | `arg`   | Since  | Output           |
+| --------------------- | ---- | ------- | ------ | ---------------- |
+| `count`               | —    | —       | v1     | integer          |
+| `sum` / `min` / `max` | yes  | —       | v1     | the field's type |
+| `avg`                 | yes  | —       | v1     | float            |
+| `quantile`            | yes  | `[0,1]` | v1     | float            |
+| `stddev` / `stdvar`   | yes  | —       | **v5** | float            |
+| `first` / `last`      | yes  | —       | **v5** | the field's type |
 
 `first` and `last` order by the source's own time column, so they mean
 earliest and latest — not whichever row the scan happened to produce first.
@@ -245,13 +249,13 @@ An aggregate may carry an optional `divisor`, which divides its value by that
 scalar. That is all a rate is — a count over a window, divided by the window:
 
 ```jsonc
-{ "aggregate": {
-  "by": ["service.name"],
-  "step": "1m",
-  "aggs": [
-    { "fn": "count", "as": "errors_per_second", "divisor": 60 }
-  ]
-}}
+{
+  "aggregate": {
+    "by": ["service.name"],
+    "step": "1m",
+    "aggs": [{ "fn": "count", "as": "errors_per_second", "divisor": 60 }],
+  },
+}
 ```
 
 It is named for the operation rather than `per_seconds` because dividing an
@@ -260,7 +264,7 @@ greater than zero; a divided aggregate is always a float, even when the
 function it divided returns an integer.
 
 `divisor` composes with [scoping](#scoping-an-aggregate-to-a-subset): an
-aggregate may narrow which records it consumes *and* report the result per
+aggregate may narrow which records it consumes _and_ report the result per
 unit, which is how you ask for the error rate rather than the overall rate.
 
 ### Scoping an aggregate to a subset
@@ -659,7 +663,9 @@ POST /api/v1/query
     "fields": [
       { "name": "service.name", "type": "string", "level": "resource",
         "filterable": true, "origin": "declared" },
-      { "name": "body", "type": "any_value", "filterable": false,
+      { "name": "body", "type": "any_value", "filterable": true,
+        "origin": "declared" },
+      { "name": "span_events", "type": "any_value", "filterable": false,
         "origin": "declared" },
       { "name": "http.route", "type": "string", "filterable": true,
         "origin": "registry", "coverage": 0.82,
