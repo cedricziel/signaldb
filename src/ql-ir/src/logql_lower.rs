@@ -192,7 +192,18 @@ pub const STREAM_IDENTITY: &[&str] = &["service.name", "severity_text"];
 /// A metric query: the inner log query's filter, then one aggregate.
 fn lower_metric_query(q: &MetricQuery, from: &str, to: &str) -> Result<Document, LowerError> {
     let (range_agg, grouping) = match q {
-        MetricQuery::Range(r) => (r, Vec::new()),
+        // D7: a *bare* range aggregation — no outer vector aggregation at
+        // all — defaults to the stream identity rather than collapsing
+        // every matching row into one series.
+        MetricQuery::Range(r) => (r, STREAM_IDENTITY.iter().map(|s| s.to_string()).collect()),
+        // An *explicit* vector aggregation with no `by()` means something
+        // different: `sum(count_over_time(...))` collapses every matching
+        // stream into one series (real Loki's behavior, and the old path's
+        // `logs.rs::execute_plan` — its `Some(_)` outer_agg branch reduces
+        // across every series when `out_group_cols` is empty). The D7
+        // default must not apply here; `vector_grouping` already returns an
+        // empty grouping for exactly this case, and it means "collapse",
+        // not "no grouping specified yet".
         MetricQuery::Vector(v) => match &v.inner {
             MetricQuery::Range(r) => (r, vector_grouping(v, range_function(r)?.0)?),
             _ => {
@@ -207,14 +218,6 @@ fn lower_metric_query(q: &MetricQuery, from: &str, to: &str) -> Result<Document,
                 metric_kind(other)
             )));
         }
-    };
-    // D7: no grouping at all (no outer `by`/`without`, and the range
-    // aggregation itself named none) defaults to the stream identity rather
-    // than collapsing every matching row into one series.
-    let grouping = if grouping.is_empty() {
-        STREAM_IDENTITY.iter().map(|s| s.to_string()).collect()
-    } else {
-        grouping
     };
 
     let (func, divisor) = range_function(range_agg)?;

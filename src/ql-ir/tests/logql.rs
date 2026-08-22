@@ -274,6 +274,34 @@ fn explicit_grouping_overrides_the_stream_identity_default() {
     assert_eq!(agg.by, vec!["service.name".to_string()]);
 }
 
+/// CodeRabbit finding on #1393: the stream-identity default (D7) is for a
+/// *bare* range aggregation with no outer vector aggregation at all —
+/// `count_over_time(...)` alone. An *explicit* vector aggregation with no
+/// `by()` — `sum(count_over_time(...))` — means something different: real
+/// Loki (and the old querier path, `logs.rs::execute_plan`'s `Some(_)
+/// outer_agg` branch) collapses it into a *single* series, the same as an
+/// empty `by` anywhere else. `vector_grouping` returning `Ok(Vec::new())`
+/// for `v.grouping == None` must not be reinterpreted as "apply the
+/// default" by `lower_metric_query` — only the truly bare
+/// `MetricQuery::Range` arm gets the default.
+#[test]
+fn explicitly_ungrouped_vector_aggregation_collapses_to_one_series() {
+    let d = doc(r#"sum(count_over_time({service_name="api"}[1h]))"#);
+    let agg = d
+        .pipeline
+        .iter()
+        .find_map(|s| match s {
+            Stage::Aggregate(a) => Some(a.clone()),
+            _ => None,
+        })
+        .expect("an aggregate stage");
+    assert!(
+        agg.by.is_empty(),
+        "sum(...) with no by() must collapse to one series, not default to the stream identity: {:?}",
+        agg.by
+    );
+}
+
 /// Documents that need no v5 feature declare v1, so they remain executable by
 /// an older server. Version is claimed from what the query uses, not stamped
 /// at the maximum.
