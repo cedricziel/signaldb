@@ -10,7 +10,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use common::auth::{
-    AuthError, Authenticator, TenantContext, validate_dataset_id, validate_tenant_id,
+    AuthError, Authenticator, TenantContext, parse_bearer_token, validate_dataset_id,
+    validate_tenant_id,
 };
 use std::sync::Arc;
 
@@ -26,32 +27,7 @@ fn extract_auth_headers(
         .to_str()
         .map_err(|_| AuthError::bad_request("Invalid Authorization header"))?;
 
-    // Parse Bearer token (case-insensitive scheme, trim whitespace)
-    let api_key = {
-        // Split scheme from token at the first whitespace
-        let Some((scheme, token)) = auth_header.split_once(char::is_whitespace) else {
-            return Err(AuthError::bad_request(
-                "Authorization header must be in format: Bearer <token>",
-            ));
-        };
-        let token = token.trim();
-
-        // Verify scheme is "bearer" (case-insensitive)
-        if !scheme.eq_ignore_ascii_case("bearer") {
-            return Err(AuthError::bad_request(
-                "Authorization header must use Bearer scheme",
-            ));
-        }
-
-        // Verify token is not empty after trimming
-        if token.is_empty() {
-            return Err(AuthError::bad_request(
-                "Authorization token cannot be empty",
-            ));
-        }
-
-        token.to_string()
-    };
+    let api_key = parse_bearer_token(auth_header)?;
 
     // Extract and validate X-Tenant-ID header
     let tenant_id_raw = headers
@@ -62,9 +38,16 @@ fn extract_auth_headers(
 
     let tenant_id = validate_tenant_id(tenant_id_raw)?;
 
-    // Extract and validate optional X-Dataset-ID header
-    let dataset_id = match headers.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
-        Some(id) => Some(validate_dataset_id(id)?),
+    // Extract and validate optional X-Dataset-ID header. A non-UTF-8 value
+    // is a malformed header (400), not "the header is absent" (which would
+    // silently ignore it and fall back to the tenant's default dataset).
+    let dataset_id = match headers.get("x-dataset-id") {
+        Some(value) => {
+            let id = value
+                .to_str()
+                .map_err(|_| AuthError::bad_request("Invalid X-Dataset-ID header"))?;
+            Some(validate_dataset_id(id)?)
+        }
         None => None,
     };
 
@@ -529,6 +512,29 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.status_code, 400);
         assert!(err.message.contains("Invalid dataset ID"));
+    }
+
+    #[test]
+    fn test_extract_auth_headers_rejects_non_utf8_dataset_id() {
+        // Finding L2: a non-UTF-8 X-Dataset-ID must be a 400, matching
+        // X-Tenant-ID's existing behavior — not silently treated as absent
+        // (which would fall back to the tenant's default dataset).
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test-api-key-123"),
+        );
+        headers.insert("x-tenant-id", HeaderValue::from_static("acme"));
+        headers.insert(
+            "x-dataset-id",
+            HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
+        );
+
+        let result = extract_auth_headers(&headers);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("X-Dataset-ID"));
     }
 
     #[test]
