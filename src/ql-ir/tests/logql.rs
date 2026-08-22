@@ -58,14 +58,89 @@ fn matcher_operators_map_to_ir_comparisons() {
     let re = leaves(&where_of(r#"{service_name=~"api-.*"}"#));
     assert_eq!(re[0].1, ComparisonOp::Regex);
 
-    // Negations wrap rather than inventing a `NotRegex` operator.
+    // D9: a negative matcher ORs in "the field is absent" rather than
+    // relying on a plain `not`, so Loki's absent-matches-negation semantics
+    // survive the IR's Kleene `not`. See
+    // `negative_matchers_also_match_an_absent_field` for the exact shape.
     assert!(matches!(
         where_of(r#"{service_name!="api"}"#),
-        Predicate::Not(_)
+        Predicate::Or(_)
     ));
     assert!(matches!(
         where_of(r#"{service_name!~"api-.*"}"#),
-        Predicate::Not(_)
+        Predicate::Or(_)
+    ));
+}
+
+/// D9 (`ir-single-lowering`): Loki treats a missing label as the empty
+/// string, so `!=`, `!~`, and `=""` must all match a stream that lacks the
+/// label entirely — not just one holding a different value. `=~` is the one
+/// documented exception (see the module doc).
+#[test]
+fn negative_matchers_also_match_an_absent_field() {
+    let neq = where_of(r#"{region!="eu"}"#);
+    match &neq {
+        Predicate::Or(parts) if parts.len() == 2 => {
+            assert!(matches!(
+                &parts[0],
+                Predicate::Leaf(l) if l.field == "region" && l.op == ComparisonOp::Ne
+            ));
+            assert!(matches!(
+                &parts[1],
+                Predicate::Not(inner) if matches!(
+                    inner.as_ref(),
+                    Predicate::Leaf(l) if l.field == "region" && l.op == ComparisonOp::Exists
+                )
+            ));
+        }
+        other => panic!("expected or[ne, not(exists)], got {other:?}"),
+    }
+
+    let nre = where_of(r#"{region!~"e.*"}"#);
+    match &nre {
+        Predicate::Or(parts) if parts.len() == 2 => {
+            assert!(matches!(
+                &parts[0],
+                Predicate::Not(inner) if matches!(
+                    inner.as_ref(),
+                    Predicate::Leaf(l) if l.field == "region" && l.op == ComparisonOp::Regex
+                )
+            ));
+            assert!(matches!(
+                &parts[1],
+                Predicate::Not(inner) if matches!(
+                    inner.as_ref(),
+                    Predicate::Leaf(l) if l.field == "region" && l.op == ComparisonOp::Exists
+                )
+            ));
+        }
+        other => panic!("expected or[not(regex), not(exists)], got {other:?}"),
+    }
+
+    let empty = where_of(r#"{region=""}"#);
+    match &empty {
+        Predicate::Or(parts) if parts.len() == 2 => {
+            assert!(matches!(
+                &parts[0],
+                Predicate::Leaf(l) if l.field == "region"
+                    && l.op == ComparisonOp::Eq
+                    && l.value.as_ref() == Some(&json!(""))
+            ));
+            assert!(matches!(
+                &parts[1],
+                Predicate::Not(inner) if matches!(
+                    inner.as_ref(),
+                    Predicate::Leaf(l) if l.field == "region" && l.op == ComparisonOp::Exists
+                )
+            ));
+        }
+        other => panic!("expected or[eq \"\", not(exists)], got {other:?}"),
+    }
+
+    // `=~` is unaffected — a plain regex, the documented corner case.
+    assert!(matches!(
+        where_of(r#"{region=~"e.*"}"#),
+        Predicate::Leaf(l) if l.op == ComparisonOp::Regex
     ));
 }
 
@@ -143,6 +218,50 @@ fn rate_becomes_a_count_with_a_divisor() {
 /// A vector aggregation supplies the grouping.
 #[test]
 fn sum_by_supplies_the_grouping() {
+    let d = doc(r#"sum by (service_name) (count_over_time({service_name="api"}[1m]))"#);
+    let agg = d
+        .pipeline
+        .iter()
+        .find_map(|s| match s {
+            Stage::Aggregate(a) => Some(a.clone()),
+            _ => None,
+        })
+        .expect("an aggregate stage");
+    assert_eq!(agg.by, vec!["service.name".to_string()]);
+}
+
+/// D7 (`ir-single-lowering`): a bare range aggregation with no outer `by` at
+/// all is, in real Loki, one series per matching *stream* — not one series
+/// total. The default grouping is the stream identity (`service.name`,
+/// `severity_text`), the same two columns `logs.rs::SERIES_COLUMNS` names on
+/// the querier side (pinned against each other there, since this crate has
+/// no access to the real `LogicalSchema`).
+#[test]
+fn ungrouped_range_aggregation_defaults_to_the_stream_identity() {
+    for query in [
+        r#"count_over_time({service_name="api"}[5m])"#,
+        r#"rate({service_name="api"}[5m])"#,
+    ] {
+        let agg = doc(query)
+            .pipeline
+            .iter()
+            .find_map(|s| match s {
+                Stage::Aggregate(a) => Some(a.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{query}: expected an aggregate stage"));
+        assert_eq!(
+            agg.by,
+            vec!["service.name".to_string(), "severity_text".to_string()],
+            "{query}: an ungrouped range aggregation should default to the stream identity"
+        );
+    }
+}
+
+/// An explicit `by (...)` still wins — the stream-identity default only
+/// applies when the query supplies no grouping at all.
+#[test]
+fn explicit_grouping_overrides_the_stream_identity_default() {
     let d = doc(r#"sum by (service_name) (count_over_time({service_name="api"}[1m]))"#);
     let agg = d
         .pipeline
@@ -275,6 +394,12 @@ fn every_lowered_document_validates() {
             "logs",
             "service.name",
             "service_name",
+            query_ir::ValueType::String,
+        )
+        .with_column(
+            "logs",
+            "severity_text",
+            "severity_text",
             query_ir::ValueType::String,
         )
         .with_column("logs", "body", "body", query_ir::ValueType::String)

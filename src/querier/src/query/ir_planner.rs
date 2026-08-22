@@ -4331,18 +4331,63 @@ mod tests {
 
     #[tokio::test]
     async fn retrieval_only_metadata_cannot_be_used_in_predicates() {
-        let svc = IrService::new(logs_ctx());
+        // `body` moved off the retrieval-only list (`ir-single-lowering` D6);
+        // `span_events` is the retrieval-only example now — see
+        // `span_events_is_retrieval_only` for the dedicated coverage of that
+        // field's own normalization behaviour, and `body_is_filterable_for_string_operators`/
+        // `body_ordered_operators_are_still_rejected` below for `body`.
+        let svc = IrService::new(traces_events_ctx());
         let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
             "result": "rows",
-            "pipeline": [{ "where": { "field": "body", "op": "eq", "value": "a" } }]
+            "pipeline": [{ "where": { "field": "span_events", "op": "exists" } }]
         }));
 
         let err = svc
             .plan(&d, "t", "d", 0)
             .await
             .expect_err("retrieval-only metadata must not be filterable");
-        assert!(format!("{err}").contains("body"), "unexpected error: {err}");
+        assert!(
+            format!("{err}").contains("span_events"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// D6 (`ir-single-lowering`): the harness found every LogQL line filter
+    /// (`|=`/`!=`/`|~`/`!~`) lowers to a predicate on `body`, which
+    /// `LogicalSchema::core()` used to mark retrieval-only — rejecting every
+    /// one of those documents outright. `body` is filterable for string
+    /// operators now.
+    #[tokio::test]
+    async fn body_is_filterable_for_string_operators() {
+        let svc = IrService::new(logs_ctx());
+        for (op, value) in [
+            ("contains", serde_json::json!("a")),
+            ("regex", serde_json::json!("^a$")),
+            ("eq", serde_json::json!("a")),
+            ("ne", serde_json::json!("a")),
+        ] {
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "fields": ["body"],
+                "pipeline": [{ "where": { "field": "body", "op": op, "value": value } }]
+            }));
+            svc.plan(&d, "t", "d", 0)
+                .await
+                .unwrap_or_else(|e| panic!("body {op} should plan: {e}"))
+                .expect("logs table is registered");
+        }
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["body"],
+            "pipeline": [{ "where": { "field": "body", "op": "exists" } }]
+        }));
+        svc.plan(&d, "t", "d", 0)
+            .await
+            .unwrap_or_else(|e| panic!("body exists should plan: {e}"))
+            .expect("logs table is registered");
     }
 
     /// Collect the LogicalPlan node types, root-first, following each node's
