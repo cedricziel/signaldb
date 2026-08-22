@@ -255,6 +255,7 @@ max_uncommitted_rows = 100000 # Row ceiling that triggers an earlier commit for 
 metadata_previous_versions_max = 100 # Previous metadata.json versions retained per table (older deleted on commit)
 table_reconcile_interval = "5m"      # How often to re-run the signal-table reconciler over the tenant registry; "0s" = startup pass only
 wal_marker_retention = "30d"         # How long ANOTHER writer id's WAL idempotency marker is kept on a table; "0s" disables retirement
+max_drain_bytes_per_cycle = 268435456 # 256 MiB. Byte budget per WAL per drain cycle, oldest entries first; 0 disables it
 ```
 
 The writer commits ingested data to Iceberg asynchronously via its background
@@ -282,6 +283,16 @@ longest a writer could be down while still holding undrained WAL entries;
 retiring one too early makes that writer re-insert those rows as duplicates.
 Markers written before markers carried a commit time are only retired once the
 writer process has itself been up longer than the window.
+
+Each drain cycle decodes at most `max_drain_bytes_per_cycle` bytes of pending
+data per WAL, oldest entries first — without a bound, replaying a multi-GB WAL
+built up during an outage decodes the whole thing to Arrow in one tick and can
+OOM-kill the writer into a crash loop. Entries past the budget stay durable and
+unprocessed for a later cycle; `signaldb.writer.entries_deferred_by_budget`
+(gauge) tracks how many. A `Flush` WAL marker is always drained regardless of
+the budget, and `do_action("flush")` loops cycles (bounded by its own
+`FLUSH_TIMEOUT`) until the requested scope's backlog is fully drained, so a
+read-your-writes flush is never cut short by the budget.
 
 ### MCP (Model Context Protocol server)
 

@@ -47,6 +47,15 @@ across all of them is shared infrastructure. A sustained non-zero
 `groups_deferred` alongside rising `signaldb.wal.entries_pending` means commits
 are not keeping up regardless of which.
 
+A third, related gauge: `signaldb.writer.entries_deferred_by_budget` counts WAL
+entries a WAL's backlog held past `[writer].max_drain_bytes_per_cycle` on the
+last drain cycle — left durable and unprocessed, retried on a later cycle
+rather than decoded to Arrow all at once. Distinct from `groups_deferred` (the
+commit-coalescing floor holding back _decoded_ groups): this one is entries the
+cycle never even decoded. Expect brief non-zero spikes right after a restart
+that recovers a large backlog; sustained non-zero means the backlog is larger
+than the budget drains per tick.
+
 ## Resource identity
 
 Every service exports with:

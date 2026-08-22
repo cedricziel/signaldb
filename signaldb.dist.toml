@@ -338,6 +338,15 @@ table_reconcile_interval = "5m"
 # entries. Markers written before markers carried a commit time are only
 # retired once the writer process has itself been up longer than this window.
 wal_marker_retention = "30d"
+#
+# Byte budget for how much backlog one drain cycle decodes from a single WAL,
+# oldest entries first. Without a budget, replaying a multi-GB WAL built up
+# during an outage decodes it all to Arrow in one tick, which can OOM-kill the
+# writer and restart into the same backlog (a crash loop). Entries left out by
+# the budget stay durable and unprocessed; a later cycle picks them up. "0"
+# disables the budget. A Flush marker is always drained regardless, so a
+# scoped flush request is never starved by an unrelated backlog.
+max_drain_bytes_per_cycle = 268435456 # 256 MiB
 
 [acceptor]
 # Acceptor transport limits. One value drives both the OTLP/HTTP request

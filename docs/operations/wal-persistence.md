@@ -325,6 +325,14 @@ that seed the gauge drifts negative after every restart that recovers a
 backlog, since those entries are decremented when processed but were
 incremented by a process that is gone.
 
+Replay is budgeted, not all-at-once: each drain cycle decodes at most
+`[writer].max_drain_bytes_per_cycle` (default 256 MiB) of backlog per WAL,
+oldest entries first, so a multi-GB backlog left by a long outage drains over
+several cycles instead of being decoded to Arrow in a single tick — which
+would risk OOM-killing the writer into a crash loop that never makes progress.
+See the Configuration reference for the knob and
+`signaldb.writer.entries_deferred_by_budget`.
+
 #### Record Framing and Checksums
 
 Every WAL record carries a length and a CRC-32 of its payload, and every
