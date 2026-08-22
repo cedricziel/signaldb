@@ -113,8 +113,8 @@
 use std::sync::Arc;
 
 use datafusion::arrow::array::{
-    Array, Float64Array, MapBuilder, MapFieldNames, RecordBatch, StringArray, StringBuilder,
-    TimestampNanosecondArray,
+    Array, BooleanArray, Float64Array, MapBuilder, MapFieldNames, RecordBatch, StringArray,
+    StringBuilder, TimestampNanosecondArray,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
 use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
@@ -125,12 +125,14 @@ use common::query_ir::Document;
 use logql::Expr as LogqlExpr;
 
 use super::MetricQueryParams;
+use super::SearchQueryParams;
 use super::error::QuerierError;
 use super::ir_planner::plan_document;
 use super::logql::{AttrContext, log_query_filter_with_columns};
 use super::logs::{LogsService, materialized_columns_of};
 use super::search_filter;
 use super::table_lookup::optional_table;
+use super::trace::TraceService;
 
 const TENANT: &str = "t";
 const DATASET: &str = "d";
@@ -1582,4 +1584,232 @@ async fn old_logql_log_query_df(ctx: &SessionContext, q: &str, fields: &[&str]) 
         df = df.filter(filter).unwrap();
     }
     df.select_columns(fields).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Task 2.3b/3.4: endpoint-level agreement — `TraceService::find_traces_with_tenant`
+// with the `ir-single-lowering` switch on vs off, over the corpus and the
+// promoted-attribute/combining-semantics adversarial cases.
+// ---------------------------------------------------------------------------
+
+/// A `traces` table with the full schema [`super::trace::TraceService`]'s
+/// search assembly reads (unlike [`traces_fixture`], which only carries what
+/// the plan-comparison tests above project) — same two rows as
+/// [`traces_fixture`], so every `TRACEQL_CORPUS`/`TAGS_CORPUS` query that
+/// matches there matches identically here.
+fn traces_endpoint_fixture() -> SessionContext {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("trace_id", DataType::Utf8, false),
+        Field::new("span_id", DataType::Utf8, false),
+        Field::new("parent_span_id", DataType::Utf8, true),
+        Field::new("span_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("span_kind", DataType::Utf8, true),
+        Field::new("status_code", DataType::Utf8, true),
+        Field::new("is_root", DataType::Boolean, false),
+        Field::new("start_time_unix_nano", DataType::Int64, false),
+        Field::new("duration_nanos", DataType::Int64, false),
+        map_field_named("span_attributes"),
+        map_field_named("resource_attributes"),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["t0", "t1"])),
+            Arc::new(StringArray::from(vec!["s0", "s1"])),
+            Arc::new(StringArray::from(vec![None, Some("s0")])),
+            Arc::new(StringArray::from(vec!["GET /api", "POST /x"])),
+            Arc::new(StringArray::from(vec!["api", "web"])),
+            Arc::new(StringArray::from(vec![Some("Server"), Some("Internal")])),
+            Arc::new(StringArray::from(vec![Some("Error"), Some("Ok")])),
+            Arc::new(BooleanArray::from(vec![true, false])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![10_i64, 20])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![
+                100_i64, 200,
+            ])),
+            build_map(&[&[("http.method", "GET"), ("http.status_code", "500")], &[]]),
+            build_map(&[&[("k8s.pod.name", "p"), ("service.name", "api")], &[]]),
+        ],
+    )
+    .unwrap();
+    let ctx = SessionContext::new();
+    register(&ctx, "traces", schema, batch);
+    ctx
+}
+
+/// A comparable, deterministic form of a search result: top-level trace
+/// order sorted by `trace_id` (`Trace.spans` is already deterministic —
+/// `build_span_hierarchy` sorts by start time then span id — but two
+/// independently-truncated searches can still order traces differently),
+/// serialized to JSON so `Span::attributes`/`resource` (`HashMap`, whose
+/// iteration order is randomized per-instance, not just per-process) compare
+/// by content rather than by incidental Debug-output order.
+fn canonicalize_traces(mut traces: Vec<common::model::trace::Trace>) -> serde_json::Value {
+    traces.sort_by(|a, b| a.trace_id.cmp(&b.trace_id));
+    serde_json::to_value(&traces).expect("Trace serializes to JSON")
+}
+
+async fn search_traces(
+    ctx: &SessionContext,
+    query: SearchQueryParams,
+    via_ir: bool,
+) -> Result<Vec<common::model::trace::Trace>, QuerierError> {
+    TraceService::new(ctx.clone(), "traces".to_string())
+        .with_trace_search_via_ir(via_ir)
+        .find_traces_with_tenant(query, TENANT, DATASET)
+        .await
+}
+
+fn q_only(q: &str) -> SearchQueryParams {
+    SearchQueryParams {
+        q: Some(q.to_string()),
+        tags: None,
+        min_duration: None,
+        max_duration: None,
+        limit: None,
+        start: None,
+        end: None,
+    }
+}
+
+fn tags_only(tags: &str) -> SearchQueryParams {
+    SearchQueryParams {
+        q: None,
+        tags: Some(tags.to_string()),
+        min_duration: None,
+        max_duration: None,
+        limit: None,
+        start: None,
+        end: None,
+    }
+}
+
+/// Every `TRACEQL_CORPUS` query both paths accept must produce the identical
+/// assembled search result whether `trace_search_via_ir` is off or on — not
+/// merely the identical plan (2.3, above), which the compat layer's own
+/// assembly sits downstream of (module doc, task 2.3b).
+#[tokio::test]
+async fn traceql_corpus_search_results_agree_with_switch_on_and_off() {
+    let ctx = traces_endpoint_fixture();
+    for q in TRACEQL_CORPUS {
+        if old_traceql_class(q, &AttrContext::default()) != Class::Accept {
+            continue;
+        }
+        let old = search_traces(&ctx, q_only(q), false)
+            .await
+            .unwrap_or_else(|e| panic!("{q}: switch off failed: {e}"));
+        let new = search_traces(&ctx, q_only(q), true)
+            .await
+            .unwrap_or_else(|e| panic!("{q}: switch on failed: {e}"));
+        assert_eq!(
+            canonicalize_traces(old),
+            canonicalize_traces(new),
+            "{q}: switch on/off disagree on the assembled search result"
+        );
+    }
+}
+
+/// Same agreement, for the `tags` corpus.
+#[tokio::test]
+async fn tags_corpus_search_results_agree_with_switch_on_and_off() {
+    let ctx = traces_endpoint_fixture();
+    for tags in TAGS_CORPUS {
+        if old_tags_class(tags) != Class::Accept {
+            continue;
+        }
+        let old = search_traces(&ctx, tags_only(tags), false)
+            .await
+            .unwrap_or_else(|e| panic!("{tags}: switch off failed: {e}"));
+        let new = search_traces(&ctx, tags_only(tags), true)
+            .await
+            .unwrap_or_else(|e| panic!("{tags}: switch on failed: {e}"));
+        assert_eq!(
+            canonicalize_traces(old),
+            canonicalize_traces(new),
+            "{tags}: switch on/off disagree on the assembled search result"
+        );
+    }
+}
+
+/// `q` and `tags` together, at the endpoint level (task 3.4's explicit case:
+/// no existing test sent both before task 3.3 made them one document).
+#[tokio::test]
+async fn q_and_tags_together_search_results_agree_with_switch_on_and_off() {
+    let ctx = traces_endpoint_fixture();
+    let query = SearchQueryParams {
+        q: Some(r#"{ resource.service.name = "api" }"#.to_string()),
+        tags: Some("http.method=GET".to_string()),
+        min_duration: None,
+        max_duration: None,
+        limit: None,
+        start: None,
+        end: None,
+    };
+    let old = search_traces(&ctx, query.clone(), false).await.unwrap();
+    let new = search_traces(&ctx, query, true).await.unwrap();
+    assert_eq!(
+        canonicalize_traces(old),
+        canonicalize_traces(new),
+        "q+tags together: switch on/off disagree on the assembled search result"
+    );
+}
+
+/// The D8 combining-semantics divergence
+/// (`adversarial_unscoped_attribute_combining_semantics_diverge`, above)
+/// reproduces at the endpoint level too, not just in the raw plan/row
+/// comparison: the old path's OR-across-containers still finds the
+/// resource-scope match the new path's coalesce never reaches. Asserts the
+/// *divergence*, matching the module doc's pinned finding — if this ever
+/// starts agreeing, the D8 gap was closed and this assertion (and the
+/// triage table entry) should be deleted, not "fixed".
+#[tokio::test]
+async fn adversarial_unscoped_attribute_combining_semantics_diverge_at_endpoint() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("trace_id", DataType::Utf8, false),
+        Field::new("span_id", DataType::Utf8, false),
+        Field::new("parent_span_id", DataType::Utf8, true),
+        Field::new("span_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("span_kind", DataType::Utf8, true),
+        Field::new("status_code", DataType::Utf8, true),
+        Field::new("is_root", DataType::Boolean, false),
+        Field::new("start_time_unix_nano", DataType::Int64, false),
+        Field::new("duration_nanos", DataType::Int64, false),
+        map_field_named("span_attributes"),
+        map_field_named("resource_attributes"),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["t0"])),
+            Arc::new(StringArray::from(vec!["s0"])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec!["POST /api"])),
+            Arc::new(StringArray::from(vec!["api"])),
+            Arc::new(StringArray::from(vec![Some("Internal")])),
+            Arc::new(StringArray::from(vec![Some("Ok")])),
+            Arc::new(BooleanArray::from(vec![true])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![10_i64])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![100_i64])),
+            build_map(&[&[("http.method", "POST")]]),
+            build_map(&[&[("http.method", "GET")]]),
+        ],
+    )
+    .unwrap();
+    let ctx = SessionContext::new();
+    register(&ctx, "traces", schema, batch);
+
+    let query = q_only(r#"{ .http.method = "GET" }"#);
+    let old = search_traces(&ctx, query.clone(), false).await.unwrap();
+    let new = search_traces(&ctx, query, true).await.unwrap();
+    assert_eq!(
+        old.len(),
+        1,
+        "old path: OR across containers matches the resource-scope GET"
+    );
+    assert_eq!(
+        new.len(),
+        0,
+        "if this now matches, the D8 combining-semantics gap was closed at the endpoint level — update the triage table, don't just delete this assertion"
+    );
 }

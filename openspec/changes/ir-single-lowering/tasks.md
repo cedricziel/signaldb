@@ -39,6 +39,10 @@
       compat layer assembles Tempo and Loki shapes downstream of the plan, and
       a projection or column-name change would pass a plan diff while altering
       what a client receives.
+      (traces: done in §3 — `tests-integration::router_tempo_endpoints::test_search_filters_are_applied_via_ir`
+      and the `query::trace::tests::search_via_ir_matches_old_path_for_*`
+      unit tests exercise `find_traces_with_tenant` end to end with the
+      switch both ways; logs: §4.)
       (Completed per signal in §3/§4, where the switch makes both paths
       reachable from the endpoint.)
 - [x] 2.4 Run it and triage every difference. Each is a finding about one of
@@ -66,24 +70,24 @@
 
 ## 3. Traces
 
-- [ ] 3.0 Fix the promoted-column gap for scope-qualified fields in
+- [x] 3.0 Fix the promoted-column gap for scope-qualified fields in
       `ir_planner::SchemaResolver::column_for` (D10): strip the scope before
       `materialized_column_name`, as `Lowering::qualified_attr` does. Failing
       test first; the harness's `adversarial_promoted_attribute_agrees_on_result`
       then moves from a row-level to a plan-level comparison.
-- [ ] 3.1 **Failing test first**: extend the trace-search integration coverage
+- [x] 3.1 **Failing test first**: extend the trace-search integration coverage
       with a query whose result depends on attribute promotion, and confirm it
       passes on the old path — the regression net for 3.3.
-- [ ] 3.2 Add the `Condition`-to-IR shim for Tempo's `tags` parameter, in the
+- [x] 3.2 Add the `Condition`-to-IR shim for Tempo's `tags` parameter, in the
       querier (D4 — `tags` is an HTTP encoding, not a language, so it does not
       belong in `ql-ir`).
-- [ ] 3.3 Route trace search through `ql_ir::traceql_to_ir` and
+- [x] 3.3 Route trace search through `ql_ir::traceql_to_ir` and
       `plan_document`, behind the per-signal switch (D3), defaulting to the old
       path. The switch governs **the whole trace-search filter**, not `q`
       alone: a request may carry `q`, `tags`, both, or neither, and the two
       contribute conditions to one conjunction. Splitting them across two
       lowerings would produce a filter neither path was tested for. - `q` only → lower the text - `tags` only → lower the conditions via the 3.2 shim - both → one document conjoining them, in the order the old path used - neither → no filter stage, exactly as today
-- [ ] 3.4 `cargo test -p querier -p tests-integration` green with the switch
+- [x] 3.4 `cargo test -p querier -p tests-integration` green with the switch
       both ways. `test_search_filters_are_applied` must pass unmodified in both
       — including the 400/501 assertions from `publishable-ql-crates`. Add a
       case sending `q` and `tags` together, since 3.3 makes that one document
