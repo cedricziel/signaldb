@@ -18,6 +18,7 @@ tonic.workspace = true
 
 tracing.workspace = true
 tokio.workspace = true
+tokio-stream = { workspace = true, features = ["net"] }
 futures.workspace = true
 
 anyhow.workspace = true

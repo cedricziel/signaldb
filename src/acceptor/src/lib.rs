@@ -5,6 +5,7 @@ pub mod services;
 
 use std::{net::SocketAddr, sync::Arc};
 
+use anyhow::Context;
 use axum::{
     Extension, Router,
     routing::{get, post},
@@ -257,9 +258,24 @@ pub async fn serve_otlp_grpc(
         move |req| grpc_auth_interceptor(auth_for_profiles.clone(), req),
     );
 
-    init_tx
-        .send(())
-        .expect("Unable to send init signal for OTLP/gRPC");
+    // Bind before signaling init: sending init_tx first would let the CLI
+    // log "listening" for a port that turned out to be unbindable (e.g.
+    // already in use), and a bind failure surfaced only as a panic in the
+    // spawned task instead of a startup error the CLI could fail fast on.
+    let listener = tokio::net::TcpListener::bind(config.addr)
+        .await
+        .with_context(|| format!("Failed to bind OTLP/gRPC listener on {}", config.addr))?;
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    // A dropped receiver means the CLI already gave up waiting on us — most
+    // often because the *other* server (gRPC/HTTP) failed to start first and
+    // the CLI's sequential `grpc_init_rx.await?` / `http_init_rx.await?`
+    // returned early, dropping this receiver before we got here. That is a
+    // real (if unlikely) race, not a programming error, so it must not
+    // panic: propagate it like any other startup failure.
+    init_tx.send(()).map_err(|_| {
+        anyhow::anyhow!("Unable to send init signal for OTLP/gRPC: receiver dropped")
+    })?;
 
     tonic::transport::Server::builder()
         .layer(crate::middleware::GrpcTraceLayer)
@@ -267,12 +283,12 @@ pub async fn serve_otlp_grpc(
         .add_service(trace_server)
         .add_service(metric_server)
         .add_service(profile_server)
-        .serve_with_shutdown(config.addr, async {
+        .serve_with_incoming_shutdown(incoming, async {
             shutdown_rx.await.ok();
             tracing::info!("Shutting down OTLP/gRPC acceptor");
         })
         .await
-        .expect("Unable to start OTLP acceptor");
+        .context("OTLP/gRPC server error")?;
 
     stopped_tx
         .send(())
@@ -998,11 +1014,17 @@ pub async fn serve_otlp_http(
     tracing::info!("Prometheus remote_write endpoint enabled at POST /api/v1/write");
     tracing::info!("OTLP profiles endpoint enabled at POST /v1development/profiles");
 
-    init_tx
-        .send(())
-        .expect("Unable to send init signal for OTLP/HTTP");
-
+    // Bind before signaling init: sending init_tx first would let the CLI
+    // log "listening" for a port that turned out to be unbindable (e.g.
+    // already in use).
     let listener = TcpListener::bind(config.addr).await?;
+
+    // A dropped receiver means the CLI already gave up waiting on us — see
+    // the matching comment in serve_otlp_grpc. Propagate, don't panic.
+    init_tx.send(()).map_err(|_| {
+        anyhow::anyhow!("Unable to send init signal for OTLP/HTTP: receiver dropped")
+    })?;
+
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
