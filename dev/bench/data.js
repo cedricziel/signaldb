@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787286271796,
+  "lastUpdate": 1787373084794,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -1373,6 +1373,244 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 858731,
             "range": "± 11896",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "92d165fb14494ed97bc49bc90b19af1d1341a596",
+          "message": "test(querier): pin ql-ir's field mapping against the real logical schema (#1379)\n\n* feat(ql-ir): lower TraceQL onto the query IR\n\nStarts design D6 as option (c): a bridge crate between the parsers and the\nIR, rather than putting the lowering in either.\n\nNot in query-ir, which would make SignalDB's own query surface import every\ncompat grammar. Not in the parser crates either, for two reasons: cargo\npublish rejects a path-only dependency, so logql-parser depending on the\nunpublished query-ir would break publishing outright — and more importantly,\nhow TraceQL maps onto *our* IR is not part of TraceQL. Tempo has no such IR.\nThat mapping is a SignalDB decision, and belongs in a SignalDB crate, the\nsame argument that kept unscoped_selector private.\n\nTraceQL first because it is the provable case: its equality subset is\nliterally a where stage of conjoined equality leaves, so the lowering is a\nrename of vocabulary rather than a translation of structure. The scoping\ncarries over intact — the IR's container qualifiers mean what TraceQL's\nscopes mean, so span.http.method stays scoped and a bare key stays\ncoalescing.\n\nField names come from LogicalSchema::core() rather than TraceQL's spelling:\nname becomes span.name, status becomes status.code, kind becomes span_kind.\nVerified against the schema instead of guessed, and mutation-tested — the\nsuite catches span.name silently becoming name.\n\nql-ir is publish = false and is deliberately absent from the leaf-purity\nlist: depending on all three crates is its entire job.\n\n* docs: add ql-ir to the crate tables and the FDAP rationale\n\nThe new crate owes a row in both workspace tables. fdap.md gains the\nreason it belongs in that section: all three of ql-ir's dependencies are\nFDAP-free, so it is too — which is what separates client-side query\nconstruction from client-side syntax checking.\n\nVerified rather than asserted: cargo tree -p ql-ir shows zero datafusion,\narrow, parquet or iceberg.\n\nDeliberately not added to the architecture skill's query path. ql-ir\ncompiles but nothing calls it — no service, endpoint, or Flight ticket —\nand describing it there would document an aspiration as architecture. The\nsection that genuinely changes is the one covering the two parallel\nlowerings, and it changes when ql-ir is wired in.\n\n* docs(ql-ir): record why LogQL cannot lower onto the IR yet\n\nProbed the IR's stage vocabulary against LogQL's surface before writing more\nlowering, since the answer decides whether this crate can finish.\n\nOf LogQL's 15 range functions, 7 map to existing IR aggregates; of its 11\nvector aggregations, 9 do. The unmapped eight split in two, and the split is\nthe actual finding:\n\nAdditive — stddev/stdvar/first/last/absent need new AggFn variants and\nnothing else.\n\nStructural — rate, bytes_rate and rate_counter are a per-bucket count\ndivided by the window, and the IR has no arithmetic stage at all. Confirmed\nby grep: nothing computes over another stage's output. The same absence\nblocks binary operations between series and label_replace.\n\nrate is the most-used LogQL metric function, so partial coverage is not a\nuseful state to ship. Closing the gap is a design change to SignalDB's own\nquery surface, not a lowering detail — which makes it a proposal, not a\ncontinuation of this branch.\n\n* feat(query-ir)!: aggregate divisor and four functions at irVersion 5\n\nI called rate structurally inexpressible. The querier disproves it:\n\n    RangeFunction::Rate => (Aggregate::Count, Some(range_seconds))\n\nA rate is an aggregate plus a scalar divisor, and MetricPlan already carries\nrate_divisor_seconds through vector aggregation. That makes it additive, not\nstructural — my earlier reading generalised from 'no arithmetic stage exists'\nto 'rate needs one'.\n\nSo v5 adds two things to aggregate, neither changing document shape:\n\n- stddev, stdvar, first, last as AggFn variants. first/last order by the\n  source's own time column via SourcePlan.time_col, so 'first' means earliest\n  rather than whatever order the scan produced.\n- an optional divisor, reporting an aggregate per unit instead of absolute.\n  Named for the operation rather than per_seconds: dividing by a scalar is\n  not inherently temporal and this IR is signal-agnostic.\n\nA divided aggregate is Float64 whatever it divided — a count per 300 seconds\nis not an Int64. Divisors must be finite and positive; JSON cannot carry NaN\nor infinity (serde_json renders both as null, i.e. absent), so that guard\nexists for Rust callers constructing documents directly, which is exactly\nwhat ql-ir does. A test pins both paths.\n\nAggFn is deliberately not non_exhaustive: the compiler found the single\nplanner match that needed the new arms, which is the outcome we want when a\nnew aggregate appears.\n\nBREAKING CHANGE: irVersion 5 is the new maximum. Every v1-v4 document keeps\nits exact meaning; documents using stddev/stdvar/first/last or a divisor\nbelow v5 are rejected naming the version they need, never silently coerced.\n\n* docs: document irVersion 5's aggregate additions\n\nThe user-facing IR reference gains an aggregate-function table with the\nversion each was introduced in, and a section on divisor showing the rate\nshape it exists for.\n\nCorrects the architecture skill, which asserted that rate has no IR\nequivalent. That was true when written and my change makes it false. What\nremains genuinely inexpressible is narrower and now stated as such: irate,\nhistogram_fraction, and cross-series formulas like a / b and label_replace,\nall of which need computation across series rather than within one\naggregate.\n\nNo client regeneration: the OpenAPI models pipeline as opaque objects and\nirVersion as a plain integer, so the stage grammar is deliberately outside\nthe schema. cargo xtask check confirms.\n\n* feat(ql-ir): lower LogQL onto the query IR\n\nLog queries become a where stage; metric queries a where plus a stepped\naggregate. rate lowers as count carrying a divisor — the case irVersion 5\nwas added for, and the one I had wrongly called structurally impossible.\n\nWhat the IR still cannot say is refused by name rather than approximated:\ncross-series arithmetic (a / b, label_replace), `without` grouping, topk\nand bottomk as vector aggregations, ip(), unwrap, irate. A partially\nlowered query returns more rows than asked for while looking successful,\nwhich is the failure this crate exists to prevent.\n\nReview findings applied:\n\n- Document::minimum_ir_version() moves the version rule into query-ir,\n  where it belongs. ql-ir was asserting 'a divisor means 5' itself, making\n  the same fact true in three places with nothing keeping them in step. The\n  lowering now builds the document and asks it what version it needs, which\n  also covers the v2/v3/v4 gates it never knew about.\n- One shared ir_range helper instead of the same Range literal in both\n  lowerings.\n- label_field now lists trace_id and span_id explicitly, matching the set\n  querier::query::logql::column_for_label special-cases. They pass through\n  unchanged either way, but the two lists had already drifted, and a future\n  alias added to one is now visibly absent from the other.\n\nDocuments claim the lowest version that carries them, so a query needing\nnothing from v5 declares v1 and stays executable on an older server.\n\n* test(querier): pin ql-ir's field mapping against the real logical schema\n\nql-ir is a leaf crate by design, so it cannot see LogicalSchema — its field\nnames (span.name, status.code, span_kind, service.name, severity_text) were\nonly as correct as my reading of logical.rs, with nothing checking them. A\nwrong name does not fail loudly: it resolves through the attribute-container\nfallback as a key nothing ever has, and the query silently returns no rows.\n\nThis test is the join, and it takes ql-ir as the querier's first dependency\non it — the first step of routing the compat endpoints through the IR.\n\nThe first version of it did not work. It asked \"does the emitted name\nresolve?\", which cannot catch a typo: an unrecognised name is\nindistinguishable from an ordinary attribute key. Mutating status.code to\nstatus_code — the physical column, exactly the mistake worth catching — left\nit green. It now pins the expected logical field per query, so a wrong name\nfails on the expectation rather than needing to be recognised, and the same\nmutation reports:\n\n    { status = error }: expected a predicate on 'status.code', got [\"status_code\"]\n\nNot the full swap: routing Tempo search through ir_planner needs a\nSchemaResolver, which is private and wants a live DFSchema, and that is too\nlarge to do safely against a live API in one change. This is its\nprerequisite — the names have to line up before anything is rerouted.",
+          "timestamp": "2026-08-21T22:55:13Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/92d165fb14494ed97bc49bc90b19af1d1341a596"
+        },
+        "date": 1787373082518,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1929110,
+            "range": "± 19175",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1138438,
+            "range": "± 31864",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 742942,
+            "range": "± 24965",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1594900,
+            "range": "± 22007",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 763401,
+            "range": "± 18002",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1872005,
+            "range": "± 44156",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1168523,
+            "range": "± 14375",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1445740,
+            "range": "± 8237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2712506,
+            "range": "± 30777",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 12710333,
+            "range": "± 251101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 117761665,
+            "range": "± 4411419",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 4239678,
+            "range": "± 64647",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8711453,
+            "range": "± 134818",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 15801315,
+            "range": "± 360957",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 31525515,
+            "range": "± 863155",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 985908,
+            "range": "± 7882",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2374733,
+            "range": "± 49501",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3389569,
+            "range": "± 168834",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6572395,
+            "range": "± 164286",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 616726,
+            "range": "± 7874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 21050471,
+            "range": "± 263433",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 28265944,
+            "range": "± 1503623",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 26961816,
+            "range": "± 305870",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 27217773,
+            "range": "± 301713",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 27010413,
+            "range": "± 200566",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 6606280,
+            "range": "± 58977",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 15835027,
+            "range": "± 182415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 34047761,
+            "range": "± 217925",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 28552526,
+            "range": "± 2067719",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 6608692,
+            "range": "± 55325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 70815841,
+            "range": "± 1281487",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 130983950,
+            "range": "± 2299939",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 141377259,
+            "range": "± 1573306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1093914,
+            "range": "± 32570",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1069299,
+            "range": "± 9066",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1119429,
+            "range": "± 27131",
             "unit": "ns/iter"
           }
         ]
