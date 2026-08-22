@@ -390,7 +390,17 @@ fn otlp_cors_layer(allowed_origins: &[String]) -> tower_http::cors::CorsLayer {
     } else {
         let origins: Vec<axum::http::HeaderValue> = allowed_origins
             .iter()
-            .filter_map(|o| o.parse().ok())
+            .filter_map(|o| match o.parse() {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    tracing::warn!(
+                        origin = %o,
+                        error = %e,
+                        "Dropping unparseable entry from self_monitoring.frontend.allowed_origins"
+                    );
+                    None
+                }
+            })
             .collect();
         cors.allow_origin(origins)
     }
@@ -1062,6 +1072,29 @@ mod cors_tests {
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .is_none(),
             "unlisted origin must not be granted CORS access"
+        );
+    }
+
+    /// Finding L3: an unparseable entry in `allowed_origins` must not take
+    /// down CORS for the *valid* entries alongside it — it's dropped (with
+    /// a warning, not exercised by this test) and the rest still work.
+    #[tokio::test]
+    async fn preflight_still_allows_valid_origins_alongside_an_unparseable_one() {
+        let allowed = vec![
+            "not a valid header value\n".to_string(),
+            "http://ui.example:3000".to_string(),
+        ];
+
+        let res = app_with_cors(&allowed)
+            .oneshot(preflight("http://ui.example:3000"))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .map(|v| v.to_str().unwrap().to_string()),
+            Some("http://ui.example:3000".to_string()),
+            "the valid origin must still be allowed despite the unparseable entry"
         );
     }
 }
