@@ -259,6 +259,10 @@ aggregate by a scalar is not inherently about time. The divisor must be
 greater than zero; a divided aggregate is always a float, even when the
 function it divided returns an integer.
 
+`divisor` composes with [scoping](#scoping-an-aggregate-to-a-subset): an
+aggregate may narrow which records it consumes *and* report the result per
+unit, which is how you ask for the error rate rather than the overall rate.
+
 ### Scoping an aggregate to a subset
 
 An aggregate may carry an optional `where` predicate scoping which records _it_
