@@ -1476,6 +1476,15 @@ pub struct QuerierConfig {
     /// queries are rejected with RESOURCE_EXHAUSTED. Unset means
     /// unlimited.
     pub max_concurrent_queries_per_tenant: Option<usize>,
+    /// **TEMPORARY rollout switch (`ir-single-lowering`, design D3).** Routes
+    /// Tempo trace search (`q`, `tags`, duration bounds) through
+    /// `ql_ir::traceql_to_ir` + the shared IR planner instead of
+    /// `search_filter`'s dedicated TraceQL lowering. Defaults to the old
+    /// path. Removed, along with the old lowering, once traces have run on
+    /// the IR path in production with the differential harness green (§5 of
+    /// `ir-single-lowering`) — a switch that outlives its rollout becomes a
+    /// second untested code path.
+    pub trace_search_via_ir: bool,
     /// DataFusion scan/pushdown tuning for the query engine. See
     /// `[querier.datafusion]` in `signaldb.dist.toml`.
     pub datafusion: QuerierDataFusionConfig,
@@ -1491,6 +1500,7 @@ impl Default for QuerierConfig {
             max_sql_rows: 1_000_000,
             max_search_limit: 1_000,
             max_concurrent_queries_per_tenant: None,
+            trace_search_via_ir: false,
             datafusion: QuerierDataFusionConfig::default(),
         }
     }
@@ -1801,6 +1811,8 @@ mod tests {
         assert_eq!(config.querier.query_timeout, Duration::from_secs(60));
         assert_eq!(config.querier.max_sql_rows, 1_000_000);
         assert_eq!(config.querier.max_search_limit, 1_000);
+        // The `ir-single-lowering` rollout switch defaults to the old path.
+        assert!(!config.querier.trace_search_via_ir);
 
         Jail::expect_with(|jail| {
             jail.create_file(
@@ -1812,6 +1824,7 @@ mod tests {
                 query_timeout = "5s"
                 max_sql_rows = 1000
                 max_search_limit = 50
+                trace_search_via_ir = true
                 "#,
             )?;
             let config: Configuration = Figment::new()
@@ -1823,6 +1836,7 @@ mod tests {
             assert_eq!(config.querier.query_timeout, Duration::from_secs(5));
             assert_eq!(config.querier.max_sql_rows, 1000);
             assert_eq!(config.querier.max_search_limit, 50);
+            assert!(config.querier.trace_search_via_ir);
             Ok(())
         });
     }

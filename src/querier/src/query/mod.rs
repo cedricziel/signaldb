@@ -140,7 +140,7 @@ pub struct FindTraceByIdParams {
 /// Mirrors the Tempo search API. `spss` (spans per span set) is applied by
 /// the router when shaping the HTTP response and is intentionally absent
 /// here; unknown JSON fields in the ticket are ignored on deserialization.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SearchQueryParams {
     pub q: Option<String>,
     pub tags: Option<String>,

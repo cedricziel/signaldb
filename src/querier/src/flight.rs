@@ -552,7 +552,8 @@ impl QuerierFlightService {
 
         // Create trace service for specialized trace queries
         let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string())
-            .with_max_search_limit(limits.max_search_limit);
+            .with_max_search_limit(limits.max_search_limit)
+            .with_trace_search_via_ir(limits.trace_search_via_ir);
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
@@ -635,7 +636,8 @@ impl QuerierFlightService {
 
         // Create trace service for specialized trace queries
         let trace_service = TraceService::new(session_ctx.as_ref().clone(), "traces".to_string())
-            .with_max_search_limit(limits.max_search_limit);
+            .with_max_search_limit(limits.max_search_limit)
+            .with_trace_search_via_ir(limits.trace_search_via_ir);
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
