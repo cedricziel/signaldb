@@ -8,19 +8,29 @@
 //! this shim stays on the querier side of that boundary rather than growing
 //! `ql_ir`'s surface for one compat parameter (D4).
 //!
-//! Rather than re-implementing `ql_ir::traceql_lower`'s field-naming and
-//! status/kind normalization rules for a second time, each condition is
-//! rendered back into the one-condition TraceQL spanset text that would have
-//! produced it, then handed to [`ql_ir::traceql_to_ir`] — the *same* code
-//! path `ql-ir` uses for TraceQL's own `q` parameter. This is not a
-//! duplicate lowering that could drift from ql-ir's: it calls ql-ir's public
-//! function directly, so the two cannot disagree by construction. The
-//! module's unit tests still pin this against `traceql_to_ir` explicitly, to
-//! document the guarantee and catch a signature change that would silently
-//! break it.
+//! Each condition is lowered by
+//! [`ql_ir::traceql_condition_to_predicate`] — the exact per-condition step
+//! `ql_ir::traceql_to_ir` uses internally for TraceQL's own `q` parameter,
+//! exposed for exactly this reuse — so field-naming and status/kind
+//! normalization cannot drift from `ql-ir`'s: there is only one
+//! implementation, not two that happen to agree.
+//!
+//! An earlier version of this shim rendered each condition back into
+//! one-condition TraceQL spanset *text* and re-parsed it through
+//! `ql_ir::traceql_to_ir`, reasoning that reusing the same function this way
+//! also couldn't drift. That was true for field-naming, but wrong in a
+//! different way: TraceQL's string-literal grammar has no escape syntax
+//! (`traceql::parser::parse_value` rejects any embedded `"` outright, and
+//! never un-escapes a backslash), so round-tripping an arbitrary tags value
+//! through it was unsound — a value containing a backslash silently changed
+//! (Rust's `Debug` escaping doubled it, and the doubled form parsed back as
+//! itself), a value with an embedded `"` was rejected even though the old
+//! path accepted it, and a *key* containing `&&` split into a bogus
+//! multi-clause parse instead of one leaf on that literal key. Lowering the
+//! already-parsed [`Condition`] directly has no text to corrupt.
 
-use common::query_ir::{Predicate, Stage};
-use traceql::{Condition, FilterValue, Selector};
+use common::query_ir::Predicate;
+use traceql::Condition;
 
 use super::error::QuerierError;
 
@@ -31,7 +41,8 @@ use super::error::QuerierError;
 pub(crate) fn conditions_to_predicate(conditions: &[Condition]) -> Result<Predicate, QuerierError> {
     let mut predicates = Vec::with_capacity(conditions.len());
     for condition in conditions {
-        predicates.push(condition_to_predicate(condition)?);
+        predicates
+            .push(ql_ir::traceql_condition_to_predicate(condition).map_err(QuerierError::from)?);
     }
     Ok(match predicates.len() {
         1 => predicates.remove(0),
@@ -39,74 +50,18 @@ pub(crate) fn conditions_to_predicate(conditions: &[Condition]) -> Result<Predic
     })
 }
 
-/// Lower one condition via `ql_ir::traceql_to_ir`, extracting its single
-/// `where` stage.
-fn condition_to_predicate(condition: &Condition) -> Result<Predicate, QuerierError> {
-    let rendered = render(condition)?;
-    // The range is discarded — only the predicate the single condition
-    // lowers to is used — so any well-formed range literal will do.
-    let doc = ql_ir::traceql_to_ir(&rendered, "0", "0").map_err(QuerierError::from)?;
-    match doc.pipeline.into_iter().next() {
-        Some(Stage::Where(predicate)) => Ok(predicate),
-        other => unreachable!(
-            "a single non-empty TraceQL spanset always lowers to exactly one Where stage, got {other:?}"
-        ),
-    }
-}
-
-/// Render one condition as the one-condition TraceQL spanset text that
-/// would parse back to the same [`Condition`] — see the module doc for why
-/// this beats duplicating `ql_ir::traceql_lower`'s field-naming rules.
-fn render(condition: &Condition) -> Result<String, QuerierError> {
-    let value = render_value(&condition.value)?;
-    Ok(match &condition.selector {
-        Selector::ServiceName => format!("{{ resource.service.name = {value} }}"),
-        Selector::SpanName => format!("{{ name = {value} }}"),
-        Selector::Status => format!("{{ status = {value} }}"),
-        Selector::Kind => format!("{{ kind = {value} }}"),
-        Selector::SpanAttribute(key) => format!("{{ span.{key} = {value} }}"),
-        Selector::ResourceAttribute(key) => format!("{{ resource.{key} = {value} }}"),
-        Selector::AnyAttribute(key) => format!("{{ .{key} = {value} }}"),
-        // `Selector` is `#[non_exhaustive]`, and `parse_tags` only ever
-        // produces the variants above (`search_filter::tags_selector`) — but
-        // saying so beats silently mis-rendering a selector this build
-        // cannot express as tags.
-        other => {
-            return Err(QuerierError::Unsupported(format!(
-                "tags selector {other:?} is recognised but not lowered by this build"
-            )));
-        }
-    })
-}
-
-/// A filter value as a TraceQL literal. `Debug` on a `String` produces a
-/// double-quoted, escaped Rust string literal, which is also a valid TraceQL
-/// string literal for every value `parse_tags` can produce (its own value
-/// parsing is unquoted-or-double-quoted logfmt, with no escape sequences to
-/// preserve).
-fn render_value(value: &FilterValue) -> Result<String, QuerierError> {
-    Ok(match value {
-        FilterValue::String(s) => format!("{s:?}"),
-        FilterValue::Number(n) => n.clone(),
-        FilterValue::Bool(b) => b.to_string(),
-        other => {
-            return Err(QuerierError::Unsupported(format!(
-                "tags value {other:?} is recognised but not lowered by this build"
-            )));
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::query_ir::{ComparisonOp, Leaf};
+    use traceql::{FilterValue, Selector};
 
     /// Extract the single `Predicate` a one-condition TraceQL query lowers
     /// to, for comparison against the shim's output.
     fn ir_predicate_for(query: &str) -> Predicate {
         let doc = ql_ir::traceql_to_ir(query, "0", "0").unwrap();
         match doc.pipeline.into_iter().next() {
-            Some(Stage::Where(predicate)) => predicate,
+            Some(common::query_ir::Stage::Where(predicate)) => predicate,
             other => panic!("expected exactly one Where stage, got {other:?}"),
         }
     }
@@ -114,8 +69,8 @@ mod tests {
     /// Pin: for every selector kind `parse_tags` can produce, the shim must
     /// equal the predicate `ql_ir::traceql_to_ir` produces for the
     /// equivalent TraceQL text (task 3.2) — by construction, since both call
-    /// the same function, but pinned explicitly so a refactor that breaks
-    /// this is caught here rather than downstream.
+    /// `ql_ir::traceql_condition_to_predicate`, but pinned explicitly so a
+    /// refactor that breaks this is caught here rather than downstream.
     #[test]
     fn matches_traceql_to_ir_for_every_tags_selector_kind() {
         let cases: &[(Condition, &str)] = &[
@@ -156,7 +111,7 @@ mod tests {
             ),
         ];
         for (condition, equivalent_traceql) in cases {
-            let shimmed = condition_to_predicate(condition).unwrap();
+            let shimmed = conditions_to_predicate(std::slice::from_ref(condition)).unwrap();
             let direct = ir_predicate_for(equivalent_traceql);
             assert_eq!(
                 shimmed, direct,
@@ -213,5 +168,72 @@ mod tests {
             ir_predicate_for(r#"{ .http.method = "GET" }"#),
         ]);
         assert_eq!(predicate, expected);
+    }
+
+    /// A backslash in a tags value must survive unchanged. A text
+    /// round-trip through TraceQL doubled it (Rust's `Debug` escaping, then
+    /// parsed back literally by a grammar with no un-escaping) — silently
+    /// filtering on the wrong string, never observed as an error.
+    #[test]
+    fn a_backslash_in_the_value_is_preserved_exactly() {
+        let condition = Condition {
+            selector: Selector::AnyAttribute("file.path".to_string()),
+            value: FilterValue::String(r"C:\Users\foo".to_string()),
+        };
+        let predicate = conditions_to_predicate(std::slice::from_ref(&condition)).unwrap();
+        assert_eq!(
+            predicate,
+            Predicate::Leaf(Leaf {
+                field: "file.path".to_string(),
+                op: ComparisonOp::Eq,
+                value: Some(serde_json::Value::String(r"C:\Users\foo".to_string())),
+            }),
+            "the leaf's value must be the original single-backslash string, not a doubled one"
+        );
+    }
+
+    /// A tags value containing a literal `"` must lower successfully — the
+    /// old (`search_filter::to_expr`) path never rejects it, since it
+    /// compares the raw string directly with no grammar of its own to
+    /// offend. A text round-trip rejected this outright (TraceQL's string
+    /// literal has no escape for an embedded quote).
+    #[test]
+    fn a_value_with_an_embedded_quote_is_accepted() {
+        let condition = Condition {
+            selector: Selector::AnyAttribute("weird.key".to_string()),
+            value: FilterValue::String(r#"va"lue"#.to_string()),
+        };
+        let predicate = conditions_to_predicate(std::slice::from_ref(&condition))
+            .unwrap_or_else(|e| panic!("embedded-quote value should lower, got {e}"));
+        assert_eq!(
+            predicate,
+            Predicate::Leaf(Leaf {
+                field: "weird.key".to_string(),
+                op: ComparisonOp::Eq,
+                value: Some(serde_json::Value::String(r#"va"lue"#.to_string())),
+            })
+        );
+    }
+
+    /// A tags *key* containing `&&` must stay one leaf on that literal key.
+    /// Splicing an unescaped key into TraceQL text handed `&&` to the
+    /// spanset grammar's own AND operator, corrupting one condition into a
+    /// bogus multi-clause parse.
+    #[test]
+    fn a_key_containing_ampersand_ampersand_stays_one_leaf() {
+        let condition = Condition {
+            selector: Selector::AnyAttribute("weird&&key".to_string()),
+            value: FilterValue::String("value".to_string()),
+        };
+        let predicate = conditions_to_predicate(std::slice::from_ref(&condition))
+            .unwrap_or_else(|e| panic!("a literal `&&` in a key should lower, got {e}"));
+        assert_eq!(
+            predicate,
+            Predicate::Leaf(Leaf {
+                field: "weird&&key".to_string(),
+                op: ComparisonOp::Eq,
+                value: Some(serde_json::Value::String("value".to_string())),
+            })
+        );
     }
 }
