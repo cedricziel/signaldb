@@ -161,7 +161,7 @@
       silently absorbed it.
       (Resolved via **attribute resolution**, not the physical-column
       fallback the brief's option (a) was first read as: LogQL `unwrap
-    <label>` names an _attribute_ field (container-coalesced, cast to
+  <label>` names an _attribute_ field (container-coalesced, cast to
       float at plan time) — it never named a physical column even on the
       old path, whose `unwrap_value`/`column_for_label` (`logs.rs`) is a
       bare `col(label)` reference with zero type or registration checking,
@@ -178,7 +178,7 @@
       coercing to a number at plan time with a non-numeric value going
       absent, while a _registered_ String column stays rejected. Landed as
       its own PR ahead of this one (`fix(query-ir): accept an attribute as
-    a numeric aggregate operand`, #1403) since it's a real product bug
+  a numeric aggregate operand`, #1403) since it's a real product bug
       independent of this change. Option (b) — `ql_ir::logql_lower`
       refusing an unresolvable `unwrap` as `Inexpressible` — stays
       available for a target that resolves to nothing at all (no
@@ -200,9 +200,17 @@
       to single-path expected-result pins, task 5.4's trace half — see the
       module's new "Status after §5" doc section and commit
       `refactor(querier): make the IR planner the only trace-search
-  lowering`.)
-- [ ] 5.2 Delete the portion of `logql.rs`/`logql_metric.rs` that `ql-ir`
+lowering`.)
+- [x] 5.2 Delete the portion of `logql.rs`/`logql_metric.rs` that `ql-ir`
       covers. What backs the 4.2 fallback set stays.
+      (Finding, recorded in design.md: the D5 fallback is a whole-document
+      decision, so almost all of `logql.rs`/`logql_metric.rs` remains
+      reachable for some `Inexpressible` shape and is not safely deletable.
+      Only `logql.rs::log_query_filter` — an orphaned public convenience
+      wrapper with zero callers outside its own tests, re-exported at the
+      querier crate root — was actually dead code. Deleted, along with the
+      `lib.rs` re-export; its tests switched to calling
+      `log_query_filter_with_columns` directly.)
 - [ ] 5.3 Remove both switches and their config keys (D3 — a rollout switch
       that outlives its rollout is a second untested path). (Partially done:
       `TraceService`'s switch and its `flight.rs` wiring were removed in 5.1

@@ -75,16 +75,12 @@ const LOG_ATTRIBUTES: &str = "log_attributes";
 const RESOURCE_ATTRIBUTES: &str = "resource_attributes";
 
 /// Lower a LogQL log query to a combined filter expression over the logs
-/// table, or `None` when the query selects everything in range (`{}`).
+/// table, or `None` when the query selects everything in range (`{}`). Aware
+/// of which materialized `label_<key>` columns exist in the target table, so
+/// attribute labels backed by a column are matched exactly instead of by
+/// JSON substring.
 ///
 /// The caller ANDs in the request's time-range predicate.
-pub fn log_query_filter(query: &LogQuery) -> Result<Option<Expr>, QuerierError> {
-    log_query_filter_with_columns(query, &AttrContext::default())
-}
-
-/// Like [`log_query_filter`], but aware of which materialized `label_<key>`
-/// columns exist in the target table, so attribute labels backed by a
-/// column are matched exactly instead of by JSON substring.
 pub fn log_query_filter_with_columns(
     query: &LogQuery,
     ctx: &AttrContext,
@@ -420,12 +416,14 @@ mod tests {
     /// the exact transpilation outcome, not just fragments of it.
     fn sql(query: &str) -> String {
         let q = parse_query(query).expect("parse");
-        let expr = log_query_filter(&q).expect("lower").expect("some filter");
+        let expr = log_query_filter_with_columns(&q, &AttrContext::default())
+            .expect("lower")
+            .expect("some filter");
         format!("{expr}")
     }
 
     fn lower(query: &str) -> Result<Option<Expr>, QuerierError> {
-        log_query_filter(&parse_query(query).expect("parse"))
+        log_query_filter_with_columns(&parse_query(query).expect("parse"), &AttrContext::default())
     }
 
     /// Lower with a set of materialized `label_<key>` columns present.

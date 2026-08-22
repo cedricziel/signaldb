@@ -198,6 +198,35 @@ all):**
   attribute grouping, issue #1392, task 4.0d) — not a fallback trigger, a
   latent bug in the code path a fallback query still runs.
 
+### §5.2 finding: the fallback is whole-query, so almost nothing is deletable
+
+Task 5.2 asked for the portion of `logql.rs`/`logql_metric.rs` `ql-ir` covers
+to be deleted. Having read both files against the enumerated fallback set
+above, the honest finding is: **almost none of it is safely deletable.** The
+D5 fallback is a whole-_document_ decision (`ql_ir::logql_to_ir` either
+lowers the entire query or returns `Inexpressible`), not a per-construct one.
+An `Inexpressible` wrapper — `label_replace(rate({a="b"}[5m]), ...)`, `sum(rate(a))
+/ sum(rate(b))`, an outer `avg` over counts, an `unwrap` in a bare log query —
+still needs the _complete_ old lowering for everything nested inside it: the
+selector's matchers, every line filter, the range aggregation's own function
+dispatch. `plan_metric_query`/`plan_range`/`plan_binary` in `logql_metric.rs`
+and `log_query_filter_with_columns`/`matcher_expr`/`stage_expr`/
+`line_filter_expr`/`label_filter_expr`/`column_expr`/`attribute_expr` (and
+their private helpers) in `logql.rs` all remain reachable through this
+fallback for some corpus shape, so none of them is dead code — deleting any
+of them would silently break the fallback for exactly the queries D5 exists
+to keep working.
+
+**What was actually deletable:** `logql.rs::log_query_filter` — the bare
+(`AttrContext::default()`) convenience wrapper around
+`log_query_filter_with_columns`, re-exported at the querier crate root
+(`pub use query::logql::log_query_filter` in `lib.rs`). It had zero callers
+anywhere in the workspace outside its own module's tests (which called
+`log_query_filter_with_columns` directly instead, with no loss of coverage)
+— not part of the fallback set, not used by `get_series`/`get_labels`/etc.
+(they call `log_query_filter_with_columns` directly), just an orphaned public
+convenience function nothing used. Deleted along with the re-export.
+
 **Closed in §4, no longer in the fallback set:** LogQL line filters (D6),
 LogQL negative label matchers and `=""` (D9), and an ungrouped range
 aggregation's default grouping (D7) — all three used to be either outright
