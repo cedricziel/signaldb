@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acceptor"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1341,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "compactor"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -4098,14 +4098,14 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "logql-parser"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "loki-api"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -4240,7 +4240,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mcp-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -5429,7 +5429,7 @@ dependencies = [
 
 [[package]]
 name = "prometheus-api"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -5599,7 +5599,7 @@ dependencies = [
 
 [[package]]
 name = "pyroscope-api"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -5625,7 +5625,7 @@ checksum = "5a651516ddc9168ebd67b24afd085a718be02f8858fe406591b013d101ce2f40"
 
 [[package]]
 name = "querier"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -6277,7 +6277,7 @@ dependencies = [
 
 [[package]]
 name = "router"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -6912,7 +6912,7 @@ dependencies = [
 
 [[package]]
 name = "signaldb-bin"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "acceptor",
  "anyhow",
@@ -6933,7 +6933,7 @@ dependencies = [
 
 [[package]]
 name = "signaldb-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -6957,7 +6957,7 @@ dependencies = [
 
 [[package]]
 name = "signaldb-sdk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -7568,7 +7568,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-api"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "prost",
  "serde",
@@ -7696,7 +7696,7 @@ dependencies = [
 
 [[package]]
 name = "tests-integration"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "acceptor",
  "anyhow",
@@ -8234,7 +8234,7 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "traceql-parser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.20",
 ]
@@ -9225,7 +9225,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "writer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arrow-flight",

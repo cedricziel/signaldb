@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.4.0](https://github.com/cedricziel/signaldb/compare/writer-v0.3.0...writer-v0.4.0) (2026-08-22)
+
+
+### Features
+
+* sort every producer's rows by the declared key and attest it per file ([#1313](https://github.com/cedricziel/signaldb/issues/1313)) ([c667eda](https://github.com/cedricziel/signaldb/commit/c667eda0c05752ff51fb1ad6ba37cf4594455c6f))
+* **wal:** frame every record with a length and CRC-32 ([#1294](https://github.com/cedricziel/signaldb/issues/1294)) ([50ab64a](https://github.com/cedricziel/signaldb/commit/50ab64aefb041d471e0668f86255970ab0e12840)), closes [#946](https://github.com/cedricziel/signaldb/issues/946)
+
+
+### Bug Fixes
+
+* **wal:** reclaim processed segments from the service drain loops ([#1338](https://github.com/cedricziel/signaldb/issues/1338)) ([e2b3da6](https://github.com/cedricziel/signaldb/commit/e2b3da636d773b20457e92e2a9938da68d14b712))
+* **writer:** give each tenant its own WAL instead of one global WAL ([#1299](https://github.com/cedricziel/signaldb/issues/1299)) ([830900e](https://github.com/cedricziel/signaldb/commit/830900ebaddf46dff5ac9eb0748d8fb63e7b35b2))
+* **writer:** retire Iceberg WAL markers left by writer ids past retention ([#1346](https://github.com/cedricziel/signaldb/issues/1346)) ([61c9f1b](https://github.com/cedricziel/signaldb/commit/61c9f1bc426edc34516922368ddcfe598d1e62f2))
+* **writer:** route ingest and replay through one shared function ([#1333](https://github.com/cedricziel/signaldb/issues/1333)) ([452ec09](https://github.com/cedricziel/signaldb/commit/452ec09495f275117072713a7163eb8183680561))
+
+
+### Performance Improvements
+
+* **writer:** commit tenants' WAL groups concurrently, not one at a time ([#1344](https://github.com/cedricziel/signaldb/issues/1344)) ([414982c](https://github.com/cedricziel/signaldb/commit/414982cab6c0e243302ead1519ef18f9ae6685e3))
+
+
+### Code Refactoring
+
+* quality cleanups across writer, mcp-server, schema-model, and tests-integration ([#1330](https://github.com/cedricziel/signaldb/issues/1330)) ([cee4018](https://github.com/cedricziel/signaldb/commit/cee401872f96e2a6961edc1dd3714fa394a56c31))
+
 ## [0.3.0](https://github.com/cedricziel/signaldb/compare/writer-v0.2.1...writer-v0.3.0) (2026-08-17)
 
 

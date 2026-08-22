@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.2.0...signaldb-ui-v0.2.1) (2026-08-22)
+
+
+### Features
+
+* **compactor:** keep a bounded value sketch so discovery can suggest values ([#1329](https://github.com/cedricziel/signaldb/issues/1329)) ([dd64a3d](https://github.com/cedricziel/signaldb/commit/dd64a3dd8a8846499ac75bea818ba938c6ca9a87))
+* **router:** serve query discovery from the registry and statistics ([#1312](https://github.com/cedricziel/signaldb/issues/1312)) ([41d2738](https://github.com/cedricziel/signaldb/commit/41d27384df6e90bd9e9731218e084dd27581e20b))
+* **ui:** chart an entity's metrics in the catalog ([#1368](https://github.com/cedricziel/signaldb/issues/1368)) ([deba724](https://github.com/cedricziel/signaldb/commit/deba7241690f4f6390c1da806abd19e78e116c17))
+* **ui:** discover catalog entities from the schema registry across every signal ([#1350](https://github.com/cedricziel/signaldb/issues/1350)) ([5e6f67d](https://github.com/cedricziel/signaldb/commit/5e6f67d1fec16f6286f43398f854496a75b53d80))
+
+
+### Bug Fixes
+
+* **query-ir:** stop an unknown group-by field from answering silently ([#1301](https://github.com/cedricziel/signaldb/issues/1301)) ([b4f8464](https://github.com/cedricziel/signaldb/commit/b4f8464f71192f80d407f81e8bd837efd8fafd79))
+* **ui:** align catalog cache keys and resolve entity identity from the schema ([#1354](https://github.com/cedricziel/signaldb/issues/1354)) ([0cc9910](https://github.com/cedricziel/signaldb/commit/0cc99105bfe4cc3ab0a48c9e23eacb0b20a48525))
+* **ui:** resolve a catalog detail page's entity type from the observed set ([#1366](https://github.com/cedricziel/signaldb/issues/1366)) ([3f76e1d](https://github.com/cedricziel/signaldb/commit/3f76e1db18acfdc6bc0dde8c351838a58dc23b2f))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.1.2...signaldb-ui-v0.2.0) (2026-08-17)
 
 
