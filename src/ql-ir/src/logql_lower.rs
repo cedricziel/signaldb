@@ -161,7 +161,7 @@ fn lower_metric_query(q: &MetricQuery, from: &str, to: &str) -> Result<Document,
     let (range_agg, grouping) = match q {
         MetricQuery::Range(r) => (r, Vec::new()),
         MetricQuery::Vector(v) => match &v.inner {
-            MetricQuery::Range(r) => (r, vector_grouping(v)?),
+            MetricQuery::Range(r) => (r, vector_grouping(v, range_function(r)?.0)?),
             _ => {
                 return Err(LowerError::Inexpressible(
                     "a LogQL vector aggregation over anything but a range aggregation".to_string(),
@@ -177,6 +177,22 @@ fn lower_metric_query(q: &MetricQuery, from: &str, to: &str) -> Result<Document,
     };
 
     let (func, divisor) = range_function(range_agg)?;
+
+    // Field-taking aggregates need an operand. LogQL supplies it through the
+    // `unwrap` stage, which it requires for exactly these functions; without
+    // one there is nothing to aggregate and the IR would reject the document.
+    let of = if func.needs_field() {
+        let unwrap = range_agg.unwrap.as_ref().ok_or_else(|| {
+            LowerError::Inexpressible(format!(
+                "LogQL {:?} without an `unwrap` stage",
+                range_agg.function
+            ))
+        })?;
+        Some(label_field(&unwrap.label))
+    } else {
+        None
+    };
+
     let step = humanize(range_agg.range);
 
     let mut pipeline = Vec::new();
@@ -188,7 +204,7 @@ fn lower_metric_query(q: &MetricQuery, from: &str, to: &str) -> Result<Document,
         step: Some(step),
         aggs: vec![Agg {
             func,
-            of: None,
+            of,
             arg: None,
             divisor,
             as_name: "value".to_string(),
@@ -233,21 +249,35 @@ fn range_function(r: &logql::RangeAggregation) -> Result<(AggFn, Option<f64>), L
     })
 }
 
-/// A vector aggregation's grouping labels. `without` is not expressible: the
-/// IR groups by naming fields, and naming the complement of a set requires
-/// knowing the set, which is not available until the data is read.
-fn vector_grouping(v: &logql::VectorAggregation) -> Result<Vec<String>, LowerError> {
-    if !matches!(
-        v.function,
-        AggregationFunction::Sum
-            | AggregationFunction::Avg
-            | AggregationFunction::Min
-            | AggregationFunction::Max
-            | AggregationFunction::Count
-    ) {
+/// A vector aggregation's grouping labels, once the pairing is checked.
+///
+/// LogQL aggregates twice — the range function per stream, then the vector
+/// function across streams — while the IR aggregates once. Collapsing the two
+/// is only sound when applying the outer function to partial results
+/// reproduces the inner one over their union:
+///
+/// | outer | inner | sound because |
+/// |-------|-------|---------------|
+/// | `sum` | `count_over_time`, `rate` | counts over disjoint streams add |
+/// | `sum` | `sum_over_time` | sums add |
+/// | `min` | `min_over_time` | the min of minima is the minimum |
+/// | `max` | `max_over_time` | likewise |
+///
+/// Anything else means something different collapsed than spelled: the average
+/// of per-stream counts is not a count. Those are refused, because answering a
+/// neighbouring question silently is worse than refusing this one.
+fn vector_grouping(v: &logql::VectorAggregation, inner: AggFn) -> Result<Vec<String>, LowerError> {
+    let collapses = matches!(
+        (v.function, inner),
+        (AggregationFunction::Sum, AggFn::Count | AggFn::Sum)
+            | (AggregationFunction::Min, AggFn::Min)
+            | (AggregationFunction::Max, AggFn::Max)
+    );
+    if !collapses {
         return Err(LowerError::Inexpressible(format!(
-            "LogQL vector aggregation {:?}",
-            v.function
+            "LogQL {:?} over {:?} — the IR aggregates once, and this pairing \
+             does not collapse into a single aggregate",
+            v.function, inner
         )));
     }
     match &v.grouping {
@@ -274,7 +304,14 @@ fn metric_kind(q: &MetricQuery) -> &'static str {
 
 /// A duration as the IR spells a step. Whole units where possible, so a 5m
 /// window reads `5m` rather than `300s`.
+///
+/// Sub-second windows are spelled in milliseconds. Truncating to whole seconds
+/// turned `[500ms]` into a `0s` step, which is not a window at all.
 fn humanize(d: std::time::Duration) -> String {
+    let millis = d.as_millis();
+    if !millis.is_multiple_of(1000) {
+        return format!("{millis}ms");
+    }
     let secs = d.as_secs();
     if secs > 0 && secs.is_multiple_of(3600) {
         format!("{}h", secs / 3600)

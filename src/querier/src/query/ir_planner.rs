@@ -1667,26 +1667,30 @@ impl Lowering<'_> {
             ),
         };
 
-        // `divisor` reports the aggregate per unit instead of absolute — the
-        // whole of what a rate is. Applied here rather than as a later stage so
-        // it composes with the scoping filter below and needs no new stage.
-        let expr = match a.divisor {
-            None => expr,
-            Some(d) => expr / lit(d),
-        };
         // A scoping predicate narrows this aggregate alone, as a per-aggregate
         // FILTER on the one grouping — not a `Filter` node, which would narrow
         // every aggregate in the stage and drop groups with no matching row.
         // The scope lowers through `lower_predicate`, so it inherits the same
         // Kleene absent-value semantics a `where` stage has: a row whose field
         // is NULL satisfies neither the scope nor its negation.
-        match &a.scope {
-            None => Ok(expr),
+        //
+        // This must happen before the divisor: `.filter()` builds on an
+        // aggregate function expression, and dividing first hands it an
+        // arithmetic node it cannot attach to.
+        let expr = match &a.scope {
+            None => expr,
             Some(scope) => expr
                 .filter(self.lower_predicate(scope)?)
                 .build()
-                .map_err(QuerierError::QueryFailed),
-        }
+                .map_err(QuerierError::QueryFailed)?,
+        };
+        // `divisor` reports the aggregate per unit rather than absolute — the
+        // whole of what a rate is. It divides whatever the aggregate produced,
+        // scoped or not.
+        Ok(match a.divisor {
+            None => expr,
+            Some(d) => expr / lit(d),
+        })
     }
 
     /// The `of` field of an aggregate as a numeric (Float64) expression.

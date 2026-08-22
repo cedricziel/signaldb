@@ -135,8 +135,7 @@ through a trait the querier implements, which is what keeps attribute
 promotion invisible to the IR.
 
 `ql-ir` joins the two: it lowers a parsed LogQL or TraceQL query into an IR
-document, and because all three of its dependencies are themselves FDAP-free,
-so is it. That is what makes client-side query *construction* possible rather
+document, and because every one of its dependencies is itself FDAP-free, so is it. That is what makes client-side query *construction* possible rather
 than only client-side syntax checking — turning query text into something
 executable has never needed the engine that executes it. TraceQL and LogQL both lower today; what
 remains out of reach is cross-series arithmetic (`a / b`, `label_replace`),

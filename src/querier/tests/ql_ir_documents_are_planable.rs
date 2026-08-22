@@ -35,7 +35,14 @@ fn referenced_fields(doc: &common::query_ir::Document) -> Vec<String> {
             Stage::Where(p) => from_predicate(p, &mut out),
             Stage::Aggregate(a) => {
                 out.extend(a.by.iter().cloned());
-                out.extend(a.aggs.iter().filter_map(|agg| agg.of.clone()));
+                for agg in &a.aggs {
+                    out.extend(agg.of.clone());
+                    // A scoping predicate addresses fields too, and they need
+                    // resolving just as much as a `where` stage's do.
+                    if let Some(scope) = &agg.scope {
+                        from_predicate(scope, &mut out);
+                    }
+                }
             }
             _ => {}
         }
@@ -147,10 +154,11 @@ fn lowered_versions_are_within_the_supported_range() {
         r#"rate({service_name="api"}[5m])"#,
         r#"stddev_over_time({service_name="api"} | unwrap duration [5m])"#,
     ] {
-        let Ok(doc) = ql_ir::logql_to_ir(query, "now-1h", "now") else {
-            // Refused constructs are the other test's business.
-            continue;
-        };
+        // Skipping on failure (`let Ok(..) else { continue }`) meant a query
+        // that stopped lowering silently stopped being tested — which is how
+        // `stddev_over_time` emitting an invalid document went unnoticed.
+        let doc = ql_ir::logql_to_ir(query, "now-1h", "now")
+            .unwrap_or_else(|e| panic!("{query} should lower: {e}"));
         assert!(
             common::query_ir::is_supported(doc.ir_version),
             "{query} claims irVersion {}, outside the supported range",

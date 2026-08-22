@@ -192,3 +192,154 @@ fn parse_errors_propagate() {
     let err = ql_ir::logql_to_ir("{service_name=}", "now-1h", "now").expect_err("malformed");
     assert!(matches!(err, ql_ir::LowerError::ParseLogql(_)), "{err:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Review findings on #1379. Each of these lowered to something the IR rejects,
+// or to something that means a different query — and every one slipped past
+// the original suite, which only ever exercised `count_over_time` and `rate`
+// (both `count`, the one aggregate that needs no field).
+// ---------------------------------------------------------------------------
+
+/// `AggFn::needs_field()` is true for everything but `count`, so emitting
+/// `of: None` for `sum_over_time` produces a document the validator refuses.
+/// The field comes from the `unwrap` stage LogQL already requires for these.
+#[test]
+fn field_taking_range_functions_carry_their_unwrapped_field() {
+    let cases: &[(&str, query_ir::AggFn)] = &[
+        (
+            r#"sum_over_time({a="b"} | unwrap duration [5m])"#,
+            query_ir::AggFn::Sum,
+        ),
+        (
+            r#"avg_over_time({a="b"} | unwrap duration [5m])"#,
+            query_ir::AggFn::Avg,
+        ),
+        (
+            r#"min_over_time({a="b"} | unwrap duration [5m])"#,
+            query_ir::AggFn::Min,
+        ),
+        (
+            r#"max_over_time({a="b"} | unwrap duration [5m])"#,
+            query_ir::AggFn::Max,
+        ),
+        (
+            r#"stddev_over_time({a="b"} | unwrap duration [5m])"#,
+            query_ir::AggFn::Stddev,
+        ),
+        (
+            r#"stdvar_over_time({a="b"} | unwrap duration [5m])"#,
+            query_ir::AggFn::Stdvar,
+        ),
+        (
+            r#"first_over_time({a="b"} | unwrap duration [5m])"#,
+            query_ir::AggFn::First,
+        ),
+        (
+            r#"last_over_time({a="b"} | unwrap duration [5m])"#,
+            query_ir::AggFn::Last,
+        ),
+    ];
+    for (query, expected) in cases {
+        let d = doc(query);
+        let agg = d
+            .pipeline
+            .iter()
+            .find_map(|s| match s {
+                Stage::Aggregate(a) => Some(a.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{query}: expected an aggregate"));
+        assert_eq!(agg.aggs[0].func, *expected, "{query}");
+        assert_eq!(
+            agg.aggs[0].of.as_deref(),
+            Some("duration"),
+            "{query}: a field-taking aggregate needs `of`"
+        );
+    }
+}
+
+/// Whatever is emitted must satisfy the IR's own validator — the check that
+/// would have caught every finding here at once.
+#[test]
+fn every_lowered_document_validates() {
+    let corpus = [
+        r#"{service_name="api"}"#,
+        r#"{service_name="api"} |= "boom""#,
+        r#"count_over_time({service_name="api"}[5m])"#,
+        r#"rate({service_name="api"}[5m])"#,
+        r#"sum_over_time({service_name="api"} | unwrap duration [5m])"#,
+        r#"sum by (service_name) (rate({service_name="api"}[1m]))"#,
+    ];
+    let resolver = query_ir::InMemoryResolver::new()
+        .with_column(
+            "logs",
+            "service.name",
+            "service_name",
+            query_ir::ValueType::String,
+        )
+        .with_column("logs", "body", "body", query_ir::ValueType::String)
+        .with_column("logs", "duration", "duration", query_ir::ValueType::Float64);
+    for query in corpus {
+        let d = doc(query);
+        query_ir::validate(&d, &query_ir::SourceRegistry::core(), &resolver)
+            .unwrap_or_else(|e| panic!("{query} lowered to a document the IR rejects: {e:?}"));
+    }
+}
+
+/// The IR aggregates once; LogQL's vector-over-range is two levels. Collapsing
+/// them is only sound when combining partial results with the outer function
+/// reproduces the inner one over the union — `sum` of counts is a count,
+/// `min` of mins is a min. `avg` of counts is not a count, so the pairing must
+/// be refused rather than quietly answering a different question.
+#[test]
+fn only_collapsible_vector_aggregations_are_accepted() {
+    for query in [
+        r#"sum by (service_name) (count_over_time({a="b"}[1m]))"#,
+        r#"sum by (service_name) (rate({a="b"}[1m]))"#,
+        r#"min by (service_name) (min_over_time({a="b"} | unwrap duration [1m]))"#,
+        r#"max by (service_name) (max_over_time({a="b"} | unwrap duration [1m]))"#,
+    ] {
+        assert!(
+            ql_ir::logql_to_ir(query, "now-1h", "now").is_ok(),
+            "{query} collapses soundly and should lower"
+        );
+    }
+
+    for query in [
+        r#"avg by (service_name) (count_over_time({a="b"}[1m]))"#,
+        r#"max by (service_name) (rate({a="b"}[1m]))"#,
+        r#"min by (service_name) (count_over_time({a="b"}[1m]))"#,
+    ] {
+        let err = ql_ir::logql_to_ir(query, "now-1h", "now")
+            .expect_err(&format!("{query} does not collapse and must be refused"));
+        assert!(
+            matches!(err, ql_ir::LowerError::Inexpressible(_)),
+            "{query}: got {err:?}"
+        );
+    }
+}
+
+/// A sub-second window must not round to zero. `as_secs()` turned `[500ms]`
+/// into a `0s` step, which is not a window at all.
+#[test]
+fn subsecond_ranges_keep_their_precision() {
+    let cases: &[(&str, &str)] = &[
+        (r#"count_over_time({a="b"}[500ms])"#, "500ms"),
+        (r#"count_over_time({a="b"}[1500ms])"#, "1500ms"),
+        (r#"count_over_time({a="b"}[30s])"#, "30s"),
+        (r#"count_over_time({a="b"}[5m])"#, "5m"),
+        (r#"count_over_time({a="b"}[2h])"#, "2h"),
+    ];
+    for (query, expected) in cases {
+        let d = doc(query);
+        let agg = d
+            .pipeline
+            .iter()
+            .find_map(|s| match s {
+                Stage::Aggregate(a) => Some(a.clone()),
+                _ => None,
+            })
+            .expect("an aggregate");
+        assert_eq!(agg.step.as_deref(), Some(*expected), "{query}");
+    }
+}
