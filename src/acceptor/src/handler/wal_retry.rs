@@ -620,4 +620,191 @@ mod tests {
             "a retry pass must reclaim sealed segments whose entries are all processed"
         );
     }
+
+    /// A `FlightService` whose `do_put` always rejects the batch with
+    /// `INVALID_ARGUMENT` — the "writer inspected it and refused it" case
+    /// [`classify_forward_failure`] maps to [`ForwardFailureKind::Permanent`].
+    /// Every other RPC is unimplemented; the retry consumer only exercises
+    /// `do_put`.
+    struct RejectingFlightService;
+
+    #[tonic::async_trait]
+    impl arrow_flight::flight_service_server::FlightService for RejectingFlightService {
+        type HandshakeStream = futures::stream::BoxStream<
+            'static,
+            Result<arrow_flight::HandshakeResponse, tonic::Status>,
+        >;
+        type ListFlightsStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightInfo, tonic::Status>>;
+        type DoGetStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightData, tonic::Status>>;
+        type DoPutStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::PutResult, tonic::Status>>;
+        type DoExchangeStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightData, tonic::Status>>;
+        type DoActionStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::Result, tonic::Status>>;
+        type ListActionsStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::ActionType, tonic::Status>>;
+
+        async fn handshake(
+            &self,
+            _request: tonic::Request<tonic::Streaming<arrow_flight::HandshakeRequest>>,
+        ) -> Result<tonic::Response<Self::HandshakeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("handshake"))
+        }
+        async fn list_flights(
+            &self,
+            _request: tonic::Request<arrow_flight::Criteria>,
+        ) -> Result<tonic::Response<Self::ListFlightsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_flights"))
+        }
+        async fn get_flight_info(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::FlightInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_flight_info"))
+        }
+        async fn poll_flight_info(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::PollInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("poll_flight_info"))
+        }
+        async fn get_schema(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::SchemaResult>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_schema"))
+        }
+        async fn do_get(
+            &self,
+            _request: tonic::Request<arrow_flight::Ticket>,
+        ) -> Result<tonic::Response<Self::DoGetStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_get"))
+        }
+        async fn do_put(
+            &self,
+            _request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoPutStream>, tonic::Status> {
+            Err(tonic::Status::invalid_argument(
+                "batch does not match the target table's schema",
+            ))
+        }
+        async fn do_exchange(
+            &self,
+            _request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoExchangeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_exchange"))
+        }
+        async fn do_action(
+            &self,
+            _request: tonic::Request<arrow_flight::Action>,
+        ) -> Result<tonic::Response<Self::DoActionStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_action"))
+        }
+        async fn list_actions(
+            &self,
+            _request: tonic::Request<arrow_flight::Empty>,
+        ) -> Result<tonic::Response<Self::ListActionsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_actions"))
+        }
+    }
+
+    /// A minimal but valid Arrow `RecordBatch`, round-trippable through
+    /// [`common::wal::record_batch_to_bytes`]/[`bytes_to_record_batch`].
+    fn sample_record_batch() -> datafusion::arrow::record_batch::RecordBatch {
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc as StdArc;
+
+        let schema = StdArc::new(Schema::new(vec![Field::new("n", DataType::Int32, false)]));
+        datafusion::arrow::record_batch::RecordBatch::try_new(
+            schema,
+            vec![StdArc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn writer_rejected_entry_is_dead_lettered_with_the_writer_s_reason() {
+        // record_rejected_entry is the third dead-letter path (the other two
+        // are covered above): the payload deserializes fine, but the writer
+        // itself refuses it. Unlike the other two, this one requires a real
+        // Flight round-trip to exercise, since the rejection is a property
+        // of what the *writer* does with a syntactically valid batch.
+        let catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let writer_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(common::flight::flight_service_server(
+                    RejectingFlightService,
+                ))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        ServiceBootstrap::new_for_test_with_catalog(
+            catalog.clone(),
+            ServiceType::Writer,
+            &writer_addr.to_string(),
+        )
+        .await
+        .unwrap();
+
+        let acceptor_bootstrap = ServiceBootstrap::new_for_test_with_catalog(
+            catalog,
+            ServiceType::Acceptor,
+            "127.0.0.1:0",
+        )
+        .await
+        .unwrap();
+        let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
+
+        let temp_dir = TempDir::new().unwrap();
+        let manager = Arc::new(test_manager(temp_dir.path()));
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        let batch_bytes = common::wal::record_batch_to_bytes(&sample_record_batch()).unwrap();
+        wal.append(WalOperation::WriteTraces, batch_bytes, None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), flight_transport)
+            .with_timing(Duration::from_secs(1), Duration::ZERO);
+        let stats = consumer.run_once().await.unwrap();
+
+        assert_eq!(
+            stats.dead_lettered, 1,
+            "a writer rejection must be dead-lettered, not left pending"
+        );
+        assert_eq!(stats.failed, 0);
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+
+        let dead_letter_dir = temp_dir
+            .path()
+            .join("acme")
+            .join("production")
+            .join("traces")
+            .join("dead-letter");
+        let mut saw_marker = false;
+        let mut files = tokio::fs::read_dir(&dead_letter_dir).await.unwrap();
+        while let Some(entry) = files.next_entry().await.unwrap() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                let marker = tokio::fs::read_to_string(&path).await.unwrap();
+                assert!(
+                    marker.contains("schema"),
+                    "rejection marker must carry the writer's own reason: {marker}"
+                );
+                saw_marker = true;
+            }
+        }
+        assert!(saw_marker, "expected a .rejected.json marker file");
+    }
 }
