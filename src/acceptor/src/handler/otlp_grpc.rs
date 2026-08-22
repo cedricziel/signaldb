@@ -9,6 +9,7 @@ use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 
 use super::WalManager;
 use super::forward::forward_batch_to_writer;
+use super::ingest_error::IngestError;
 
 pub struct TraceHandler {
     /// Flight transport for forwarding telemetry
@@ -41,7 +42,7 @@ impl MockTraceHandler {
         &self,
         _tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_traces_calls
             .lock()
             .await
@@ -85,7 +86,7 @@ impl TraceHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
@@ -101,11 +102,15 @@ impl TraceHandler {
                 "traces",
             )
             .await
-            .context("Failed to get WAL")?;
+            .context("Failed to get WAL")
+            .map_err(IngestError::Unavailable)?;
 
         // Convert OTLP traces to Arrow RecordBatch. A conversion failure
         // must reject the export (client retries) instead of ACKing an
-        // empty batch — that would be silent data loss (issue #926).
+        // empty batch — that would be silent data loss (issue #926). It is
+        // also deterministic, not a WAL/durability problem, so it is
+        // rejected as Invalid rather than Unavailable (finding M3):
+        // retrying the same bytes will fail again.
         let record_batch = otlp_traces_to_arrow(&request)
             .inspect_err(|error| {
                 tracing::error!(
@@ -116,7 +121,8 @@ impl TraceHandler {
                     "OTLP to Arrow conversion failed - rejecting export"
                 );
             })
-            .context("Failed to convert OTLP traces to Arrow")?;
+            .context("Failed to convert OTLP traces to Arrow")
+            .map_err(IngestError::Invalid)?;
 
         let mut metadata = serde_json::json!({
             "schema_version": "v1",
@@ -134,16 +140,21 @@ impl TraceHandler {
         }
         let metadata_str = serde_json::to_string(&metadata).ok();
 
-        let batch_bytes =
-            record_batch_to_bytes(&record_batch).context("Failed to serialize record batch")?;
+        let batch_bytes = record_batch_to_bytes(&record_batch)
+            .context("Failed to serialize record batch")
+            .map_err(IngestError::Unavailable)?;
 
         let wal_entry_id = wal
             .append(WalOperation::WriteTraces, batch_bytes, metadata_str.clone())
             .await
-            .context("Failed to write traces to WAL")?;
+            .context("Failed to write traces to WAL")
+            .map_err(IngestError::Unavailable)?;
 
         // Flush WAL to ensure durability
-        wal.flush().await.context("Failed to flush WAL")?;
+        wal.flush()
+            .await
+            .context("Failed to flush WAL")
+            .map_err(IngestError::Unavailable)?;
 
         tracing::debug!(entry_id = %wal_entry_id, "Traces written to WAL");
 

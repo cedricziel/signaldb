@@ -4,6 +4,7 @@ use opentelemetry_proto::tonic::collector::profiles::v1development::{
 };
 use tonic::{Request, Response, Status};
 
+use crate::handler::IngestError;
 use crate::handler::otlp_profiles_handler::ProfileHandler;
 use crate::middleware::get_tenant_context;
 use common::auth::TenantContext;
@@ -18,7 +19,7 @@ pub trait ProfileHandlerTrait {
         &self,
         tenant_context: &TenantContext,
         request: ExportProfilesServiceRequest,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), IngestError>;
 }
 
 #[async_trait::async_trait]
@@ -27,7 +28,7 @@ impl ProfileHandlerTrait for ProfileHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportProfilesServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_profiles(tenant_context, request)
             .await
     }
@@ -119,14 +120,25 @@ impl<H: ProfileHandlerTrait + Send + Sync + 'static> ProfilesService for Profile
                 handle.await
             };
 
-        // Reject the export if the data was not durably accepted, so the
-        // client retries instead of dropping its copy (OTLP treats
-        // UNAVAILABLE as retryable).
+        // Classify the failure (finding M3): a deterministic conversion
+        // failure is INVALID_ARGUMENT, while a WAL/durability failure
+        // stays UNAVAILABLE so the client retries instead of dropping its
+        // copy. Profile conversion is currently infallible, so this branch
+        // is exercised only by durability failures today, but the
+        // classification stays consistent with the other three signals.
         if let Err(e) = result {
-            tracing::error!(error = %e, "Failed to durably accept profiles export");
-            return Err(Status::unavailable(format!(
-                "failed to durably accept profiles export: {e:#}"
-            )));
+            return Err(match e {
+                IngestError::Invalid(err) => {
+                    tracing::warn!(error = %err, "Rejecting profiles export: invalid payload");
+                    Status::invalid_argument(format!("invalid profiles payload: {err:#}"))
+                }
+                IngestError::Unavailable(err) => {
+                    tracing::error!(error = %err, "Failed to durably accept profiles export");
+                    Status::unavailable(format!(
+                        "failed to durably accept profiles export: {err:#}"
+                    ))
+                }
+            });
         }
 
         // Anti-loop guard: _system traffic is SignalDB's own telemetry and
@@ -165,7 +177,7 @@ impl ProfileHandlerTrait for crate::handler::otlp_profiles_handler::MockProfileH
         &self,
         tenant_context: &TenantContext,
         request: ExportProfilesServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_profiles(tenant_context, request)
             .await
     }

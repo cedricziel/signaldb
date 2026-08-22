@@ -9,6 +9,7 @@ use opentelemetry_proto::tonic::collector::profiles::v1development::ExportProfil
 
 use super::WalManager;
 use super::forward::forward_batch_to_writer;
+use super::ingest_error::IngestError;
 
 pub struct ProfileHandler {
     /// Flight transport for forwarding telemetry
@@ -41,7 +42,7 @@ impl MockProfileHandler {
         &self,
         _tenant_context: &TenantContext,
         request: ExportProfilesServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_profiles_calls
             .lock()
             .await
@@ -82,7 +83,7 @@ impl ProfileHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportProfilesServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
@@ -98,7 +99,8 @@ impl ProfileHandler {
                 "profiles",
             )
             .await
-            .context("Failed to get WAL")?;
+            .context("Failed to get WAL")
+            .map_err(IngestError::Unavailable)?;
 
         // Convert OTLP profiles to Arrow RecordBatch (resolves the dictionary)
         let record_batch = otlp_profiles_to_arrow(&request);
@@ -123,8 +125,9 @@ impl ProfileHandler {
         let metadata_str = serde_json::to_string(&metadata).ok();
 
         // Step 1: Write to WAL first for durability
-        let batch_bytes =
-            record_batch_to_bytes(&record_batch).context("Failed to serialize record batch")?;
+        let batch_bytes = record_batch_to_bytes(&record_batch)
+            .context("Failed to serialize record batch")
+            .map_err(IngestError::Unavailable)?;
 
         let wal_entry_id = wal
             .append(
@@ -133,10 +136,14 @@ impl ProfileHandler {
                 metadata_str.clone(),
             )
             .await
-            .context("Failed to write profiles to WAL")?;
+            .context("Failed to write profiles to WAL")
+            .map_err(IngestError::Unavailable)?;
 
         // Flush WAL to ensure durability
-        wal.flush().await.context("Failed to flush WAL")?;
+        wal.flush()
+            .await
+            .context("Failed to flush WAL")
+            .map_err(IngestError::Unavailable)?;
 
         tracing::debug!(entry_id = %wal_entry_id, "Profiles written to WAL");
 
