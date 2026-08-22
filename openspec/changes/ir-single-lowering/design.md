@@ -204,6 +204,36 @@ aggregation's default grouping (D7) — all three used to be either outright
 rejections or silent behavioural differences; §4 fixed each in `ql-ir`
 itself rather than routing around it.
 
+**Open pre-deletion gate (blocks §5, not §4):** issue #1395. `ql_ir` accepts
+`unwrap <label>` on any field name with no type or schema-registration
+check, but `plan_document` rejects an unwrap target `LogicalSchema::core()`
+doesn't register for that source as `InvalidInput` (physical addressing) —
+and since task 4.1's fallback narrows to `Inexpressible` only (a review
+finding on the §4 PR: the exception set must stay enumerable), that
+`InvalidInput` now propagates instead of silently falling back. The old
+path has no such restriction (`unwrap_label` is a bare physical-column
+reference, no schema lookup), so a currently-working `unwrap` on an
+unregistered field would turn into an error with the switch on — the exact
+regression D5 exists to prevent. Not a §4 fallback-set gap (both accept the
+query; the split happens after lowering, at planning), so it isn't fixed
+here — but it must close, one of two ways, before §5 deletes the old
+lowering:
+
+1. `ir_planner`'s aggregate `of`-field resolution falls back to a bare
+   physical-column reference for an unregistered field, mirroring the old
+   path's own `unwrap_label` — the unwrap target joins §4's coverage rather
+   than the fallback set.
+2. `ql_ir::logql_lower` refuses `unwrap` on a field it cannot resolve as
+   `LowerError::Inexpressible` explicitly, so the case joins the
+   _enumerated_ fallback set above instead of surfacing as a bare
+   `plan_document` rejection.
+
+(#1394, the old LogQL metric path's own — separate — bug where an
+ungrouped `sum(...)` never collapses to one series, does not gate
+anything: the new path's behavior there is already correct, and the old
+path's bug is filed and deliberately left as-is until §5 deletes the code
+that carries it.)
+
 ### D6 — `logs.body` becomes filterable for string operators
 
 The harness found that every LogQL line filter (`|=`, `!=`, `|~`, `!~`)

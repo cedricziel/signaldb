@@ -152,6 +152,16 @@
 
 ## 5. Delete the duplication
 
+- [ ] 5.0 Close #1395 before 5.2 (design.md's "Open pre-deletion gate" under
+      D5's fallback set): `ql_ir` accepts `unwrap <label>` on any field name,
+      but `plan_document` rejects an unregistered unwrap target as
+      `InvalidInput`, which task 4.1's narrowed fallback (`Inexpressible`
+      only) now propagates instead of masking — a currently-working `unwrap`
+      query must not turn into an error once §5 deletes the old path that
+      silently absorbed it. Either (a) `ir_planner`'s aggregate `of`-field
+      resolution falls back to a bare physical-column reference for an
+      unregistered field, or (b) `ql_ir::logql_lower` refuses it as
+      `Inexpressible` explicitly, joining the enumerated fallback set.
 - [ ] 5.1 With both switches on and differential evidence green, delete
       `search_filter.rs`'s lowering half. Keep `parse_tags` and `take_value`.
 - [ ] 5.2 Delete the portion of `logql.rs`/`logql_metric.rs` that `ql-ir`
