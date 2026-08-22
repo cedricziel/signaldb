@@ -180,6 +180,10 @@ pub async fn init_acceptor_resources(
 pub struct GrpcAcceptorConfig {
     pub addr: SocketAddr,
     pub resources: AcceptorResources,
+    /// `max_decoding_message_size` applied to every OTLP/gRPC service.
+    /// Shared with the HTTP body limit via `[acceptor].max_request_body_bytes`
+    /// so the two transports enforce the same ceiling.
+    pub max_decoding_message_size: usize,
 }
 
 pub async fn serve_otlp_grpc(
@@ -189,6 +193,8 @@ pub async fn serve_otlp_grpc(
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
     tracing::info!(address = %config.addr, "Starting OTLP/gRPC acceptor");
+
+    let max_decoding_message_size = config.max_decoding_message_size;
 
     let AcceptorResources {
         flight_transport,
@@ -207,7 +213,8 @@ pub async fn serve_otlp_grpc(
     let log_server = InterceptedService::new(
         LogsServiceServer::new(log_service)
             .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd),
+            .accept_compressed(CompressionEncoding::Zstd)
+            .max_decoding_message_size(max_decoding_message_size),
         move |req| grpc_auth_interceptor(auth_for_logs.clone(), req),
     );
 
@@ -219,7 +226,8 @@ pub async fn serve_otlp_grpc(
     let trace_server = InterceptedService::new(
         TraceServiceServer::new(trace_service)
             .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd),
+            .accept_compressed(CompressionEncoding::Zstd)
+            .max_decoding_message_size(max_decoding_message_size),
         move |req| grpc_auth_interceptor(auth_for_traces.clone(), req),
     );
 
@@ -231,7 +239,8 @@ pub async fn serve_otlp_grpc(
     let metric_server = InterceptedService::new(
         MetricsServiceServer::new(metrics_service)
             .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd),
+            .accept_compressed(CompressionEncoding::Zstd)
+            .max_decoding_message_size(max_decoding_message_size),
         move |req| grpc_auth_interceptor(auth_for_metrics.clone(), req),
     );
 
@@ -243,7 +252,8 @@ pub async fn serve_otlp_grpc(
     let profile_server = InterceptedService::new(
         ProfilesServiceServer::new(profile_service)
             .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd),
+            .accept_compressed(CompressionEncoding::Zstd)
+            .max_decoding_message_size(max_decoding_message_size),
         move |req| grpc_auth_interceptor(auth_for_profiles.clone(), req),
     );
 
@@ -866,6 +876,33 @@ pub struct HttpAcceptorConfig {
     /// cross-origin access entirely; `Some(empty)` allows any origin. Set from
     /// `[self_monitoring.frontend]` when browser telemetry export is enabled.
     pub cors_allowed_origins: Option<Vec<String>>,
+    /// Maximum decoded request body size, in bytes, for every OTLP/HTTP and
+    /// Prometheus remote_write route. From `[acceptor].max_request_body_bytes`,
+    /// shared with the gRPC side's `max_decoding_message_size`.
+    pub max_request_body_bytes: usize,
+}
+
+/// Apply the acceptor's OTLP/HTTP transport limits to a router: accept
+/// gzip/zstd-encoded request bodies, then cap the decoded body size.
+///
+/// The OTel Collector's `otlphttp` exporter defaults to `compression:
+/// gzip`, so without decompression support a default-configured collector
+/// gets a 400 and drops the batch permanently (acceptor whole-crate review,
+/// finding H1). `RequestDecompressionLayer` must sit *outside*
+/// `DefaultBodyLimit` (added first here, so it is the inner layer): the
+/// limit is enforced against the decompressed byte stream, not the wire
+/// size, so a small compressed body cannot bypass it (zip-bomb guard,
+/// finding H2). Everything downstream of these layers — including the
+/// per-tenant rate limiter's `body.len()` ingest accounting in
+/// `handle_otlp_http_export` — therefore sees decompressed bytes, which is
+/// the deliberate choice: it matches the WAL/Iceberg bytes the tenant is
+/// actually charged for, not the bytes that happened to cross the wire.
+///
+/// Exposed (not just inlined into [`serve_otlp_http`]) so integration tests
+/// can exercise the exact same wiring production uses.
+pub fn with_http_transport_limits(app: Router, max_request_body_bytes: usize) -> Router {
+    app.layer(axum::extract::DefaultBodyLimit::max(max_request_body_bytes))
+        .layer(tower_http::decompression::RequestDecompressionLayer::new())
 }
 
 pub async fn serve_otlp_http(
@@ -938,6 +975,8 @@ pub async fn serve_otlp_http(
             config.rate_limiter.clone(),
             config.storage_usage.clone(),
         ));
+
+    let app = with_http_transport_limits(app, config.max_request_body_bytes);
 
     // Browser telemetry export is cross-origin (UI on the router, ingest on
     // the acceptor), so add CORS outermost when it is enabled — it must answer

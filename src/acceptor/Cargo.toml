@@ -25,7 +25,7 @@ anyhow.workspace = true
 clap.workspace = true
 axum.workspace = true
 tower.workspace = true
-tower-http = { workspace = true, features = ["cors"] }
+tower-http = { workspace = true, features = ["cors", "decompression-gzip", "decompression-zstd"] }
 
 serde.workspace = true
 serde_json.workspace = true
@@ -38,6 +38,7 @@ bytes.workspace = true
 [dev-dependencies]
 tower.workspace = true
 tempfile.workspace = true
+flate2.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["trace", "logs", "testing"] }
 opentelemetry-appender-tracing.workspace = true
 tracing-opentelemetry.workspace = true

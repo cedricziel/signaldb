@@ -129,6 +129,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
     let grpc_config = GrpcAcceptorConfig {
         addr: grpc_addr,
         resources: grpc_resources,
+        max_decoding_message_size: config.acceptor.max_request_body_bytes as usize,
     };
     let grpc_handle = tokio::spawn(async move {
         if let Err(e) =
@@ -151,6 +152,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
             .frontend
             .enabled
             .then(|| config.self_monitoring.frontend.allowed_origins.clone()),
+        max_request_body_bytes: config.acceptor.max_request_body_bytes as usize,
     };
     let http_handle = tokio::spawn(async move {
         if let Err(e) =

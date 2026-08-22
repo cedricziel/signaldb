@@ -532,7 +532,11 @@ async fn test_acceptor_grpc_accepts_gzip_compressed_requests() {
     let (stopped_tx, _stopped_rx) = tokio::sync::oneshot::channel();
 
     tokio::spawn(acceptor::serve_otlp_grpc(
-        acceptor::GrpcAcceptorConfig { addr, resources },
+        acceptor::GrpcAcceptorConfig {
+            addr,
+            resources,
+            max_decoding_message_size: config.acceptor.max_request_body_bytes as usize,
+        },
         init_tx,
         shutdown_rx,
         stopped_tx,
