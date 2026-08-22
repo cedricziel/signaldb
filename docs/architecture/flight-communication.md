@@ -213,7 +213,8 @@ convention of its own, so it is modeled as plain gRPC: spans are named by the
 fully-qualified logical method, disambiguated by a low-cardinality detail
 segment where one exists —
 `arrow.flight.protocol.FlightService/DoGet query_ir` (Querier, ticket verb),
-`…/DoPut` (Writer), `…/DoAction compact_dry_run` (Compactor, action type) —
+`…/DoPut` (Writer), `…/DoAction flush` (Writer, action type),
+`…/DoAction compact_dry_run` (Compactor, action type) —
 and carry `rpc.system.name = grpc`, `rpc.method`, and the string
 `rpc.response.status_code`. Status mapping follows the RPC semconv asymmetry:
 a server span is marked failed only for server-fault gRPC codes (`UNKNOWN`,
