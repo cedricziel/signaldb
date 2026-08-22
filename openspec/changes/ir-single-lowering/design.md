@@ -142,6 +142,94 @@ This means the old LogQL path cannot be deleted wholesale — only the portion
 `ql-ir` covers. Closing the remainder is follow-up work, and D6 of
 `publishable-ql-crates` describes what the IR would need.
 
+### D6 — `logs.body` becomes filterable for string operators
+
+The harness found that every LogQL line filter (`|=`, `!=`, `|~`, `!~`)
+lowers to a predicate on `body`, which `LogicalSchema::core()` marks
+`RetrievalOnly`, so `plan_document` rejects the document outright — and
+`ql_ir::logql_to_ir` returns `Ok`, so the D5 fallback never sees it.
+
+Retrieval-only was a foundation default from the Layer-2 logical schema
+(#1104), not a product decision, and it leaves the IR — our own query surface
+— without full-text log search while the Explore UI's logs view still compiles
+`|= "…"` through the Loki compat path. The rule is to extend the IR rather
+than reach for a compat endpoint, so `body` becomes **filterable**: the planner
+already lowers `AnyValue` as `String`, the physical column is `Utf8` (the
+JSON-serialised AnyValue), and the old LogQL path already does
+`contains(body, …)` on exactly that column. `contains`, `regex`, `eq`, `ne`,
+`exists` apply; ordered and numeric operators are rejected by type coercion
+as for any string field. `span_events` stays retrieval-only (filter on the
+`exception.*` fields instead).
+
+Lands in the §4 PR, before LogQL is routed: `LogicalSchema::core()` and its
+tests, the planner test that used `body` as the retrieval-only example (use
+`span_events`), `docs/users/querying-ir.md`'s retrieval-only paragraph, and
+any generated schema listing that states `"filterable": false` for `body`.
+
+### D7 — An ungrouped LogQL range aggregation groups by the stream identity
+
+LogQL's `count_over_time({…}[5m])` with no outer `by` is one series per
+matching *stream*; the old path implemented that with `logs.rs`'s
+`SERIES_COLUMNS` (`service_name`, `severity_text`), which is also what
+`get_series` reports as a stream. `ql_ir` emitted `by: []`, collapsing to one
+series. The old path is right; `ql_ir` is fixed to emit the stream identity
+(`service.name`, `severity_text`, as logical names) as the default grouping.
+
+That mapping belongs in `ql-ir`: "what a Loki stream is in SignalDB" is
+exactly the kind of decision the crate exists to own, and the SDK/CLI preview
+must produce the same document the querier plans. The querier pins the two
+against each other — a test asserts `ql-ir`'s default grouping resolves to
+`SERIES_COLUMNS` — so they cannot drift.
+
+### D8 — Unscoped attributes take the IR's combining rule
+
+For a bare attribute (`{ .http.method = "GET" }`, `{k8s_namespace="prod"}`)
+the old path ORed a match across every container; the IR coalesces across
+containers by priority (span/log, then scope, then resource) and compares
+once. They differ only when the same key holds *different* values in two
+containers. The compat surfaces adopt the IR's rule: Tempo's own unscoped
+lookup is span-first-then-resource, Loki has no container concept at all, and
+OR-across-containers was the approximation, not the contract. This is the one
+deliberate edge-case behaviour change in this change; the harness pins it as
+an explained difference until the old path is deleted.
+
+### D9 — LogQL negative matchers keep Loki's absent-matches semantics
+
+Loki (and Prometheus) treat a missing label as the empty string:
+`{foo!="bar"}` matches a stream without `foo`, `{foo=""}` matches absent. The
+old LogQL path honoured that (`is_null().or(not_eq(…))`); the IR's `not` is
+Kleene, where absent satisfies neither `=` nor `not(=)`. The compat surface
+promises Loki's semantics, so `ql_ir::logql_to_ir` encodes them explicitly:
+`!=` → `or[ne, not(exists)]`, `!~` → `or[not(regex), not(exists)]`, `=""` →
+`or[eq "", not(exists)]`. `=~` stays a plain `regex` (a pattern that matches
+the empty string would match absent in Loki; that corner is recorded, not
+emulated). TraceQL is unaffected: the old TraceQL path lowers equality only,
+and Tempo's own semantics for a missing attribute are "no match", which is the
+IR's rule.
+
+### D10 — `ir_planner` resolves promoted columns for scope-qualified fields
+
+The harness found `SchemaResolver::column_for` computes the materialised
+column name from the scope-qualified logical field (`span.http.method` →
+`label_span_http_method`), which no promoted column is ever named, so a
+scope-qualified attribute always takes the map-extraction path even when a
+promoted column exists. The old path keyed off the bare attribute key, as the
+compactor does. Results agree (promotion duplicates the value), so this is a
+promotion-invariance and performance gap, not a correctness bug — but it is
+the planner's stated claim, so it is fixed in §3 before traces move: strip the
+scope the way `Lowering::qualified_attr` already does, and the harness's
+row-level pin for this case becomes a plan-level one.
+
+### Findings left as they are
+
+- The old LogQL metric path still has the #1070 mixed-case grouping bug
+  (`logs.rs::execute_plan`). Queries `ql-ir` covers move to the planner, which
+  has the fix; the D5 fallback set keeps the old path and the bug. Tracked as
+  a separate issue filed in §4, fixed when the fallback set is closed.
+- `tests-integration/tests/query_parity.rs` carries no query text (it tests
+  CLI/MCP operation parity); the corpus premise in D2 was stale and the
+  harness draws from the two files that do.
+
 ## Risks / Trade-offs
 
 | Risk                                                             | Mitigation                                                                    |
@@ -174,11 +262,6 @@ it. After deletion, rollback is an ordinary revert.
    test needed rewriting for this change.
 
 The differential harness (`src/querier/src/query/differential.rs`, landed by
-task 2) also surfaced findings beyond these two questions — most notably that
-`ql_ir::logql_lower`'s line-filter lowering (`|=`/`!=`/`|~`/`!~`) produces a
-document `plan_document`'s real schema rejects outright (`logs.body` is
-`RetrievalOnly`), and that a bare LogQL range aggregation with no outer `by`
-collapses to one series where real Loki (and the old path's default
-`SERIES_COLUMNS` grouping) returns one per stream. Both are reported, not
-resolved, here — see the harness's module doc for the full triage table;
-whoever builds §4 needs an answer to both before wiring the switch.
+task 2) also surfaced findings beyond these two questions; each has a decision
+above (D6–D10, "Findings left as they are"). The full triage table lives in the
+harness's module doc.

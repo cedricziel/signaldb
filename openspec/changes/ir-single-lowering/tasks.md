@@ -66,6 +66,11 @@
 
 ## 3. Traces
 
+- [ ] 3.0 Fix the promoted-column gap for scope-qualified fields in
+      `ir_planner::SchemaResolver::column_for` (D10): strip the scope before
+      `materialized_column_name`, as `Lowering::qualified_attr` does. Failing
+      test first; the harness's `adversarial_promoted_attribute_agrees_on_result`
+      then moves from a row-level to a plan-level comparison.
 - [ ] 3.1 **Failing test first**: extend the trace-search integration coverage
       with a query whose result depends on attribute promotion, and confirm it
       passes on the old path — the regression net for 3.3.
@@ -86,6 +91,18 @@
 
 ## 4. Logs
 
+- [ ] 4.0a Make `logs.body` filterable for string operators (D6): `LogicalSchema::core()`
+      and its tests, the planner's retrieval-only test (use `span_events`),
+      `docs/users/querying-ir.md`, any generated schema listing. Failing test
+      first: a `where body contains` document plans and executes. The harness's
+      `logql_line_filter_is_rejected_by_the_real_schema` pin flips to agreement.
+- [ ] 4.0b `ql-ir`: default an ungrouped range aggregation's `by` to the stream
+      identity (D7), pinned in the querier against `logs.rs::SERIES_COLUMNS`.
+      The harness's ungrouped-aggregation pin flips to agreement.
+- [ ] 4.0c `ql-ir`: encode Loki's absent-matches semantics for `!=`, `!~`, `=""`
+      (D9). The harness's absent-value pin flips to agreement.
+- [ ] 4.0d File an issue for the #1070 bug still present in `logs.rs::execute_plan`
+      (mixed-case attribute grouping on the old metric path); reference it from 4.2.
 - [ ] 4.1 Route LogQL through `ql_ir::logql_to_ir` for what it covers, behind
       its own switch, **falling back to the old lowering on `Inexpressible`**
       (D5 — a working query must not regress into a 501).
