@@ -53,12 +53,75 @@ pub fn traceql_to_ir(query: &str, from: &str, to: &str) -> Result<Document, Lowe
 }
 
 /// One matcher becomes one equality leaf.
+///
+/// `status`/`kind` get their value normalized rather than passed through
+/// [`literal`] — see [`normalize_status`]/[`normalize_kind`].
 fn leaf(condition: &traceql::Condition) -> Result<Predicate, LowerError> {
+    let value = match condition.selector {
+        traceql::Selector::Status => {
+            serde_json::Value::String(normalize_status(&condition.value)?.to_string())
+        }
+        traceql::Selector::Kind => {
+            serde_json::Value::String(normalize_kind(&condition.value)?.to_string())
+        }
+        _ => literal(&condition.value)?,
+    };
     Ok(Predicate::Leaf(Leaf {
         field: field_name(&condition.selector)?,
         op: ComparisonOp::Eq,
-        value: Some(literal(&condition.value)?),
+        value: Some(value),
     }))
+}
+
+/// Canonicalize a `status` matcher's value to the form span status is
+/// actually stored in (`status_code_to_str` in
+/// `common::flight::conversion::conversion_traces`: `"Ok"`/`"Error"`/
+/// `"Unspecified"`). TraceQL spells the value lowercase
+/// (`status = error`); comparing that spelling against the stored column
+/// would never match a real row. `search_filter::to_expr` (the compat
+/// lowering this crate is meant to replace) already normalizes the same
+/// way — this mirrors it so both paths agree, a gap the `ir-single-lowering`
+/// differential harness found.
+fn normalize_status(value: &traceql::FilterValue) -> Result<&'static str, LowerError> {
+    let traceql::FilterValue::String(s) = value else {
+        return Err(LowerError::Inexpressible(format!(
+            "TraceQL status value {value:?}"
+        )));
+    };
+    Ok(match s.to_ascii_lowercase().as_str() {
+        "ok" => "Ok",
+        "error" => "Error",
+        "unset" | "unspecified" => "Unspecified",
+        _ => {
+            return Err(LowerError::Inexpressible(format!(
+                "TraceQL status value '{s}'"
+            )));
+        }
+    })
+}
+
+/// Canonicalize a `kind` matcher's value to the form span kind is actually
+/// stored in (`span_kind_to_str`): `"Internal"`/`"Server"`/`"Client"`/
+/// `"Producer"`/`"Consumer"`. See [`normalize_status`] for why this can't be
+/// a plain [`literal`] passthrough.
+fn normalize_kind(value: &traceql::FilterValue) -> Result<&'static str, LowerError> {
+    let traceql::FilterValue::String(s) = value else {
+        return Err(LowerError::Inexpressible(format!(
+            "TraceQL kind value {value:?}"
+        )));
+    };
+    Ok(match s.to_ascii_lowercase().as_str() {
+        "internal" => "Internal",
+        "server" => "Server",
+        "client" => "Client",
+        "producer" => "Producer",
+        "consumer" => "Consumer",
+        _ => {
+            return Err(LowerError::Inexpressible(format!(
+                "TraceQL kind value '{s}'"
+            )));
+        }
+    })
 }
 
 /// The logical field a TraceQL selector addresses.

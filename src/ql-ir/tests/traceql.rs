@@ -27,8 +27,16 @@ fn where_of(traceql_query: &str) -> Predicate {
 fn intrinsics_map_to_logical_field_names() {
     let cases: &[(&str, &str, serde_json::Value)] = &[
         (r#"{ name = "GET /api" }"#, "span.name", json!("GET /api")),
-        (r#"{ status = error }"#, "status.code", json!("error")),
-        (r#"{ kind = server }"#, "span_kind", json!("server")),
+        // `status`/`kind` are closed enums stored Title-cased
+        // (`status_code_to_str`/`span_kind_to_str` in
+        // conversion_traces.rs: "Ok"/"Error"/"Unspecified",
+        // "Internal"/"Server"/...); TraceQL spells them lowercase, so the
+        // leaf's value must be normalized to the stored form or it can
+        // never match a real row (found by the ir-single-lowering
+        // differential harness comparing this lowering against
+        // search_filter::to_expr, which already normalizes the same way).
+        (r#"{ status = error }"#, "status.code", json!("Error")),
+        (r#"{ kind = server }"#, "span_kind", json!("Server")),
         (
             r#"{ resource.service.name = "api" }"#,
             "service.name",
