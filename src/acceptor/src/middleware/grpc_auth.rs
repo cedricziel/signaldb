@@ -14,7 +14,8 @@
 //! valid on a multi-thread runtime). A tower layer can simply be `async`.
 
 use common::auth::{
-    AuthError, Authenticator, TenantContext, validate_dataset_id, validate_tenant_id,
+    AuthError, Authenticator, TenantContext, parse_bearer_token, validate_dataset_id,
+    validate_tenant_id,
 };
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -32,12 +33,11 @@ fn extract_grpc_auth_headers(
         .to_str()
         .map_err(|_| AuthError::bad_request("Invalid authorization metadata"))?;
 
-    // Parse Bearer token
-    let api_key = auth_header
-        .strip_prefix("Bearer ")
-        .or_else(|| auth_header.strip_prefix("bearer "))
-        .ok_or_else(|| AuthError::bad_request("Authorization must use Bearer scheme"))?
-        .to_string();
+    // Shared with the HTTP middleware's own Bearer parsing: case-insensitive
+    // scheme, tolerant of extra whitespace around the token (finding L1 —
+    // this used to accept only the literal "Bearer "/"bearer " prefixes,
+    // diverging from the HTTP side).
+    let api_key = parse_bearer_token(auth_header)?;
 
     // Extract and validate x-tenant-id header (same validator as the HTTP
     // middleware: charset allowlist, length cap, path-traversal rejection —
@@ -49,9 +49,16 @@ fn extract_grpc_auth_headers(
         .map_err(|_| AuthError::bad_request("Invalid x-tenant-id metadata"))?;
     let tenant_id = validate_tenant_id(tenant_id_raw)?;
 
-    // Extract and validate optional x-dataset-id header
-    let dataset_id = match metadata.get("x-dataset-id").and_then(|v| v.to_str().ok()) {
-        Some(id) => Some(validate_dataset_id(id)?),
+    // Extract and validate optional x-dataset-id header. A non-UTF-8 value
+    // is a malformed header (400), not "the header is absent" (finding L2 —
+    // matches x-tenant-id's existing behavior).
+    let dataset_id = match metadata.get("x-dataset-id") {
+        Some(value) => {
+            let id = value
+                .to_str()
+                .map_err(|_| AuthError::bad_request("Invalid x-dataset-id metadata"))?;
+            Some(validate_dataset_id(id)?)
+        }
         None => None,
     };
 
@@ -323,6 +330,44 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.status_code, 400);
         assert!(err.message.contains("Invalid dataset ID"));
+    }
+
+    #[test]
+    fn extract_grpc_auth_headers_rejects_non_utf8_dataset_id() {
+        // Finding L2: a non-UTF-8 x-dataset-id must be a 400, matching
+        // x-tenant-id's existing behavior — not silently treated as absent.
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            "authorization",
+            MetadataValue::from_static("Bearer test-api-key-123"),
+        );
+        metadata.insert("x-tenant-id", MetadataValue::from_static("acme"));
+        metadata.insert(
+            "x-dataset-id",
+            MetadataValue::try_from(&[0xff, 0xfe][..]).unwrap(),
+        );
+
+        let result = extract_grpc_auth_headers(&metadata);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("x-dataset-id"));
+    }
+
+    #[test]
+    fn extract_grpc_auth_headers_accepts_case_insensitive_bearer_scheme() {
+        // Finding L1: the gRPC side used to accept only the literal
+        // "Bearer "/"bearer " prefixes; it now shares the HTTP side's
+        // case-insensitive, whitespace-tolerant parser.
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            "authorization",
+            MetadataValue::from_static("BEARER   test-api-key-123   "),
+        );
+        metadata.insert("x-tenant-id", MetadataValue::from_static("acme"));
+
+        let (api_key, _, _) = extract_grpc_auth_headers(&metadata).unwrap();
+        assert_eq!(api_key, "test-api-key-123");
     }
 
     #[test]
