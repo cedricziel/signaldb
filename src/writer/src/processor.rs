@@ -2623,8 +2623,7 @@ mod tests {
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
 
         for _ in 0..ENTRY_COUNT {
             wal.append(
