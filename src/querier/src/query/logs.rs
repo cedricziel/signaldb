@@ -283,15 +283,18 @@ impl LogsService {
     /// [`super::ir_planner::plan_document`] — the single planner entry
     /// point (D1) — classifying the result per the D5 fallback contract
     /// [`Self::query_logs_via_ir`] and [`Self::query_metric_via_ir`] share:
-    /// [`IrOutcome::Fallback`] on `LowerError::Inexpressible` or a
-    /// `plan_document` `InvalidInput` rejection (the same "the IR doesn't
-    /// cover this yet" class, treated identically so a working query never
-    /// regresses into an error); [`IrOutcome::NoTable`] when the dataset has
-    /// no table for the source at all (an empty result, not a fallback
-    /// trigger); any other error propagates. A `ParseLogql` failure is
-    /// unreachable here in practice — the caller's own parser already
-    /// accepted `query` — but is mapped to `InvalidInput` defensively rather
-    /// than falling back.
+    /// [`IrOutcome::Fallback`] **only** on `LowerError::Inexpressible` — D5's
+    /// exception set is enumerable, and design.md's fallback set (task 4.2)
+    /// lists zero `plan_document`-rejected cases (D6 closed the one that
+    /// used to exist). A `plan_document` rejection therefore propagates like
+    /// any other error, even though it means the IR document built from a
+    /// query `ql_ir` itself accepted turned out to be invalid — pinned by
+    /// `planner_invalid_input_propagates_instead_of_falling_back` below.
+    /// [`IrOutcome::NoTable`] is the one non-error, non-fallback outcome:
+    /// the dataset has no table for the source at all, an empty result. A
+    /// `ParseLogql` failure is unreachable here in practice — the caller's
+    /// own parser already accepted `query` — but is mapped to `InvalidInput`
+    /// defensively rather than falling back.
     ///
     /// `finish` post-processes the successfully lowered document (`fields`,
     /// extra pipeline stages, an aggregate's `step`) before it is planned —
@@ -324,28 +327,18 @@ impl LogsService {
         };
         finish(&mut doc);
 
-        match super::ir_planner::plan_document(
+        let planned = super::ir_planner::plan_document(
             &self.session_context,
             &doc,
             tenant_slug,
             dataset_slug,
             0,
         )
-        .await
-        {
-            Ok(Some((df, _window))) => Ok(IrOutcome::Planned(Box::new(df))),
-            Ok(None) => Ok(IrOutcome::NoTable),
-            Err(QuerierError::InvalidInput(reason)) => {
-                tracing::debug!(
-                    query = %query,
-                    kind = %kind,
-                    reason = %reason,
-                    "LogQL query's IR document was rejected by the planner; falling back to the old lowering"
-                );
-                Ok(IrOutcome::Fallback)
-            }
-            Err(e) => Err(e),
-        }
+        .await?;
+        Ok(match planned {
+            Some((df, _window)) => IrOutcome::Planned(Box::new(df)),
+            None => IrOutcome::NoTable,
+        })
     }
 
     /// Execute a LogQL metric query, returning a matrix: one row per
@@ -2474,6 +2467,38 @@ mod tests {
             (dev[0].0 - 125.0_f64.sqrt()).abs() < 1e-6,
             "stddev {}",
             dev[0].0
+        );
+    }
+
+    /// Review finding on #1393: a `plan_document` rejection must propagate as
+    /// an error, not silently fall back to the old lowering — design D5's
+    /// exception set is `LowerError::Inexpressible` only, and design.md's
+    /// fallback set (task 4.2) lists zero `plan_document`-rejected cases.
+    /// `unwrap trace_id` lowers fine through `ql_ir` (`stddev_over_time` is
+    /// supported, and `ql_ir` does no type checking of the unwrapped field),
+    /// but `trace_id` is logically a `String` field — `plan_document`'s
+    /// aggregate validation requires a numeric field for `stddev` and
+    /// rejects it with `InvalidInput`. The *old* path never logically types
+    /// the unwrap target at all (a bare physical-column cast), so it
+    /// succeeds on the same query — this is not a case for the fallback set,
+    /// it is a case for propagating the planner's answer.
+    #[tokio::test]
+    async fn planner_invalid_input_propagates_instead_of_falling_back() {
+        let service = service_with_numeric_unwrap().with_logql_via_ir(true);
+        let params = MetricQueryParams {
+            query: r#"stddev_over_time({service_name="api"} | unwrap trace_id [1000ns])"#
+                .to_string(),
+            start: 0,
+            end: 1000,
+            step: 1000,
+        };
+        let err = service
+            .query_metric(&params, "t", "d")
+            .await
+            .expect_err("a plan_document rejection must surface as an error, not a silent fallback to the old path's success");
+        assert!(
+            matches!(err, QuerierError::InvalidInput(_)),
+            "expected InvalidInput (unwrap target is not numeric), got {err:?}"
         );
     }
 
