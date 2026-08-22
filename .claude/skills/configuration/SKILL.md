@@ -242,6 +242,7 @@ query_timeout = "60s"                 # Wall-clock timeout per Flight query
 max_sql_rows = 1000000                # Row cap for raw SQL over Flight
 max_search_limit = 1000               # Upper bound for client `limit` on /api/search
 max_concurrent_queries_per_tenant = 8 # Unset = unlimited
+trace_search_via_ir = false           # TEMPORARY (ir-single-lowering): route trace search through the query-IR planner
 ```
 
 ### Writer (Commit Coalescing)

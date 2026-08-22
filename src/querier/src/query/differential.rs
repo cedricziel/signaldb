@@ -1663,24 +1663,14 @@ async fn search_traces(
 fn q_only(q: &str) -> SearchQueryParams {
     SearchQueryParams {
         q: Some(q.to_string()),
-        tags: None,
-        min_duration: None,
-        max_duration: None,
-        limit: None,
-        start: None,
-        end: None,
+        ..Default::default()
     }
 }
 
 fn tags_only(tags: &str) -> SearchQueryParams {
     SearchQueryParams {
-        q: None,
         tags: Some(tags.to_string()),
-        min_duration: None,
-        max_duration: None,
-        limit: None,
-        start: None,
-        end: None,
+        ..Default::default()
     }
 }
 
@@ -1739,11 +1729,7 @@ async fn q_and_tags_together_search_results_agree_with_switch_on_and_off() {
     let query = SearchQueryParams {
         q: Some(r#"{ resource.service.name = "api" }"#.to_string()),
         tags: Some("http.method=GET".to_string()),
-        min_duration: None,
-        max_duration: None,
-        limit: None,
-        start: None,
-        end: None,
+        ..Default::default()
     };
     let old = search_traces(&ctx, query.clone(), false).await.unwrap();
     let new = search_traces(&ctx, query, true).await.unwrap();
