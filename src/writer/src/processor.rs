@@ -31,6 +31,12 @@ const MAX_ENTRY_FAILURES: u32 = 10;
 /// commits slow in the first place (#959/#895).
 const COMMIT_CONCURRENCY: usize = 8;
 
+/// Hard cap on non-`Flush` entries taken from one WAL in one drain cycle,
+/// independent of `[writer].max_drain_bytes_per_cycle`. The byte budget alone
+/// does not bound cycle work for a WAL with a very large number of small
+/// entries (near-zero `data_size` each); this backstops that case.
+const MAX_DRAIN_ENTRIES_PER_CYCLE: usize = 65_536;
+
 /// A WAL entry's W3C trace context (`traceparent`, `tracestate`) as carried
 /// from the originating ingest request.
 type EntryTraceContext = (Option<String>, Option<String>);
@@ -166,6 +172,49 @@ impl FlushScope {
     }
 }
 
+/// Bound one WAL's contribution to a drain cycle, oldest first: `entries` is
+/// consumed in its incoming order (the order [`Wal::get_unprocessed_entries`]
+/// returns, i.e. write order) and split into what this cycle takes and what
+/// stays for a later one.
+///
+/// `max_bytes` is the running cap on `Σ data_size` of *data* entries taken
+/// (`0` disables it — take everything, subject only to
+/// [`MAX_DRAIN_ENTRIES_PER_CYCLE`]). A data entry is deferred rather than
+/// taken once including it would push the running total over the budget, so
+/// the cap is never exceeded within a cycle.
+///
+/// `Flush` markers are always taken regardless of the budget or the entry
+/// count: they carry no data to decode, and a scoped flush request must not
+/// be starved by an unrelated backlog sitting ahead of it in the same WAL.
+///
+/// Returns `(taken, deferred_count)`; `taken` preserves the original order.
+fn apply_drain_budget(entries: Vec<WalEntry>, max_bytes: u64) -> (Vec<WalEntry>, usize) {
+    let mut taken = Vec::with_capacity(entries.len());
+    let mut deferred = 0usize;
+    let mut bytes_taken = 0u64;
+    let mut data_entries_taken = 0usize;
+
+    for entry in entries {
+        if matches!(entry.operation, common::wal::WalOperation::Flush) {
+            taken.push(entry);
+            continue;
+        }
+
+        let would_exceed_bytes = max_bytes != 0 && bytes_taken + entry.data_size > max_bytes;
+        let would_exceed_count = data_entries_taken >= MAX_DRAIN_ENTRIES_PER_CYCLE;
+        if would_exceed_bytes || would_exceed_count {
+            deferred += 1;
+            continue;
+        }
+
+        bytes_taken += entry.data_size;
+        data_entries_taken += 1;
+        taken.push(entry);
+    }
+
+    (taken, deferred)
+}
+
 /// Extract the W3C trace context (`traceparent`/`tracestate`) that the ingest
 /// request stored in a WAL entry's metadata. Lets the asynchronous processor
 /// link its batch span back to the originating ingest trace instead of
@@ -210,6 +259,10 @@ pub struct WalProcessor {
     /// How long another writer's idempotency marker is kept before it is
     /// retired from a table. Zero disables retirement.
     wal_marker_retention: Duration,
+    /// Byte budget for how much backlog one drain cycle decodes from a
+    /// single WAL, oldest entries first. Zero disables the budget. See
+    /// [`apply_drain_budget`].
+    max_drain_bytes_per_cycle: u64,
     /// When this processor started, and when it last swept markers. Both are
     /// needed: the sweep is throttled, and a marker with no recorded commit
     /// time (written before markers were dated) may only be retired once this
@@ -257,6 +310,7 @@ impl WalProcessor {
             entry_failures: tokio::sync::Mutex::new(HashMap::new()),
             coalescer: tokio::sync::Mutex::new(CommitCoalescer::new(writer_config)),
             wal_marker_retention: writer_config.wal_marker_retention,
+            max_drain_bytes_per_cycle: writer_config.max_drain_bytes_per_cycle,
             started_at: Instant::now(),
             last_marker_sweep: tokio::sync::Mutex::new(None),
             #[cfg(test)]
@@ -393,9 +447,39 @@ impl WalProcessor {
     /// Immediately commit the pending groups covered by `scope`, ignoring the
     /// coalescing floor for them only. Groups outside the scope keep normal
     /// coalescing. The read-your-writes drain used by the force-commit primitive.
+    ///
+    /// One [`Self::drain_pending`] call only commits what fits under
+    /// `max_drain_bytes_per_cycle`, so this loops until `scope`'s backlog is
+    /// actually empty rather than returning after one partial cycle — a
+    /// caller asking to flush its own just-written data expects it to be
+    /// queryable when this returns, not merely "less pending than before".
+    /// Unbounded here on purpose: the caller (`do_action("flush")`) wraps
+    /// this in `FLUSH_TIMEOUT`, which cancels the whole call if the scope's
+    /// backlog cannot drain in time.
     #[tracing::instrument(level = "debug", skip_all, fields(signaldb.tenant.id = %scope.tenant_id))]
     pub async fn force_commit_pending(&mut self, scope: FlushScope) -> Result<()> {
-        self.drain_pending(vec![scope]).await
+        loop {
+            self.drain_pending(vec![scope.clone()]).await?;
+            if !self.scope_has_unprocessed(&scope).await? {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Whether any WAL still holds an unprocessed entry within `scope`.
+    /// Drives [`Self::force_commit_pending`]'s drain loop: a cycle bounded by
+    /// the drain budget can leave `scope`'s backlog partially drained, and
+    /// this is how the loop tells "partially" from "done".
+    async fn scope_has_unprocessed(&self, scope: &FlushScope) -> Result<bool> {
+        for ((tenant, dataset, _signal), wal) in self.wal_manager.all_wals().await {
+            if !scope.matches(&tenant, &dataset) {
+                continue;
+            }
+            if !wal.get_unprocessed_entries().await?.is_empty() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Shared drain implementation. Groups matching any entry in `flush_scopes`
@@ -403,6 +487,12 @@ impl WalProcessor {
     /// floor. The background loop passes an empty `flush_scopes` (pure
     /// coalescing); `Flush` WAL markers contribute their own tenant/dataset
     /// scope.
+    ///
+    /// Each WAL contributes at most `max_drain_bytes_per_cycle` bytes of data
+    /// entries to this cycle, oldest first (see [`apply_drain_budget`]);
+    /// anything past that stays unprocessed for a later cycle. This bounds
+    /// how much Arrow one tick decodes, so a large post-outage backlog drains
+    /// over several ticks instead of being decoded to memory in one.
     async fn drain_pending(&mut self, mut flush_scopes: Vec<FlushScope>) -> Result<()> {
         // Every cached WAL is drained each cycle. Listing a WAL's entries is
         // an in-memory read that cannot fail today; the error arm is kept
@@ -415,10 +505,18 @@ impl WalProcessor {
         // is the export-churn loop of the #865 incident.
         let mut pending_entries: Vec<(Arc<Wal>, WalEntry)> = Vec::new();
         let mut list_failures = 0usize;
+        // Entries a WAL's backlog holds beyond this cycle's byte budget
+        // (`apply_drain_budget`): still durable and unprocessed, just left
+        // for a later cycle. Tracked separately from `list_failures`, which
+        // is entries this cycle never even saw.
+        let mut budget_deferred_entries = 0usize;
         for ((tenant, dataset, signal), wal) in self.wal_manager.all_wals().await {
             match wal.get_unprocessed_entries().await {
                 Ok(entries) => {
-                    pending_entries.extend(entries.into_iter().map(|e| (wal.clone(), e)));
+                    let (taken, deferred) =
+                        apply_drain_budget(entries, self.max_drain_bytes_per_cycle);
+                    budget_deferred_entries += deferred;
+                    pending_entries.extend(taken.into_iter().map(|e| (wal.clone(), e)));
                 }
                 Err(e) => {
                     list_failures += 1;
@@ -447,6 +545,16 @@ impl WalProcessor {
                 "WALs skipped this cycle because their entries could not be listed"
             );
         }
+        if budget_deferred_entries > 0 {
+            tracing::warn!(
+                budget_deferred_entries,
+                max_drain_bytes_per_cycle = self.max_drain_bytes_per_cycle,
+                "WAL entries left unprocessed this cycle by the per-cycle drain budget; they remain durable and will be retried"
+            );
+        }
+        common::self_monitoring::app_metrics()
+            .writer_entries_deferred_by_budget
+            .record(budget_deferred_entries as u64, &[]);
 
         if pending_entries.is_empty() {
             // Keep the backlog gauge honest on an idle WAL: without this it
@@ -2210,6 +2318,189 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e.operation, WalOperation::Flush)),
             "Flush marker must be retained when its forced drain fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pending_respects_max_drain_bytes_per_cycle_oldest_first() {
+        // A replay backlog must not be decoded past a per-cycle byte budget:
+        // without one, a multi-GB WAL after an outage is decoded to Arrow in
+        // a single tick and OOM-kills the writer (W5). A budget of ~2.5x one
+        // entry's size must commit exactly the oldest two of six per cycle.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+
+        let entry_bytes = metrics_gauge_bytes(1);
+        let entry_size = entry_bytes.len() as u64;
+        let config = WriterConfig {
+            commit_interval: Duration::from_secs(0),
+            max_uncommitted_rows: 1_000_000,
+            max_drain_bytes_per_cycle: entry_size * 2 + entry_size / 2,
+            ..Default::default()
+        };
+        let mut processor = WalProcessor::with_config(
+            manager_for(&wal).await,
+            catalog_manager,
+            object_store,
+            &config,
+        );
+
+        let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
+        let mut ids = Vec::new();
+        for _ in 0..6 {
+            ids.push(
+                wal.append(
+                    WalOperation::WriteMetrics,
+                    entry_bytes.clone(),
+                    meta.clone(),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        wal.flush().await.unwrap();
+
+        processor.process_pending_entries().await.unwrap();
+        let remaining: Vec<Uuid> = wal
+            .get_unprocessed_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(
+            remaining,
+            ids[2..].to_vec(),
+            "budget must cap the first cycle to the oldest two entries"
+        );
+
+        processor.process_pending_entries().await.unwrap();
+        let remaining: Vec<Uuid> = wal
+            .get_unprocessed_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(
+            remaining,
+            ids[4..].to_vec(),
+            "second cycle commits the next two, oldest first"
+        );
+
+        processor.process_pending_entries().await.unwrap();
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "third cycle drains the rest"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pending_with_budget_unset_drains_everything_in_one_cycle() {
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let config = WriterConfig {
+            commit_interval: Duration::from_secs(0),
+            max_uncommitted_rows: 1_000_000,
+            max_drain_bytes_per_cycle: 0,
+            ..Default::default()
+        };
+        let mut processor = WalProcessor::with_config(
+            manager_for(&wal).await,
+            catalog_manager,
+            object_store,
+            &config,
+        );
+
+        let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
+        for _ in 0..6 {
+            wal.append(
+                WalOperation::WriteMetrics,
+                metrics_gauge_bytes(1),
+                meta.clone(),
+            )
+            .await
+            .unwrap();
+        }
+        wal.flush().await.unwrap();
+
+        processor.process_pending_entries().await.unwrap();
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "0 (unset) must not bound the drain"
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_marker_beyond_drain_budget_is_still_included() {
+        // The byte budget bounds *data* entries; a `Flush` marker must never
+        // be starved by it, even when it sits chronologically after entries
+        // the budget already deferred.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+
+        let entry_bytes = metrics_gauge_bytes(1);
+        let entry_size = entry_bytes.len() as u64;
+        let config = WriterConfig {
+            commit_interval: Duration::from_secs(0),
+            max_uncommitted_rows: 1_000_000,
+            max_drain_bytes_per_cycle: entry_size * 2 + entry_size / 2,
+            ..Default::default()
+        };
+        let mut processor = WalProcessor::with_config(
+            manager_for(&wal).await,
+            catalog_manager,
+            object_store,
+            &config,
+        );
+
+        let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
+        for _ in 0..6 {
+            wal.append(
+                WalOperation::WriteMetrics,
+                entry_bytes.clone(),
+                meta.clone(),
+            )
+            .await
+            .unwrap();
+        }
+        // Arrives after the data, past the byte budget's cutoff.
+        wal.append(WalOperation::Flush, Vec::new(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        processor.process_pending_entries().await.unwrap();
+
+        let remaining = wal.get_unprocessed_entries().await.unwrap();
+        assert!(
+            !remaining
+                .iter()
+                .any(|e| matches!(e.operation, WalOperation::Flush)),
+            "a Flush marker must never be starved by the drain budget"
+        );
+        assert_eq!(
+            remaining.len(),
+            4,
+            "budget-deferred data entries stay pending; only the forced group committed"
         );
     }
 

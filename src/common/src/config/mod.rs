@@ -1417,6 +1417,19 @@ pub struct WriterConfig {
     /// duplicates when it returns.
     #[serde(with = "humantime_serde")]
     pub wal_marker_retention: Duration,
+    /// Byte budget for how much WAL backlog one drain cycle decodes from a
+    /// single WAL, oldest entries first. `0` disables the budget (decode
+    /// everything pending, the legacy behavior).
+    ///
+    /// Without a budget, replaying a multi-GB backlog after an outage
+    /// deserializes the entire thing to Arrow in one tick — 2-3x the
+    /// on-disk size once transform and Parquet encode buffers are counted —
+    /// which OOM-kills the writer and restarts into the same backlog
+    /// (crash loop). Entries left out by the budget stay durable and
+    /// unprocessed in the WAL; later cycles pick up where this one stopped.
+    /// A `Flush` marker is always included regardless of the budget, so a
+    /// scoped flush request is never starved by an unrelated backlog.
+    pub max_drain_bytes_per_cycle: u64,
 }
 
 impl WriterConfig {
@@ -1439,6 +1452,10 @@ impl Default for WriterConfig {
             // question, short enough that a fleet recreating WAL directories
             // does not carry an unbounded marker set.
             wal_marker_retention: Duration::from_secs(30 * 24 * 3600),
+            // 256 MiB: generous for a homelab-scale writer while still
+            // keeping a multi-GB post-outage backlog from being decoded to
+            // Arrow in one tick.
+            max_drain_bytes_per_cycle: 256 * 1024 * 1024,
         }
     }
 }
@@ -2261,12 +2278,14 @@ mod tests {
         assert_eq!(writer.commit_interval, Duration::from_secs(5));
         assert_eq!(writer.max_uncommitted_rows, 100_000);
         assert_eq!(writer.metadata_previous_versions_max, 100);
+        assert_eq!(writer.max_drain_bytes_per_cycle, 256 * 1024 * 1024);
 
         // Present on the top-level Configuration with the same defaults.
         let config = Configuration::default();
         assert_eq!(config.writer.commit_interval, Duration::from_secs(5));
         assert_eq!(config.writer.max_uncommitted_rows, 100_000);
         assert_eq!(config.writer.metadata_previous_versions_max, 100);
+        assert_eq!(config.writer.max_drain_bytes_per_cycle, 256 * 1024 * 1024);
     }
 
     #[test]

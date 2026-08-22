@@ -66,6 +66,13 @@ pub struct AppMetrics {
     // `signaldb.wal.entries_pending` indicates the commit path is stalling.
     pub writer_groups_deferred: Gauge<u64>,
 
+    // WAL entries left unprocessed on the last drain cycle because the
+    // per-WAL byte budget (`[writer].max_drain_bytes_per_cycle`) was
+    // reached before they were decoded. A sustained non-zero value means a
+    // WAL's backlog is larger than one cycle's budget and is draining
+    // across several ticks rather than in one.
+    pub writer_entries_deferred_by_budget: Gauge<u64>,
+
     // How long one group's Iceberg commit took, by tenant. Groups commit
     // concurrently (#1306), so a tenant with slow commits shows up as that
     // tenant's latency rather than as everyone's — which is the whole point
@@ -297,6 +304,13 @@ impl AppMetrics {
                     "Writer groups deferred by the commit-coalescing floor last cycle",
                 )
                 .with_unit("{group}")
+                .build(),
+            writer_entries_deferred_by_budget: meter
+                .u64_gauge("signaldb.writer.entries_deferred_by_budget")
+                .with_description(
+                    "WAL entries left unprocessed last cycle by the per-cycle drain byte budget",
+                )
+                .with_unit("{entry}")
                 .build(),
             writer_commit_duration: meter
                 .f64_histogram("signaldb.writer.commit_duration")
