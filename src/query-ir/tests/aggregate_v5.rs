@@ -143,3 +143,24 @@ fn an_undivided_count_is_still_an_integer() {
     let rel = validate(&d, &SourceRegistry::core(), &permissive()).expect("validates");
     assert!(format!("{rel:?}").contains("Int64"), "{rel:?}");
 }
+
+/// A scoped aggregate that also divides. This pairing built the wrong
+/// expression: the divisor was applied first, handing `.filter()` an
+/// arithmetic node instead of the aggregate it attaches to. Nothing combined
+/// the two until a reviewer asked.
+#[test]
+fn a_scoped_aggregate_may_also_divide() {
+    let r = check(
+        5,
+        json!({
+            "fn": "count",
+            "as": "error_rate",
+            "divisor": 60.0,
+            "where": { "field": "service.name", "op": "eq", "value": "api" }
+        }),
+    );
+    assert!(
+        r.is_ok(),
+        "a scoped, divided aggregate should validate: {r:?}"
+    );
+}
