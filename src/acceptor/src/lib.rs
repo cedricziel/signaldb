@@ -267,9 +267,15 @@ pub async fn serve_otlp_grpc(
         .with_context(|| format!("Failed to bind OTLP/gRPC listener on {}", config.addr))?;
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
-    init_tx
-        .send(())
-        .expect("Unable to send init signal for OTLP/gRPC");
+    // A dropped receiver means the CLI already gave up waiting on us — most
+    // often because the *other* server (gRPC/HTTP) failed to start first and
+    // the CLI's sequential `grpc_init_rx.await?` / `http_init_rx.await?`
+    // returned early, dropping this receiver before we got here. That is a
+    // real (if unlikely) race, not a programming error, so it must not
+    // panic: propagate it like any other startup failure.
+    init_tx.send(()).map_err(|_| {
+        anyhow::anyhow!("Unable to send init signal for OTLP/gRPC: receiver dropped")
+    })?;
 
     tonic::transport::Server::builder()
         .layer(crate::middleware::GrpcTraceLayer)
@@ -1013,9 +1019,11 @@ pub async fn serve_otlp_http(
     // already in use).
     let listener = TcpListener::bind(config.addr).await?;
 
-    init_tx
-        .send(())
-        .expect("Unable to send init signal for OTLP/HTTP");
+    // A dropped receiver means the CLI already gave up waiting on us — see
+    // the matching comment in serve_otlp_grpc. Propagate, don't panic.
+    init_tx.send(()).map_err(|_| {
+        anyhow::anyhow!("Unable to send init signal for OTLP/HTTP: receiver dropped")
+    })?;
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {

@@ -152,3 +152,82 @@ async fn http_bind_failure_is_returned_as_error_not_a_panic() {
         "init signal must not fire before a successful bind"
     );
 }
+
+/// A free port that the caller does not hold — the server under test binds
+/// it for real, unlike [`bind_and_hold_port`].
+async fn free_addr() -> std::net::SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    addr
+}
+
+/// CodeRabbit review of #1384: a successful bind is not the only way
+/// `init_tx.send(())` can fail. If the *other* server (gRPC/HTTP) fails to
+/// start first, `cli.rs`'s sequential `grpc_init_rx.await?` /
+/// `http_init_rx.await?` returns early and drops the receiver for the
+/// server that hasn't reported in yet — while that server's task keeps
+/// running concurrently and may still bind successfully afterwards. The
+/// resulting `init_tx.send(())` must be returned as an `Err`, not panic.
+#[tokio::test(flavor = "multi_thread")]
+async fn grpc_init_send_after_receiver_dropped_is_returned_as_error_not_a_panic() {
+    let temp_dir = TempDir::new().unwrap();
+    let resources = test_resources(&temp_dir).await;
+    let addr = free_addr().await;
+
+    let (init_tx, init_rx) = tokio::sync::oneshot::channel();
+    drop(init_rx); // simulates the CLI having already given up on us
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (stopped_tx, _stopped_rx) = tokio::sync::oneshot::channel();
+
+    let result = acceptor::serve_otlp_grpc(
+        GrpcAcceptorConfig {
+            addr,
+            resources,
+            max_decoding_message_size: 64 * 1024 * 1024,
+        },
+        init_tx,
+        shutdown_rx,
+        stopped_tx,
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "a dropped init receiver must be returned as Err, not panic, even after a successful bind"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_init_send_after_receiver_dropped_is_returned_as_error_not_a_panic() {
+    let temp_dir = TempDir::new().unwrap();
+    let resources = test_resources(&temp_dir).await;
+    let addr = free_addr().await;
+
+    let (init_tx, init_rx) = tokio::sync::oneshot::channel();
+    drop(init_rx); // simulates the CLI having already given up on us
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (stopped_tx, _stopped_rx) = tokio::sync::oneshot::channel();
+
+    let result = acceptor::serve_otlp_http(
+        HttpAcceptorConfig {
+            addr,
+            flight_transport: resources.flight_transport,
+            wal_manager: resources.wal_manager,
+            authenticator: resources.authenticator,
+            rate_limiter: resources.rate_limiter,
+            storage_usage: resources.storage_usage,
+            cors_allowed_origins: None,
+            max_request_body_bytes: 64 * 1024 * 1024,
+        },
+        init_tx,
+        shutdown_rx,
+        stopped_tx,
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "a dropped init receiver must be returned as Err, not panic, even after a successful bind"
+    );
+}
