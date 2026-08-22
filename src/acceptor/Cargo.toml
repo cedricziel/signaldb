@@ -39,6 +39,7 @@ bytes.workspace = true
 tower.workspace = true
 tempfile.workspace = true
 flate2.workspace = true
+zstd.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["trace", "logs", "testing"] }
 opentelemetry-appender-tracing.workspace = true
 tracing-opentelemetry.workspace = true

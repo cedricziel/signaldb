@@ -77,6 +77,10 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     encoder.finish().unwrap()
 }
 
+fn zstd_compress(bytes: &[u8]) -> Vec<u8> {
+    zstd::stream::encode_all(bytes, 0).unwrap()
+}
+
 /// Set up the OTLP/HTTP traces router, with the same transport-limit layers
 /// `serve_otlp_http` applies, for a given `max_request_body_bytes`.
 async fn setup_traces_test_with_limit(
@@ -217,6 +221,46 @@ async fn gzip_compressed_protobuf_body_is_accepted() {
     );
 }
 
+/// H1: a zstd-encoded protobuf body is decompressed and durably accepted.
+/// `with_http_transport_limits` enables `decompression-zstd` alongside
+/// gzip; this pins that zstd isn't just declared but actually wired up.
+#[tokio::test]
+async fn zstd_compressed_protobuf_body_is_accepted() {
+    let (app, wal_manager, _temp_dir) = setup_traces_test_with_limit(64 * 1024 * 1024).await;
+
+    let plain = padded_trace_request().encode_to_vec();
+    let compressed = zstd_compress(&plain);
+    assert!(
+        compressed.len() < plain.len(),
+        "test payload must actually shrink under zstd, got {} -> {} bytes",
+        plain.len(),
+        compressed.len()
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/traces")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::CONTENT_ENCODING, "zstd")
+        .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+        .header("X-Tenant-ID", TEST_TENANT)
+        .body(Body::from(compressed))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a zstd-compressed OTLP/HTTP body must be decompressed and accepted"
+    );
+    assert_eq!(
+        traces_wal_entry_count(&wal_manager).await,
+        1,
+        "the decompressed export must be durably recorded in the WAL"
+    );
+}
+
 /// H2: a plain (uncompressed) body over the configured limit is rejected
 /// with 413, not silently truncated or accepted.
 #[tokio::test]
@@ -265,6 +309,41 @@ async fn gzip_body_exceeding_limit_after_decompression_is_rejected() {
         .uri("/v1/traces")
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(header::CONTENT_ENCODING, "gzip")
+        .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+        .header("X-Tenant-ID", TEST_TENANT)
+        .body(Body::from(compressed))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "a small compressed body that decompresses past the limit must still be rejected"
+    );
+    assert_eq!(traces_wal_entry_count(&wal_manager).await, 0);
+}
+
+/// H2 (zip-bomb guard), zstd variant of the gzip test above.
+#[tokio::test]
+async fn zstd_body_exceeding_limit_after_decompression_is_rejected() {
+    let limit = 512;
+    let (app, wal_manager, _temp_dir) = setup_traces_test_with_limit(limit).await;
+
+    let huge_plain = vec![0u8; limit * 20];
+    let compressed = zstd_compress(&huge_plain);
+    assert!(
+        compressed.len() < limit,
+        "compressed payload ({} bytes) must be smaller than the limit ({limit}) for this test \
+         to prove decompression runs before the size check",
+        compressed.len()
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/traces")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::CONTENT_ENCODING, "zstd")
         .header("Authorization", format!("Bearer {TEST_API_KEY}"))
         .header("X-Tenant-ID", TEST_TENANT)
         .body(Body::from(compressed))
