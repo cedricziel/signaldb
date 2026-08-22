@@ -98,16 +98,16 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 tui-tree-widget = "0.24.0"
 
 # DataFusion for workspace members
-datafusion = { version = "54.1.0", default-features = false, features = [
+datafusion = { version = "55.0.0", default-features = false, features = [
     "parquet",
 ] }
 # Direct Arrow and Parquet dependencies
 # ipc_compression enables the lz4/zstd IPC buffer codecs on every build that
 # encodes or decodes Flight/WAL payloads — including per-package builds and
 # the published SDK, which don't inherit the codecs transitively.
-arrow = { version = "58.3.0", features = ["prettyprint", "ipc_compression"] }
-parquet = { version = "58.3.0", features = ["arrow", "async"] }
-arrow-flight = { version = "58.3.0" }
+arrow = { version = "59.2.0", features = ["prettyprint", "ipc_compression"] }
+parquet = { version = "59.2.0", features = ["arrow", "async"] }
+arrow-flight = { version = "59.2.0" }
 object_store = { version = "0.13.2", features = ["aws"] }
 
 # Iceberg table format support (schema, catalog, and write operations)
