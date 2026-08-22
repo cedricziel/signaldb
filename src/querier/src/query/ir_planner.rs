@@ -84,7 +84,7 @@ const FLAMEGRAPH_PROFILE_CAP: usize = 1_000;
 /// Iceberg schema (`common::schema::SCHEMA_DEFINITIONS`) by a unit test — the
 /// traces v2 schema renames `name`→`span_name` and `duration_nano`→
 /// `duration_nanos`, so those idiosyncratic renames live in `aliases`.
-struct SourcePlan {
+pub(crate) struct SourcePlan {
     /// The logical source name (as written in a document's `from`) — used for
     /// display/error messages, distinct from `tables` below since a source
     /// can scan more than one physical table (metrics unions gauge + sum).
@@ -113,7 +113,7 @@ struct SourcePlan {
 }
 
 impl SourcePlan {
-    fn for_source(source: &str) -> Option<SourcePlan> {
+    pub(crate) fn for_source(source: &str) -> Option<SourcePlan> {
         match source {
             "logs" => Some(SourcePlan {
                 name: "logs",
@@ -728,7 +728,7 @@ fn arrow_to_value_type(dt: &DataType) -> Option<ValueType> {
 /// A [`FieldResolver`] whose client-visible built-ins come from the canonical
 /// logical schema. The scanned Arrow schema only verifies a logical field's
 /// current physical realization and discovers promoted attributes.
-struct SchemaResolver {
+pub(crate) struct SchemaResolver {
     columns: HashMap<String, ValueType>,
     physical_names: std::collections::HashSet<String>,
     container: String,
@@ -738,7 +738,7 @@ struct SchemaResolver {
 }
 
 impl SchemaResolver {
-    fn new(schema: &datafusion::common::DFSchema, source: &SourcePlan) -> Self {
+    pub(crate) fn new(schema: &datafusion::common::DFSchema, source: &SourcePlan) -> Self {
         let mut columns = HashMap::new();
         let mut physical_names = std::collections::HashSet::new();
         for field in schema.fields() {
@@ -948,6 +948,11 @@ impl IrService {
     }
 
     /// Build the `DataFrame` for a document (split out for planner tests).
+    ///
+    /// Delegates to [`plan_document`], the planner's single entry point —
+    /// `IrService`'s Flight-ticket path and any other caller (the compat
+    /// lowerings, once they route through this planner) build the same plan
+    /// the same way.
     pub async fn plan(
         &self,
         doc: &Document,
@@ -955,61 +960,85 @@ impl IrService {
         dataset_slug: &str,
         now_ns: i64,
     ) -> Result<Option<(DataFrame, ResolvedWindow)>, QuerierError> {
-        let source = SourcePlan::for_source(&doc.from)
-            .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
-
-        // A dataset with none of this source's tables has no rows to plan
-        // over. The document's schema-dependent validation is skipped along
-        // with the scan — there is no schema to validate against.
-        let Some(base) =
-            scan_source_tables(&self.session_context, tenant_slug, dataset_slug, &source).await?
-        else {
-            return Ok(None);
-        };
-
-        // Build the resolver from the actual scanned schema and validate the
-        // document against it (envelope, coercibility, references, guards).
-        let resolver = SchemaResolver::new(base.schema(), &source);
-        validate(doc, &SourceRegistry::core(), &resolver)
-            .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-
-        // Resolve the time window once against the injected clock.
-        let window = resolve_window(doc, now_ns)?;
-        validate_heatmap_window(doc, &window)?;
-
-        let mut lowering = Lowering {
-            source: &source,
-            resolver: &resolver,
+        plan_document(
+            &self.session_context,
+            doc,
+            tenant_slug,
+            dataset_slug,
             now_ns,
-            aggregated: false,
-            series_shaped: false,
-            col_of: HashMap::new(),
-            derived_types: HashMap::new(),
-            schema_cols: base
-                .schema()
-                .fields()
-                .iter()
-                .map(|f| f.name().to_string())
-                .collect(),
-        };
-
-        let mut df = lowering.apply_time_window(base, &window)?;
-        for stage in &doc.pipeline {
-            df = match stage {
-                // The only stage that needs to break the lazy DataFrame chain
-                // (merging bucket-array columns element-wise isn't expressible
-                // as a DataFusion aggregate) — see lower_histogram_quantile.
-                Stage::HistogramQuantile(hq) => {
-                    lowering
-                        .lower_histogram_quantile(&self.session_context, df, hq)
-                        .await?
-                }
-                other => lowering.lower_stage(df, other)?,
-            };
-        }
-        df = lowering.apply_projection(df, doc)?;
-        Ok(Some((df, window)))
+        )
+        .await
     }
+}
+
+/// Lower a validated [`Document`] to a `DataFrame`, over the given session
+/// context and tenant/dataset scope. The planner's one entry point (D1 of
+/// `ir-single-lowering`): [`IrService::plan`] calls this, and so will every
+/// compat lowering that adopts the IR, so there is one planner rather than a
+/// planner and a compat-planner.
+///
+/// The [`SchemaResolver`] is deliberately not a parameter — see D1's note:
+/// it is built here from the *scanned table's* Arrow schema, which is what
+/// keeps field resolution promotion-invariant (a promoted attribute is
+/// discovered from the schema DataFusion actually returned, not from a
+/// resolver a caller could hand in stale or wrong) and is exactly the
+/// coupling `pub(crate)`-only visibility (task 1.2) exists to prevent a
+/// caller from second-guessing.
+pub(crate) async fn plan_document(
+    ctx: &SessionContext,
+    doc: &Document,
+    tenant_slug: &str,
+    dataset_slug: &str,
+    now_ns: i64,
+) -> Result<Option<(DataFrame, ResolvedWindow)>, QuerierError> {
+    let source = SourcePlan::for_source(&doc.from)
+        .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
+
+    // A dataset with none of this source's tables has no rows to plan
+    // over. The document's schema-dependent validation is skipped along
+    // with the scan — there is no schema to validate against.
+    let Some(base) = scan_source_tables(ctx, tenant_slug, dataset_slug, &source).await? else {
+        return Ok(None);
+    };
+
+    // Build the resolver from the actual scanned schema and validate the
+    // document against it (envelope, coercibility, references, guards).
+    let resolver = SchemaResolver::new(base.schema(), &source);
+    validate(doc, &SourceRegistry::core(), &resolver)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+
+    // Resolve the time window once against the injected clock.
+    let window = resolve_window(doc, now_ns)?;
+    validate_heatmap_window(doc, &window)?;
+
+    let mut lowering = Lowering {
+        source: &source,
+        resolver: &resolver,
+        now_ns,
+        aggregated: false,
+        series_shaped: false,
+        col_of: HashMap::new(),
+        derived_types: HashMap::new(),
+        schema_cols: base
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect(),
+    };
+
+    let mut df = lowering.apply_time_window(base, &window)?;
+    for stage in &doc.pipeline {
+        df = match stage {
+            // The only stage that needs to break the lazy DataFrame chain
+            // (merging bucket-array columns element-wise isn't expressible
+            // as a DataFusion aggregate) — see lower_histogram_quantile.
+            Stage::HistogramQuantile(hq) => lowering.lower_histogram_quantile(ctx, df, hq).await?,
+            other => lowering.lower_stage(df, other)?,
+        };
+    }
+    df = lowering.apply_projection(df, doc)?;
+    Ok(Some((df, window)))
 }
 
 /// Decode full-payload profile rows, aggregate them into one flamegraph, and
