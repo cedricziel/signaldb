@@ -564,7 +564,7 @@ where
     Req: prost::Message + Default + serde::de::DeserializeOwned,
     Resp: prost::Message + Default,
     F: FnOnce(Req) -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<()>>,
+    Fut: std::future::Future<Output = Result<(), crate::handler::IngestError>>,
 {
     // Per-tenant ingest rate limiting (HTTP 429 with the reason)
     if let Err(e) = rate_limiter.check_ingest(&tenant_context.tenant_id, body.len()) {
@@ -626,7 +626,18 @@ where
                 }
             }
         }
-        Err(e) => {
+        // Classify the failure (finding M3): a deterministic conversion
+        // failure is 400 Bad Request (retrying the same bytes will fail
+        // again), while a WAL/durability failure stays 503 Service
+        // Unavailable so the client retries instead of dropping its copy.
+        Err(crate::handler::IngestError::Invalid(e)) => {
+            tracing::warn!(error = %e, signal, "Rejecting export via HTTP: invalid payload");
+            otlp_http_error(
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("invalid {signal} payload: {e:#}"),
+            )
+        }
+        Err(crate::handler::IngestError::Unavailable(e)) => {
             tracing::error!(error = %e, signal, "Failed to durably accept export via HTTP");
             otlp_http_error(
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -813,7 +824,15 @@ async fn handle_http_profiles(
             .header(axum::http::header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from("{}"))
             .expect("static response must build"),
-        Err(e) => {
+        // Classify the failure (finding M3): see handle_otlp_http_export.
+        Err(crate::handler::IngestError::Invalid(e)) => {
+            tracing::warn!(error = %e, "Rejecting profiles export via HTTP: invalid payload");
+            otlp_http_error(
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("invalid profiles payload: {e:#}"),
+            )
+        }
+        Err(crate::handler::IngestError::Unavailable(e)) => {
             tracing::error!(error = %e, "Failed to durably accept profiles export via HTTP");
             otlp_http_error(
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -1115,6 +1134,92 @@ mod cors_tests {
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .is_none(),
             "unlisted origin must not be granted CORS access"
+        );
+    }
+}
+
+/// Finding M3: `handle_otlp_http_export` must classify `IngestError`
+/// into the right HTTP status — Invalid to 400, Unavailable to 503 — not
+/// flatten every handler failure into 503.
+#[cfg(test)]
+mod otlp_http_export_classification_tests {
+    use super::handle_otlp_http_export;
+    use crate::handler::IngestError;
+    use common::config::AuthConfig;
+    use common::ratelimit::TenantRateLimiter;
+    use common::storage_usage::StorageUsageTracker;
+    use opentelemetry_proto::tonic::collector::trace::v1::{
+        ExportTraceServiceRequest, ExportTraceServiceResponse,
+    };
+    use prost::Message;
+
+    fn test_tenant_context() -> common::auth::TenantContext {
+        common::auth::TenantContext {
+            tenant_id: "test-tenant".to_string(),
+            dataset_id: "test-dataset".to_string(),
+            tenant_slug: "test-tenant".to_string(),
+            dataset_slug: "test-dataset".to_string(),
+            api_key_name: Some("test-key".to_string()),
+            api_key_scopes: None,
+            api_key_dataset_id: None,
+            user_id: None,
+            role: None,
+            is_instance_admin: false,
+            session_id: None,
+            source: common::auth::TenantSource::Config,
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_payload_maps_to_400() {
+        let rate_limiter = TenantRateLimiter::from_auth_config(&AuthConfig::default());
+        let storage_quota = StorageUsageTracker::from_auth_config(&AuthConfig::default());
+        let tenant_context = test_tenant_context();
+        let headers = axum::http::HeaderMap::new();
+        let body = axum::body::Bytes::from(ExportTraceServiceRequest::default().encode_to_vec());
+
+        let response =
+            handle_otlp_http_export::<ExportTraceServiceRequest, ExportTraceServiceResponse, _, _>(
+                "traces",
+                &rate_limiter,
+                &storage_quota,
+                &tenant_context,
+                &headers,
+                body,
+                |_req| async {
+                    Err(IngestError::Invalid(anyhow::anyhow!(
+                        "OTLP to Arrow conversion failed"
+                    )))
+                },
+            )
+            .await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn unavailable_backend_maps_to_503() {
+        let rate_limiter = TenantRateLimiter::from_auth_config(&AuthConfig::default());
+        let storage_quota = StorageUsageTracker::from_auth_config(&AuthConfig::default());
+        let tenant_context = test_tenant_context();
+        let headers = axum::http::HeaderMap::new();
+        let body = axum::body::Bytes::from(ExportTraceServiceRequest::default().encode_to_vec());
+
+        let response =
+            handle_otlp_http_export::<ExportTraceServiceRequest, ExportTraceServiceResponse, _, _>(
+                "traces",
+                &rate_limiter,
+                &storage_quota,
+                &tenant_context,
+                &headers,
+                body,
+                |_req| async { Err(IngestError::Unavailable(anyhow::anyhow!("WAL unavailable"))) },
+            )
+            .await;
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
         );
     }
 }
