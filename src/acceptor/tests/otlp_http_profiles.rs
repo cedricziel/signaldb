@@ -250,6 +250,46 @@ async fn otlp_http_profiles_protobuf_with_auth_lands_in_wal() {
     );
 }
 
+/// Finding M4: the hand-rolled `handle_http_profiles` always answered
+/// `application/json` regardless of the request's encoding — a protobuf
+/// request got a JSON response, violating the OTLP/HTTP same-encoding
+/// rule. Pins that a protobuf request now gets a protobuf response
+/// (decodable as `ExportProfilesServiceResponse`), not `{}`/JSON.
+#[tokio::test]
+async fn otlp_http_profiles_protobuf_response_matches_request_encoding() {
+    use opentelemetry_proto::tonic::collector::profiles::v1development::ExportProfilesServiceResponse;
+
+    let (app, _wal_manager, _temp_dir) = setup_profiles_test().await;
+
+    let body = sample_profiles_request().encode_to_vec();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1development/profiles")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+        .header("X-Tenant-ID", TEST_TENANT)
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/x-protobuf"),
+        "a protobuf request must get a protobuf response, not JSON"
+    );
+
+    let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body must be readable");
+    ExportProfilesServiceResponse::decode(response_body.as_ref())
+        .expect("response body must decode as a valid protobuf ExportProfilesServiceResponse");
+}
+
 #[tokio::test]
 async fn otlp_http_profiles_json_with_auth_lands_in_wal() {
     let (app, wal_manager, _temp_dir) = setup_profiles_test().await;
