@@ -1,5 +1,5 @@
 use crate::routing::{self, RouteMetadata, RouteTarget};
-use crate::storage::IcebergTableWriter;
+use crate::storage::{CommitError, IcebergTableWriter};
 use anyhow::{Context, Result};
 use common::CatalogManager;
 use common::config::WriterConfig;
@@ -70,6 +70,76 @@ enum GroupOutcome {
     /// A group covered by a flush scope did not commit, so a read-your-writes
     /// caller must be told its drain failed.
     ForcedCommitFailed,
+    /// A background (non-forced) group failed transiently this cycle. Not
+    /// logged per-group (see W1): the cycle emits one aggregate `warn!` from
+    /// the count of these instead, so a catalog/object-store outage produces
+    /// one line per tick rather than one per stalled table.
+    TransientFailure,
+}
+
+/// Why [`WalProcessor::process_batch_for_table`] failed to commit a group.
+///
+/// Only [`CommitFailureKind::Permanent`] counts toward an entry's
+/// dead-lettering budget — a [`CommitFailureKind::Transient`] failure (a
+/// catalog/object-store/WAL-index outage) is expected to clear on its own,
+/// and counting it would dead-letter every pending entry of every tenant
+/// after roughly `MAX_ENTRY_FAILURES * commit_interval` of downtime (W1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitFailureKind {
+    /// A deterministic fault the entry itself carries: a routing error, a
+    /// schema transform/coercion failure, or an unknown target table.
+    /// Retrying without operator intervention will fail identically
+    /// forever.
+    Permanent,
+    /// Catalog, object store, or WAL-index I/O. Expected to clear once the
+    /// dependency recovers.
+    Transient,
+}
+
+impl CommitFailureKind {
+    /// Attribute value for `signaldb.writer.commit_failures{kind}`.
+    fn as_attr(self) -> &'static str {
+        match self {
+            CommitFailureKind::Permanent => "permanent",
+            CommitFailureKind::Transient => "transient",
+        }
+    }
+}
+
+/// A failed group commit attempt, classified for the caller's retry policy.
+#[derive(Debug)]
+struct CommitFailure {
+    kind: CommitFailureKind,
+    /// Ids this attempt durably committed (or found already committed via
+    /// the idempotency marker) before the failure — an earlier chunk in a
+    /// multi-chunk group, or the already-committed dedup pass. These are
+    /// safe regardless of the overall outcome: the next attempt's marker
+    /// dedup will find and re-mark them, so they must not count toward
+    /// their own dead-lettering budget.
+    processed: Vec<Uuid>,
+    source: anyhow::Error,
+}
+
+impl std::fmt::Display for CommitFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.source)
+    }
+}
+
+/// Classify a table-writer creation failure. `TableManager::ensure_table`
+/// has no typed error for an unrecognized table name (see
+/// `common::iceberg::table_manager`), so an unknown target table — a sender
+/// fault that will never succeed on retry — is recognized by its message
+/// text; every other creation failure (catalog unreachable, materialization
+/// plan build) is a transient dependency problem.
+fn classify_table_creation_error(e: &anyhow::Error) -> CommitFailureKind {
+    if e.chain()
+        .any(|cause| cause.to_string().starts_with("Unknown table name"))
+    {
+        CommitFailureKind::Permanent
+    } else {
+        CommitFailureKind::Transient
+    }
 }
 
 /// Grouping key for one processing cycle: which WAL the entries live in, then
@@ -286,6 +356,12 @@ pub struct WalProcessor {
     in_flight_commits: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     peak_concurrent_commits: std::sync::atomic::AtomicUsize,
+    /// Test-only fault injector for `process_batch_for_table`: when set,
+    /// every group commit fails with this [`CommitFailureKind`] instead of
+    /// doing real work, so W1's transient-vs-permanent handling can be
+    /// exercised without a real catalog/object-store outage.
+    #[cfg(test)]
+    injected_commit_failure: tokio::sync::Mutex<Option<CommitFailureKind>>,
 }
 
 impl WalProcessor {
@@ -326,7 +402,17 @@ impl WalProcessor {
             in_flight_commits: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             peak_concurrent_commits: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            injected_commit_failure: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Make every subsequent group commit fail with `kind` instead of doing
+    /// real work, until cleared with `None`. See
+    /// [`Self::injected_commit_failure`].
+    #[cfg(test)]
+    async fn inject_commit_failure(&self, kind: Option<CommitFailureKind>) {
+        *self.injected_commit_failure.lock().await = kind;
     }
 
     /// Every writer id this process owns — one per cached WAL directory.
@@ -630,6 +716,7 @@ impl WalProcessor {
                         &entry.tenant_id,
                         &entry.dataset_id,
                         entry.operation.signal(),
+                        &e.to_string(),
                     )
                     .await;
                     continue;
@@ -668,13 +755,14 @@ impl WalProcessor {
                                 self.record_unreadable_entry(&wal, &entry, &cause.to_string())
                                     .await;
                             }
-                            EntryDecodeError::Undecodable(_) => {
+                            EntryDecodeError::Undecodable(cause) => {
                                 self.record_entry_failure(
                                     &wal,
                                     entry.id,
                                     &entry.tenant_id,
                                     &entry.dataset_id,
                                     entry.operation.signal(),
+                                    &cause.to_string(),
                                 )
                                 .await;
                             }
@@ -782,6 +870,11 @@ impl WalProcessor {
                             let now = this.in_flight_commits.fetch_add(1, Ordering::SeqCst) + 1;
                             this.peak_concurrent_commits.fetch_max(now, Ordering::SeqCst);
                         }
+                        // Set from inside the async block below on a
+                        // Transient failure; read only after it (and thus
+                        // the `.await`) completes, so the plain shared
+                        // mutable capture is race-free.
+                        let mut transient_failure = false;
                         let committed = common::self_monitoring::maybe_suppress_self_telemetry(
                             suppress,
                             async {
@@ -818,17 +911,67 @@ impl WalProcessor {
                                         );
                                         true
                                     }
-                                    Err(e) => {
-                                        tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %e, "Failed to process batch for table");
-                                        for entry_id in group_ids {
-                                            this.record_entry_failure(
-                                                &wal,
-                                                entry_id,
-                                                &tenant_id,
-                                                &dataset_id,
-                                                &table_name,
-                                            )
-                                            .await;
+                                    Err(failure) => {
+                                        // Ids this attempt safely committed
+                                        // despite the overall failure (an
+                                        // earlier chunk, or the
+                                        // already-committed dedup pass) must
+                                        // not carry a failure count into the
+                                        // next cycle.
+                                        if !failure.processed.is_empty() {
+                                            let mut entry_failures =
+                                                this.entry_failures.lock().await;
+                                            for entry_id in &failure.processed {
+                                                entry_failures.remove(entry_id);
+                                            }
+                                        }
+
+                                        common::self_monitoring::app_metrics()
+                                            .writer_commit_failures
+                                            .add(
+                                                1,
+                                                &[
+                                                    opentelemetry::KeyValue::new(
+                                                        "signaldb.tenant.id",
+                                                        tenant_id.clone(),
+                                                    ),
+                                                    opentelemetry::KeyValue::new(
+                                                        "kind",
+                                                        failure.kind.as_attr(),
+                                                    ),
+                                                ],
+                                            );
+
+                                        match failure.kind {
+                                            CommitFailureKind::Permanent => {
+                                                tracing::error!(tenant_id = %tenant_id, table_name = %table_name, error = %failure, "Failed to process batch for table");
+                                                let reason = failure.source.to_string();
+                                                let processed = failure.processed;
+                                                for entry_id in group_ids
+                                                    .into_iter()
+                                                    .filter(|id| !processed.contains(id))
+                                                {
+                                                    this.record_entry_failure(
+                                                        &wal,
+                                                        entry_id,
+                                                        &tenant_id,
+                                                        &dataset_id,
+                                                        &table_name,
+                                                        &reason,
+                                                    )
+                                                    .await;
+                                                }
+                                            }
+                                            CommitFailureKind::Transient => {
+                                                // Never counted toward
+                                                // dead-lettering (W1): an
+                                                // outage must not retire
+                                                // healthy pending entries. No
+                                                // per-group log here — the
+                                                // cycle emits one aggregate
+                                                // `warn!` below.
+                                                transient_failure = true;
+                                            }
                                         }
                                         false
                                     }
@@ -865,6 +1008,8 @@ impl WalProcessor {
                         // dead-lettered/retried).
                         if forced && !committed {
                             GroupOutcome::ForcedCommitFailed
+                        } else if transient_failure {
+                            GroupOutcome::TransientFailure
                         } else {
                             GroupOutcome::Committed
                         }
@@ -882,6 +1027,21 @@ impl WalProcessor {
         let forced_commit_failed = outcomes
             .iter()
             .any(|o| matches!(o, GroupOutcome::ForcedCommitFailed));
+        let transient_failures = outcomes
+            .iter()
+            .filter(|o| matches!(o, GroupOutcome::TransientFailure))
+            .count();
+        if transient_failures > 0 {
+            // One line per cycle regardless of how many tables are stalled,
+            // so a catalog/object-store outage does not flood logs with one
+            // `error!` per group per tick (W1) on top of not dead-lettering
+            // anything.
+            tracing::warn!(
+                group_count = transient_failures,
+                "One or more groups failed to commit due to a transient error this cycle; \
+                 their entries remain pending and will retry next cycle"
+            );
+        }
 
         // Retire the Flush markers only once their requested drain fully
         // succeeded — otherwise leave them so the next cycle retries the
@@ -934,12 +1094,21 @@ impl WalProcessor {
         table_name: &str,
         entries: Vec<(Uuid, RecordBatch)>,
         trace_contexts: Vec<EntryTraceContext>,
-    ) -> Result<Vec<Uuid>> {
+    ) -> Result<Vec<Uuid>, CommitFailure> {
         // Link this batch span back to every distinct ingest trace whose
         // entries it commits. The processor fans work in from many ingest
         // requests, so a single parent can't represent them all — links keep
         // each source trace reachable. No-op when self-monitoring is disabled.
         link_batch_origins(&tracing::Span::current(), &trace_contexts);
+
+        #[cfg(test)]
+        if let Some(kind) = *self.injected_commit_failure.lock().await {
+            return Err(CommitFailure {
+                kind,
+                processed: Vec::new(),
+                source: anyhow::anyhow!("injected {kind:?} commit failure for testing"),
+            });
+        }
 
         let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
 
@@ -967,7 +1136,12 @@ impl WalProcessor {
                         dataset_id.to_string(),
                         table_name.to_string(),
                     )
-                    .await?,
+                    .await
+                    .map_err(|e| CommitFailure {
+                        kind: classify_table_creation_error(&e),
+                        processed: Vec::new(),
+                        source: e,
+                    })?,
                 ));
                 self.table_writers
                     .lock()
@@ -987,7 +1161,14 @@ impl WalProcessor {
         // Re-inserting them would duplicate rows — mark them durably
         // instead, and do it BEFORE any new commit replaces the marker.
         // A mark failure aborts the whole group for the same reason.
-        let committed = writer.load_committed_marker(&wal_writer_id).await?;
+        let committed = writer
+            .load_committed_marker(&wal_writer_id)
+            .await
+            .map_err(|e| CommitFailure {
+                kind: CommitFailureKind::Transient,
+                processed: Vec::new(),
+                source: e,
+            })?;
         let mut already_committed_ids = Vec::new();
         let mut fresh = Vec::new();
         for (entry_id, batch) in entries {
@@ -1027,6 +1208,11 @@ impl WalProcessor {
                         "Failed to mark {} already-committed WAL entries as processed",
                         already_committed_ids.len()
                     )
+                })
+                .map_err(|e| CommitFailure {
+                    kind: CommitFailureKind::Transient,
+                    processed: Vec::new(),
+                    source: e,
                 })?;
             processed_ids.extend(already_committed_ids);
         }
@@ -1040,22 +1226,42 @@ impl WalProcessor {
                 fresh_iter.by_ref().take(MAX_ENTRIES_PER_COMMIT).collect();
             let chunk_ids: Vec<Uuid> = chunk.iter().map(|(id, _)| *id).collect();
 
-            writer
+            if let Err(e) = writer
                 .append_batches_with_marker(&wal_writer_id, chunk)
-                .await?;
+                .await
+            {
+                let kind = match &e {
+                    CommitError::Rejected(_) => CommitFailureKind::Permanent,
+                    CommitError::Failed(_) => CommitFailureKind::Transient,
+                };
+                return Err(CommitFailure {
+                    kind,
+                    processed: processed_ids,
+                    source: anyhow::Error::new(e),
+                });
+            }
 
             // One batch call per committed chunk: the WAL persists each
             // affected segment's index once instead of rewriting and
             // fsyncing it per entry (issue #943). On failure the entries
             // stay unprocessed but their ids are in the marker, so the
-            // next tick re-marks instead of re-inserting.
-            wal.mark_processed_many(&chunk_ids).await.with_context(|| {
-                format!(
-                    "Failed to mark {} WAL entries as processed after commit",
-                    chunk_ids.len()
-                )
-            })?;
-            processed_ids.extend(chunk_ids);
+            // next tick re-marks instead of re-inserting. The commit above
+            // already landed, so `chunk_ids` are safe regardless of this
+            // outcome.
+            processed_ids.extend(chunk_ids.iter().copied());
+            wal.mark_processed_many(&chunk_ids)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to mark {} WAL entries as processed after commit",
+                        chunk_ids.len()
+                    )
+                })
+                .map_err(|e| CommitFailure {
+                    kind: CommitFailureKind::Transient,
+                    processed: processed_ids.clone(),
+                    source: e,
+                })?;
         }
 
         Ok(processed_ids)
@@ -1070,6 +1276,7 @@ impl WalProcessor {
         tenant_id: &str,
         dataset_id: &str,
         signal: &str,
+        reason: &str,
     ) {
         let failures = {
             let mut entry_failures = self.entry_failures.lock().await;
@@ -1080,7 +1287,12 @@ impl WalProcessor {
         if failures < MAX_ENTRY_FAILURES {
             return;
         }
-        match wal.dead_letter(entry_id).await {
+        // `dead_letter_rejected` (not `dead_letter`): every call site here is
+        // a deterministic fault (a routing error, an undecodable payload, or
+        // a permanent commit failure) that will not clear on retry, so the
+        // reason belongs beside the preserved payload for an operator to
+        // read (W1).
+        match wal.dead_letter_rejected(entry_id, reason).await {
             Ok(path) => {
                 tracing::error!(
                     entry_id = %entry_id,
@@ -1089,7 +1301,7 @@ impl WalProcessor {
                     signal = %signal,
                     failures,
                     path = %path.display(),
-                    "WAL entry exhausted its retries; payload preserved in the dead-letter directory and entry marked processed"
+                    "WAL entry exhausted its retries; payload and rejection reason preserved in the dead-letter directory and entry marked processed"
                 );
                 self.entry_failures.lock().await.remove(&entry_id);
             }
@@ -2681,6 +2893,172 @@ mod tests {
             1,
             "replaying {ENTRY_COUNT} already-committed entries must log one \
              aggregate line, not one per entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_commit_failure_never_dead_letters_and_clears_on_recovery() {
+        // W1: a transient failure (catalog/object-store/WAL-index outage)
+        // must never count toward an entry's dead-lettering budget — before
+        // this fix, a ~1 minute outage (MAX_ENTRY_FAILURES ticks) dead-lettered
+        // every pending entry even though nothing was wrong with the data.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+
+        wal.append(
+            WalOperation::WriteMetrics,
+            metrics_gauge_bytes(3),
+            Some(r#"{"target_table":"metrics_gauge"}"#.to_string()),
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        processor
+            .inject_commit_failure(Some(super::CommitFailureKind::Transient))
+            .await;
+
+        for _ in 0..3 * super::MAX_ENTRY_FAILURES {
+            processor
+                .process_pending_entries()
+                .await
+                .expect("a transient failure must not abort the cycle");
+        }
+
+        assert_eq!(
+            wal.get_unprocessed_entries().await.unwrap().len(),
+            1,
+            "a purely transient failure must never dead-letter its entry, no matter how many \
+             cycles it spans"
+        );
+        assert!(
+            !temp_dir.path().join("dead-letter").exists(),
+            "no dead-letter directory must be created for a transient failure"
+        );
+
+        // Recovery: once the dependency comes back, the same entry commits
+        // normally on the very next cycle.
+        processor.inject_commit_failure(None).await;
+        processor.process_pending_entries().await.unwrap();
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "the entry must commit once the transient failure clears"
+        );
+    }
+
+    #[tokio::test]
+    async fn permanent_commit_failure_dead_letters_with_rejection_reason() {
+        // W1: a permanent failure (routing/schema/unknown-table) IS
+        // deterministic, so it must still retire at MAX_ENTRY_FAILURES — but
+        // via `dead_letter_rejected` (payload + reason), not the bare
+        // `dead_letter` reserved for genuinely unparseable payloads.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+
+        let entry_id = wal
+            .append(
+                WalOperation::WriteMetrics,
+                metrics_gauge_bytes(3),
+                Some(r#"{"target_table":"metrics_gauge"}"#.to_string()),
+            )
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        processor
+            .inject_commit_failure(Some(super::CommitFailureKind::Permanent))
+            .await;
+
+        for _ in 0..super::MAX_ENTRY_FAILURES {
+            processor
+                .process_pending_entries()
+                .await
+                .expect("a permanent failure must not abort the cycle");
+        }
+
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "an exhausted permanent failure must be retired and marked processed"
+        );
+        let dead_letter = temp_dir.path().join("dead-letter");
+        assert!(
+            dead_letter
+                .join(format!("{}.bin", entry_id.simple()))
+                .exists(),
+            "the payload must be preserved for replay"
+        );
+        assert!(
+            dead_letter
+                .join(format!("{}.rejected.json", entry_id.simple()))
+                .exists(),
+            "the rejection reason must be recorded beside the preserved payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_mismatch_dead_letters_with_rejection_reason_via_real_commit_path() {
+        // Real-path counterpart to the injected test above, with no
+        // injector: a batch whose schema does not match its target table
+        // fails commit permanently (`CommitError::Rejected`), so it must
+        // retire the same way. Before this fix `record_entry_failure` always
+        // called the bare `dead_letter`, so only a `.bin` existed.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+
+        let entry_id = wal
+            .append(
+                WalOperation::WriteMetrics,
+                schema_mismatched_bytes(),
+                Some(r#"{"target_table":"metrics_gauge"}"#.to_string()),
+            )
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        for _ in 0..super::MAX_ENTRY_FAILURES {
+            processor
+                .process_pending_entries()
+                .await
+                .expect("a schema-mismatched batch must not abort the cycle");
+        }
+
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+        let dead_letter = temp_dir.path().join("dead-letter");
+        assert!(
+            dead_letter
+                .join(format!("{}.bin", entry_id.simple()))
+                .exists()
+        );
+        assert!(
+            dead_letter
+                .join(format!("{}.rejected.json", entry_id.simple()))
+                .exists(),
+            "today this only wrote a bare .bin with no reason; the .rejected.json marker \
+             must now be recorded too"
         );
     }
 }
