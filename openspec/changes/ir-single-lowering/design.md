@@ -33,26 +33,30 @@ moves.
 
 ### D1 — The seam is a validated document plus a planner entry point
 
-`ir_planner` exposes exactly one new door:
+`ir_planner` exposes exactly one new door — the shipped signature, matching
+`src/querier/src/query/ir_planner.rs`:
 
 ```rust
-pub(crate) fn plan_document(
+pub(crate) async fn plan_document(
     ctx: &SessionContext,
     doc: &Document,
-    resolver: &dyn FieldResolver,
-    // tenant/dataset scoping as the existing path takes it
-) -> Result<DataFrame, QuerierError>
+    tenant_slug: &str,
+    dataset_slug: &str,
+    now_ns: i64,
+) -> Result<Option<(DataFrame, ResolvedWindow)>, QuerierError>
 ```
 
-`IrService` keeps its Flight-ticket entry and calls the same function, so there
-is one planner rather than a planner and a compat-planner.
+`IrService::plan` keeps its Flight-ticket entry and calls this same function,
+so there is one planner rather than a planner and a compat-planner. `Option`
+is `None` for a dataset with no table for the source at all (nothing to
+plan); `ResolvedWindow` is the absolute time bounds the document's relative
+`range` resolved to, echoed back for reproducibility.
 
-In the shipped signature `resolver` is not actually a parameter: the real code
-builds it internally, from the _scanned table's_ schema
-(`SchemaResolver::new(base.schema(), &source)`), and that is deliberate — a
-resolver built from anything other than the schema DataFusion just returned
-could disagree with what got promoted, which is exactly the invariant this
-change must not weaken.
+Deliberately absent from the signature: a `resolver` parameter. An earlier
+sketch of this door took one, but the resolver is built _internally_, from
+the _scanned table's_ schema (`SchemaResolver::new(base.schema(), &source)`)
+— a resolver built from anything else could disagree with what got promoted,
+which is exactly the invariant this change must not weaken.
 
 **Rejected: exposing `lower_predicate` alone.** It is a method needing
 `col_of`, `derived_types` and `resolver`, so a caller would have to assemble
@@ -169,7 +173,7 @@ any generated schema listing that states `"filterable": false` for `body`.
 ### D7 — An ungrouped LogQL range aggregation groups by the stream identity
 
 LogQL's `count_over_time({…}[5m])` with no outer `by` is one series per
-matching *stream*; the old path implemented that with `logs.rs`'s
+matching _stream_; the old path implemented that with `logs.rs`'s
 `SERIES_COLUMNS` (`service_name`, `severity_text`), which is also what
 `get_series` reports as a stream. `ql_ir` emitted `by: []`, collapsing to one
 series. The old path is right; `ql_ir` is fixed to emit the stream identity
@@ -186,7 +190,7 @@ against each other — a test asserts `ql-ir`'s default grouping resolves to
 For a bare attribute (`{ .http.method = "GET" }`, `{k8s_namespace="prod"}`)
 the old path ORed a match across every container; the IR coalesces across
 containers by priority (span/log, then scope, then resource) and compares
-once. They differ only when the same key holds *different* values in two
+once. They differ only when the same key holds _different_ values in two
 containers. The compat surfaces adopt the IR's rule: Tempo's own unscoped
 lookup is span-first-then-resource, Loki has no container concept at all, and
 OR-across-containers was the approximation, not the contract. This is the one

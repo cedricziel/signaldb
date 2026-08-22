@@ -55,8 +55,8 @@
 //! That premise was stale by the time this change was proposed; the corpus
 //! below draws from the two files that do carry query text instead.
 //!
-//! Total corpus: 14 TraceQL `q` strings + 3 `tags` strings + 8 LogQL log
-//! queries + 7 LogQL metric queries = **32 queries**, plus the four
+//! Total corpus: 18 TraceQL `q` strings + 3 `tags` strings + 8 LogQL log
+//! queries + 7 LogQL metric queries = **36 queries**, plus the six
 //! adversarial cases (task 2.2) below.
 //!
 //! ## Triage table (task 2.4)
@@ -1037,6 +1037,52 @@ struct MetricRow {
     value: f64,
 }
 
+/// A minimal one-row matrix batch: `bucket` (nanosecond timestamp), one
+/// group column (aliased to whatever `group_col` names), and `value`.
+fn one_row_metric_batch(
+    bucket_ns: i64,
+    group_col: &str,
+    group_value: &str,
+    value: f64,
+) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "bucket",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(group_col, DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(TimestampNanosecondArray::from(vec![bucket_ns])),
+            Arc::new(StringArray::from(vec![group_value])),
+            Arc::new(Float64Array::from(vec![value])),
+        ],
+    )
+    .unwrap()
+}
+
+/// `metric_rows`' row key must include the time bucket, not just the group
+/// columns and value — two runs whose (group, value) pairs land in
+/// different time buckets are a real divergence, not agreement, and must
+/// not compare equal (found by CodeRabbit review on this PR).
+#[test]
+fn metric_rows_key_distinguishes_different_buckets() {
+    let earlier = one_row_metric_batch(0, "service_name", "api", 5.0);
+    let later = one_row_metric_batch(1_000, "service_name", "api", 5.0);
+
+    let earlier_rows = metric_rows(std::slice::from_ref(&earlier), &["service_name"], "value");
+    let later_rows = metric_rows(std::slice::from_ref(&later), &["service_name"], "value");
+
+    assert_ne!(
+        earlier_rows, later_rows,
+        "same (group, value) in different buckets must not compare equal"
+    );
+}
+
 fn metric_rows(batches: &[RecordBatch], group_cols: &[&str], value_col: &str) -> Vec<MetricRow> {
     let mut rows = Vec::new();
     for batch in batches {
@@ -1052,6 +1098,17 @@ fn metric_rows(batches: &[RecordBatch], group_cols: &[&str], value_col: &str) ->
             .as_any()
             .downcast_ref::<Float64Array>()
             .expect("just cast to Float64");
+        // Both sides bucket by `date_bin(...).alias("bucket")` — see
+        // `Lowering::lower_aggregate` and `logs.rs::execute_plan`. Included
+        // in the row key so two runs whose (group, value) pairs land in
+        // different time buckets don't compare as equal (this module doc's
+        // "bucket, the group labels, and a value column" claim).
+        let bucket_array = batch
+            .column_by_name("bucket")
+            .unwrap_or_else(|| panic!("missing bucket column"))
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .unwrap_or_else(|| panic!("bucket column is not a nanosecond timestamp"));
         let group_arrays: Vec<&StringArray> = group_cols
             .iter()
             .map(|c| {
@@ -1064,9 +1121,8 @@ fn metric_rows(batches: &[RecordBatch], group_cols: &[&str], value_col: &str) ->
             })
             .collect();
         for row in 0..batch.num_rows() {
-            let key = group_arrays
-                .iter()
-                .map(|a| a.value(row).to_string())
+            let key = std::iter::once(bucket_array.value(row).to_string())
+                .chain(group_arrays.iter().map(|a| a.value(row).to_string()))
                 .collect();
             rows.push(MetricRow {
                 key,
