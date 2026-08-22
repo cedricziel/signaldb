@@ -1,3 +1,10 @@
+//! # OTLP Log Handler
+//!
+//! Converts an `ExportLogsServiceRequest` to Arrow, writes it to the
+//! tenant/dataset's logs WAL, and forwards it to a writer via Flight.
+//! Shared by both the gRPC (`services::otlp_log_service`) and HTTP
+//! (`lib::handle_http_logs`) surfaces.
+
 use std::sync::Arc;
 
 use anyhow::Context;

@@ -1,3 +1,12 @@
+//! # OTLP Profiles Handler
+//!
+//! Converts an `ExportProfilesServiceRequest` to Arrow (an infallible
+//! conversion — profiles has no equivalent of the traces/logs/metrics
+//! conversion-failure path), writes it to the tenant/dataset's profiles
+//! WAL, and forwards it to a writer via Flight. Shared by both the gRPC
+//! (`services::otlp_profile_service`) and HTTP
+//! (`lib::handle_http_profiles`) surfaces.
+
 use std::sync::Arc;
 
 use anyhow::Context;
