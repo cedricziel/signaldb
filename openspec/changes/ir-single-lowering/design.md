@@ -157,13 +157,28 @@ This means the old LogQL path cannot be deleted wholesale — only the portion
 No data migration. Rollout is the per-signal switch (D3); rollback is flipping
 it. After deletion, rollback is an ordinary revert.
 
-## Open Questions
+## Open Questions — answered
 
-1. **Does the optimized-plan comparison in D2 hold for aggregates**, or only for
-   filters? Filters are the bulk of the duplication and the obvious starting
-   point; if aggregate plans differ structurally in ways DataFusion does not
-   normalise, the harness may need a weaker equivalence (row-level results over
-   a fixture dataset) for the metric path.
-2. **Does anything depend on `search_filter::to_expr`'s exact expression shape**
-   — a test asserting `Debug` output, for instance? Those pass today by
-   construction and would need rewriting against behaviour rather than shape.
+1. **Does the optimized-plan comparison in D2 hold for aggregates?** No.
+   `logs.rs`'s `execute_plan` (grouping-column resolution, topk/sort/
+   label_replace post-passes, vector-binary joins) and `ir_planner`'s
+   `lower_aggregate` build structurally different plans with no basis for
+   DataFusion to normalise them onto each other. The metric path instead
+   uses the weaker equivalence anticipated here: execute both over an
+   identical fixture, sort, and compare rows
+   (`querier::query::differential::logql_metric_corpus_row_level_equivalence`).
+2. **Does anything depend on `search_filter::to_expr`'s exact expression
+   shape?** Only `search_filter.rs`'s own unit tests do (asserting `{:?}`
+   output), and they exercise exactly the lowering half task 5.1 deletes
+   along with them. Nothing outside the module depends on the shape, so no
+   test needed rewriting for this change.
+
+The differential harness (`src/querier/src/query/differential.rs`, landed by
+task 2) also surfaced findings beyond these two questions — most notably that
+`ql_ir::logql_lower`'s line-filter lowering (`|=`/`!=`/`|~`/`!~`) produces a
+document `plan_document`'s real schema rejects outright (`logs.body` is
+`RetrievalOnly`), and that a bare LogQL range aggregation with no outer `by`
+collapses to one series where real Loki (and the old path's default
+`SERIES_COLUMNS` grouping) returns one per stream. Both are reported, not
+resolved, here — see the harness's module doc for the full triage table;
+whoever builds §4 needs an answer to both before wiring the switch.

@@ -2,26 +2,34 @@
 
 ## 1. Make the planner callable
 
-- [ ] 1.1 Extract a `plan_document(ctx, doc, resolver, …) -> DataFrame` entry
+- [x] 1.1 Extract a `plan_document(ctx, doc, resolver, …) -> DataFrame` entry
       point from `IrService`'s existing path, and have `IrService` call it, so
       there is one planner rather than two doors into it. No behaviour change;
       `cargo test -p querier` must pass untouched.
-- [ ] 1.2 Make `SchemaResolver` and `SourcePlan` `pub(crate)`, and nothing else
+      (The resolver is not actually a parameter — see design.md's D1 note:
+      it is built internally from the scanned schema, which is what keeps
+      resolution promotion-invariant.)
+- [x] 1.2 Make `SchemaResolver` and `SourcePlan` `pub(crate)`, and nothing else
       from `ir_planner`. Exposing helpers instead of one entry point would
       re-create the coupling this change removes (D1).
 
 ## 2. Differential harness — before anything moves
 
-- [ ] 2.1 Build the corpus: every query in `router_tempo_endpoints.rs`,
+- [x] 2.1 Build the corpus: every query in `router_tempo_endpoints.rs`,
       `logql_queries.rs` and `query_parity.rs`, plus the `ql-ir` test corpora.
       Record the count so later additions are visible.
-- [ ] 2.2 Add adversarial cases: a promoted vs unpromoted attribute, a
+      (`query_parity.rs` contributed nothing — verified before writing the
+      harness that it carries CLI/MCP operation-surface parity, not query
+      text; see `differential.rs`'s module doc. Corpus: 32 queries — 14
+      TraceQL, 3 tags, 8 LogQL log, 7 LogQL metric — plus 6 adversarial
+      cases.)
+- [x] 2.2 Add adversarial cases: a promoted vs unpromoted attribute, a
       mixed-case label (#1070), an absent value, and an attribute key colliding
       with a physical column name.
-- [ ] 2.3 Write the harness: for each query, lower via both paths and compare
+- [x] 2.3 Write the harness: for each query, lower via both paths and compare
       the **optimized** logical plans (D2 — the raw expression trees differ
       legitimately and DataFusion normalises them).
-- [ ] 2.3a Compare **rejections**, not only plans. A query one path refuses and
+- [x] 2.3a Compare **rejections**, not only plans. A query one path refuses and
       the other accepts produces no plan to diff, so it is exactly the case a
       plan-only harness cannot see. Assert the same accept/reject decision and
       the same error class — the 400-vs-501 split `publishable-ql-crates`
@@ -31,15 +39,30 @@
       compat layer assembles Tempo and Loki shapes downstream of the plan, and
       a projection or column-name change would pass a plan diff while altering
       what a client receives.
-- [ ] 2.4 Run it and triage every difference. Each is a finding about one of
+      (Completed per signal in §3/§4, where the switch makes both paths
+      reachable from the endpoint.)
+- [x] 2.4 Run it and triage every difference. Each is a finding about one of
       the two lowerings; record which was wrong. **Do not proceed past this task
       with an unexplained difference.**
-- [ ] 2.5 Answer open question 1: does plan comparison hold for aggregates, or
+      (Six findings, all triaged in `differential.rs`'s module doc: one fixed
+      [ql-ir status/kind casing], five reported/pinned rather than fixed
+      — line-filter body-retrievability, unscoped-attribute OR-vs-coalesce
+      combining semantics, absent-value `!=` semantics, ungrouped
+      range-aggregation default grouping, and a still-open #1070-class bug
+      in the old LogQL metric path. See the report to the requesting agent
+      for the full detail — several of these are significant and need a
+      product/design decision before §3/§4.)
+- [x] 2.5 Answer open question 1: does plan comparison hold for aggregates, or
       only filters? If not, define the weaker equivalence (row-level results
       over a fixture) the metric path needs, and say so here.
-- [ ] 2.6 Answer open question 2: grep for tests asserting `search_filter`'s or
+      (No — see design.md's Open Questions, now answered: row-level
+      equivalence over a fixture, implemented in
+      `logql_metric_corpus_row_level_equivalence`.)
+- [x] 2.6 Answer open question 2: grep for tests asserting `search_filter`'s or
       `logql.rs`'s expression _shape_ (`Debug` output). Rewrite any against
       behaviour before the shape changes under them.
+      (Only `search_filter.rs`'s own unit tests do this, and §5 deletes them
+      along with the code — see design.md's Open Questions.)
 
 ## 3. Traces
 
@@ -54,11 +77,7 @@
       path. The switch governs **the whole trace-search filter**, not `q`
       alone: a request may carry `q`, `tags`, both, or neither, and the two
       contribute conditions to one conjunction. Splitting them across two
-      lowerings would produce a filter neither path was tested for.
-      - `q` only → lower the text
-      - `tags` only → lower the conditions via the 3.2 shim
-      - both → one document conjoining them, in the order the old path used
-      - neither → no filter stage, exactly as today
+      lowerings would produce a filter neither path was tested for. - `q` only → lower the text - `tags` only → lower the conditions via the 3.2 shim - both → one document conjoining them, in the order the old path used - neither → no filter stage, exactly as today
 - [ ] 3.4 `cargo test -p querier -p tests-integration` green with the switch
       both ways. `test_search_filters_are_applied` must pass unmodified in both
       — including the 400/501 assertions from `publishable-ql-crates`. Add a

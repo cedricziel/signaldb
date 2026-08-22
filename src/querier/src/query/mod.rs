@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod differential;
 pub mod error;
 pub mod histogram;
 pub mod ir_planner;
