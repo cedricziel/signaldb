@@ -93,7 +93,8 @@ and compares the resulting plans, landing **before** any endpoint moves.
   `logql.rs`, `logql_metric.rs`, `search_filter.rs`), `ql-ir` (gaps found by the
   differential harness), `query-ir` (only if the harness finds an expressiveness
   gap), `tests-integration`.
-- **Issues**: none open; file one and link it here.
+- **Issues**: no tracking issue exists yet. Task 7.2 files one; its number
+  replaces this line before implementation starts.
 - **API surfaces**: none intentionally. The change is verified by the absence of
   a difference, not by a new behaviour.
 - **Config**: a per-signal switch during rollout (D3), removed when the old path

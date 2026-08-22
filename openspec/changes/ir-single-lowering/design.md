@@ -80,8 +80,20 @@ The corpus is seeded from three places, in this order of value:
    labels (#1070), absent values, an attribute whose name collides with a
    physical column.
 
-A difference is a finding, not a failure to route around. It means one of the
-two lowerings is wrong, and which one is a question to answer before proceeding.
+A difference is a finding to explain, not a failure to route around — and not
+automatically a bug. Three outcomes are possible, and the harness cannot tell
+them apart on its own:
+
+1. **One lowering is wrong.** Fix it; this is the case the harness exists for.
+2. **Both are correct and the plans differ anyway** — DataFusion does not
+   normalise every equivalent form. Record why, and pin the pair so the
+   exception is deliberate rather than a quietly weakened comparison.
+3. **They mean genuinely different things**, and which is right is a product
+   question about what the compat surface promises.
+
+What must not happen is loosening the comparison until it passes. Every
+difference gets one of those three answers in writing before the surface
+moves.
 
 ### D3 — Per-signal switch, old path stays callable
 

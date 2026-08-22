@@ -21,6 +21,16 @@
 - [ ] 2.3 Write the harness: for each query, lower via both paths and compare
       the **optimized** logical plans (D2 — the raw expression trees differ
       legitimately and DataFusion normalises them).
+- [ ] 2.3a Compare **rejections**, not only plans. A query one path refuses and
+      the other accepts produces no plan to diff, so it is exactly the case a
+      plan-only harness cannot see. Assert the same accept/reject decision and
+      the same error class — the 400-vs-501 split `publishable-ql-crates`
+      established is user-visible and must survive.
+- [ ] 2.3b Compare **endpoint responses** for a fixture dataset on the queries
+      that reach one. Identical plans are strong evidence and not proof: the
+      compat layer assembles Tempo and Loki shapes downstream of the plan, and
+      a projection or column-name change would pass a plan diff while altering
+      what a client receives.
 - [ ] 2.4 Run it and triage every difference. Each is a finding about one of
       the two lowerings; record which was wrong. **Do not proceed past this task
       with an unexplained difference.**
@@ -39,12 +49,21 @@
 - [ ] 3.2 Add the `Condition`-to-IR shim for Tempo's `tags` parameter, in the
       querier (D4 — `tags` is an HTTP encoding, not a language, so it does not
       belong in `ql-ir`).
-- [ ] 3.3 Route `trace.rs`'s `q` handling through `ql_ir::traceql_to_ir` and
+- [ ] 3.3 Route trace search through `ql_ir::traceql_to_ir` and
       `plan_document`, behind the per-signal switch (D3), defaulting to the old
-      path.
+      path. The switch governs **the whole trace-search filter**, not `q`
+      alone: a request may carry `q`, `tags`, both, or neither, and the two
+      contribute conditions to one conjunction. Splitting them across two
+      lowerings would produce a filter neither path was tested for.
+      - `q` only → lower the text
+      - `tags` only → lower the conditions via the 3.2 shim
+      - both → one document conjoining them, in the order the old path used
+      - neither → no filter stage, exactly as today
 - [ ] 3.4 `cargo test -p querier -p tests-integration` green with the switch
       both ways. `test_search_filters_are_applied` must pass unmodified in both
-      — including the 400/501 assertions from `publishable-ql-crates`.
+      — including the 400/501 assertions from `publishable-ql-crates`. Add a
+      case sending `q` and `tags` together, since 3.3 makes that one document
+      and no existing test covers the combination.
 
 ## 4. Logs
 

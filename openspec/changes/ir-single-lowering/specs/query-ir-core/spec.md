@@ -3,10 +3,15 @@
 ### Requirement: One lowering serves every query surface
 
 The querier SHALL lower a query onto its execution engine through a single
-implementation, whichever surface the query arrived on. A query expressed as
-TraceQL, as LogQL, or as an IR document SHALL resolve fields, address attribute
-containers, and evaluate absent values identically, because the same code
-performs all three.
+implementation **for every construct the IR can express**, whichever surface
+the query arrived on. Such a query expressed as TraceQL, as LogQL, or as an IR
+document SHALL resolve fields, address attribute containers, and evaluate
+absent values identically, because the same code performs all three.
+
+A construct the IR cannot yet express is served by its existing
+implementation. That exception SHALL be enumerable rather than incidental: the
+set of such constructs is known and recorded, and shrinks as the IR grows,
+rather than being discovered when a query behaves differently.
 
 Guarantees the IR already states — promotion-invariant field resolution,
 three-valued absent semantics, rejection of physical names — SHALL therefore
@@ -23,8 +28,15 @@ hold for compatibility queries without being separately implemented for them.
 
 - **WHEN** field resolution is corrected — a quoting rule, a container
   fallback, an absent-value case
-- **THEN** the correction applies to compatibility queries and IR documents
-  together, with no second implementation left to update
+- **THEN** the correction applies to every IR-expressible query, on any
+  surface, without a second implementation of that construct to update
+
+#### Scenario: The exception set is known, not discovered
+
+- **WHEN** a construct is served by the previous lowering because the IR
+  cannot express it
+- **THEN** it appears in a recorded list of such constructs, so the remaining
+  divergence is a stated quantity rather than something a user finds
 
 #### Scenario: Physical names stay unaddressable from a compatibility surface
 
