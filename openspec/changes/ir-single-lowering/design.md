@@ -146,6 +146,94 @@ This means the old LogQL path cannot be deleted wholesale — only the portion
 `ql-ir` covers. Closing the remainder is follow-up work, and D6 of
 `publishable-ql-crates` describes what the IR would need.
 
+### The fallback set as of §4
+
+`ql_ir::logql_to_ir`'s own module doc (`src/ql-ir/src/lib.rs`) is the
+authoritative list of what it refuses as `LowerError::Inexpressible`; this
+section is that list re-expressed as "what `LogsService::query_logs`/
+`query_metric` fall back to the old lowering for" once `logql_via_ir` is on,
+plus what stays on the old lowering for a different reason. This is the input
+the successor change (closing the remainder) starts from.
+
+**Falls back on `Inexpressible` (task 4.1):**
+
+- Cross-series arithmetic (`sum(rate(a)) / sum(rate(b))`) and any other
+  vector-to-vector binary operation — the IR aggregates within one series,
+  never between two. `LogsService::query_metric` never even offers these to
+  `ql_ir`: `classify_binary` already routes a recognized binary form to its
+  own join-based execution path before the IR attempt, so this is a
+  structural bypass, not an `Inexpressible` catch.
+- `vector(N)` (a constant, no-label series) — likewise bypassed structurally
+  (`MetricQuery::VectorLiteral`), never offered to `ql_ir`.
+- `label_replace` — rewrites a label on the finished matrix; no IR stage does
+  this.
+- `without` grouping — the IR groups by naming fields; naming the complement
+  of a label set needs the data read first.
+- Vector aggregations that do not collapse (`avg`/`stddev`/`stdvar`/`count`
+  outer over most inner functions — only `sum` over `count_over_time`/
+  `sum_over_time`, `min` over `min_over_time`, `max` over `max_over_time`
+  collapse soundly; `only_collapsible_vector_aggregations_are_accepted` in
+  `src/ql-ir/tests/logql.rs` pins the accepted/refused split).
+- `topk`/`bottomk` as vector aggregations.
+- `ip()` line filters.
+- `irate`, `absent_over_time` (and any other range/vector function
+  `ql_ir::logql_lower::range_function`/`vector_grouping` does not name).
+- `unwrap` in a bare log query (only meaningful there as a range aggregate's
+  field, which is the one place `ql_ir` gives it meaning).
+- Parser/formatter pipeline stages beyond `| json`, `| logfmt`,
+  `| line_format`, `| label_format`, `| decolorize`, `| unpack` (these six
+  reshape rather than narrow and contribute no predicate; anything else
+  narrows the result and `ql_ir` cannot express it yet — the IR's `extract`
+  stage would need to grow to cover it).
+
+**Stay on the old lowering for a different reason (not a `LowerError` at
+all):**
+
+- `get_series`, `detected_fields`, `get_labels`, `get_label_values` — these
+  Loki metadata endpoints call `log_query_filter_with_columns` directly for a
+  sub-problem (a stream-selector filter alone, not a full query with a
+  result envelope), so they were never routed through `logql_via_ir` in the
+  first place. Bringing them onto the IR is separate work, not a fallback.
+- The still-open #1070-class bug in `logs.rs::execute_plan` (mixed-case
+  attribute grouping, issue #1392, task 4.0d) — not a fallback trigger, a
+  latent bug in the code path a fallback query still runs.
+
+**Closed in §4, no longer in the fallback set:** LogQL line filters (D6),
+LogQL negative label matchers and `=""` (D9), and an ungrouped range
+aggregation's default grouping (D7) — all three used to be either outright
+rejections or silent behavioural differences; §4 fixed each in `ql-ir`
+itself rather than routing around it.
+
+**Open pre-deletion gate (blocks §5, not §4):** issue #1395. `ql_ir` accepts
+`unwrap <label>` on any field name with no type or schema-registration
+check, but `plan_document` rejects an unwrap target `LogicalSchema::core()`
+doesn't register for that source as `InvalidInput` (physical addressing) —
+and since task 4.1's fallback narrows to `Inexpressible` only (a review
+finding on the §4 PR: the exception set must stay enumerable), that
+`InvalidInput` now propagates instead of silently falling back. The old
+path has no such restriction (`unwrap_label` is a bare physical-column
+reference, no schema lookup), so a currently-working `unwrap` on an
+unregistered field would turn into an error with the switch on — the exact
+regression D5 exists to prevent. Not a §4 fallback-set gap (both accept the
+query; the split happens after lowering, at planning), so it isn't fixed
+here — but it must close, one of two ways, before §5 deletes the old
+lowering:
+
+1. `ir_planner`'s aggregate `of`-field resolution falls back to a bare
+   physical-column reference for an unregistered field, mirroring the old
+   path's own `unwrap_label` — the unwrap target joins §4's coverage rather
+   than the fallback set.
+2. `ql_ir::logql_lower` refuses `unwrap` on a field it cannot resolve as
+   `LowerError::Inexpressible` explicitly, so the case joins the
+   _enumerated_ fallback set above instead of surfacing as a bare
+   `plan_document` rejection.
+
+(#1394, the old LogQL metric path's own — separate — bug where an
+ungrouped `sum(...)` never collapses to one series, does not gate
+anything: the new path's behavior there is already correct, and the old
+path's bug is filed and deliberately left as-is until §5 deletes the code
+that carries it.)
+
 ### D6 — `logs.body` becomes filterable for string operators
 
 The harness found that every LogQL line filter (`|=`, `!=`, `|~`, `!~`)

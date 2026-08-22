@@ -80,22 +80,46 @@ fn selector_predicates(s: &StreamSelector) -> Result<Vec<Predicate>, LowerError>
     s.matchers.iter().map(matcher).collect()
 }
 
-/// One label matcher. Negations wrap in `not` rather than inventing a
-/// `not_regex` operator — the IR already has negation, and two ways to say the
-/// same thing is one too many.
+/// One label matcher.
+///
+/// D9 (`ir-single-lowering`): Loki (and Prometheus) treat a missing label as
+/// the empty string — `{foo!="bar"}` matches a stream without `foo` at all,
+/// and `{foo=""}` matches absent the same way a present empty value would.
+/// The IR's own `not` is Kleene: absent satisfies neither a comparison nor
+/// its negation, which is *not* what the compat surface promises here. So a
+/// negative matcher — `!=`, `!~`, or `=` against `""` — explicitly ORs in
+/// "the field does not exist" rather than relying on `not` alone:
+/// `!=` → `or[ne, not(exists)]`, `!~` → `or[not(regex), not(exists)]`,
+/// `=""` → `or[eq "", not(exists)]`. `=~` stays a plain `regex` — a pattern
+/// that matches the empty string would match absent in real Loki too, but
+/// that corner is recorded here, not emulated.
 fn matcher(m: &LabelMatcher) -> Result<Predicate, LowerError> {
-    let leaf = |op| {
+    let field = label_field(&m.name);
+    let leaf = |op: ComparisonOp| {
         Predicate::Leaf(Leaf {
-            field: label_field(&m.name),
+            field: field.clone(),
             op,
             value: Some(serde_json::Value::String(m.value.clone())),
         })
     };
+    let not_exists = || {
+        Predicate::Not(Box::new(Predicate::Leaf(Leaf {
+            field: field.clone(),
+            op: ComparisonOp::Exists,
+            value: None,
+        })))
+    };
     Ok(match m.op {
+        MatchOp::Eq if m.value.is_empty() => {
+            Predicate::Or(vec![leaf(ComparisonOp::Eq), not_exists()])
+        }
         MatchOp::Eq => leaf(ComparisonOp::Eq),
-        MatchOp::Neq => Predicate::Not(Box::new(leaf(ComparisonOp::Eq))),
+        MatchOp::Neq => Predicate::Or(vec![leaf(ComparisonOp::Ne), not_exists()]),
         MatchOp::Re => leaf(ComparisonOp::Regex),
-        MatchOp::Nre => Predicate::Not(Box::new(leaf(ComparisonOp::Regex))),
+        MatchOp::Nre => Predicate::Or(vec![
+            Predicate::Not(Box::new(leaf(ComparisonOp::Regex))),
+            not_exists(),
+        ]),
         // `MatchOp` is `#[non_exhaustive]`; a newer parser may know an
         // operator this build cannot name.
         ref other => {
@@ -156,10 +180,30 @@ fn line_filter(f: &LineFilter) -> Result<Predicate, LowerError> {
     })
 }
 
+/// The default grouping for a range aggregation with no outer `by` at all
+/// (design D7 of `ir-single-lowering`): in real Loki, `count_over_time(...)`
+/// alone is one series per matching *stream*, not one series total. The old
+/// querier path implemented that by defaulting to these two dedicated
+/// columns when ungrouped (`logs.rs::SERIES_COLUMNS`); the querier pins its
+/// physical constant against this one (this crate has no access to the real
+/// `LogicalSchema`, so the mapping is asserted, not derived, on that side).
+pub const STREAM_IDENTITY: &[&str] = &["service.name", "severity_text"];
+
 /// A metric query: the inner log query's filter, then one aggregate.
 fn lower_metric_query(q: &MetricQuery, from: &str, to: &str) -> Result<Document, LowerError> {
     let (range_agg, grouping) = match q {
-        MetricQuery::Range(r) => (r, Vec::new()),
+        // D7: a *bare* range aggregation — no outer vector aggregation at
+        // all — defaults to the stream identity rather than collapsing
+        // every matching row into one series.
+        MetricQuery::Range(r) => (r, STREAM_IDENTITY.iter().map(|s| s.to_string()).collect()),
+        // An *explicit* vector aggregation with no `by()` means something
+        // different: `sum(count_over_time(...))` collapses every matching
+        // stream into one series (real Loki's behavior, and the old path's
+        // `logs.rs::execute_plan` — its `Some(_)` outer_agg branch reduces
+        // across every series when `out_group_cols` is empty). The D7
+        // default must not apply here; `vector_grouping` already returns an
+        // empty grouping for exactly this case, and it means "collapse",
+        // not "no grouping specified yet".
         MetricQuery::Vector(v) => match &v.inner {
             MetricQuery::Range(r) => (r, vector_grouping(v, range_function(r)?.0)?),
             _ => {

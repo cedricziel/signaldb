@@ -334,14 +334,21 @@ fn numeric_value(value: &FilterValue) -> Result<f64, QuerierError> {
 }
 
 /// Predicate against a dedicated string column.
+/// A dedicated-column label (`service_name`, `level`/`severity`/
+/// `detected_level` → `severity_text`, `trace_id`, `span_id` — see
+/// `logs.rs::column_for_label`). Negations also match a NULL column value
+/// (design D9 of `ir-single-lowering`: Loki treats an absent label as the
+/// empty string, uniformly — a dedicated column gets no exception the
+/// attribute-map and materialized-label paths don't already have, see
+/// `map_attribute_expr`/`materialized_label_expr`).
 fn column_expr(column: &str, op: FilterOp, value: &FilterValue) -> Result<Expr, QuerierError> {
     let c = col(column);
     let v = string_value(value)?;
     Ok(match op {
         FilterOp::Eq | FilterOp::CmpEq => c.eq(lit(v)),
-        FilterOp::Neq => c.not_eq(lit(v)),
+        FilterOp::Neq => c.clone().is_null().or(c.not_eq(lit(v))),
         FilterOp::Re => regexp_like(c, lit(v), None),
-        FilterOp::Nre => not(regexp_like(c, lit(v), None)),
+        FilterOp::Nre => c.clone().is_null().or(not(regexp_like(c, lit(v), None))),
         FilterOp::Gt | FilterOp::Gte | FilterOp::Lt | FilterOp::Lte => {
             return Err(QuerierError::Unsupported(format!(
                 "ordered comparison on log label column '{column}'"
@@ -618,9 +625,11 @@ mod tests {
 
     #[test]
     fn column_matcher_operators() {
+        // D9 (`ir-single-lowering`): negations also match a NULL column
+        // value, uniformly with `map_attribute_expr`/`materialized_label_expr`.
         assert_eq!(
             sql(r#"{service_name!="api"}"#),
-            r#"service_name != Utf8("api")"#
+            r#"service_name IS NULL OR service_name != Utf8("api")"#
         );
         assert_eq!(
             sql(r#"{service_name=~"ap.*"}"#),
@@ -628,7 +637,7 @@ mod tests {
         );
         assert_eq!(
             sql(r#"{service_name!~"ap.*"}"#),
-            r#"NOT regexp_like(service_name, Utf8("ap.*"))"#
+            r#"service_name IS NULL OR NOT regexp_like(service_name, Utf8("ap.*"))"#
         );
     }
 

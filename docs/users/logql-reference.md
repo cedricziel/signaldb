@@ -138,7 +138,9 @@ and returns log lines.
 All four matchers are supported: `=`, `!=`, `=~`, `!~`. Regex matchers on
 a column (`service_name=~"api.*"`) are pushed down as `regexp_like`;
 regex against an attribute label is **not** supported (attribute labels
-support only `=` and `!=`).
+support only `=` and `!=`). As in Loki, a negative matcher (`!=`, `!~`)
+also matches a stream that lacks the label entirely, not only one holding
+a different value.
 
 ### Line filters
 

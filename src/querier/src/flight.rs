@@ -556,7 +556,8 @@ impl QuerierFlightService {
             .with_trace_search_via_ir(limits.trace_search_via_ir);
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
-        let logs_service = LogsService::new(session_ctx.as_ref().clone());
+        let logs_service =
+            LogsService::new(session_ctx.as_ref().clone()).with_logql_via_ir(limits.logql_via_ir);
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
         let ir_service = IrService::new(session_ctx.as_ref().clone());
 
@@ -640,7 +641,8 @@ impl QuerierFlightService {
             .with_trace_search_via_ir(limits.trace_search_via_ir);
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
-        let logs_service = LogsService::new(session_ctx.as_ref().clone());
+        let logs_service =
+            LogsService::new(session_ctx.as_ref().clone()).with_logql_via_ir(limits.logql_via_ir);
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
         let ir_service = IrService::new(session_ctx.as_ref().clone());
 

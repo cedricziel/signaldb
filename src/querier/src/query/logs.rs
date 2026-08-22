@@ -60,6 +60,24 @@ pub const LOG_COLUMNS: &[&str] = &[
     "resource_attributes",
 ];
 
+/// `(logical field, LOG_COLUMNS entry)` pairs the IR path (task 4.1 of
+/// `ir-single-lowering`) uses to build a document's `fields`: each pair's
+/// logical half is what goes in `fields`, and its column half is that
+/// field's `safe_ident` alias — kept as one array of pairs, not two
+/// separately-indexed arrays, so the correspondence is structural rather
+/// than a convention two lists could drift out of. Pinned against
+/// `LOG_COLUMNS` by `log_field_pairs_resolve_to_log_columns` below.
+const LOG_FIELD_PAIRS: &[(&str, &str)] = &[
+    ("timestamp", "timestamp"),
+    ("body", "body"),
+    ("service.name", "service_name"),
+    ("severity_text", "severity_text"),
+    ("trace_id", "trace_id"),
+    ("span_id", "span_id"),
+    ("log.attributes", "log_attributes"),
+    ("resource.attributes", "resource_attributes"),
+];
+
 /// LogQL label names backed by dedicated columns, in Loki label form.
 const KNOWN_LABELS: &[&str] = &[
     "detected_level",
@@ -69,8 +87,11 @@ const KNOWN_LABELS: &[&str] = &[
     "trace_id",
 ];
 
-/// Columns whose distinct values define a series' identity.
-const SERIES_COLUMNS: &[&str] = &["service_name", "severity_text"];
+/// Columns whose distinct values define a series' identity. Pinned against
+/// `ql_ir::STREAM_IDENTITY` (design D7 of `ir-single-lowering`) by
+/// `differential::ql_ir_stream_identity_matches_series_columns`, so the two
+/// constants cannot drift apart unnoticed.
+pub(super) const SERIES_COLUMNS: &[&str] = &["service_name", "severity_text"];
 
 /// Scan direction for a log query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,15 +114,40 @@ impl Direction {
     }
 }
 
+/// The result of attempting the IR path for a LogQL query — shared by
+/// [`LogsService::query_logs_via_ir`] and
+/// [`LogsService::query_metric_via_ir`] via
+/// [`LogsService::lower_and_plan_via_ir`] (task 4.1 of `ir-single-lowering`).
+enum IrOutcome {
+    /// Lowered and planned successfully; the caller executes this. Boxed —
+    /// `DataFrame` dwarfs the other variants, and this enum is short-lived
+    /// local plumbing that never sits in a larger owning type.
+    Planned(Box<DataFrame>),
+    /// The dataset has no table for this source at all — an empty result,
+    /// not a fallback trigger (matches the old path's identical no-table
+    /// handling).
+    NoTable,
+    /// `ql_ir` refused the query, or `plan_document` rejected the resulting
+    /// document — fall back to the old lowering (design D5).
+    Fallback,
+}
+
 /// Executes LogQL log queries and Loki metadata lookups.
 pub struct LogsService {
     session_context: Arc<SessionContext>,
+    /// TEMPORARY rollout switch (`ir-single-lowering`, design D3): route
+    /// LogQL through `ql_ir::logql_to_ir` + the shared IR planner for what
+    /// it covers, falling back to this module's dedicated lowering on
+    /// `LowerError::Inexpressible` (design D5). See
+    /// `QuerierConfig::logql_via_ir`.
+    logql_via_ir: bool,
 }
 
 impl Debug for LogsService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogsService")
             .field("session_context", &"set")
+            .field("logql_via_ir", &self.logql_via_ir)
             .finish()
     }
 }
@@ -110,6 +156,7 @@ impl Clone for LogsService {
     fn clone(&self) -> Self {
         Self {
             session_context: Arc::clone(&self.session_context),
+            logql_via_ir: self.logql_via_ir,
         }
     }
 }
@@ -118,7 +165,15 @@ impl LogsService {
     pub fn new(session_context: SessionContext) -> Self {
         Self {
             session_context: Arc::new(session_context),
+            logql_via_ir: common::config::QuerierConfig::default().logql_via_ir,
         }
+    }
+
+    /// Override the `ir-single-lowering` rollout switch (default: the old
+    /// dedicated LogQL lowering).
+    pub fn with_logql_via_ir(mut self, logql_via_ir: bool) -> Self {
+        self.logql_via_ir = logql_via_ir;
+        self
     }
 
     /// Resolve the dataset's `logs` table, or `None` when it has none.
@@ -148,6 +203,14 @@ impl LogsService {
         record_attr_demand(&parsed, tenant_slug, dataset_slug);
         let direction = Direction::parse(params.direction.as_deref());
 
+        if self.logql_via_ir
+            && let Some(batches) = self
+                .query_logs_via_ir(params, direction, tenant_slug, dataset_slug)
+                .await?
+        {
+            return Ok(batches);
+        }
+
         let Some(df) = self.logs_table(tenant_slug, dataset_slug).await? else {
             return Ok(Vec::new());
         };
@@ -161,6 +224,121 @@ impl LogsService {
             direction,
         )?;
         df.collect().await.map_err(QuerierError::QueryFailed)
+    }
+
+    /// [`Self::query_logs`]'s IR-routed twin (task 4.1 of `ir-single-lowering`,
+    /// behind [`Self::logql_via_ir`]): lowers the query via
+    /// [`Self::lower_and_plan_via_ir`], appending the ordering/limit stages
+    /// `query_logs` applies itself and projecting `fields` onto exactly
+    /// [`LOG_COLUMNS`] (via `safe_ident`), so the caller and the router's
+    /// Loki conversion need no changes for either path — pinned by
+    /// `log_field_pairs_resolve_to_log_columns` below.
+    async fn query_logs_via_ir(
+        &self,
+        params: &LogQueryParams,
+        direction: Direction,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Option<Vec<RecordBatch>>, QuerierError> {
+        use common::query_ir::{Direction as IrDirection, Order, Stage};
+
+        let outcome = self
+            .lower_and_plan_via_ir(
+                &params.query,
+                params.start,
+                params.end,
+                "log",
+                (tenant_slug, dataset_slug),
+                |doc| {
+                    doc.fields = Some(
+                        LOG_FIELD_PAIRS
+                            .iter()
+                            .map(|(logical, _)| logical.to_string())
+                            .collect(),
+                    );
+                    doc.pipeline.push(Stage::Order(vec![Order {
+                        of: "timestamp".to_string(),
+                        dir: if direction.ascending() {
+                            IrDirection::Asc
+                        } else {
+                            IrDirection::Desc
+                        },
+                    }]));
+                    doc.pipeline.push(Stage::Limit(params.limit as u64));
+                },
+            )
+            .await?;
+        match outcome {
+            IrOutcome::Planned(df) => df
+                .collect()
+                .await
+                .map(Some)
+                .map_err(QuerierError::QueryFailed),
+            IrOutcome::NoTable => Ok(Some(Vec::new())),
+            IrOutcome::Fallback => Ok(None),
+        }
+    }
+
+    /// Lowers a LogQL query via `ql_ir::logql_to_ir` and plans it through
+    /// [`super::ir_planner::plan_document`] — the single planner entry
+    /// point (D1) — classifying the result per the D5 fallback contract
+    /// [`Self::query_logs_via_ir`] and [`Self::query_metric_via_ir`] share:
+    /// [`IrOutcome::Fallback`] **only** on `LowerError::Inexpressible` — D5's
+    /// exception set is enumerable, and design.md's fallback set (task 4.2)
+    /// lists zero `plan_document`-rejected cases (D6 closed the one that
+    /// used to exist). A `plan_document` rejection therefore propagates like
+    /// any other error, even though it means the IR document built from a
+    /// query `ql_ir` itself accepted turned out to be invalid — pinned by
+    /// `planner_invalid_input_propagates_instead_of_falling_back` below.
+    /// [`IrOutcome::NoTable`] is the one non-error, non-fallback outcome:
+    /// the dataset has no table for the source at all, an empty result. A
+    /// `ParseLogql` failure is unreachable here in practice — the caller's
+    /// own parser already accepted `query` — but is mapped to `InvalidInput`
+    /// defensively rather than falling back.
+    ///
+    /// `finish` post-processes the successfully lowered document (`fields`,
+    /// extra pipeline stages, an aggregate's `step`) before it is planned —
+    /// the one part that differs between the two callers.
+    async fn lower_and_plan_via_ir(
+        &self,
+        query: &str,
+        start_ns: i64,
+        end_ns: i64,
+        kind: &str,
+        tenant_dataset: (&str, &str),
+        finish: impl FnOnce(&mut common::query_ir::Document),
+    ) -> Result<IrOutcome, QuerierError> {
+        let (tenant_slug, dataset_slug) = tenant_dataset;
+        let mut doc = match ql_ir::logql_to_ir(query, &start_ns.to_string(), &end_ns.to_string()) {
+            Ok(doc) => doc,
+            Err(ql_ir::LowerError::Inexpressible(reason)) => {
+                tracing::debug!(
+                    query = %query,
+                    kind = %kind,
+                    reason = %reason,
+                    "LogQL query is inexpressible in the IR; falling back to the old lowering"
+                );
+                return Ok(IrOutcome::Fallback);
+            }
+            Err(ql_ir::LowerError::ParseLogql(e)) => {
+                return Err(QuerierError::InvalidInput(e.to_string()));
+            }
+            Err(other) => return Err(QuerierError::InvalidInput(other.to_string())),
+        };
+        finish(&mut doc);
+
+        let planned = super::ir_planner::plan_document(
+            &self.session_context,
+            &doc,
+            tenant_slug,
+            dataset_slug,
+            0,
+        )
+        .await?;
+        Ok(match planned {
+            Some((df, _window)) => IrOutcome::Planned(Box::new(df)),
+            None => IrOutcome::NoTable,
+        })
     }
 
     /// Execute a LogQL metric query, returning a matrix: one row per
@@ -215,8 +393,89 @@ impl LogsService {
         }
 
         let plan = plan_metric_query(&metric)?;
+        if self.logql_via_ir
+            && let Some(batches) = self
+                .query_metric_via_ir(
+                    &params.query,
+                    params,
+                    &plan.log_query,
+                    tenant_slug,
+                    dataset_slug,
+                )
+                .await?
+        {
+            return Ok(batches);
+        }
         self.execute_plan(&plan, params, tenant_slug, dataset_slug)
             .await
+    }
+
+    /// [`Self::query_metric`]'s IR-routed twin (task 4.1 of
+    /// `ir-single-lowering`, behind [`Self::logql_via_ir`]) for the plain
+    /// (non-`vector(N)`, non-binary) case. `Ok(None)` is the D5 fallback
+    /// signal, same as [`Self::query_logs_via_ir`].
+    ///
+    /// Two post-`plan_document` corrections, both projection/naming only
+    /// (never a filter), keep the result schema identical to
+    /// [`Self::execute_plan`]'s:
+    /// - **`step`**: `ql_ir::logql_to_ir` sets the aggregate's bucket width
+    ///   from the LogQL range literal (`[5m]` → `"5m"`), but the Loki API's
+    ///   own `step` parameter is the caller's requested bucket resolution —
+    ///   a *different* value `execute_plan` buckets by
+    ///   (`params.step` is nanoseconds; a bare integer string is accepted
+    ///   as-is, see `query_ir::parse_duration_ns`). Overridden here so both
+    ///   paths bucket identically. (This would be better owned by `ql_ir`
+    ///   itself accepting a step override instead of deriving one it is
+    ///   then told to discard — filed as a follow-up, not done here.)
+    /// - **`value`'s type**: `ir_planner::agg_expr`'s `count` aggregate is
+    ///   `count(lit(1))`, Arrow `Int64`, unless a `rate` divisor promotes it
+    ///   — `execute_plan` always casts to `Float64`
+    ///   (`logs.rs`'s own aggregate assembly), which is also what the
+    ///   router's `batches_to_matrix` requires (`downcast_ref::<Float64Array>`,
+    ///   silently reading `0.0` for any other type). Cast explicitly so a
+    ///   plain `count_over_time`/`min`/`max` doesn't silently zero out. (The
+    ///   same Int64/Float64 inconsistency exists in `ir_planner::agg_expr`
+    ///   for `min`/`max`/`first`/`last` too — a planner-wide invariant gap
+    ///   beyond this method's reach; also a follow-up.)
+    async fn query_metric_via_ir(
+        &self,
+        query: &str,
+        params: &MetricQueryParams,
+        log_query: &LogQuery,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Option<Vec<RecordBatch>>, QuerierError> {
+        use common::query_ir::Stage;
+
+        let outcome = self
+            .lower_and_plan_via_ir(
+                query,
+                params.start,
+                params.end,
+                "metric",
+                (tenant_slug, dataset_slug),
+                |doc| {
+                    for stage in &mut doc.pipeline {
+                        if let Stage::Aggregate(agg) = stage {
+                            agg.step = Some(params.step.to_string());
+                        }
+                    }
+                },
+            )
+            .await?;
+        let df = match outcome {
+            IrOutcome::Planned(df) => df,
+            IrOutcome::NoTable => return Ok(Some(Vec::new())),
+            IrOutcome::Fallback => return Ok(None),
+        };
+        // Cast `value` to Float64 in place (see this method's doc); every
+        // other column passes through unchanged.
+        let df = df
+            .with_column("value", cast(col("value"), DataType::Float64))
+            .map_err(QuerierError::QueryFailed)?;
+        let batches = df.collect().await.map_err(QuerierError::QueryFailed)?;
+        record_attr_demand(log_query, tenant_slug, dataset_slug);
+        Ok(Some(batches))
     }
 
     /// Execute a single lowered [`MetricPlan`] into a matrix. Shared by
@@ -1407,6 +1666,33 @@ mod tests {
         CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
     };
 
+    /// `LOG_FIELD_PAIRS`' whole reason to exist (task 4.1 of
+    /// `ir-single-lowering`): each pair's logical field, run through
+    /// `safe_ident` the same way `ir_planner::Lowering::apply_projection`
+    /// aliases a `fields` entry, must equal that pair's own column half —
+    /// which must in turn be `LOG_COLUMNS`' entry at the same index, so the
+    /// IR path's projected output lines up with the old path's regardless
+    /// of which one changes first.
+    #[test]
+    fn log_field_pairs_resolve_to_log_columns() {
+        assert_eq!(
+            LOG_FIELD_PAIRS.len(),
+            LOG_COLUMNS.len(),
+            "LOG_FIELD_PAIRS and LOG_COLUMNS must stay the same length"
+        );
+        for (i, (logical, column)) in LOG_FIELD_PAIRS.iter().enumerate() {
+            assert_eq!(
+                common::query_ir::safe_ident(logical),
+                *column,
+                "LOG_FIELD_PAIRS[{i}]: safe_ident({logical:?}) must equal its own column half"
+            );
+            assert_eq!(
+                *column, LOG_COLUMNS[i],
+                "LOG_FIELD_PAIRS[{i}]'s column half must equal LOG_COLUMNS[{i}]"
+            );
+        }
+    }
+
     fn logs_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![
             Field::new(
@@ -2181,6 +2467,38 @@ mod tests {
             (dev[0].0 - 125.0_f64.sqrt()).abs() < 1e-6,
             "stddev {}",
             dev[0].0
+        );
+    }
+
+    /// Review finding on #1393: a `plan_document` rejection must propagate as
+    /// an error, not silently fall back to the old lowering — design D5's
+    /// exception set is `LowerError::Inexpressible` only, and design.md's
+    /// fallback set (task 4.2) lists zero `plan_document`-rejected cases.
+    /// `unwrap trace_id` lowers fine through `ql_ir` (`stddev_over_time` is
+    /// supported, and `ql_ir` does no type checking of the unwrapped field),
+    /// but `trace_id` is logically a `String` field — `plan_document`'s
+    /// aggregate validation requires a numeric field for `stddev` and
+    /// rejects it with `InvalidInput`. The *old* path never logically types
+    /// the unwrap target at all (a bare physical-column cast), so it
+    /// succeeds on the same query — this is not a case for the fallback set,
+    /// it is a case for propagating the planner's answer.
+    #[tokio::test]
+    async fn planner_invalid_input_propagates_instead_of_falling_back() {
+        let service = service_with_numeric_unwrap().with_logql_via_ir(true);
+        let params = MetricQueryParams {
+            query: r#"stddev_over_time({service_name="api"} | unwrap trace_id [1000ns])"#
+                .to_string(),
+            start: 0,
+            end: 1000,
+            step: 1000,
+        };
+        let err = service
+            .query_metric(&params, "t", "d")
+            .await
+            .expect_err("a plan_document rejection must surface as an error, not a silent fallback to the old path's success");
+        assert!(
+            matches!(err, QuerierError::InvalidInput(_)),
+            "expected InvalidInput (unwrap target is not numeric), got {err:?}"
         );
     }
 
