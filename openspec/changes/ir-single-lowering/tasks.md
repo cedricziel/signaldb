@@ -114,8 +114,9 @@
       (`=""` has no old-path precedent — see
       `empty_string_equality_matches_an_absent_field_on_the_new_path`'s doc —
       so it is a new-path-only regression test, not an old/new pin.)
-- [ ] 4.0d File an issue for the #1070 bug still present in `logs.rs::execute_plan`
+- [x] 4.0d File an issue for the #1070 bug still present in `logs.rs::execute_plan`
       (mixed-case attribute grouping on the old metric path); reference it from 4.2.
+      (Filed as #1392.)
 - [ ] 4.1 Route LogQL through `ql_ir::logql_to_ir` for what it covers, behind
       its own switch, **falling back to the old lowering on `Inexpressible`**
       (D5 — a working query must not regress into a 501).
