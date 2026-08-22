@@ -302,8 +302,8 @@ async fn test_acceptor_writer_flow() {
     let acceptor_addr = acceptor_listener.local_addr().unwrap();
     drop(acceptor_listener);
 
-    // Production wraps this service in grpc_auth_interceptor, which resolves
-    // auth headers into a TenantContext request extension. Auth itself is
+    // Production wraps this service in GrpcAuthLayer, which resolves auth
+    // headers into a TenantContext request extension. Auth itself is
     // covered by grpc_auth's own tests; here we inject the context directly
     // so this suite stays focused on the acceptor->writer flow.
     let acceptor_server = Server::builder()
