@@ -117,13 +117,30 @@
 - [x] 4.0d File an issue for the #1070 bug still present in `logs.rs::execute_plan`
       (mixed-case attribute grouping on the old metric path); reference it from 4.2.
       (Filed as #1392.)
-- [ ] 4.1 Route LogQL through `ql_ir::logql_to_ir` for what it covers, behind
+- [x] 4.1 Route LogQL through `ql_ir::logql_to_ir` for what it covers, behind
       its own switch, **falling back to the old lowering on `Inexpressible`**
       (D5 — a working query must not regress into a 501).
-- [ ] 4.2 Record which corpus queries take the fallback. That set is the
+      (`QuerierConfig::logql_via_ir`; `LogsService::query_logs_via_ir`/
+      `query_metric_via_ir`, sharing `lower_and_plan_via_ir`'s D5
+      classification. Two schema-parity corrections found and fixed along
+      the way, documented on `query_metric_via_ir`: the aggregate's `step`
+      must be the caller's `params.step`, not `ql_ir`'s range-literal
+      default, and `value` must be cast to `Float64` — `ir_planner`'s
+      `count` aggregate is `Int64`, which the router's `batches_to_matrix`
+      silently reads as `0.0`.)
+- [x] 4.2 Record which corpus queries take the fallback. That set is the
       remaining IR expressiveness gap and the input to any successor change.
-- [ ] 4.3 `cargo test -p querier -p tests-integration` green with the switch
+      (Recorded in design.md's new "The fallback set as of §4" subsection
+      under D5.)
+- [x] 4.3 `cargo test -p querier -p tests-integration` green with the switch
       both ways.
+      (`cargo test -p querier -p ql-ir -p common --lib`: 641+414 passed;
+      `cargo test -p tests-integration --test integration logql_queries::`:
+      9 passed, including the three new `_via_ir` twins
+      (`logql_stream_query_returns_all_lines_for_service_via_ir`,
+      `logql_line_filter_narrows_to_matching_lines_via_ir`,
+      `logql_metric_query_count_over_time_returns_matrix_via_ir`) exercising
+      the full ingest→store→query stack with the switch on.)
 
 ## 5. Delete the duplication
 
