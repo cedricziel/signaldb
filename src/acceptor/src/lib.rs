@@ -1,3 +1,20 @@
+//! # Acceptor
+//!
+//! OTLP ingestion service: the gRPC (`serve_otlp_grpc`) and HTTP
+//! (`serve_otlp_http`) servers that terminate traces, logs, metrics, and
+//! profiles exports, plus Prometheus remote_write. Every ingest surface
+//! follows the same shape: authenticate ([`middleware`]), enforce
+//! per-tenant rate limits and storage quotas, decode the wire payload,
+//! hand off to a per-signal [`handler`] that writes it to the WAL and
+//! forwards it to a writer via Flight, and answer once the data is
+//! durable — not once it's forwarded (WAL-before-ACK; see
+//! `handler::forward` and `handler::wal_retry` for the retry path when a
+//! forward fails after durability).
+//!
+//! [`services`] holds the four generated gRPC service implementations;
+//! this module builds their HTTP/2 server and the routers for the HTTP
+//! surface.
+
 pub mod cli;
 pub mod handler;
 pub mod middleware;
@@ -390,7 +407,17 @@ fn otlp_cors_layer(allowed_origins: &[String]) -> tower_http::cors::CorsLayer {
     } else {
         let origins: Vec<axum::http::HeaderValue> = allowed_origins
             .iter()
-            .filter_map(|o| o.parse().ok())
+            .filter_map(|o| match o.parse() {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    tracing::warn!(
+                        origin = %o,
+                        error = %e,
+                        "Dropping unparseable entry from self_monitoring.frontend.allowed_origins"
+                    );
+                    None
+                }
+            })
             .collect();
         cors.allow_origin(origins)
     }
@@ -1062,6 +1089,29 @@ mod cors_tests {
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .is_none(),
             "unlisted origin must not be granted CORS access"
+        );
+    }
+
+    /// Finding L3: an unparseable entry in `allowed_origins` must not take
+    /// down CORS for the *valid* entries alongside it — it's dropped (with
+    /// a warning, not exercised by this test) and the rest still work.
+    #[tokio::test]
+    async fn preflight_still_allows_valid_origins_alongside_an_unparseable_one() {
+        let allowed = vec![
+            "not a valid header value\n".to_string(),
+            "http://ui.example:3000".to_string(),
+        ];
+
+        let res = app_with_cors(&allowed)
+            .oneshot(preflight("http://ui.example:3000"))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .map(|v| v.to_str().unwrap().to_string()),
+            Some("http://ui.example:3000".to_string()),
+            "the valid origin must still be allowed despite the unparseable entry"
         );
     }
 }

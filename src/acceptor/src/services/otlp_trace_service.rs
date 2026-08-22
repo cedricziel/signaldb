@@ -1,3 +1,6 @@
+//! gRPC `TraceService` implementation — see `services` module docs for the
+//! shared shape every OTLP signal's gRPC service follows.
+
 use opentelemetry_proto::tonic::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse, trace_service_server::TraceService,
 };
@@ -358,8 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_trace_acceptor_service() {
-        let mut mock_handler = MockTraceHandler::new();
-        mock_handler.expect_handle_grpc_otlp_traces();
+        let mock_handler = MockTraceHandler::new();
 
         let service = TraceAcceptorService::new(mock_handler);
 
