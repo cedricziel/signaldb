@@ -324,6 +324,16 @@ table_reconcile_interval = "5m"
 # retired once the writer process has itself been up longer than this window.
 wal_marker_retention = "30d"
 
+[acceptor]
+# Acceptor transport limits. One value drives both the OTLP/HTTP request
+# body limit (all ingest routes: /v1/traces, /v1/logs, /v1/metrics,
+# /v1development/profiles, /api/v1/write) and the OTLP/gRPC
+# max_decoding_message_size, so raising it for large payloads is one
+# decision instead of two limits that can drift. This is the *decoded*
+# size: gzip/zstd request bodies are decompressed before this limit is
+# applied. 64MB comfortably covers the [wal] segment tuning below.
+max_request_body_bytes = 67108864     # 64MB
+
 [compactor]
 # Compactor Service Configuration
 # The compactor manages the complete data lifecycle with three phases:
