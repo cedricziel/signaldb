@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use acceptor::handler::otlp_grpc::TraceHandler;
-use acceptor::middleware::grpc_auth_interceptor;
+use acceptor::middleware::GrpcAuthLayer;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
 use common::auth::{Authenticator, TenantContext, TenantSource};
 use common::catalog::Catalog;
@@ -110,12 +110,10 @@ async fn self_monitoring_export_lands_in_system_wal() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = listener.local_addr().unwrap();
-    let auth = authenticator.clone();
     tokio::spawn(
         Server::builder()
-            .add_service(TraceServiceServer::with_interceptor(service, move |req| {
-                grpc_auth_interceptor(auth.clone(), req)
-            }))
+            .layer(GrpcAuthLayer::new(authenticator.clone()))
+            .add_service(TraceServiceServer::new(service))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
     );
 
