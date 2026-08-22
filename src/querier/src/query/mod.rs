@@ -12,6 +12,7 @@ pub mod promql;
 pub mod search_filter;
 pub mod table_lookup;
 pub mod table_ref;
+pub(crate) mod tags_to_ir;
 pub mod trace;
 
 /// Parameters carried in the `query_logs` Flight ticket (JSON-encoded).
@@ -139,7 +140,7 @@ pub struct FindTraceByIdParams {
 /// Mirrors the Tempo search API. `spss` (spans per span set) is applied by
 /// the router when shaping the HTTP response and is intentionally absent
 /// here; unknown JSON fields in the ticket are ignored on deserialization.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SearchQueryParams {
     pub q: Option<String>,
     pub tags: Option<String>,

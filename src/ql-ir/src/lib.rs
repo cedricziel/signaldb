@@ -80,7 +80,7 @@ fn ir_range(from: &str, to: &str) -> query_ir::Range {
 }
 
 pub use logql_lower::logql_to_ir;
-pub use traceql_lower::traceql_to_ir;
+pub use traceql_lower::{traceql_condition_to_predicate, traceql_to_ir};
 
 /// Why a query could not be lowered.
 #[non_exhaustive]

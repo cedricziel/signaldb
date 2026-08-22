@@ -55,8 +55,8 @@
 //! That premise was stale by the time this change was proposed; the corpus
 //! below draws from the two files that do carry query text instead.
 //!
-//! Total corpus: 18 TraceQL `q` strings + 3 `tags` strings + 8 LogQL log
-//! queries + 7 LogQL metric queries = **36 queries**, plus the six
+//! Total corpus: 18 TraceQL `q` strings + 6 `tags` strings + 8 LogQL log
+//! queries + 7 LogQL metric queries = **39 queries**, plus the seven
 //! adversarial cases (task 2.2) below.
 //!
 //! ## Triage table (task 2.4)
@@ -67,7 +67,7 @@
 //! | **Every LogQL line filter** (`|=`/`!=`/`|~`/`!~`) | **(3) the biggest open finding — reported, not picked** | `ql_ir::logql_lower::line_filter` lowers to `Leaf{field:"body", op:Contains}`, but `LogicalSchema::core()` marks `logs.body` `RetrievalOnly` (deliberately, per `ir_planner`'s own `retrieval_only_metadata_cannot_be_used_in_predicates` test) — `plan_document`'s validation rejects every one of these documents. This is *not* the D5 fallback case: `logql_to_ir` returns `Ok`, not `Inexpressible`, so the rejection surfaces only after the point a §4 fallback switch would check. `ql-ir`'s own `every_lowered_document_validates` test missed this because it validates against a permissive `InMemoryResolver`, never the real `SchemaResolver`. Pinned in `logql_line_filter_is_rejected_by_the_real_schema`. Whoever builds §4 needs to decide: relax `body`'s retrievability (for `contains`/`regex` ops only?), or add a plan-time-Inexpressible-equivalent the switch can also fall back on. |
 //! | A LogQL stream-selector `!=` against a key some rows lack | **(3) genuinely different meaning — reported, not picked** | The old LogQL lowering's `!=`/`!~` explicitly matches an absent key (`e.is_null().or(e.not_eq(...))`, documented "mirroring the JSON path"); `ir_planner`'s `Predicate::Not` is a plain `not(...)`, which is NULL for a NULL input — the IR's stated Kleene semantics ("absent satisfies neither `field = x` nor `not(field = x)`"). Pinned as `adversarial_absent_value_semantics_diverge` below, which asserts the *divergence* rather than agreement. Reported for a product decision (does the compat surface promise Loki's negation-matches-absent behaviour, or the IR's three-valued one) rather than silently choosing a side. |
 //! | `{ .service.name = "api" }`, `{ .http.method = "GET" }` (TraceQL, unscoped), `{k8s_namespace="prod"}` (LogQL, no known column) | **(3) genuinely different meaning — reported, not picked** | The old path ORs the match across every container (`map_attribute_expr("span_attributes",..).or(map_attribute_expr("resource_attributes",..))`) — matches if *any* container has the value. `ir_planner`'s bare-name resolution COALESCEs across containers by priority (span/log, then scope, then resource) and compares *once* — if a higher-priority container has the key at all (regardless of value), lower-priority containers are never consulted. Pinned in `adversarial_unscoped_attribute_combining_semantics_diverge` with a fixture where the same key holds *different* values in two containers, which the corpus's own fixture data happened not to exercise (both sides agreed there only because one container lacked the key entirely). The LogQL corpus's `{k8s_namespace="prod"}` hits the identical mechanism (skipped via `KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG`, no separate pinned test). Reported: which combining rule the compat surface should keep is a product question. |
-//! | `{ span.http.method = "GET" }` against a table with a promoted `label_http_method` column | **(2) both correct, plans differ** | `search_filter::to_expr` checks `materialized_column_name(key)` against the **bare** attribute key (`"http.method"` → `label_http_method`), matching how the compactor actually names promoted columns (`attr_promotion::materialized_keys_of` keys off the raw `attr_key`, never the TraceQL-scoped spelling). `ir_planner::SchemaResolver::column_for` computes `materialized_column_name(field)` against the **scope-qualified** logical field (`"span.http.method"` → `label_span_http_method`), which no real promoted column is ever named — so `ir_planner` always takes the `get_field` (JsonPath) branch for a scope-qualified attribute, never the promoted column, even when one exists. This is a real gap in `ir_planner`'s promotion-invariance claim, but not a *result* difference: promotion duplicates a value into a column without removing it from the source attribute map (`schema_transform.rs`), so the map extraction the IR takes returns the identical value the old path's column reference would. Pinned in `adversarial_promoted_attribute_agrees_on_result` (row-level, not plan-level, comparison — the plans legitimately differ: one references the column, the other calls `get_field`). Recorded here as a real perf/promotion-invariance gap in `ir_planner` for `§3`/a follow-up to fix (scope-strip the field before materializing, the same way `Lowering::qualified_attr` already does for the *unpromoted* extraction path) — out of scope for this harness change, since fixing it changes no query's result. |
+//! | `{ span.http.method = "GET" }` against a table with a promoted `label_http_method` column | **(1) `ir_planner` was wrong, fixed in §3** | `search_filter::to_expr` checks `materialized_column_name(key)` against the **bare** attribute key (`"http.method"` → `label_http_method`), matching how the compactor actually names promoted columns (`attr_promotion::materialized_keys_of` keys off the raw `attr_key`, never the TraceQL-scoped spelling). `ir_planner::SchemaResolver::column_for` used to compute `materialized_column_name(field)` against the **scope-qualified** logical field (`"span.http.method"` → `label_span_http_method`), which no real promoted column is ever named — so `ir_planner` always took the `get_field` (JsonPath) branch for a scope-qualified attribute, never the promoted column, even when one existed. Fixed in `ir_planner::SchemaResolver::column_for` (task 3.0): strip the scope qualifier before materializing, the same way `Lowering::qualified_attr` already does for the unpromoted extraction path. The pin moved from a row-level comparison to a plan-level one, now that the plans genuinely agree — see `adversarial_promoted_attribute_agrees_on_plan`. Commit: `fix(querier): resolve promoted columns for scope-qualified IR fields`. |
 //! | `sum by (StatusCode) (count_over_time(...))` (mixed-case attribute grouping) | **(1) old path is wrong, still open** | #1070's fix (`ident()` not `col()` for a group-column alias) only touched `ir_planner.rs`. The *old* LogQL metric path (`logs.rs`'s `execute_plan`) has the identical unfixed bug for grouping by a mixed-case attribute label. New path (routed through `plan_document`) already handles it correctly. Pinned in `adversarial_mixed_case_grouping_label_old_path_still_has_1070`; reported as a still-open bug in `logs.rs`, independent of this change, not fixed here. |
 //! | `count_over_time(...)`/`rate(...)`/`sum_over_time(...)` etc. with **no** outer `by` | **(3) genuinely different meaning — reported, not picked** | Real Loki returns one series per matching *stream* for a bare range aggregation. The old path approximates this by defaulting the range aggregate's grouping to `SERIES_COLUMNS` (`service_name`, `severity_text`) when ungrouped. `ql_ir::logql_to_ir` emits `by: []` for the same shape, and `ir_planner` groups by nothing — collapsing every matching row into one count. Pinned in `adversarial_ungrouped_range_aggregation_default_grouping_diverges` (two `api` rows of different severities: old produces 2 rows, new produces 1). This is likely the single biggest behavioural gap for real dashboards (per-stream matrices are the common case), and — like the line-filter finding above — needs a design decision (does the IR need a "natural series identity" default?) rather than a pick made here. |
 //! | every other corpus query | **match** | See the `*_corpus_*` tests below. |
@@ -113,24 +113,26 @@
 use std::sync::Arc;
 
 use datafusion::arrow::array::{
-    Array, Float64Array, MapBuilder, MapFieldNames, RecordBatch, StringArray, StringBuilder,
-    TimestampNanosecondArray,
+    Array, BooleanArray, Float64Array, MapBuilder, MapFieldNames, RecordBatch, StringArray,
+    StringBuilder, TimestampNanosecondArray,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
 use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
 use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
 use datafusion::prelude::{DataFrame, SessionContext, col, lit};
 
-use common::query_ir::Document;
+use common::query_ir::{Document, Range, ResultEnvelope, Stage};
 use logql::Expr as LogqlExpr;
 
 use super::MetricQueryParams;
+use super::SearchQueryParams;
 use super::error::QuerierError;
 use super::ir_planner::plan_document;
 use super::logql::{AttrContext, log_query_filter_with_columns};
 use super::logs::{LogsService, materialized_columns_of};
 use super::search_filter;
 use super::table_lookup::optional_table;
+use super::trace::TraceService;
 
 const TENANT: &str = "t";
 const DATASET: &str = "d";
@@ -169,11 +171,20 @@ const TRACEQL_CORPUS: &[&str] = &[
     "{}",
 ];
 
-/// Tempo `tags` (logfmt) strings, from `test_search_filters_are_applied`.
+/// Tempo `tags` (logfmt) strings, from `test_search_filters_are_applied`,
+/// plus three adversarial values (blocker found in review of PR #1391) that
+/// a text round-trip through TraceQL mishandled: `parse_tags`/`take_value`
+/// have no escape syntax of their own, so a backslash, an embedded `"`, and
+/// a literal `&&` inside a key all pass straight through as ordinary
+/// characters, but TraceQL's own string-literal grammar does not accept
+/// them unchanged (see `tags_to_ir`'s module doc).
 const TAGS_CORPUS: &[&str] = &[
     "service.name=filter-test-service",
     "service.name=does-not-exist",
     "justaword",
+    r"file.path=C:\Users\foo",
+    r#"weird.key=va"lue"#,
+    "weird&&key=value",
 ];
 
 /// LogQL log-query strings (no metric functions). Sources: `logql_queries.rs`
@@ -506,46 +517,16 @@ fn old_tags_class(tags: &str) -> Class {
     }
 }
 
-/// The stand-in for D4's `Condition`-to-IR shim (task 3.2), which does not
-/// exist yet — this change lands the harness *before* any endpoint moves.
-/// Tags share TraceQL's intrinsic vocabulary by construction
-/// (`search_filter::tags_selector`), so a tags condition can be lowered by
-/// asking `ql_ir` for exactly the field name TraceQL's matching selector
-/// would use, then wrapping the raw value as a string leaf. This is
-/// deliberately not exported: it exists to give the harness something to
-/// diff before D4 is built, not to anticipate D4's own shape.
+/// D4's `Condition`-to-IR shim, task 3.2's `tags_to_ir::conditions_to_predicate` —
+/// the real production lowering, not a stand-in. (An earlier version of this
+/// harness rendered the condition back into TraceQL text before that shim
+/// existed; the blocker found in review of PR #1391 was exactly that a text
+/// round-trip is unsound, so this now calls the real shim instead — see
+/// `tags_to_ir`'s module doc.)
 fn tags_condition_class(condition: &traceql::Condition) -> Class {
-    // A tags condition is always a single equality; round-trip it through a
-    // one-condition TraceQL spanset so the *same* `ql_ir` code path (not a
-    // duplicate of it) decides field naming and value normalization.
-    let rendered = match &condition.selector {
-        traceql::Selector::ServiceName => format!(
-            "{{ resource.service.name = {} }}",
-            filter_value_literal(&condition.value)
-        ),
-        traceql::Selector::SpanName => {
-            format!("{{ name = {} }}", filter_value_literal(&condition.value))
-        }
-        traceql::Selector::Status => {
-            format!("{{ status = {} }}", filter_value_literal(&condition.value))
-        }
-        traceql::Selector::Kind => {
-            format!("{{ kind = {} }}", filter_value_literal(&condition.value))
-        }
-        traceql::Selector::AnyAttribute(key) => {
-            format!("{{ .{key} = {} }}", filter_value_literal(&condition.value))
-        }
-        other => panic!("tags_condition_class: unexpected selector {other:?}"),
-    };
-    new_traceql_class(&rendered)
-}
-
-fn filter_value_literal(v: &traceql::FilterValue) -> String {
-    match v {
-        traceql::FilterValue::String(s) => format!("{s:?}"),
-        traceql::FilterValue::Number(n) => n.clone(),
-        traceql::FilterValue::Bool(b) => b.to_string(),
-        other => panic!("unexpected tags filter value {other:?}"),
+    match super::tags_to_ir::conditions_to_predicate(std::slice::from_ref(condition)) {
+        Ok(_) => Class::Accept,
+        Err(e) => class_of_querier_err(&e),
     }
 }
 
@@ -616,6 +597,33 @@ async fn new_traceql_plan(
     let mut doc = ql_ir::traceql_to_ir(q, FROM_NS, TO_NS)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
     set_fields(&mut doc, fields);
+    let (df, _) = plan_document(ctx, &doc, TENANT, DATASET, 0)
+        .await?
+        .expect("traces table is registered");
+    Ok(optimized_plan_text(df))
+}
+
+/// The new `tags` plan: `tags_to_ir::conditions_to_predicate` (task 3.2's
+/// real shim, not a text round-trip) conjoined into one document, with
+/// `fields` set to the same projection the old side used (comparison
+/// rules) — the same shape `build_search_dataframe_via_ir` builds.
+async fn new_tags_plan(
+    ctx: &SessionContext,
+    conditions: &[traceql::Condition],
+    fields: &[&str],
+) -> Result<String, QuerierError> {
+    let predicate = super::tags_to_ir::conditions_to_predicate(conditions)?;
+    let doc = Document {
+        ir_version: 1,
+        from: "traces".to_string(),
+        range: Range {
+            from: serde_json::Value::String(FROM_NS.to_string()),
+            to: serde_json::Value::String(TO_NS.to_string()),
+        },
+        result: ResultEnvelope::Rows,
+        fields: Some(fields.iter().map(|s| s.to_string()).collect()),
+        pipeline: vec![Stage::Where(predicate)],
+    };
     let (df, _) = plan_document(ctx, &doc, TENANT, DATASET, 0)
         .await?
         .expect("traces table is registered");
@@ -858,11 +866,33 @@ async fn tags_corpus_rejections_agree() {
     }
 }
 
+/// The three escaping-hazard entries added to `TAGS_CORPUS` for the blocker
+/// found in review of PR #1391 are all bare (`AnyAttribute`) keys, which hit
+/// the *unrelated*, already-pinned D8 combining-semantics divergence
+/// (`adversarial_unscoped_attribute_combining_semantics_diverge`, same
+/// mechanism as `KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG`): `traces_fixture`'s
+/// schema carries both `span_attributes` and `resource_attributes`, so the
+/// old path's OR-across-containers and the new path's coalesce-by-priority
+/// produce structurally different plans for *any* bare key, independent of
+/// what values are actually stored. That is not what these three entries
+/// exist to test — see `adversarial_tags_escaping_values_agree_on_result`
+/// for the execution-level proof that the escaping fix itself is correct,
+/// isolated from D8 by using a fixture where only one container carries the
+/// key.
+const KNOWN_COMBINING_DIVERGENCE_TAGS: &[&str] = &[
+    r"file.path=C:\Users\foo",
+    r#"weird.key=va"lue"#,
+    "weird&&key=value",
+];
+
 #[tokio::test]
 async fn tags_corpus_filters_agree_on_optimized_plan() {
     let ctx = traces_fixture();
     let fields = ["trace_id"];
     for tags in TAGS_CORPUS {
+        if KNOWN_COMBINING_DIVERGENCE_TAGS.contains(tags) {
+            continue;
+        }
         let Ok(conditions) = search_filter::parse_tags(tags) else {
             continue;
         };
@@ -889,27 +919,12 @@ async fn tags_corpus_filters_agree_on_optimized_plan() {
         }
         let old = optimized_plan_text(old_df.select_columns(&fields).unwrap());
 
-        // New plan: each condition rendered as a one-leaf TraceQL spanset
-        // (the D4 stand-in, see `tags_condition_class`), conjoined.
-        let rendered: Vec<String> = conditions
-            .iter()
-            .map(|c| match &c.selector {
-                traceql::Selector::AnyAttribute(key) => {
-                    format!(".{key} = {}", filter_value_literal(&c.value))
-                }
-                traceql::Selector::ServiceName => {
-                    format!("resource.service.name = {}", filter_value_literal(&c.value))
-                }
-                traceql::Selector::SpanName => format!("name = {}", filter_value_literal(&c.value)),
-                other => panic!("unexpected tags selector {other:?}"),
-            })
-            .collect();
-        let spanset = format!("{{ {} }}", rendered.join(" && "));
-        let new = new_traceql_plan(&ctx, &spanset, &fields)
+        // New plan: the real D4 shim (`tags_to_ir::conditions_to_predicate`),
+        // conjoined into one document exactly like
+        // `build_search_dataframe_via_ir` does.
+        let new = new_tags_plan(&ctx, &conditions, &fields)
             .await
-            .unwrap_or_else(|e| {
-                panic!("{tags} (as {spanset}): new path rejected an old-accepted query: {e}")
-            });
+            .unwrap_or_else(|e| panic!("{tags}: new path rejected an old-accepted query: {e}"));
         assert_plans_match(tags, &old, &new);
     }
 }
@@ -1360,70 +1375,147 @@ async fn logql_metric_known_inexpressible_matches_old_path_accepts() {
 // Adversarial cases (task 2.2)
 // ---------------------------------------------------------------------------
 
-/// Promoted vs. unpromoted attribute: the same TraceQL filter against a
-/// table where `http.method` is materialized as `label_http_method`. See the
-/// triage table's case (2) — the plans legitimately differ (old references
-/// the column, new does a `get_field` extraction), but the *result* must
-/// still agree, since the map still carries the value the promotion was
-/// taken from.
+/// Promoted attribute, scope-qualified field: after the D10 fix
+/// (`ir_planner::SchemaResolver::column_for` strips the scope qualifier
+/// before materializing a promoted column's name, task 3.0), both paths
+/// resolve `span.http.method` to the promoted `label_http_method` column —
+/// this moved from triage table case (2) "both correct, plans differ" to
+/// case (1) "`ir_planner` was wrong, fixed in §3", so the comparison is now
+/// at the optimized-plan level, like every other agreeing case, rather than
+/// the weaker row-level one it needed while the plans still legitimately
+/// differed.
 #[tokio::test]
-async fn adversarial_promoted_attribute_agrees_on_result() {
+async fn adversarial_promoted_attribute_agrees_on_plan() {
     let ctx = traces_promoted_fixture();
     let q = r#"{ span.http.method = "GET" }"#;
     let fields = ["trace_id"];
 
-    let conditions = traceql::parse(q).unwrap();
-    let mut old_df = optional_table(&ctx, TENANT, DATASET, "traces")
-        .await
-        .unwrap()
-        .unwrap();
-    let attr_ctx = AttrContext {
-        materialized: materialized_columns_of(&old_df),
-        map_attrs: true,
-        attr_tokens: false,
-    };
+    let old = old_traceql_plan(&ctx, q, &fields).await.unwrap();
+    let new = new_traceql_plan(&ctx, q, &fields).await.unwrap();
     assert!(
-        attr_ctx.materialized.contains("label_http_method"),
-        "fixture must expose the promoted column"
+        old.contains("label_http_method") && new.contains("label_http_method"),
+        "both paths should route to the promoted column:\nold:\n{old}\nnew:\n{new}"
     );
-    for c in &conditions {
-        old_df = old_df
-            .filter(search_filter::to_expr(c, &attr_ctx).unwrap())
+    assert!(
+        !old.contains("get_field") && !new.contains("get_field"),
+        "neither path should fall back to json-path extraction once a promoted column exists:\nold:\n{old}\nnew:\n{new}"
+    );
+    assert_plans_match(q, &old, &new);
+}
+
+/// The three tags escaping-hazard values added to `TAGS_CORPUS` (blocker
+/// found in review of PR #1391), executed end to end. Each attribute exists
+/// only in `span_attributes`, so old (OR-across-containers) and new
+/// (coalesce-by-priority) trivially agree on which container answers —
+/// isolating this from the unrelated D8 divergence
+/// `KNOWN_COMBINING_DIVERGENCE_TAGS` skips at the plan level (see its doc
+/// comment). What this proves: a backslash, an embedded `"`, and a `&&` in
+/// a key all reach the filter unchanged on the new (`tags_to_ir`) path,
+/// exactly as the old path's raw-string comparison already did.
+#[tokio::test]
+async fn adversarial_tags_escaping_values_agree_on_result() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("trace_id", DataType::Utf8, false),
+        Field::new("span_id", DataType::Utf8, false),
+        Field::new("parent_span_id", DataType::Utf8, true),
+        Field::new("span_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("start_time_unix_nano", DataType::Int64, false),
+        Field::new("duration_nanos", DataType::Int64, false),
+        Field::new("status_code", DataType::Utf8, true),
+        Field::new("span_kind", DataType::Utf8, true),
+        map_field_named("span_attributes"),
+        map_field_named("resource_attributes"),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["t0"])),
+            Arc::new(StringArray::from(vec!["s0"])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec!["GET /a"])),
+            Arc::new(StringArray::from(vec!["api"])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![10_i64])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![100_i64])),
+            Arc::new(StringArray::from(vec![Some("Ok")])),
+            Arc::new(StringArray::from(vec![Some("Internal")])),
+            build_map(&[&[
+                ("file.path", r"C:\Users\foo"),
+                ("weird.key", "va\"lue"),
+                ("weird&&key", "value"),
+            ]]),
+            build_map(&[&[]]),
+        ],
+    )
+    .unwrap();
+    let ctx = SessionContext::new();
+    register(&ctx, "traces", schema, batch);
+    let fields = ["trace_id"];
+
+    for tags in [
+        r"file.path=C:\Users\foo",
+        r#"weird.key=va"lue"#,
+        "weird&&key=value",
+    ] {
+        let conditions = search_filter::parse_tags(tags).unwrap();
+
+        let mut old_df = optional_table(&ctx, TENANT, DATASET, "traces")
+            .await
+            .unwrap()
             .unwrap();
+        let attr_ctx = AttrContext {
+            materialized: materialized_columns_of(&old_df),
+            map_attrs: true,
+            attr_tokens: false,
+        };
+        for c in &conditions {
+            old_df = old_df
+                .filter(search_filter::to_expr(c, &attr_ctx).unwrap())
+                .unwrap();
+        }
+        let old_rows: usize = old_df
+            .select_columns(&fields)
+            .unwrap()
+            .collect()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(
+            old_rows, 1,
+            "{tags}: old path should match the fixture's one row"
+        );
+
+        let predicate = super::tags_to_ir::conditions_to_predicate(&conditions)
+            .unwrap_or_else(|e| panic!("{tags}: new path rejected an old-accepted query: {e}"));
+        let doc = Document {
+            ir_version: 1,
+            from: "traces".to_string(),
+            range: Range {
+                from: serde_json::Value::String(FROM_NS.to_string()),
+                to: serde_json::Value::String(TO_NS.to_string()),
+            },
+            result: ResultEnvelope::Rows,
+            fields: Some(fields.iter().map(|s| s.to_string()).collect()),
+            pipeline: vec![Stage::Where(predicate)],
+        };
+        let (new_df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        let new_rows: usize = new_df
+            .collect()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(
+            new_rows, old_rows,
+            "{tags}: new path should match the same row the old path did"
+        );
     }
-    let old_plan = optimized_plan_text(old_df.clone().select_columns(&fields).unwrap());
-    assert!(
-        old_plan.contains("label_http_method"),
-        "old path should route to the promoted column:\n{old_plan}"
-    );
-    let old_rows = old_df
-        .select_columns(&fields)
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-
-    let mut doc = ql_ir::traceql_to_ir(q, FROM_NS, TO_NS).unwrap();
-    set_fields(&mut doc, &fields);
-    let (new_df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
-        .await
-        .unwrap()
-        .unwrap();
-    let new_plan = optimized_plan_text(new_df.clone());
-    // Documents the gap in the triage table: `ir_planner` never takes the
-    // promoted-column branch for a scope-qualified field. If this ever
-    // starts failing, `ir_planner`'s promotion invariance improved and this
-    // assertion (and the triage table entry) should be deleted, not fixed.
-    assert!(
-        new_plan.contains("get_field"),
-        "expected ir_planner to still miss scope-qualified promotion (tracked gap):\n{new_plan}"
-    );
-    let new_rows = new_df.collect().await.unwrap();
-
-    assert_eq!(
-        old_rows, new_rows,
-        "{q}: promoted-column and get_field extraction must still agree on the result"
-    );
 }
 
 /// An attribute key colliding with a physical column name
@@ -1620,4 +1712,218 @@ async fn old_logql_log_query_df(ctx: &SessionContext, q: &str, fields: &[&str]) 
         df = df.filter(filter).unwrap();
     }
     df.select_columns(fields).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Task 2.3b/3.4: endpoint-level agreement — `TraceService::find_traces_with_tenant`
+// with the `ir-single-lowering` switch on vs off, over the corpus and the
+// promoted-attribute/combining-semantics adversarial cases.
+// ---------------------------------------------------------------------------
+
+/// A `traces` table with the full schema [`super::trace::TraceService`]'s
+/// search assembly reads (unlike [`traces_fixture`], which only carries what
+/// the plan-comparison tests above project) — same two rows as
+/// [`traces_fixture`], so every `TRACEQL_CORPUS`/`TAGS_CORPUS` query that
+/// matches there matches identically here.
+fn traces_endpoint_fixture() -> SessionContext {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("trace_id", DataType::Utf8, false),
+        Field::new("span_id", DataType::Utf8, false),
+        Field::new("parent_span_id", DataType::Utf8, true),
+        Field::new("span_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("span_kind", DataType::Utf8, true),
+        Field::new("status_code", DataType::Utf8, true),
+        Field::new("is_root", DataType::Boolean, false),
+        Field::new("start_time_unix_nano", DataType::Int64, false),
+        Field::new("duration_nanos", DataType::Int64, false),
+        map_field_named("span_attributes"),
+        map_field_named("resource_attributes"),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["t0", "t1"])),
+            Arc::new(StringArray::from(vec!["s0", "s1"])),
+            Arc::new(StringArray::from(vec![None, Some("s0")])),
+            Arc::new(StringArray::from(vec!["GET /api", "POST /x"])),
+            Arc::new(StringArray::from(vec!["api", "web"])),
+            Arc::new(StringArray::from(vec![Some("Server"), Some("Internal")])),
+            Arc::new(StringArray::from(vec![Some("Error"), Some("Ok")])),
+            Arc::new(BooleanArray::from(vec![true, false])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![10_i64, 20])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![
+                100_i64, 200,
+            ])),
+            build_map(&[&[("http.method", "GET"), ("http.status_code", "500")], &[]]),
+            build_map(&[&[("k8s.pod.name", "p"), ("service.name", "api")], &[]]),
+        ],
+    )
+    .unwrap();
+    let ctx = SessionContext::new();
+    register(&ctx, "traces", schema, batch);
+    ctx
+}
+
+/// A comparable, deterministic form of a search result: top-level trace
+/// order sorted by `trace_id` (`Trace.spans` is already deterministic —
+/// `build_span_hierarchy` sorts by start time then span id — but two
+/// independently-truncated searches can still order traces differently),
+/// serialized to JSON so `Span::attributes`/`resource` (`HashMap`, whose
+/// iteration order is randomized per-instance, not just per-process) compare
+/// by content rather than by incidental Debug-output order.
+fn canonicalize_traces(mut traces: Vec<common::model::trace::Trace>) -> serde_json::Value {
+    traces.sort_by(|a, b| a.trace_id.cmp(&b.trace_id));
+    serde_json::to_value(&traces).expect("Trace serializes to JSON")
+}
+
+async fn search_traces(
+    ctx: &SessionContext,
+    query: SearchQueryParams,
+    via_ir: bool,
+) -> Result<Vec<common::model::trace::Trace>, QuerierError> {
+    TraceService::new(ctx.clone(), "traces".to_string())
+        .with_trace_search_via_ir(via_ir)
+        .find_traces_with_tenant(query, TENANT, DATASET)
+        .await
+}
+
+fn q_only(q: &str) -> SearchQueryParams {
+    SearchQueryParams {
+        q: Some(q.to_string()),
+        ..Default::default()
+    }
+}
+
+fn tags_only(tags: &str) -> SearchQueryParams {
+    SearchQueryParams {
+        tags: Some(tags.to_string()),
+        ..Default::default()
+    }
+}
+
+/// Every `TRACEQL_CORPUS` query both paths accept must produce the identical
+/// assembled search result whether `trace_search_via_ir` is off or on — not
+/// merely the identical plan (2.3, above), which the compat layer's own
+/// assembly sits downstream of (module doc, task 2.3b).
+#[tokio::test]
+async fn traceql_corpus_search_results_agree_with_switch_on_and_off() {
+    let ctx = traces_endpoint_fixture();
+    for q in TRACEQL_CORPUS {
+        if old_traceql_class(q, &AttrContext::default()) != Class::Accept {
+            continue;
+        }
+        let old = search_traces(&ctx, q_only(q), false)
+            .await
+            .unwrap_or_else(|e| panic!("{q}: switch off failed: {e}"));
+        let new = search_traces(&ctx, q_only(q), true)
+            .await
+            .unwrap_or_else(|e| panic!("{q}: switch on failed: {e}"));
+        assert_eq!(
+            canonicalize_traces(old),
+            canonicalize_traces(new),
+            "{q}: switch on/off disagree on the assembled search result"
+        );
+    }
+}
+
+/// Same agreement, for the `tags` corpus.
+#[tokio::test]
+async fn tags_corpus_search_results_agree_with_switch_on_and_off() {
+    let ctx = traces_endpoint_fixture();
+    for tags in TAGS_CORPUS {
+        if old_tags_class(tags) != Class::Accept {
+            continue;
+        }
+        let old = search_traces(&ctx, tags_only(tags), false)
+            .await
+            .unwrap_or_else(|e| panic!("{tags}: switch off failed: {e}"));
+        let new = search_traces(&ctx, tags_only(tags), true)
+            .await
+            .unwrap_or_else(|e| panic!("{tags}: switch on failed: {e}"));
+        assert_eq!(
+            canonicalize_traces(old),
+            canonicalize_traces(new),
+            "{tags}: switch on/off disagree on the assembled search result"
+        );
+    }
+}
+
+/// `q` and `tags` together, at the endpoint level (task 3.4's explicit case:
+/// no existing test sent both before task 3.3 made them one document).
+#[tokio::test]
+async fn q_and_tags_together_search_results_agree_with_switch_on_and_off() {
+    let ctx = traces_endpoint_fixture();
+    let query = SearchQueryParams {
+        q: Some(r#"{ resource.service.name = "api" }"#.to_string()),
+        tags: Some("http.method=GET".to_string()),
+        ..Default::default()
+    };
+    let old = search_traces(&ctx, query.clone(), false).await.unwrap();
+    let new = search_traces(&ctx, query, true).await.unwrap();
+    assert_eq!(
+        canonicalize_traces(old),
+        canonicalize_traces(new),
+        "q+tags together: switch on/off disagree on the assembled search result"
+    );
+}
+
+/// The D8 combining-semantics divergence
+/// (`adversarial_unscoped_attribute_combining_semantics_diverge`, above)
+/// reproduces at the endpoint level too, not just in the raw plan/row
+/// comparison: the old path's OR-across-containers still finds the
+/// resource-scope match the new path's coalesce never reaches. Asserts the
+/// *divergence*, matching the module doc's pinned finding — if this ever
+/// starts agreeing, the D8 gap was closed and this assertion (and the
+/// triage table entry) should be deleted, not "fixed".
+#[tokio::test]
+async fn adversarial_unscoped_attribute_combining_semantics_diverge_at_endpoint() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("trace_id", DataType::Utf8, false),
+        Field::new("span_id", DataType::Utf8, false),
+        Field::new("parent_span_id", DataType::Utf8, true),
+        Field::new("span_name", DataType::Utf8, false),
+        Field::new("service_name", DataType::Utf8, false),
+        Field::new("span_kind", DataType::Utf8, true),
+        Field::new("status_code", DataType::Utf8, true),
+        Field::new("is_root", DataType::Boolean, false),
+        Field::new("start_time_unix_nano", DataType::Int64, false),
+        Field::new("duration_nanos", DataType::Int64, false),
+        map_field_named("span_attributes"),
+        map_field_named("resource_attributes"),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["t0"])),
+            Arc::new(StringArray::from(vec!["s0"])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec!["POST /api"])),
+            Arc::new(StringArray::from(vec!["api"])),
+            Arc::new(StringArray::from(vec![Some("Internal")])),
+            Arc::new(StringArray::from(vec![Some("Ok")])),
+            Arc::new(BooleanArray::from(vec![true])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![10_i64])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![100_i64])),
+            build_map(&[&[("http.method", "POST")]]),
+            build_map(&[&[("http.method", "GET")]]),
+        ],
+    )
+    .unwrap();
+    let ctx = SessionContext::new();
+    register(&ctx, "traces", schema, batch);
+
+    let query = q_only(r#"{ .http.method = "GET" }"#);
+    let old = search_traces(&ctx, query.clone(), false).await.unwrap();
+    let new = search_traces(&ctx, query, true).await.unwrap();
+    assert_eq!(
+        old.len(),
+        1,
+        "old path: OR across containers matches the resource-scope GET"
+    );
+    assert_eq!(
+        new.len(),
+        0,
+        "if this now matches, the D8 combining-semantics gap was closed at the endpoint level — update the triage table, don't just delete this assertion"
+    );
 }
