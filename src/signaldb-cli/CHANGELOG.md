@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/cedricziel/signaldb/compare/signaldb-cli-v0.3.0...signaldb-cli-v0.4.0) (2026-08-22)
+
+
+### Features
+
+* **router:** serve query discovery from the registry and statistics ([#1312](https://github.com/cedricziel/signaldb/issues/1312)) ([41d2738](https://github.com/cedricziel/signaldb/commit/41d27384df6e90bd9e9731218e084dd27581e20b))
+
+
+### Code Refactoring
+
+* **cli:** quality pass on signaldb-cli TUI (simplify) ([#1328](https://github.com/cedricziel/signaldb/issues/1328)) ([ee11e5f](https://github.com/cedricziel/signaldb/commit/ee11e5ff6c2a5cee658cc84a276e41503049a76c))
+
 ## [0.3.0](https://github.com/cedricziel/signaldb/compare/signaldb-cli-v0.1.3...signaldb-cli-v0.3.0) (2026-08-17)
 
 > **Note:** this release jumps `signaldb-cli` from the `0.1.x` line straight to `0.3.0`. `signaldb-cli` now versions in lockstep with the other core crates (`signaldb-bin`, `acceptor`, `router`, `writer`, `querier`, `compactor`, `common`) through a release-please `linked-versions` group named `signaldb-core`, so it adopted the group's highest version. The jump is pure harmonization — there is no additional feature scope behind the skipped `0.2.x` line.

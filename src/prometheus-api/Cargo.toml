@@ -1,6 +1,6 @@
 [package]
 name = "prometheus-api"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 description = "Prometheus HTTP API types"
 # Prometheus, whose HTTP API these types mirror, is Apache-2.0. See openspec D2.
