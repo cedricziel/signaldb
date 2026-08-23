@@ -1280,15 +1280,16 @@ impl WalProcessor {
             // `outcome.committed`'s healthy neighbours down with it (W2) —
             // they already landed in the same Iceberg commit below.
             for (entry_id, cause) in outcome.rejected {
-                if let Err(e) = wal.dead_letter_rejected(entry_id, &cause.to_string()).await {
-                    tracing::error!(
-                        entry_id = %entry_id,
-                        tenant_id = %tenant_id,
-                        table_name = %table_name,
-                        error = %e,
-                        "Failed to dead-letter a rejected WAL entry; it will be retried"
-                    );
-                }
+                let _ = self
+                    .retire_rejected_entry(
+                        wal,
+                        entry_id,
+                        tenant_id,
+                        dataset_id,
+                        table_name,
+                        &cause.to_string(),
+                    )
+                    .await;
             }
 
             // One batch call per committed chunk: the WAL persists each
@@ -1337,33 +1338,80 @@ impl WalProcessor {
         if failures < MAX_ENTRY_FAILURES {
             return;
         }
-        // `dead_letter_rejected` (not `dead_letter`): every call site here is
-        // a deterministic fault (a routing error, an undecodable payload, or
-        // a permanent commit failure) that will not clear on retry, so the
-        // reason belongs beside the preserved payload for an operator to
-        // read (W1).
+        // The attempt count is folded into the reason text (not a separate
+        // tracing field) so it survives in the `.rejected.json` marker
+        // `retire_rejected_entry` writes beside the payload — an operator
+        // reading the dead-letter directory later sees it either way.
+        let reason = format!("{reason} (after {failures} attempts)");
+        if self
+            .retire_rejected_entry(wal, entry_id, tenant_id, dataset_id, signal, &reason)
+            .await
+            .is_ok()
+        {
+            self.entry_failures.lock().await.remove(&entry_id);
+        }
+    }
+
+    /// Retire a WAL entry via [`Wal::dead_letter_rejected`]: preserve its
+    /// payload with `reason` recorded beside it and mark it processed.
+    ///
+    /// Every deterministic-rejection path shares this one retirement —
+    /// [`Self::record_entry_failure`]'s exhausted retry budget, and a
+    /// per-entry commit rejection surfaced immediately during
+    /// `process_batch_for_table` (W2) — so a rejected entry is never
+    /// retired silently: exactly one `error!` and one bump of
+    /// `signaldb.writer.commit_failures{kind=permanent}` per retirement,
+    /// regardless of which path found it. `table_name` names whichever
+    /// grouping the caller had available (WAL signal or resolved target
+    /// table), matching the two `wal.dead_letter_rejected` callers' own
+    /// terms.
+    async fn retire_rejected_entry(
+        &self,
+        wal: &Wal,
+        entry_id: Uuid,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+        reason: &str,
+    ) -> Result<(), anyhow::Error> {
         match wal.dead_letter_rejected(entry_id, reason).await {
             Ok(path) => {
+                common::self_monitoring::app_metrics()
+                    .writer_commit_failures
+                    .add(
+                        1,
+                        &[
+                            opentelemetry::KeyValue::new(
+                                "signaldb.tenant.id",
+                                tenant_id.to_string(),
+                            ),
+                            opentelemetry::KeyValue::new(
+                                "kind",
+                                CommitFailureKind::Permanent.as_attr(),
+                            ),
+                        ],
+                    );
                 tracing::error!(
                     entry_id = %entry_id,
                     tenant_id = %tenant_id,
                     dataset_id = %dataset_id,
-                    signal = %signal,
-                    failures,
+                    table_name = %table_name,
+                    reason,
                     path = %path.display(),
-                    "WAL entry exhausted its retries; payload and rejection reason preserved in the dead-letter directory and entry marked processed"
+                    "WAL entry rejected at commit; payload and rejection reason preserved in the dead-letter directory and entry marked processed"
                 );
-                self.entry_failures.lock().await.remove(&entry_id);
+                Ok(())
             }
             Err(e) => {
                 tracing::error!(
                     entry_id = %entry_id,
                     tenant_id = %tenant_id,
                     dataset_id = %dataset_id,
-                    signal = %signal,
+                    table_name = %table_name,
                     error = %e,
                     "Failed to dead-letter WAL entry; it will be retried"
                 );
+                Err(e)
             }
         }
     }
@@ -2217,11 +2265,15 @@ mod tests {
                 .exists(),
             "the poison entry's payload must be preserved"
         );
+        let rejected_marker = dead_letter.join(format!("{}.rejected.json", victim.simple()));
         assert!(
-            dead_letter
-                .join(format!("{}.rejected.json", victim.simple()))
-                .exists(),
+            rejected_marker.exists(),
             "the poison entry's rejection reason must be recorded"
+        );
+        let marker_contents = tokio::fs::read_to_string(&rejected_marker).await.unwrap();
+        assert!(
+            marker_contents.contains("Batch is missing column"),
+            "the marker must record why the entry was rejected, not just that it was: {marker_contents}"
         );
         for good in [good_before, good_after] {
             assert!(
