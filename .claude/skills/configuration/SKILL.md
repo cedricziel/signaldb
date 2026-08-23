@@ -254,6 +254,7 @@ metadata_previous_versions_max = 100 # Previous metadata.json versions retained 
 table_reconcile_interval = "5m"      # How often to re-run the signal-table reconciler over the tenant registry; "0s" = startup pass only
 wal_marker_retention = "30d"         # How long ANOTHER writer id's WAL idempotency marker is kept on a table; "0s" disables retirement
 max_drain_bytes_per_cycle = 268435456 # 256 MiB. Byte budget per WAL per drain cycle, oldest entries first; 0 disables it
+group_commit_timeout = "120s"        # Wall-clock budget for one group's commit attempt; expiry is a transient failure, never dead-lettered
 ```
 
 The writer commits ingested data to Iceberg asynchronously via its background
@@ -291,6 +292,14 @@ unprocessed for a later cycle; `signaldb.writer.entries_deferred_by_budget`
 the budget, and `do_action("flush")` loops cycles (bounded by its own
 `FLUSH_TIMEOUT`) until the requested scope's backlog is fully drained, so a
 read-your-writes flush is never cut short by the budget.
+
+Each group's commit attempt (table-writer creation, idempotency-marker load,
+Iceberg/catalog append) is wrapped in `group_commit_timeout`. Without it, a
+stalled catalog or object-store call on one group would hang that group's
+commit forever, stalling the whole drain cycle and every `do_action("flush")`
+call. Expiry is a transient commit failure like any other catalog/object-store
+outage: the group's entries stay pending and retry next cycle, never
+dead-lettered.
 
 ### MCP (Model Context Protocol server)
 

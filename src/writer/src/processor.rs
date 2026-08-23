@@ -349,6 +349,11 @@ pub struct WalProcessor {
     /// single WAL, oldest entries first. Zero disables the budget. See
     /// [`apply_drain_budget`].
     max_drain_bytes_per_cycle: u64,
+    /// Wall-clock budget for one group's [`Self::process_batch_for_table`]
+    /// attempt, applied via `tokio::time::timeout` (W9). Expiry is reported
+    /// as [`CommitFailureKind::Transient`], the same as any other
+    /// catalog/object-store outage.
+    group_commit_timeout: Duration,
     /// When this processor started, and when it last swept markers. Both are
     /// needed: the sweep is throttled, and a marker with no recorded commit
     /// time (written before markers were dated) may only be retired once this
@@ -369,6 +374,11 @@ pub struct WalProcessor {
     /// exercised without a real catalog/object-store outage.
     #[cfg(test)]
     injected_commit_failure: tokio::sync::Mutex<Option<CommitFailureKind>>,
+    /// Test-only fault injector: when set, `process_batch_for_table` sleeps
+    /// this long before doing any real work, so [`Self::group_commit_timeout`]
+    /// (W9) can be exercised without a real stalled catalog/object-store call.
+    #[cfg(test)]
+    injected_commit_delay: tokio::sync::Mutex<Option<Duration>>,
 }
 
 impl WalProcessor {
@@ -403,6 +413,7 @@ impl WalProcessor {
             coalescer: tokio::sync::Mutex::new(CommitCoalescer::new(writer_config)),
             wal_marker_retention: writer_config.wal_marker_retention,
             max_drain_bytes_per_cycle: writer_config.max_drain_bytes_per_cycle,
+            group_commit_timeout: writer_config.group_commit_timeout,
             started_at: Instant::now(),
             last_marker_sweep: tokio::sync::Mutex::new(None),
             #[cfg(test)]
@@ -411,6 +422,8 @@ impl WalProcessor {
             peak_concurrent_commits: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             injected_commit_failure: tokio::sync::Mutex::new(None),
+            #[cfg(test)]
+            injected_commit_delay: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -420,6 +433,14 @@ impl WalProcessor {
     #[cfg(test)]
     async fn inject_commit_failure(&self, kind: Option<CommitFailureKind>) {
         *self.injected_commit_failure.lock().await = kind;
+    }
+
+    /// Make every subsequent group commit sleep for `delay` before doing
+    /// real work, until cleared with `None`. See
+    /// [`Self::injected_commit_delay`].
+    #[cfg(test)]
+    async fn inject_commit_delay(&self, delay: Option<Duration>) {
+        *self.injected_commit_delay.lock().await = delay;
     }
 
     /// Every writer id this process owns — one per cached WAL directory.
@@ -885,17 +906,36 @@ impl WalProcessor {
                         let committed = common::self_monitoring::maybe_suppress_self_telemetry(
                             suppress,
                             async {
-                                match this
-                                    .process_batch_for_table(
+                                // W9: bound the whole commit attempt (table-writer
+                                // creation, marker load, Iceberg/catalog append) so a
+                                // stalled dependency stalls only this group, not the
+                                // whole drain cycle. A timeout is reported the same
+                                // way as any other transient catalog/object-store
+                                // failure — never dead-lettered, retried next cycle.
+                                let result = match tokio::time::timeout(
+                                    this.group_commit_timeout,
+                                    this.process_batch_for_table(
                                         &wal,
                                         &tenant_id,
                                         &dataset_id,
                                         &table_name,
                                         entries,
                                         trace_contexts,
-                                    )
-                                    .await
+                                    ),
+                                )
+                                .await
                                 {
+                                    Ok(result) => result,
+                                    Err(_elapsed) => Err(CommitFailure {
+                                        kind: CommitFailureKind::Transient,
+                                        processed: Vec::new(),
+                                        source: anyhow::anyhow!(
+                                            "group commit timed out after {:?}",
+                                            this.group_commit_timeout
+                                        ),
+                                    }),
+                                };
+                                match result {
                                     Ok(processed_ids) => {
                                         // Restart this group's coalescing
                                         // interval only on a real commit.
@@ -1147,6 +1187,10 @@ impl WalProcessor {
                 processed: Vec::new(),
                 source: anyhow::anyhow!("injected {kind:?} commit failure for testing"),
             });
+        }
+        #[cfg(test)]
+        if let Some(delay) = *self.injected_commit_delay.lock().await {
+            tokio::time::sleep(delay).await;
         }
 
         let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
@@ -3205,6 +3249,69 @@ mod tests {
         assert!(
             wal.get_unprocessed_entries().await.unwrap().is_empty(),
             "the entry must commit once the transient failure clears"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_commit_timeout_never_dead_letters_and_next_cycle_commits() {
+        // W9: a stalled group commit (catalog/object-store hang) must not
+        // hang the whole drain cycle forever, and must not dead-letter the
+        // group's entries — it is a transient failure like any other,
+        // retried on the next cycle once the stall clears.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+
+        wal.append(
+            WalOperation::WriteMetrics,
+            metrics_gauge_bytes(3),
+            Some(r#"{"target_table":"metrics_gauge"}"#.to_string()),
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        let config = WriterConfig {
+            group_commit_timeout: Duration::from_millis(200),
+            ..Default::default()
+        };
+        let mut processor = WalProcessor::with_config(
+            manager_for(&wal).await,
+            catalog_manager,
+            object_store,
+            &config,
+        );
+        // Sleep well past the timeout so the commit attempt is cancelled.
+        processor
+            .inject_commit_delay(Some(Duration::from_secs(2)))
+            .await;
+
+        processor
+            .process_pending_entries()
+            .await
+            .expect("a timed-out group commit must not abort the cycle");
+
+        assert_eq!(
+            wal.get_unprocessed_entries().await.unwrap().len(),
+            1,
+            "a timed-out commit must leave the entry pending, not consume it"
+        );
+        assert!(
+            !temp_dir.path().join("dead-letter").exists(),
+            "a group commit timeout must never dead-letter its entry"
+        );
+
+        // Once the stall clears, the next cycle commits normally.
+        processor.inject_commit_delay(None).await;
+        processor.process_pending_entries().await.unwrap();
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "the entry must commit once the stall clears"
         );
     }
 

@@ -332,6 +332,15 @@ wal_marker_retention = "30d"
 # disables the budget. A Flush marker is always drained regardless, so a
 # scoped flush request is never starved by an unrelated backlog.
 max_drain_bytes_per_cycle = 268435456 # 256 MiB
+#
+# Wall-clock budget for one group's commit attempt (table-writer creation,
+# idempotency-marker load, and the Iceberg/catalog append). Without it, a
+# stalled catalog or object-store call on one group hangs that group's
+# commit forever, stalling the whole drain cycle and every do_action("flush")
+# call, whose own budget includes waiting for the processor lock. Expiry is
+# treated as a transient commit failure: the group's entries stay pending
+# and retry next cycle, never dead-lettered.
+group_commit_timeout = "120s"
 
 [acceptor]
 # Acceptor transport limits. One value drives both the OTLP/HTTP request
