@@ -740,12 +740,14 @@ impl InferCtx<'_> {
 
         // Numeric requirement for sum/avg/quantile/stddev/stdvar. An
         // advisory-typed operand — an unpromoted attribute or an
-        // event-captured one (`Resolved::is_advisory_type`) — always reports
-        // `String` until the attribute-registry epic (#811) gives attributes
-        // real canonical types, so a bare attribute name used as one of
-        // these aggregates' operand (LogQL's `unwrap <label>` is exactly
-        // this: the label names an attribute field, never a physical
-        // column) is let through here and coerced numerically at plan time
+        // event-captured one (`Resolved::is_advisory_type`) — commonly
+        // reports `String` (a resolver's unknown-name fallback hardcodes
+        // it; the attribute-registry epic, #811, hasn't landed a real type
+        // source for a declared-but-unpromoted field either), so a bare
+        // attribute name used as one of these aggregates' operand (LogQL's
+        // `unwrap <label>` is exactly this: the label names an attribute
+        // field, never a physical column) is let through here and coerced
+        // numerically at plan time
         // (`ir_planner::numeric_of`'s explicit `cast(_, Float64)`; an
         // operand that isn't actually numeric-looking casts to `NULL`, same
         // as any other uncoercible value, not a plan-time error). A
@@ -1169,9 +1171,9 @@ mod tests {
         }
     }
 
-    /// #1395: an unpromoted attribute has no declared type —
-    /// `Resolved::JsonPath` always reports `String` until the
-    /// attribute-registry epic (#811) gives attributes real canonical
+    /// #1395: an unpromoted attribute (here, `String`-typed via the test
+    /// resolver's unknown-name fallback) has no *authoritative* type until
+    /// the attribute-registry epic (#811) gives attributes real canonical
     /// types — so a numeric aggregate over one (LogQL's `unwrap <label>` is
     /// exactly this: the label names an attribute field, never a physical
     /// column) must not be rejected at validation; it is coerced numerically
