@@ -476,7 +476,11 @@ predates the typed-attribute change (attribute containers stored as JSON
 strings) while `metrics_gauge` stores maps, or whose tables carry their
 columns in different positions, is reconciled before the union, so both
 filtering and grouping by any resource attribute (`host.name`,
-`k8s.pod.name`, …) work across both. `metrics_histogram` is a separate source (see [Histograms](#histograms))
+`k8s.pod.name`, …) work across both. The same reconciliation applies to a
+single-table source too (`logs`, `traces`, `profiles`) — a table that
+predates the typed-attribute change filters and groups by attribute the
+same way a migrated one does; nothing about a query changes based on when
+the underlying table was created. `metrics_histogram` is a separate source (see [Histograms](#histograms))
 since its row shape — a whole bucketed histogram per point, not a scalar
 value — has no equivalent in the generic `where`/`aggregate` pipeline.
 
