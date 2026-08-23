@@ -1430,6 +1430,19 @@ pub struct WriterConfig {
     /// A `Flush` marker is always included regardless of the budget, so a
     /// scoped flush request is never starved by an unrelated backlog.
     pub max_drain_bytes_per_cycle: u64,
+    /// Wall-clock budget for one group's commit attempt (table-writer
+    /// creation, idempotency-marker load, and the Iceberg/catalog append),
+    /// applied per group via `tokio::time::timeout`.
+    ///
+    /// Without this, a stalled catalog or object-store call on one group
+    /// hangs that group's future forever, which stalls the whole cycle's
+    /// drain and — because `do_action("flush")` waits on the processor lock
+    /// as part of its own budget — every other tenant's forced flush too.
+    /// Expiry is classified as a transient commit failure (same handling as
+    /// #1399's catalog/object-store outages): the group's entries stay
+    /// pending and are retried next cycle, never dead-lettered.
+    #[serde(with = "humantime_serde")]
+    pub group_commit_timeout: Duration,
 }
 
 impl WriterConfig {
@@ -1456,6 +1469,10 @@ impl Default for WriterConfig {
             // keeping a multi-GB post-outage backlog from being decoded to
             // Arrow in one tick.
             max_drain_bytes_per_cycle: 256 * 1024 * 1024,
+            // 120s: generous for a slow catalog/object-store round trip
+            // under normal contention, short enough that a genuinely stalled
+            // dependency does not hold up a whole drain cycle indefinitely.
+            group_commit_timeout: Duration::from_secs(120),
         }
     }
 }
