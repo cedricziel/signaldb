@@ -382,6 +382,16 @@ keeps the non-nullable `value` columns of `metrics_gauge`/`metrics_sum`
 satisfiable, so one such point can no longer make the writer reject a whole
 batch and pin its WAL entry forever (#1061). Histogram `explicit_bounds` keep
 a `+Inf` bound for the same reason.
+A related isolation applies one step later, at the Iceberg commit itself:
+`IcebergTableWriter::append_batches_with_marker` prepares (transforms and
+coerces) every WAL entry in a commit group independently and returns a
+`CommitOutcome { committed, rejected }` rather than failing the whole group
+on the first entry it cannot shape into the table. A rejected entry retires
+immediately via `Wal::dead_letter_rejected`; its healthy same-cycle
+neighbours still commit together in one all-or-nothing Iceberg transaction.
+One poison entry can therefore no longer block its neighbours from
+committing, or make a caller's `do_action("flush")` fail once the poison
+entry is retired (W2, writer review 2026-08-23).
 The writer's per-`do_put` "Received data" line is `DEBUG`; per-request
 handler lines on the acceptor are `DEBUG` too — steady-state `INFO` shows WAL
 batch commits, not individual requests.
