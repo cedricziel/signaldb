@@ -71,10 +71,16 @@ enum GroupOutcome {
     /// caller must be told its drain failed.
     ForcedCommitFailed,
     /// A background (non-forced) group failed transiently this cycle. Not
-    /// logged per-group (see W1): the cycle emits one aggregate `warn!` from
-    /// the count of these instead, so a catalog/object-store outage produces
-    /// one line per tick rather than one per stalled table.
-    TransientFailure,
+    /// logged as an `error!`/`warn!` per group (see W1): the cycle emits one
+    /// aggregate `warn!` carrying one sample of these instead, so a
+    /// catalog/object-store outage produces one line per tick — with enough
+    /// detail to point at the failing dependency — rather than one per
+    /// stalled table.
+    TransientFailure {
+        tenant_id: String,
+        table_name: String,
+        error: String,
+    },
 }
 
 /// Why [`WalProcessor::process_batch_for_table`] failed to commit a group.
@@ -874,7 +880,7 @@ impl WalProcessor {
                         // Transient failure; read only after it (and thus
                         // the `.await`) completes, so the plain shared
                         // mutable capture is race-free.
-                        let mut transient_failure = false;
+                        let mut transient_failure: Option<(String, String, String)> = None;
                         let committed = common::self_monitoring::maybe_suppress_self_telemetry(
                             suppress,
                             async {
@@ -966,11 +972,27 @@ impl WalProcessor {
                                                 // Never counted toward
                                                 // dead-lettering (W1): an
                                                 // outage must not retire
-                                                // healthy pending entries. No
-                                                // per-group log here — the
+                                                // healthy pending entries.
+                                                // `debug!`, not `warn!`/
+                                                // `error!`, per group — the
                                                 // cycle emits one aggregate
-                                                // `warn!` below.
-                                                transient_failure = true;
+                                                // `warn!` below so an outage
+                                                // produces one line per tick,
+                                                // but that aggregate needs a
+                                                // sample to name the failing
+                                                // dependency, so capture one
+                                                // here.
+                                                tracing::debug!(
+                                                    tenant_id = %tenant_id,
+                                                    table_name = %table_name,
+                                                    error = %failure,
+                                                    "Group commit failed transiently"
+                                                );
+                                                transient_failure = Some((
+                                                    tenant_id.clone(),
+                                                    table_name.clone(),
+                                                    failure.source.to_string(),
+                                                ));
                                             }
                                         }
                                         false
@@ -1008,8 +1030,12 @@ impl WalProcessor {
                         // dead-lettered/retried).
                         if forced && !committed {
                             GroupOutcome::ForcedCommitFailed
-                        } else if transient_failure {
-                            GroupOutcome::TransientFailure
+                        } else if let Some((tenant_id, table_name, error)) = transient_failure {
+                            GroupOutcome::TransientFailure {
+                                tenant_id,
+                                table_name,
+                                error,
+                            }
                         } else {
                             GroupOutcome::Committed
                         }
@@ -1027,17 +1053,29 @@ impl WalProcessor {
         let forced_commit_failed = outcomes
             .iter()
             .any(|o| matches!(o, GroupOutcome::ForcedCommitFailed));
-        let transient_failures = outcomes
-            .iter()
-            .filter(|o| matches!(o, GroupOutcome::TransientFailure))
-            .count();
-        if transient_failures > 0 {
+        let transient_sample = outcomes.iter().find_map(|o| match o {
+            GroupOutcome::TransientFailure {
+                tenant_id,
+                table_name,
+                error,
+            } => Some((tenant_id, table_name, error)),
+            _ => None,
+        });
+        if let Some((sample_tenant_id, sample_table, sample_error)) = transient_sample {
+            let transient_failures = outcomes
+                .iter()
+                .filter(|o| matches!(o, GroupOutcome::TransientFailure { .. }))
+                .count();
             // One line per cycle regardless of how many tables are stalled,
             // so a catalog/object-store outage does not flood logs with one
             // `error!` per group per tick (W1) on top of not dead-lettering
-            // anything.
+            // anything. Carries one sample so the operator can tell which
+            // dependency is down without turning on per-group `debug!`.
             tracing::warn!(
                 group_count = transient_failures,
+                sample_tenant_id = %sample_tenant_id,
+                sample_table = %sample_table,
+                sample_error = %sample_error,
                 "One or more groups failed to commit due to a transient error this cycle; \
                  their entries remain pending and will retry next cycle"
             );
