@@ -50,25 +50,28 @@ impl Default for RetryConfig {
     }
 }
 
-/// Why [`IcebergTableWriter::append_batches_with_marker`] did not commit.
+/// Outcome of one call to [`IcebergTableWriter::append_batches_with_marker`]:
+/// which entries are safe to mark processed, and which were rejected while
+/// being prepared, with why.
 ///
-/// The two are retried differently by the caller (see W1 in the writer
-/// review): a `Rejected` batch cannot be shaped into the table no matter how
-/// many times it is retried, so the caller counts it toward dead-lettering;
-/// a `Failed` commit is a catalog/object-store/I/O problem expected to clear
-/// once the dependency recovers, so it must never count toward
-/// dead-lettering — an outage would otherwise dead-letter every pending
-/// entry.
-#[derive(Debug, thiserror::Error)]
-pub enum CommitError {
-    /// The batch could not be shaped into the table's schema — a transform
-    /// or coercion failure. Retrying without operator intervention will
-    /// fail identically forever.
-    #[error(transparent)]
-    Rejected(anyhow::Error),
-    /// Catalog, object store, or other I/O failed.
-    #[error(transparent)]
-    Failed(anyhow::Error),
+/// A schema/transform failure is a property of the one entry that carries
+/// it, not of the group — see W2 in the writer review: before this type
+/// existed, that failure aborted the whole call via `?`, so one poison
+/// entry in a commit group dragged every healthy same-cycle neighbour into
+/// the failure path with it (and, per W1, counted them all toward their own
+/// dead-lettering budget). Preparing every entry independently and
+/// collecting rejections here instead keeps a poison entry's blast radius
+/// to itself.
+pub struct CommitOutcome {
+    /// Ids safe to mark processed: committed to Iceberg, or a zero-row batch
+    /// with nothing to commit.
+    pub committed: Vec<uuid::Uuid>,
+    /// Ids whose batch could not be prepared for this table, paired with
+    /// why. The caller must retire these immediately
+    /// (`Wal::dead_letter_rejected`) rather than count them toward a retry
+    /// budget — the fault is in the entry's bytes/shape, so retrying cannot
+    /// change the outcome.
+    pub rejected: Vec<(uuid::Uuid, anyhow::Error)>,
 }
 
 /// Writes signal batches to an Iceberg table.
@@ -434,12 +437,12 @@ impl IcebergTableWriter {
     /// After every attempt the table is reloaded and the marker checked —
     /// only the marker decides success, so retries can never double-append.
     ///
-    /// Returns [`CommitError::Rejected`] for a batch that cannot be shaped
-    /// into the table (retrying is pointless without operator
-    /// intervention) and [`CommitError::Failed`] for everything else
-    /// (catalog/object-store I/O, expected to clear once the dependency
-    /// recovers) — the caller classifies dead-lettering eligibility on
-    /// that distinction (W1).
+    /// Returns a [`CommitOutcome`] rather than failing the whole call for a
+    /// batch that cannot be shaped into the table: preparation happens per
+    /// entry, so one poison entry cannot take its healthy neighbours down
+    /// with it (W2). The remaining failure modes here (catalog/object-store
+    /// I/O) are whole-call: they apply equally to every survivor, so an
+    /// `Err` still aborts everything, exactly as before.
     #[tracing::instrument(
         skip_all,
         fields(
@@ -452,45 +455,56 @@ impl IcebergTableWriter {
         &mut self,
         wal_writer_id: &str,
         entries: Vec<(uuid::Uuid, RecordBatch)>,
-    ) -> Result<(), CommitError> {
-        let (ids, batches): (Vec<uuid::Uuid>, Vec<RecordBatch>) = entries.into_iter().unzip();
-
+    ) -> Result<CommitOutcome> {
         // The Parquet writer requires batches in the table's exact Arrow
         // schema (derived from the Iceberg schema, e.g. microsecond
         // timestamps), so coerce after the wire→storage transformation.
         let target_schema: ArrowSchemaRef = Arc::new(
             self.table
                 .current_schema()
-                .map_err(|e| {
-                    CommitError::Failed(anyhow::anyhow!(
-                        "Failed to get current Iceberg schema: {e}"
-                    ))
-                })?
+                .map_err(|e| anyhow::anyhow!("Failed to get current Iceberg schema: {e}"))?
                 .fields()
                 .try_into()
                 .map_err(|e: iceberg_rust::spec::error::Error| {
-                    CommitError::Failed(anyhow::anyhow!(
-                        "Failed to convert Iceberg schema to Arrow: {e}"
-                    ))
+                    anyhow::anyhow!("Failed to convert Iceberg schema to Arrow: {e}")
                 })?,
         );
 
+        // Step 1: prepare every entry independently. A transform/coercion
+        // failure is a property of that entry's bytes, not of the group —
+        // collecting it as a rejection here (rather than aborting the whole
+        // call via `?`) is what keeps a poison entry from taking its
+        // healthy neighbours down with it.
+        let mut committed_ids = Vec::new();
+        let mut rejected = Vec::new();
         let mut transformed = Vec::new();
-        for batch in batches {
+        for (id, batch) in entries {
             if batch.num_rows() == 0 {
+                // Nothing to commit for this id, but there is also nothing
+                // wrong with it — it is as processed as an empty batch can
+                // be.
+                committed_ids.push(id);
                 continue;
             }
-            let batch = self
+            let prepared = self
                 .apply_schema_transformation_if_needed(batch)
-                .map_err(CommitError::Rejected)?;
-            transformed.push(
-                coerce_batch_to_schema(batch, &target_schema).map_err(CommitError::Rejected)?,
-            );
+                .and_then(|batch| coerce_batch_to_schema(batch, &target_schema));
+            match prepared {
+                Ok(batch) => {
+                    committed_ids.push(id);
+                    transformed.push(batch);
+                }
+                Err(e) => rejected.push((id, e)),
+            }
         }
         if transformed.is_empty() {
-            // Nothing to append: the ids can be marked processed without
-            // a commit, and replaying them is a no-op either way.
-            return Ok(());
+            // Every survivor (if any) was zero-row, and/or every non-empty
+            // entry was rejected: nothing left to commit, so no Iceberg
+            // transaction is needed either way.
+            return Ok(CommitOutcome {
+                committed: committed_ids,
+                rejected,
+            });
         }
         let total_rows: usize = transformed.iter().map(|b| b.num_rows()).sum();
 
@@ -503,20 +517,20 @@ impl IcebergTableWriter {
             write_parquet_partitioned(&self.table, stream, None).await
         };
         let files = write.map_err(|e| {
-            CommitError::Failed(anyhow::anyhow!(
+            anyhow::anyhow!(
                 "Failed to write Parquet files for Iceberg table {}: {e}",
                 self.table.identifier()
-            ))
+            )
         })?;
         if files.is_empty() {
-            return Err(CommitError::Failed(anyhow::anyhow!(
+            return Err(anyhow::anyhow!(
                 "write_parquet_partitioned produced no data files for {total_rows} rows"
-            )));
+            ));
         }
 
         let marker_key = wal_marker_key(wal_writer_id);
-        let marker_value = encode_marker_ids(&ids);
-        let id_set: HashSet<uuid::Uuid> = ids.iter().copied().collect();
+        let marker_value = encode_marker_ids(&committed_ids);
+        let id_set: HashSet<uuid::Uuid> = committed_ids.iter().copied().collect();
 
         let mut attempt = 0;
         let mut delay = self.retry_config.initial_delay;
@@ -532,7 +546,7 @@ impl IcebergTableWriter {
 
             // The catalog is the source of truth for whether the commit
             // landed, regardless of what commit() returned.
-            self.reload_table().await.map_err(CommitError::Failed)?;
+            self.reload_table().await?;
             if self.read_marker(wal_writer_id) == id_set {
                 if let Err(e) = commit_result {
                     tracing::warn!(
@@ -547,7 +561,10 @@ impl IcebergTableWriter {
                     table = %self.table.identifier(),
                     "Committed rows to Iceberg table"
                 );
-                return Ok(());
+                return Ok(CommitOutcome {
+                    committed: committed_ids,
+                    rejected,
+                });
             }
 
             let error = match commit_result {
@@ -558,11 +575,11 @@ impl IcebergTableWriter {
                 Err(e) => anyhow::anyhow!("Iceberg commit failed: {e}"),
             };
             if attempt >= self.retry_config.max_attempts {
-                return Err(CommitError::Failed(error.context(format!(
+                return Err(error.context(format!(
                     "Failed to commit {} entries to Iceberg table {} after {attempt} attempts",
                     id_set.len(),
                     self.table.identifier()
-                ))));
+                )));
             }
             tracing::warn!(
                 "Commit attempt {attempt} for Iceberg table {} did not land: {error}. \

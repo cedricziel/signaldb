@@ -1,5 +1,5 @@
 use crate::routing::{self, RouteMetadata, RouteTarget};
-use crate::storage::{CommitError, IcebergTableWriter};
+use crate::storage::IcebergTableWriter;
 use anyhow::{Context, Result};
 use common::CatalogManager;
 use common::config::WriterConfig;
@@ -92,10 +92,11 @@ enum GroupOutcome {
 /// after roughly `MAX_ENTRY_FAILURES * commit_interval` of downtime (W1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommitFailureKind {
-    /// A deterministic fault the entry itself carries: a routing error, a
-    /// schema transform/coercion failure, or an unknown target table.
-    /// Retrying without operator intervention will fail identically
-    /// forever.
+    /// A deterministic, whole-group fault: routing, or an unknown target
+    /// table. Retrying without operator intervention will fail identically
+    /// forever. A single entry's schema/transform failure is NOT one of
+    /// these — [`crate::storage::CommitOutcome::rejected`] retires it
+    /// immediately without failing its healthy neighbours (W2).
     Permanent,
     /// Catalog, object store, or WAL-index I/O. Expected to clear once the
     /// dependency recovers.
@@ -1262,21 +1263,32 @@ impl WalProcessor {
         while fresh_iter.peek().is_some() {
             let chunk: Vec<(Uuid, RecordBatch)> =
                 fresh_iter.by_ref().take(MAX_ENTRIES_PER_COMMIT).collect();
-            let chunk_ids: Vec<Uuid> = chunk.iter().map(|(id, _)| *id).collect();
 
-            if let Err(e) = writer
+            let outcome = writer
                 .append_batches_with_marker(&wal_writer_id, chunk)
                 .await
-            {
-                let kind = match &e {
-                    CommitError::Rejected(_) => CommitFailureKind::Permanent,
-                    CommitError::Failed(_) => CommitFailureKind::Transient,
-                };
-                return Err(CommitFailure {
-                    kind,
-                    processed: processed_ids,
-                    source: anyhow::Error::new(e),
-                });
+                .map_err(|e| CommitFailure {
+                    kind: CommitFailureKind::Transient,
+                    processed: processed_ids.clone(),
+                    source: e,
+                })?;
+
+            // Retire rejected entries immediately: a schema/transform
+            // failure is deterministic (a property of that entry's bytes),
+            // so retrying will never change the outcome. It must not count
+            // toward its own dead-lettering budget, and it must not drag
+            // `outcome.committed`'s healthy neighbours down with it (W2) —
+            // they already landed in the same Iceberg commit below.
+            for (entry_id, cause) in outcome.rejected {
+                if let Err(e) = wal.dead_letter_rejected(entry_id, &cause.to_string()).await {
+                    tracing::error!(
+                        entry_id = %entry_id,
+                        tenant_id = %tenant_id,
+                        table_name = %table_name,
+                        error = %e,
+                        "Failed to dead-letter a rejected WAL entry; it will be retried"
+                    );
+                }
             }
 
             // One batch call per committed chunk: the WAL persists each
@@ -1284,15 +1296,15 @@ impl WalProcessor {
             // fsyncing it per entry (issue #943). On failure the entries
             // stay unprocessed but their ids are in the marker, so the
             // next tick re-marks instead of re-inserting. The commit above
-            // already landed, so `chunk_ids` are safe regardless of this
-            // outcome.
-            processed_ids.extend(chunk_ids.iter().copied());
-            wal.mark_processed_many(&chunk_ids)
+            // already landed, so `outcome.committed` is safe regardless of
+            // this outcome.
+            processed_ids.extend(outcome.committed.iter().copied());
+            wal.mark_processed_many(&outcome.committed)
                 .await
                 .with_context(|| {
                     format!(
                         "Failed to mark {} WAL entries as processed after commit",
-                        chunk_ids.len()
+                        outcome.committed.len()
                     )
                 })
                 .map_err(|e| CommitFailure {
@@ -2143,6 +2155,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn poison_entry_is_retired_immediately_and_healthy_neighbours_commit_same_cycle() {
+        // W2: a group's commit used to be all-or-nothing at the schema/
+        // transform step -- one poison entry aborted `append_batches_with_
+        // marker` via `?`, taking every healthy same-cycle neighbour down
+        // with it (and, per W1, counting them all toward their own
+        // dead-lettering budget too). Preparing each entry independently
+        // means the poison entry is retired on sight, in the very same
+        // cycle its healthy neighbours commit.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+
+        let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
+        let good_before = wal
+            .append(
+                WalOperation::WriteMetrics,
+                metrics_gauge_bytes(1),
+                meta.clone(),
+            )
+            .await
+            .unwrap();
+        let victim = wal
+            .append(
+                WalOperation::WriteMetrics,
+                schema_mismatched_bytes(),
+                meta.clone(),
+            )
+            .await
+            .unwrap();
+        let good_after = wal
+            .append(WalOperation::WriteMetrics, metrics_gauge_bytes(2), meta)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let mut processor = WalProcessor::new(
+            manager_for(&wal).await,
+            catalog_manager.clone(),
+            object_store.clone(),
+        );
+        processor
+            .process_pending_entries()
+            .await
+            .expect("a poison entry must not abort the cycle");
+
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "the poison entry and both healthy neighbours must all be processed in one cycle"
+        );
+
+        let dead_letter = temp_dir.path().join("dead-letter");
+        assert!(
+            dead_letter
+                .join(format!("{}.bin", victim.simple()))
+                .exists(),
+            "the poison entry's payload must be preserved"
+        );
+        assert!(
+            dead_letter
+                .join(format!("{}.rejected.json", victim.simple()))
+                .exists(),
+            "the poison entry's rejection reason must be recorded"
+        );
+        for good in [good_before, good_after] {
+            assert!(
+                !dead_letter.join(format!("{}.bin", good.simple())).exists(),
+                "healthy neighbours must not be dead-lettered"
+            );
+        }
+
+        let mut writer = IcebergTableWriter::new(
+            &catalog_manager,
+            object_store,
+            "acme".to_string(),
+            "production".to_string(),
+            "metrics_gauge".to_string(),
+        )
+        .await
+        .unwrap();
+        let committed = writer.load_committed_marker(wal.writer_id()).await.unwrap();
+        assert!(
+            committed.contains(&good_before),
+            "the first healthy neighbour must be recorded in the Iceberg idempotency marker"
+        );
+        assert!(
+            committed.contains(&good_after),
+            "the second healthy neighbour must be recorded in the Iceberg idempotency marker"
+        );
+        assert!(
+            !committed.contains(&victim),
+            "the poison entry must never be recorded in the Iceberg idempotency marker"
+        );
+    }
+
+    #[tokio::test]
     async fn system_tenant_wal_processing_is_suppressed_from_otel_export() {
         // Regression test for issue #760: the background WAL-processing
         // loop must not emit log records that pass the OTel export filter
@@ -2524,6 +2636,11 @@ mod tests {
 
     #[tokio::test]
     async fn force_commit_reports_error_when_a_group_fails_to_commit() {
+        // Post-W2, a schema-mismatched entry no longer fails the group commit
+        // (it is rejected and retired immediately, see the poison-entry tests
+        // below) — this test now exercises a genuine group-level failure via
+        // the fault injector, which force-commit must still surface rather
+        // than silently swallow.
         let temp_dir = tempdir().unwrap();
         let wal = Arc::new(
             Wal::new(coalescing_wal_config(temp_dir.path()))
@@ -2534,12 +2651,13 @@ mod tests {
         let object_store = Arc::new(InMemory::new());
         let mut processor =
             WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        processor
+            .inject_commit_failure(Some(CommitFailureKind::Transient))
+            .await;
 
-        // Routes to metrics_gauge but the batch schema does not match, so the
-        // commit fails. A read-your-writes drain must not report success.
         wal.append(
             WalOperation::WriteMetrics,
-            schema_mismatched_bytes(),
+            metrics_gauge_bytes(3),
             Some(r#"{"target_table":"metrics_gauge"}"#.to_string()),
         )
         .await
@@ -2565,6 +2683,54 @@ mod tests {
 
     #[tokio::test]
     async fn flush_marker_is_retained_when_forced_drain_fails() {
+        // Post-W2 counterpart of the test above: a genuine group-level
+        // failure (injected) must still block the Flush marker's retirement.
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(coalescing_wal_config(temp_dir.path()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let mut processor =
+            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        processor
+            .inject_commit_failure(Some(CommitFailureKind::Transient))
+            .await;
+
+        wal.append(
+            WalOperation::WriteMetrics,
+            metrics_gauge_bytes(3),
+            Some(r#"{"target_table":"metrics_gauge"}"#.to_string()),
+        )
+        .await
+        .unwrap();
+        wal.append(WalOperation::Flush, Vec::new(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        // The group fails transiently, so the forced drain (triggered by the
+        // marker) returns an error and the Flush marker must not retire — the
+        // drain it requested did not complete.
+        assert!(processor.process_pending_entries().await.is_err());
+        let unprocessed = wal.get_unprocessed_entries().await.unwrap();
+        assert!(
+            unprocessed
+                .iter()
+                .any(|e| matches!(e.operation, WalOperation::Flush)),
+            "Flush marker must be retained when its forced drain fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn forced_drain_succeeds_and_retires_flush_marker_despite_a_poison_entry() {
+        // W2: a schema-mismatched entry is rejected during prepare, not
+        // treated as a whole-group commit failure. A forced drain (flush)
+        // whose only pending entry is poison must therefore succeed and
+        // retire the Flush marker — there is nothing left uncommitted once
+        // the poison entry is retired.
         let temp_dir = tempdir().unwrap();
         let wal = Arc::new(
             Wal::new(coalescing_wal_config(temp_dir.path()))
@@ -2588,16 +2754,14 @@ mod tests {
             .unwrap();
         wal.flush().await.unwrap();
 
-        // The bad group fails, so the forced drain (triggered by the marker)
-        // returns an error and the Flush marker must not retire — the drain it
-        // requested did not complete.
-        assert!(processor.process_pending_entries().await.is_err());
-        let unprocessed = wal.get_unprocessed_entries().await.unwrap();
+        processor.process_pending_entries().await.expect(
+            "a poison entry must not fail a forced drain -- it is retired immediately, \
+             not left blocking",
+        );
+
         assert!(
-            unprocessed
-                .iter()
-                .any(|e| matches!(e.operation, WalOperation::Flush)),
-            "Flush marker must be retained when its forced drain fails"
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "the poison entry and the Flush marker must both be retired"
         );
     }
 
