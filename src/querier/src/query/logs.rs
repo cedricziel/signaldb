@@ -1757,8 +1757,18 @@ mod tests {
 
     #[tokio::test]
     async fn sum_by_materialized_label_groups_on_its_column() {
-        let service = service_with_materialized_labels();
-        // label_namespace: prod, prod, staging → two groups (2 rows, 1 row).
+        // Old path (switch off, default): the group column is physically
+        // named after the promoted column (`label_namespace`) — a storage
+        // detail. New path (`logql_via_ir`): the group column is named
+        // after the logical field the query actually wrote (`namespace`).
+        // Only the *internal* name differs; the router's `batches_to_matrix`
+        // strips a `label_` prefix from every group column it presents as a
+        // label (`src/router/src/endpoints/logql.rs`), so both paths
+        // present the same `namespace` label to the client either way —
+        // this test asserts on the logical name the IR path already uses
+        // natively, matching what a client sees.
+        let service = service_with_materialized_labels().with_logql_via_ir(true);
+        // namespace: prod, prod, staging → two groups (2 rows, 1 row).
         let batches = service
             .query_metric(
                 &metric_params(
@@ -1772,7 +1782,7 @@ mod tests {
             .expect("grouped metric query");
         let mut groups: Vec<(String, f64)> = Vec::new();
         for batch in &batches {
-            let ns = string_column(batch, "label_namespace").expect("group column");
+            let ns = string_column(batch, "namespace").expect("group column");
             let value = batch
                 .column_by_name("value")
                 .unwrap()
@@ -1788,8 +1798,19 @@ mod tests {
             groups,
             vec![("prod".to_string(), 2.0), ("staging".to_string(), 1.0)]
         );
+    }
 
-        // A label with no column still can't be grouped.
+    /// The old path (switch off, default) refuses to group by a label with
+    /// no backing column at all (`nope`, present on no row). Left on the old
+    /// path deliberately: the IR path resolves any name as an unpromoted
+    /// attribute (empty/absent here, so every row groups under one `null`
+    /// label) rather than refusing it outright — a separate, independent
+    /// finding this test does not cover; only the label-naming shape
+    /// (`sum_by_materialized_label_groups_on_its_column`, above) was in
+    /// scope here.
+    #[tokio::test]
+    async fn sum_by_unmaterialized_label_is_unsupported_on_the_old_path() {
+        let service = service_with_materialized_labels();
         assert!(matches!(
             service
                 .query_metric(
