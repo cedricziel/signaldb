@@ -161,7 +161,7 @@
       silently absorbed it.
       (Resolved via **attribute resolution**, not the physical-column
       fallback the brief's option (a) was first read as: LogQL `unwrap
-  <label>` names an _attribute_ field (container-coalesced, cast to
+<label>` names an _attribute_ field (container-coalesced, cast to
       float at plan time) — it never named a physical column even on the
       old path, whose `unwrap_value`/`column_for_label` (`logs.rs`) is a
       bare `col(label)` reference with zero type or registration checking,
@@ -178,7 +178,7 @@
       coercing to a number at plan time with a non-numeric value going
       absent, while a _registered_ String column stays rejected. Landed as
       its own PR ahead of this one (`fix(query-ir): accept an attribute as
-  a numeric aggregate operand`, #1403) since it's a real product bug
+a numeric aggregate operand`, #1403) since it's a real product bug
       independent of this change. Option (b) — `ql_ir::logql_lower`
       refusing an unresolvable `unwrap` as `Inexpressible` — stays
       available for a target that resolves to nothing at all (no
@@ -211,19 +211,61 @@ lowering`.)
       querier crate root — was actually dead code. Deleted, along with the
       `lib.rs` re-export; its tests switched to calling
       `log_query_filter_with_columns` directly.)
-- [ ] 5.3 Remove both switches and their config keys (D3 — a rollout switch
-      that outlives its rollout is a second untested path). (Partially done:
-      `TraceService`'s switch and its `flight.rs` wiring were removed in 5.1
-      out of compilation necessity; `QuerierConfig::trace_search_via_ir`/
-      `logql_via_ir`, `signaldb.dist.toml`, the configuration/tempo-api
-      skills, and collapsing the `_via_ir` integration test twins remain.)
-- [ ] 5.4 Confirm the harness still passes against the remaining fallback path,
+- [x] 5.3 Remove both switches and their config keys (D3 — a rollout switch
+      that outlives its rollout is a second untested path).
+      (`QuerierConfig::trace_search_via_ir`/`logql_via_ir` deleted along
+      with `LogsService`'s own switch field/setter; `signaldb.dist.toml`'s
+      two commented-out entries removed; the `_via_ir` integration test
+      twins in `logql_queries.rs`/`router_tempo_endpoints.rs` collapsed
+      into their single unconditional test each (`setup_with_logql_via_ir`/
+      `setup_test_services_with_trace_search_via_ir` lost their `bool`
+      parameter and became plain `setup`/`setup_test_services`).
+      `logql_via_ir`-conditioned test call sites in `logs.rs` (`.with_logql_via_ir(true)`)
+      dropped along with the comments describing an "old path"/"new path"
+      split that no longer exists. Configuration/tempo-api skills done in
+      6.1–6.4.
+      **New finding surfaced by making IR routing unconditional**: two
+      `logs.rs` tests (`sum_by_unmaterialized_label_is_unsupported_on_the_old_path`,
+      `planning_failure_on_an_existing_table_still_errors`) pinned the old
+      LogQL metric path's behavior for grouping by a label with no backing
+      column at all — it rejected the query outright. The IR path resolves
+      any such name as an unpromoted attribute instead (never erroring at
+      plan time), so the query now succeeds with every row grouped under
+      one null label. Not a D5 fallback-set case (`ql_ir` accepts and
+      lowers this query fine, so there's no old code kept reachable for
+      something the IR refuses) — a genuine behavior difference in an
+      _accepted_ query, and worse for a LogQL client than the old
+      behavior: the native Query IR endpoint has an `unknown_group_by_field`
+      warning for exactly this shape (`router/src/endpoints/query.rs`), but
+      that machinery doesn't run on the LogQL-compat router path, so a
+      client goes from a clear rejection to a silently null-labeled series
+      with no signal anything was wrong. Filed as
+      [#1405](https://github.com/cedricziel/signaldb/issues/1405); the two
+      tests were rewritten to pin the new (accepted, single-path) behavior
+      — `sum_by_an_unknown_label_groups_everything_under_one_null_label` and
+      `sum_by_a_nonexistent_attribute_groups_everything_under_one_null_label`
+      — rather than asserting a rejection that no longer happens.)
+- [x] 5.4 Confirm the harness still passes against the remaining fallback path,
       then decide whether to keep it as a permanent regression test or retire
       it with the code it compared. Say which, and why, in the PR.
       (Trace half done in 5.1: `differential.rs` keeps its name — a
       permanent regression suite, and still a real differential for the
-      LogQL D5 fallback set until a future change closes that gap. Logs half
-      pending 5.2.)
+      LogQL D5 fallback set until a future change closes that gap. Logs
+      half: `logql_metric_corpus_row_level_equivalence` converted from an
+      old-vs-new comparison to a row-level regression pin
+      (`LOGQL_METRIC_CORPUS_ROWS`) against the IR path alone — there is no
+      old path left to compare for any of `LOGQL_METRIC_CORPUS`'s queries,
+      all `Accept`. `KNOWN_GROUPING_DIVERGENCE_LOGQL_METRIC`/
+      `SKIPPED_LOGQL_METRIC_UNWRAP_GROUPED` — skip-lists for
+      `unwrap duration` queries that used to diverge because the harness
+      fixture carried `duration` as a physical column the old path could
+      address bare but the IR path's physical-addressing guard rejected —
+      deleted along with that fixture shape (5.0's fix moved `duration` to
+      an attribute; all four previously-skipped queries now have pinned
+      rows like every other corpus entry). Kept as a permanent regression
+      suite for the same reason as the trace half: `logql.rs`'s remaining
+      D5 fallback set (`quantile_over_time`, etc.) is real, ongoing
+      coverage, not a comparison against code this change deletes.)
 
 ## 6. Docs and skills
 

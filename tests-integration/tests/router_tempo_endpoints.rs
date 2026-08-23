@@ -45,16 +45,8 @@ struct TestServices {
     pub _minio: Option<MinioTestContext>,
 }
 
-/// Set up complete test infrastructure with all services, on the default
-/// (old) trace-search lowering.
+/// Set up complete test infrastructure with all services.
 async fn setup_test_services() -> TestServices {
-    setup_test_services_with_trace_search_via_ir(false).await
-}
-
-/// Like [`setup_test_services`], with the `ir-single-lowering` rollout
-/// switch (`ir-single-lowering`, design D3) set explicitly — lets a test
-/// exercise the same endpoint through both trace-search lowerings.
-async fn setup_test_services_with_trace_search_via_ir(trace_search_via_ir: bool) -> TestServices {
     let temp_dir = TempDir::new().unwrap();
 
     // Use filesystem storage for now due to iceberg-rust S3 URL bug
@@ -201,10 +193,7 @@ async fn setup_test_services_with_trace_search_via_ir(trace_search_via_ir: bool)
     let querier_service = QuerierFlightService::new_with_catalog_manager(
         flight_transport.clone(),
         catalog_manager,
-        common::config::QuerierConfig {
-            trace_search_via_ir,
-            ..common::config::QuerierConfig::default()
-        },
+        common::config::QuerierConfig::default(),
     )
     .await
     .map_err(|e| anyhow::anyhow!("Failed to create querier service: {}", e))
@@ -1951,18 +1940,14 @@ async fn test_trace_attributes_round_trip() {
 /// Search filters must actually be applied (issue #551): matching
 /// selectors return the trace, non-matching selectors return nothing,
 /// unsupported TraceQL yields 501, and malformed tags yield 400 —
-/// never silently unfiltered results.
-///
-/// Runs unmodified with the `ir-single-lowering` rollout switch (design D3)
-/// both off and on (task 3.4): [`test_search_filters_are_applied`] and
-/// [`test_search_filters_are_applied_via_ir`] are thin wrappers over this
-/// body, differing only in which lowering `setup_test_services_with_trace_search_via_ir`
-/// configures the querier with.
-async fn search_filters_are_applied_body(trace_search_via_ir: bool) {
+/// never silently unfiltered results. Trace search lowers through
+/// `ql_ir::traceql_to_ir` + the shared IR planner (`ir-single-lowering`).
+#[tokio::test]
+async fn test_search_filters_are_applied() {
     use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
     use opentelemetry_proto::tonic::resource::v1::Resource;
 
-    let services = setup_test_services_with_trace_search_via_ir(trace_search_via_ir).await;
+    let services = setup_test_services().await;
     let router_state = create_router_state(&services).await;
 
     let authenticator = router_state.authenticator().clone();
@@ -2127,11 +2112,10 @@ async fn search_filters_are_applied_body(trace_search_via_ir: bool) {
         "malformed tags must be 400"
     );
 
-    // `q` and `tags` together (task 3.4): with the switch on, task 3.3
-    // conjoins both into one IR document rather than lowering them
-    // separately, so this is the one case that exercises that combination
-    // end to end. Both narrow to the same ingested trace, so the
-    // combination must still match it.
+    // `q` and `tags` together: both conjoin into one IR document rather
+    // than lowering separately, so this exercises that combination end to
+    // end. Both narrow to the same ingested trace, so the combination must
+    // still match it.
     let search_multi = |pairs: &[(&str, &str)]| {
         let app = app.clone();
         let encoded: String = url::form_urlencoded::Serializer::new(String::new())
@@ -2187,19 +2171,4 @@ async fn search_filters_are_applied_body(trace_search_via_ir: bool) {
     );
 
     println!("✅ Search filter test completed");
-}
-
-/// [`search_filters_are_applied_body`] with the old `search_filter` TraceQL
-/// lowering (the default).
-#[tokio::test]
-async fn test_search_filters_are_applied() {
-    search_filters_are_applied_body(false).await;
-}
-
-/// [`search_filters_are_applied_body`] with the `ir-single-lowering` rollout
-/// switch on (task 3.4): the same assertions, routed through
-/// `ql_ir::traceql_to_ir` + the shared IR planner instead.
-#[tokio::test]
-async fn test_search_filters_are_applied_via_ir() {
-    search_filters_are_applied_body(true).await;
 }
