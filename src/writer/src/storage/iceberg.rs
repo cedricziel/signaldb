@@ -738,14 +738,19 @@ fn coerce_batch_to_schema(batch: RecordBatch, target: &ArrowSchemaRef) -> Result
             // parsed entries.
             json_strings_to_map_array(column, field)?
         } else {
-            datafusion::arrow::compute::cast(column, field.data_type()).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to cast column '{}' from {:?} to {:?}: {e}",
-                    field.name(),
-                    column.data_type(),
-                    field.data_type()
-                )
-            })?
+            let options = datafusion::arrow::compute::CastOptions {
+                safe: false,
+                ..Default::default()
+            };
+            datafusion::arrow::compute::cast_with_options(column, field.data_type(), &options)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to cast column '{}' from {:?} to {:?}: {e}",
+                        field.name(),
+                        column.data_type(),
+                        field.data_type()
+                    )
+                })?
         };
         columns.push(column);
     }
@@ -886,6 +891,25 @@ mod tests {
             Field::new("must_have", DataType::Utf8, false),
         ]));
         assert!(coerce_batch_to_schema(batch, &required_target).is_err());
+    }
+
+    #[test]
+    fn coerce_rejects_unrepresentable_cast_instead_of_nulling_it() {
+        // W8: a type drift (batch column vs. table column) that `cast`
+        // cannot represent must fail loudly, not silently null the row.
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("n", DataType::Utf8, true)])),
+            vec![Arc::new(StringArray::from(vec![Some("abc")]))],
+        )
+        .unwrap();
+        let target = Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, true)]));
+
+        let err = coerce_batch_to_schema(batch, &target)
+            .expect_err("a non-numeric string cast to Int64 must error, not null the row");
+        assert!(
+            err.to_string().contains("Failed to cast column 'n'"),
+            "unexpected error: {err}"
+        );
     }
 
     async fn create_test_catalog_manager() -> CatalogManager {
