@@ -79,6 +79,13 @@ pub struct AppMetrics {
     // of the fan-out and the way to tell whether it is holding.
     pub writer_commit_duration: Histogram<f64>,
 
+    // Group commit failures, by tenant and `kind` (`permanent` | `transient`).
+    // Only `permanent` counts toward an entry's dead-lettering budget; a
+    // sustained `transient` rate without a matching drop in
+    // `signaldb.wal.entries_pending` means a catalog/object-store dependency
+    // is down (W1).
+    pub writer_commit_failures: Counter<u64>,
+
     // Signal-table reconciliation: tables the writer provisioned ahead of a
     // first write, and provisioning attempts that failed. A rising failure
     // count means the deployment has degraded to create-on-first-write.
@@ -316,6 +323,13 @@ impl AppMetrics {
                 .f64_histogram("signaldb.writer.commit_duration")
                 .with_description("Duration of one writer group's Iceberg commit, by tenant")
                 .with_unit("s")
+                .build(),
+            writer_commit_failures: meter
+                .u64_counter("signaldb.writer.commit_failures")
+                .with_description(
+                    "Writer group commit failures, by tenant and kind (permanent | transient)",
+                )
+                .with_unit("{failure}")
                 .build(),
             writer_tables_provisioned: meter
                 .u64_counter("signaldb.writer.tables_provisioned")

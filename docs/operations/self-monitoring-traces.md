@@ -56,6 +56,15 @@ cycle never even decoded. Expect brief non-zero spikes right after a restart
 that recovers a large backlog; sustained non-zero means the backlog is larger
 than the budget drains per tick.
 
+A fourth: `signaldb.writer.commit_failures` (counter, `signaldb.tenant.id` and
+`kind` attributes) counts group commit attempts that did not land, split into
+`permanent` (a routing/schema fault or an unknown target table — the batch
+itself will never commit) and `transient` (a catalog/object-store/WAL-index
+outage, expected to clear on its own). Only `permanent` failures count toward
+an entry's dead-lettering budget; a sustained `transient` rate with no drop in
+`signaldb.wal.entries_pending` means a dependency is down, not that data is
+being lost — the affected entries stay pending and retry once it recovers.
+
 ## Resource identity
 
 Every service exports with:

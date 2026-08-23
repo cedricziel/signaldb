@@ -50,6 +50,27 @@ impl Default for RetryConfig {
     }
 }
 
+/// Why [`IcebergTableWriter::append_batches_with_marker`] did not commit.
+///
+/// The two are retried differently by the caller (see W1 in the writer
+/// review): a `Rejected` batch cannot be shaped into the table no matter how
+/// many times it is retried, so the caller counts it toward dead-lettering;
+/// a `Failed` commit is a catalog/object-store/I/O problem expected to clear
+/// once the dependency recovers, so it must never count toward
+/// dead-lettering — an outage would otherwise dead-letter every pending
+/// entry.
+#[derive(Debug, thiserror::Error)]
+pub enum CommitError {
+    /// The batch could not be shaped into the table's schema — a transform
+    /// or coercion failure. Retrying without operator intervention will
+    /// fail identically forever.
+    #[error(transparent)]
+    Rejected(anyhow::Error),
+    /// Catalog, object store, or other I/O failed.
+    #[error(transparent)]
+    Failed(anyhow::Error),
+}
+
 /// Writes signal batches to an Iceberg table.
 ///
 /// The only write entry point is [`Self::append_batches_with_marker`],
@@ -412,6 +433,13 @@ impl IcebergTableWriter {
     /// (ambiguous failure), and the sql catalog can lose a CAS silently.
     /// After every attempt the table is reloaded and the marker checked —
     /// only the marker decides success, so retries can never double-append.
+    ///
+    /// Returns [`CommitError::Rejected`] for a batch that cannot be shaped
+    /// into the table (retrying is pointless without operator
+    /// intervention) and [`CommitError::Failed`] for everything else
+    /// (catalog/object-store I/O, expected to clear once the dependency
+    /// recovers) — the caller classifies dead-lettering eligibility on
+    /// that distinction (W1).
     #[tracing::instrument(
         skip_all,
         fields(
@@ -424,7 +452,7 @@ impl IcebergTableWriter {
         &mut self,
         wal_writer_id: &str,
         entries: Vec<(uuid::Uuid, RecordBatch)>,
-    ) -> Result<()> {
+    ) -> Result<(), CommitError> {
         let (ids, batches): (Vec<uuid::Uuid>, Vec<RecordBatch>) = entries.into_iter().unzip();
 
         // The Parquet writer requires batches in the table's exact Arrow
@@ -433,11 +461,17 @@ impl IcebergTableWriter {
         let target_schema: ArrowSchemaRef = Arc::new(
             self.table
                 .current_schema()
-                .map_err(|e| anyhow::anyhow!("Failed to get current Iceberg schema: {e}"))?
+                .map_err(|e| {
+                    CommitError::Failed(anyhow::anyhow!(
+                        "Failed to get current Iceberg schema: {e}"
+                    ))
+                })?
                 .fields()
                 .try_into()
                 .map_err(|e: iceberg_rust::spec::error::Error| {
-                    anyhow::anyhow!("Failed to convert Iceberg schema to Arrow: {e}")
+                    CommitError::Failed(anyhow::anyhow!(
+                        "Failed to convert Iceberg schema to Arrow: {e}"
+                    ))
                 })?,
         );
 
@@ -446,8 +480,12 @@ impl IcebergTableWriter {
             if batch.num_rows() == 0 {
                 continue;
             }
-            let batch = self.apply_schema_transformation_if_needed(batch)?;
-            transformed.push(coerce_batch_to_schema(batch, &target_schema)?);
+            let batch = self
+                .apply_schema_transformation_if_needed(batch)
+                .map_err(CommitError::Rejected)?;
+            transformed.push(
+                coerce_batch_to_schema(batch, &target_schema).map_err(CommitError::Rejected)?,
+            );
         }
         if transformed.is_empty() {
             // Nothing to append: the ids can be marked processed without
@@ -465,15 +503,15 @@ impl IcebergTableWriter {
             write_parquet_partitioned(&self.table, stream, None).await
         };
         let files = write.map_err(|e| {
-            anyhow::anyhow!(
+            CommitError::Failed(anyhow::anyhow!(
                 "Failed to write Parquet files for Iceberg table {}: {e}",
                 self.table.identifier()
-            )
+            ))
         })?;
         if files.is_empty() {
-            return Err(anyhow::anyhow!(
+            return Err(CommitError::Failed(anyhow::anyhow!(
                 "write_parquet_partitioned produced no data files for {total_rows} rows"
-            ));
+            )));
         }
 
         let marker_key = wal_marker_key(wal_writer_id);
@@ -494,7 +532,7 @@ impl IcebergTableWriter {
 
             // The catalog is the source of truth for whether the commit
             // landed, regardless of what commit() returned.
-            self.reload_table().await?;
+            self.reload_table().await.map_err(CommitError::Failed)?;
             if self.read_marker(wal_writer_id) == id_set {
                 if let Err(e) = commit_result {
                     tracing::warn!(
@@ -520,11 +558,11 @@ impl IcebergTableWriter {
                 Err(e) => anyhow::anyhow!("Iceberg commit failed: {e}"),
             };
             if attempt >= self.retry_config.max_attempts {
-                return Err(error.context(format!(
+                return Err(CommitError::Failed(error.context(format!(
                     "Failed to commit {} entries to Iceberg table {} after {attempt} attempts",
                     id_set.len(),
                     self.table.identifier()
-                )));
+                ))));
             }
             tracing::warn!(
                 "Commit attempt {attempt} for Iceberg table {} did not land: {error}. \
