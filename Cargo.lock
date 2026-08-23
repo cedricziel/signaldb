@@ -9230,7 +9230,6 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
- "async-trait",
  "bytes",
  "chrono",
  "clap",
