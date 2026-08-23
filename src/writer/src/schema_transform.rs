@@ -3167,6 +3167,21 @@ mod schema_consistency {
         );
     }
 
+    /// The "touched" set for a metrics transform, straight from its own
+    /// `create_metrics_*_arrow_schema()` rather than a hand-typed list --
+    /// the schema literal and the test can no longer drift apart. `date_day`
+    /// and `hour` are computed (see the module doc comment above), so they
+    /// carry no `schemas.toml` entry and are excluded here the same way the
+    /// traces/logs/profiles lists already exclude their computed fields.
+    fn metrics_arrow_touched_fields(schema: &Schema) -> Vec<&str> {
+        schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .filter(|name| *name != "date_day" && *name != "hour")
+            .collect()
+    }
+
     #[test]
     fn traces_transform_covers_every_non_computed_physical_v3_field() {
         let resolved = SCHEMA_DEFINITIONS
@@ -3270,29 +3285,9 @@ mod schema_consistency {
         let resolved = SCHEMA_DEFINITIONS
             .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v1")
             .unwrap();
-        assert_covers_non_computed_fields(
-            "metrics_gauge",
-            &resolved,
-            &[
-                "timestamp",
-                "start_timestamp",
-                "service_name",
-                "metric_name",
-                "metric_description",
-                "metric_unit",
-                "value",
-                "flags",
-                "resource_schema_url",
-                "resource_attributes",
-                "scope_name",
-                "scope_version",
-                "scope_schema_url",
-                "scope_attributes",
-                "scope_dropped_attr_count",
-                "attributes",
-                "exemplars",
-            ],
-        );
+        let schema = create_metrics_gauge_arrow_schema();
+        let touched = metrics_arrow_touched_fields(&schema);
+        assert_covers_non_computed_fields("metrics_gauge", &resolved, &touched);
     }
 
     #[test]
@@ -3300,31 +3295,9 @@ mod schema_consistency {
         let resolved = SCHEMA_DEFINITIONS
             .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, "physical-v1")
             .unwrap();
-        assert_covers_non_computed_fields(
-            "metrics_sum",
-            &resolved,
-            &[
-                "timestamp",
-                "start_timestamp",
-                "service_name",
-                "metric_name",
-                "metric_description",
-                "metric_unit",
-                "value",
-                "flags",
-                "aggregation_temporality",
-                "is_monotonic",
-                "resource_schema_url",
-                "resource_attributes",
-                "scope_name",
-                "scope_version",
-                "scope_schema_url",
-                "scope_attributes",
-                "scope_dropped_attr_count",
-                "attributes",
-                "exemplars",
-            ],
-        );
+        let schema = create_metrics_sum_arrow_schema();
+        let touched = metrics_arrow_touched_fields(&schema);
+        assert_covers_non_computed_fields("metrics_sum", &resolved, &touched);
     }
 
     #[test]
@@ -3332,35 +3305,9 @@ mod schema_consistency {
         let resolved = SCHEMA_DEFINITIONS
             .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_histogram, "physical-v1")
             .unwrap();
-        assert_covers_non_computed_fields(
-            "metrics_histogram",
-            &resolved,
-            &[
-                "timestamp",
-                "start_timestamp",
-                "service_name",
-                "metric_name",
-                "metric_description",
-                "metric_unit",
-                "count",
-                "sum",
-                "min",
-                "max",
-                "bucket_counts",
-                "explicit_bounds",
-                "flags",
-                "aggregation_temporality",
-                "resource_schema_url",
-                "resource_attributes",
-                "scope_name",
-                "scope_version",
-                "scope_schema_url",
-                "scope_attributes",
-                "scope_dropped_attr_count",
-                "attributes",
-                "exemplars",
-            ],
-        );
+        let schema = create_metrics_histogram_arrow_schema();
+        let touched = metrics_arrow_touched_fields(&schema);
+        assert_covers_non_computed_fields("metrics_histogram", &resolved, &touched);
     }
 
     #[test]
@@ -3371,40 +3318,9 @@ mod schema_consistency {
                 "physical-v1",
             )
             .unwrap();
-        assert_covers_non_computed_fields(
-            "metrics_exponential_histogram",
-            &resolved,
-            &[
-                "timestamp",
-                "start_timestamp",
-                "service_name",
-                "metric_name",
-                "metric_description",
-                "metric_unit",
-                "count",
-                "sum",
-                "min",
-                "max",
-                "scale",
-                "zero_count",
-                "positive_offset",
-                "positive_bucket_counts",
-                "negative_offset",
-                "negative_bucket_counts",
-                "flags",
-                "aggregation_temporality",
-                "zero_threshold",
-                "resource_schema_url",
-                "resource_attributes",
-                "scope_name",
-                "scope_version",
-                "scope_schema_url",
-                "scope_attributes",
-                "scope_dropped_attr_count",
-                "attributes",
-                "exemplars",
-            ],
-        );
+        let schema = create_metrics_exponential_histogram_arrow_schema();
+        let touched = metrics_arrow_touched_fields(&schema);
+        assert_covers_non_computed_fields("metrics_exponential_histogram", &resolved, &touched);
     }
 
     #[test]
@@ -3412,30 +3328,28 @@ mod schema_consistency {
         let resolved = SCHEMA_DEFINITIONS
             .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_summary, "physical-v1")
             .unwrap();
-        assert_covers_non_computed_fields(
-            "metrics_summary",
-            &resolved,
-            &[
-                "timestamp",
-                "start_timestamp",
-                "service_name",
-                "metric_name",
-                "metric_description",
-                "metric_unit",
-                "count",
-                "sum",
-                "quantile_values",
-                "flags",
-                "resource_schema_url",
-                "resource_attributes",
-                "scope_name",
-                "scope_version",
-                "scope_schema_url",
-                "scope_attributes",
-                "scope_dropped_attr_count",
-                "attributes",
-                "exemplars",
-            ],
-        );
+        let schema = create_metrics_summary_arrow_schema();
+        let touched = metrics_arrow_touched_fields(&schema);
+        assert_covers_non_computed_fields("metrics_summary", &resolved, &touched);
+    }
+
+    #[test]
+    #[should_panic(expected = "diverged")]
+    fn metrics_gauge_transform_flags_an_arrow_field_missing_from_schemas_toml() {
+        // Simulate a column added to create_metrics_gauge_arrow_schema()
+        // without a matching schemas.toml entry -- the scenario this
+        // derivation exists to catch.
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v1")
+            .unwrap();
+        let mut fields: Vec<Field> = create_metrics_gauge_arrow_schema()
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        fields.push(Field::new("undeclared_field", DataType::Utf8, true));
+        let drifted = Schema::new(fields);
+        let touched = metrics_arrow_touched_fields(&drifted);
+        assert_covers_non_computed_fields("metrics_gauge", &resolved, &touched);
     }
 }
