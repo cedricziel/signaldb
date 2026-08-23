@@ -34,8 +34,8 @@ it targets the query IR instead. `ql-ir` (`src/ql-ir/`) lowers a parsed
 LogQL/TraceQL query onto a `query-ir` document — still no Arrow, no
 DataFusion, no tenant/catalog access, just a structured description of the
 query — and the querier's single planner
-(`querier/src/query/ir_planner.rs::plan_document`) does the rest, the same
-planner the native `POST /api/v1/query` surface uses. `querier/src/query/{logql,logql_metric,search_filter}.rs`
+(`src/querier/src/query/ir_planner.rs::plan_document`) does the rest, the same
+planner the native `POST /api/v1/query` surface uses. `src/querier/src/query/{logql,logql_metric,search_filter}.rs`
 now hold only what the IR still can't express (LogQL constructs `ql_ir`
 refuses as `Inexpressible`) and response assembly; `search_filter.rs` in
 particular is down to parsing Tempo's `tags` HTTP parameter, no lowering at
