@@ -318,7 +318,11 @@ impl SourcePlan {
 /// full raw schema unchanged — `SchemaResolver`'s promoted-attribute
 /// discovery depends on seeing every column the table actually has, not
 /// just `row_defaults` — so the projection-then-union step only runs when
-/// there's more than one table to reconcile onto a common schema.
+/// there's more than one table to reconcile onto a common schema. Its own
+/// scan still runs through [`coerce_legacy_containers`], so a legacy
+/// Utf8-JSON attribute container (a table created before the Map-typed
+/// migration) presents as a typed map the same way a *union* branch's would
+/// (#1206) — same column set and order, only a container's type changes.
 async fn scan_source_tables(
     ctx: &SessionContext,
     tenant_slug: &str,
@@ -337,6 +341,7 @@ async fn scan_source_tables(
         0 => Ok(None),
         1 => {
             let (table_ref, provider) = providers.remove(0);
+            let provider = coerce_legacy_containers(provider, source)?;
             Ok(Some(scan_provider(ctx, table_ref, provider)?))
         }
         _ => {
@@ -401,13 +406,87 @@ fn union_target_types(
         .collect()
 }
 
-/// A [`TableProvider`] that presents `inner` as exactly the union's common
-/// columns: the requested column list, in that order, with any column coerced
-/// to the union's target type — a legacy JSON-string attribute container
-/// becomes a typed `Map<Utf8,Utf8>` (via [`JsonToMapUdf`]), anything else is
-/// cast.
+/// The canonical `Map<Utf8,Utf8>` shape a legacy JSON-string container
+/// coerces up to when there is no *other* table's own map type to borrow
+/// (unlike [`union_target_types`], which prefers whichever real table
+/// already stores the column as a map — a single-table source has no such
+/// reference). `JsonToMapUdf::invoke_with_args` derives its `MapBuilder`'s
+/// key/value field names from whatever `DataType::Map` it is given, so this
+/// shape is a free choice, not a contract with any other table's schema.
+fn utf8_map_type() -> DataType {
+    let entries = Field::new(
+        "entries",
+        DataType::Struct(
+            vec![
+                Field::new("keys", DataType::Utf8, false),
+                Field::new("values", DataType::Utf8, true),
+            ]
+            .into(),
+        ),
+        false,
+    );
+    DataType::Map(Arc::new(entries), false)
+}
+
+/// Coerce a single-table source's legacy JSON-string attribute containers
+/// (`source.containers`) up to a typed `Map<Utf8,Utf8>`, so `Lowering::attr_expr`'s
+/// `get_field` works uniformly regardless of which schema generation wrote
+/// the table. A table created before the Map-typed-attribute migration
+/// stores `log_attributes`/`span_attributes`/etc. as a flat JSON string —
+/// real, currently-reachable data (`schemas.toml`'s physical-v1/v2 history;
+/// Iceberg never rewrites already-written files) — and `get_field` on a
+/// `Utf8` column is a hard DataFusion execution error, never a graceful
+/// IR-level rejection, since the document itself is perfectly valid.
 ///
-/// Presenting the *shape*, not just the types, is what makes a multi-table
+/// Reuses [`CoercedTableProvider`]/[`JsonToMapUdf`], the same machinery
+/// [`scan_source_tables`]'s union branch already applies across several
+/// tables (#1206) — here there is exactly one table, so `wrap` is given its
+/// own full column list (order and count unchanged, per this function's
+/// caller's doc comment) rather than the union's `row_defaults` subset.
+/// Every operator (`eq`, `ne`, `regex`, `contains`, `exists`, Kleene
+/// absent-key semantics) works the same as it does against a genuinely
+/// typed table, strictly better than the old per-language lowerings'
+/// substring-match approximation for this same legacy shape. Pushdown on
+/// the coerced column is disabled by the same `supports_filters_pushdown`
+/// guard the union path already has — acceptable for the legacy tables this
+/// reaches, which have no bloom-filtered `attr_tokens` column to prune on
+/// either way.
+fn coerce_legacy_containers(
+    provider: Arc<dyn TableProvider>,
+    source: &SourcePlan,
+) -> Result<Arc<dyn TableProvider>, QuerierError> {
+    let fields = provider.schema().fields().clone();
+    let columns: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
+    let targets: Vec<Option<DataType>> = fields
+        .iter()
+        .map(|f| {
+            let is_legacy_container =
+                source.containers.contains(&f.name().as_str()) && is_utf8_variant(f.data_type());
+            is_legacy_container.then(utf8_map_type)
+        })
+        .collect();
+    CoercedTableProvider::wrap(provider, &columns, &targets)
+}
+
+/// Whether `dt` is one of Arrow's three UTF-8 string representations — the
+/// legacy shape a not-yet-migrated attribute container physically has,
+/// checked here and by [`CoercedTableProvider::scan`]'s own cast-vs-UDF
+/// choice.
+fn is_utf8_variant(dt: &DataType) -> bool {
+    matches!(
+        dt,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+    )
+}
+
+/// A [`TableProvider`] that presents `inner` as an explicit column list, in
+/// that order, with any column coerced to an explicit target type — a legacy
+/// JSON-string attribute container becomes a typed `Map<Utf8,Utf8>` (via
+/// [`JsonToMapUdf`]), anything else is cast. Two callers pick that column
+/// list and those targets differently; see `wrap`'s doc comment.
+///
+/// For the union caller (`scan_source_tables`'s multi-table branch):
+/// presenting the *shape*, not just the types, is what makes a multi-table
 /// source safe to union. The tables of one source disagree on column order and
 /// count as well as on type — `metrics_sum` carries `aggregation_temporality`
 /// and `is_monotonic` in the middle, so every column after them sits at a
@@ -428,12 +507,19 @@ fn union_target_types(
 /// optimizer rewrite can misalign them. Coercing types alone (#1206) was the
 /// same idea one step short of this.
 ///
+/// For the single-table caller (`coerce_legacy_containers`): there is no
+/// sibling branch to align with, so this instead closes the gap between what
+/// `Lowering::attr_expr` assumes (every attribute container is a typed map)
+/// and what a table written before the Map migration actually has on disk.
+///
 /// Filters that only touch un-coerced columns are still offered to the inner
 /// provider, so time-range and partition pruning survive.
 #[derive(Debug)]
 struct CoercedTableProvider {
     inner: Arc<dyn TableProvider>,
-    /// The columns this provider presents: the union's common list, in order.
+    /// The columns this provider presents, in order — the caller's explicit
+    /// list (the union's common columns, or a single table's own full column
+    /// list; see `wrap`'s doc comment).
     schema: SchemaRef,
     /// Our column index → the inner schema's index for the same column.
     inner_index: Vec<usize>,
@@ -442,15 +528,23 @@ struct CoercedTableProvider {
 }
 
 impl CoercedTableProvider {
-    /// Present `inner` as `columns`, coerced to `targets`.
+    /// Present `inner` as `columns`, coerced to `targets`. Two callers:
+    /// `scan_source_tables`'s union branch, with `columns` the union's
+    /// `row_defaults` subset (needed so every branch's `TableScan` has an
+    /// identical schema); and its single-table branch via
+    /// `coerce_legacy_containers`, with `columns` the provider's own full
+    /// column list (`row_defaults` would silently narrow the scan a
+    /// single-table source is documented to keep unnarrowed) and only the
+    /// legacy containers actually present in `targets`.
     ///
     /// Returns `inner` untouched only when it already *is* that schema: same
-    /// columns, same order, same types. In practice no real table matches —
-    /// `row_defaults` is a strict subset of a physical schema, which also
-    /// carries `date_day`/`hour` and the rest — so this is an identity check
-    /// rather than an optimization for any known caller. (A single-table
-    /// source never reaches here at all: `scan_source_tables` returns before
-    /// the union branch.)
+    /// columns, same order, same types. For the union caller, in practice no
+    /// real table matches — `row_defaults` is a strict subset of a physical
+    /// schema, which also carries `date_day`/`hour` and the rest — so this
+    /// is an identity check rather than an optimization for any known
+    /// caller there; for the single-table caller, this *is* the common,
+    /// optimizing case — a table already storing every container as a
+    /// typed map returns unwrapped.
     fn wrap(
         inner: Arc<dyn TableProvider>,
         columns: &[&str],
@@ -462,13 +556,15 @@ impl CoercedTableProvider {
         let mut coerced = Vec::new();
 
         for (our_idx, (name, target)) in columns.iter().zip(targets).enumerate() {
-            // Every column of the common list must exist on every table of
-            // the source, or the union has nothing to align. Failing here
-            // names the column; letting it through would silently produce a
-            // branch of the wrong width.
+            // Every requested column must exist on `inner` — for the union
+            // caller, on every table of the source, or the union has
+            // nothing to align; the single-table caller can't actually hit
+            // this, since it derives `columns` from `inner`'s own schema.
+            // Failing here names the column; letting it through would
+            // silently produce a provider of the wrong width.
             let idx = inner_schema.index_of(name).map_err(|_| {
                 QuerierError::QueryFailed(datafusion::error::DataFusionError::Plan(format!(
-                    "table is missing column '{name}' required to union this source"
+                    "table is missing column '{name}' required to present this schema"
                 )))
             })?;
             let inner_field = inner_schema.field(idx);
@@ -551,9 +647,10 @@ impl TableProvider for CoercedTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        // `projection` indexes into *our* schema (the union's common
-        // columns); the inner table has its own column order, so translate
-        // before handing the scan down. Filters are only those that survived
+        // `projection` indexes into *our* schema (the caller's explicit
+        // column list); the inner table has its own column order, so
+        // translate before handing the scan down. Filters are only those
+        // that survived
         // `supports_filters_pushdown`.
         let selected: Vec<usize> = match projection {
             Some(p) => p.clone(),
@@ -579,11 +676,7 @@ impl TableProvider for CoercedTableProvider {
                 None => column,
                 Some((_, target)) => {
                     let actual = inner_schema.field(out_idx).data_type();
-                    let is_string = matches!(
-                        actual,
-                        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-                    );
-                    if is_string && matches!(target, DataType::Map(_, _)) {
+                    if is_utf8_variant(actual) && matches!(target, DataType::Map(_, _)) {
                         let udf = Arc::new(ScalarUDF::from(JsonToMapUdf::new(target.clone())));
                         Arc::new(ScalarFunctionExpr::try_new(
                             udf,
@@ -605,8 +698,10 @@ impl TableProvider for CoercedTableProvider {
 /// `ir_json_to_map(Utf8) -> Map<Utf8,Utf8>`: decodes a legacy JSON-string
 /// attribute document into the typed map form (non-string JSON values are
 /// stringified, as the writer's `json_strings_to_map_array` does), producing
-/// exactly the `target` map type so it can sit under a UNION next to a table
-/// that already stores the map.
+/// exactly the `target` map type — matching a sibling table's own map
+/// (`union_target_types`) when unioning several tables, or a canonical
+/// `Map<Utf8,Utf8>` (`utf8_map_type`) when there is no sibling to match, only
+/// `Lowering::attr_expr`'s own assumption that every container is a map.
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct JsonToMapUdf {
     signature: Signature,
@@ -5957,5 +6052,245 @@ mod tests {
             21.0,
             "the quantile sees only the rows the scope admits"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Legacy Utf8-JSON attribute containers (issue found while removing
+    // `ir-single-lowering`'s rollout switches): a table created before the
+    // Map-typed-attribute-column migration stores `log_attributes`/
+    // `span_attributes`/etc. as a flat JSON string, not a typed
+    // `Map<Utf8,Utf8>`. `attr_expr` always emitted `get_field(col, key)`,
+    // which is a hard DataFusion execution error against a `Utf8` column —
+    // never a graceful IR-level rejection, since the document itself is
+    // perfectly valid. Real, currently-reachable data (`schemas.toml`'s
+    // physical-v1/v2 history; Iceberg never rewrites already-written files),
+    // not a hypothetical. Fixed by coercing a legacy container up to a typed
+    // map at scan time, reusing `CoercedTableProvider`/`JsonToMapUdf` (#1206
+    // already does this for the *union* of several tables; this generalizes
+    // it to a single-table source's own scan).
+    // -----------------------------------------------------------------
+
+    /// A `logs` table whose attribute containers are legacy flat-JSON
+    /// strings, not typed maps — `log_attributes` carries `http.method` on
+    /// two rows and nothing on the third (absent-key case); `label_env` is a
+    /// promoted column alongside, present for two rows.
+    fn legacy_json_logs_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("body", DataType::Utf8, true),
+            Field::new("service_name", DataType::Utf8, true),
+            Field::new("severity_text", DataType::Utf8, true),
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("span_id", DataType::Utf8, true),
+            Field::new("label_env", DataType::Utf8, true),
+            // Legacy shape: a flat JSON string, not `Map<Utf8,Utf8>`.
+            Field::new("log_attributes", DataType::Utf8, true),
+            Field::new("resource_attributes", DataType::Utf8, true),
+        ]));
+        let ts = TimestampNanosecondArray::from(vec![10_i64, 20, 30]);
+        let body = StringArray::from(vec![Some("a"), Some("b"), Some("c")]);
+        let service = StringArray::from(vec![Some("api"), Some("api"), Some("web")]);
+        let sev = StringArray::from(vec![Some("INFO"), Some("INFO"), Some("INFO")]);
+        let trace = StringArray::from(vec![Some("t1"), Some("t2"), Some("t3")]);
+        let span = StringArray::from(vec![Some("s1"), Some("s2"), Some("s3")]);
+        let env = StringArray::from(vec![Some("prod"), Some("staging"), None]);
+        let log_attrs = StringArray::from(vec![
+            Some(r#"{"http.method":"GET"}"#),
+            Some(r#"{"http.method":"POST"}"#),
+            // Row 3: the key is entirely absent, not merely empty.
+            Some("{}"),
+        ]);
+        let res_attrs = StringArray::from(vec![Some("{}"), Some("{}"), Some("{}")]);
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(ts),
+                Arc::new(body),
+                Arc::new(service),
+                Arc::new(sev),
+                Arc::new(trace),
+                Arc::new(span),
+                Arc::new(env),
+                Arc::new(log_attrs),
+                Arc::new(res_attrs),
+            ],
+        )
+        .unwrap();
+        legacy_json_single_table_ctx("logs", schema, batch)
+    }
+
+    /// Register `batch` as the sole table of `table_name`, under tenant `t`
+    /// / dataset `d` — the common tail both legacy-JSON fixtures share.
+    fn legacy_json_single_table_ctx(
+        table_name: &str,
+        schema: Arc<Schema>,
+        batch: RecordBatch,
+    ) -> SessionContext {
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table(table_name.to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    /// A `traces` table whose attribute containers are legacy flat-JSON
+    /// strings — the same gap, one representative case for the other
+    /// source `attr_expr` serves.
+    fn legacy_json_traces_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new("status_code", DataType::Utf8, true),
+            // Legacy shape: a flat JSON string, not `Map<Utf8,Utf8>`.
+            Field::new("span_attributes", DataType::Utf8, true),
+            Field::new("resource_attributes", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t1"])),
+                Arc::new(StringArray::from(vec!["s0", "s1"])),
+                Arc::new(StringArray::from(vec![None::<&str>, None])),
+                Arc::new(StringArray::from(vec!["GET /api", "POST /x"])),
+                Arc::new(StringArray::from(vec!["api", "web"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 200])),
+                Arc::new(StringArray::from(vec![Some("Ok"), Some("Ok")])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"http.method":"GET"}"#),
+                    Some(r#"{"http.method":"POST"}"#),
+                ])),
+                Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
+            ],
+        )
+        .unwrap();
+        legacy_json_single_table_ctx("traces", schema, batch)
+    }
+
+    async fn rows_matching(ctx: &SessionContext, from: &str, pred: serde_json::Value) -> usize {
+        let svc = IrService::new(ctx.clone());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": from, "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "pipeline": [{ "where": pred }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap_or_else(|e| panic!("plan failed: {e}"))
+            .expect("table is registered");
+        df.collect()
+            .await
+            .unwrap_or_else(|e| panic!("execute failed: {e}"))
+            .iter()
+            .map(|b| b.num_rows())
+            .sum()
+    }
+
+    #[tokio::test]
+    async fn legacy_json_container_equality_matches() {
+        let ctx = legacy_json_logs_ctx();
+        let n = rows_matching(
+            &ctx,
+            "logs",
+            serde_json::json!({ "field": "http.method", "op": "eq", "value": "GET" }),
+        )
+        .await;
+        assert_eq!(n, 1, "only row 1 has http.method=GET");
+    }
+
+    #[tokio::test]
+    async fn legacy_json_container_not_equal_excludes_absent_key() {
+        let ctx = legacy_json_logs_ctx();
+        // Kleene: an absent key satisfies neither `=` nor `!=` — row 3 (no
+        // `http.method` key at all) must not count, so only row 2 (POST)
+        // matches `!= "GET"`.
+        let n = rows_matching(
+            &ctx,
+            "logs",
+            serde_json::json!({ "field": "http.method", "op": "ne", "value": "GET" }),
+        )
+        .await;
+        assert_eq!(
+            n, 1,
+            "row 2 (POST) only — row 3's absent key matches neither = nor !="
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_json_container_regex_matches() {
+        let ctx = legacy_json_logs_ctx();
+        let n = rows_matching(
+            &ctx,
+            "logs",
+            serde_json::json!({ "field": "http.method", "op": "regex", "value": "^GE.*" }),
+        )
+        .await;
+        assert_eq!(n, 1, "only row 1 (GET) matches ^GE.*");
+    }
+
+    #[tokio::test]
+    async fn legacy_json_container_contains_matches() {
+        let ctx = legacy_json_logs_ctx();
+        let n = rows_matching(
+            &ctx,
+            "logs",
+            serde_json::json!({ "field": "http.method", "op": "contains", "value": "ET" }),
+        )
+        .await;
+        assert_eq!(n, 1, "only row 1 (GET) contains ET");
+    }
+
+    #[tokio::test]
+    async fn legacy_json_container_exists_excludes_absent_key() {
+        let ctx = legacy_json_logs_ctx();
+        let n = rows_matching(
+            &ctx,
+            "logs",
+            serde_json::json!({ "field": "http.method", "op": "exists" }),
+        )
+        .await;
+        assert_eq!(n, 2, "rows 1 and 2 have the key; row 3 does not");
+    }
+
+    /// A promoted column alongside a legacy JSON container: `env` resolves
+    /// to `label_env` directly and never touches `log_attributes` at all —
+    /// the coercion must not change promoted-column priority.
+    #[tokio::test]
+    async fn legacy_json_container_promoted_column_still_takes_priority() {
+        let ctx = legacy_json_logs_ctx();
+        let n = rows_matching(
+            &ctx,
+            "logs",
+            serde_json::json!({ "field": "env", "op": "eq", "value": "prod" }),
+        )
+        .await;
+        assert_eq!(n, 1, "only row 1 has label_env = prod");
+    }
+
+    #[tokio::test]
+    async fn legacy_json_container_works_for_traces_too() {
+        let ctx = legacy_json_traces_ctx();
+        let n = rows_matching(
+            &ctx,
+            "traces",
+            serde_json::json!({ "field": "http.method", "op": "eq", "value": "POST" }),
+        )
+        .await;
+        assert_eq!(n, 1, "only t1 has http.method=POST");
     }
 }
