@@ -225,16 +225,6 @@ impl IcebergTableWriter {
         self.table.metadata()
     }
 
-    /// Update retry configuration
-    pub fn set_retry_config(&mut self, retry_config: RetryConfig) {
-        self.retry_config = retry_config;
-    }
-
-    /// Get current retry configuration
-    pub fn retry_config(&self) -> &RetryConfig {
-        &self.retry_config
-    }
-
     /// Reload the table from the catalog, bypassing any cached handle,
     /// so marker reads and the next commit are based on current metadata.
     async fn reload_table(&mut self) -> Result<()> {

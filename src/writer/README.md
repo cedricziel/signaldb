@@ -84,19 +84,9 @@ writer
 let committed = writer.load_committed_marker("wal-writer-id").await?;
 ```
 
-### Retry configuration
-
-```rust
-use std::time::Duration;
-use writer::RetryConfig;
-
-writer.set_retry_config(RetryConfig {
-    max_attempts: 5,
-    initial_delay: Duration::from_millis(200),
-    max_delay: Duration::from_secs(10),
-    backoff_multiplier: 2.5,
-});
-```
+Retries on commit failure use `RetryConfig::default()` (3 attempts,
+100ms initial delay, 5s max delay, 2x backoff) — there is currently no way
+to override it per writer.
 
 ## Configuration
 
