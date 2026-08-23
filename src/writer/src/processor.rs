@@ -37,6 +37,15 @@ const COMMIT_CONCURRENCY: usize = 8;
 /// entries (near-zero `data_size` each); this backstops that case.
 const MAX_DRAIN_ENTRIES_PER_CYCLE: usize = 65_536;
 
+/// The `signaldb.tenant.id` attribute for a processor metric, per the
+/// registry's `registry.signaldb.tenancy` group (`otel/registry/signaldb.yaml`)
+/// — mirrors `reconcile::provisioning_attrs`, which exists for the same
+/// reason: a bare `tenant` key drifts from the reconciler's metrics and trips
+/// `weaver registry live-check`.
+fn tenant_attr(tenant_id: &str) -> opentelemetry::KeyValue {
+    opentelemetry::KeyValue::new("signaldb.tenant.id", tenant_id.to_string())
+}
+
 /// A WAL entry's W3C trace context (`traceparent`, `tracestate`) as carried
 /// from the originating ingest request.
 type EntryTraceContext = (Option<String>, Option<String>);
@@ -525,7 +534,7 @@ impl WalProcessor {
                         .add(
                             1,
                             &[
-                                opentelemetry::KeyValue::new("tenant", tenant.clone()),
+                                tenant_attr(&tenant),
                                 opentelemetry::KeyValue::new("signal", signal.clone()),
                             ],
                         );
@@ -834,12 +843,21 @@ impl WalProcessor {
                         // Per-tenant commit latency, so the coupling this
                         // change removes stays measurable: a tenant whose
                         // commits are slow is now visible as that tenant's
-                        // latency instead of as everyone's.
+                        // latency instead of as everyone's. `outcome`
+                        // separates failed commits (fast catalog rejections)
+                        // from successful ones, so a p99 spike during an
+                        // incident isn't diluted by the failures alongside it.
                         common::self_monitoring::app_metrics()
                             .writer_commit_duration
                             .record(
                                 started.elapsed().as_secs_f64(),
-                                &[opentelemetry::KeyValue::new("tenant", tenant_id.clone())],
+                                &[
+                                    tenant_attr(&tenant_id),
+                                    opentelemetry::KeyValue::new(
+                                        "outcome",
+                                        if committed { "success" } else { "failure" },
+                                    ),
+                                ],
                             );
 
                         // Only a *forced* group's failure fails the drain; a
@@ -974,7 +992,12 @@ impl WalProcessor {
         let mut fresh = Vec::new();
         for (entry_id, batch) in entries {
             if committed.contains(&entry_id) {
-                tracing::info!(
+                // Per-entry detail stays at debug: replaying a large group
+                // (up to `MAX_ENTRIES_PER_COMMIT`) after a crash used to log
+                // one `info!` line per already-committed entry, which
+                // self-monitoring re-ingests — the export-churn class of
+                // #865. The count below is the one line that matters.
+                tracing::debug!(
                     entry_id = %entry_id,
                     table_name = %table_name,
                     "Skipping re-insert of WAL entry already committed to Iceberg"
@@ -983,6 +1006,13 @@ impl WalProcessor {
             } else {
                 fresh.push((entry_id, batch));
             }
+        }
+        if !already_committed_ids.is_empty() {
+            tracing::info!(
+                skipped = already_committed_ids.len(),
+                table_name = %table_name,
+                "Skipped re-insert of WAL entries already committed to Iceberg"
+            );
         }
 
         // Mark every already-committed id in one batch call so the WAL
@@ -2562,6 +2592,95 @@ mod tests {
             span.parent_span_id,
             opentelemetry::trace::SpanId::INVALID,
             "batch span must not adopt any origin as parent"
+        );
+    }
+
+    // W6: mirrors `reconcile::provisioning_attrs_uses_registry_attribute_names`
+    // — the processor's metrics must key tenant scoping the same way the
+    // reconciler's do, not the bare `tenant` key weaver live-check flags.
+    #[test]
+    fn tenant_attr_uses_registry_attribute_name() {
+        let attr = tenant_attr("acme");
+
+        assert_eq!(attr.key.as_str(), "signaldb.tenant.id");
+        assert_eq!(attr.value.to_string(), "acme");
+    }
+
+    /// W7: replaying a group whose entries are already committed to Iceberg
+    /// (e.g. a crash between commit and `mark_processed`) used to log one
+    /// `info!` line per entry — up to `MAX_ENTRIES_PER_COMMIT` per group per
+    /// tick, which self-monitoring re-ingests (the #865 export-churn class).
+    /// It must log a single aggregate line regardless of group size.
+    #[tokio::test]
+    async fn replay_of_already_committed_entries_logs_one_aggregate_line() {
+        const ENTRY_COUNT: usize = 50;
+
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(WalConfig::with_defaults(temp_dir.path().to_path_buf()))
+                .await
+                .unwrap(),
+        );
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+
+        for _ in 0..ENTRY_COUNT {
+            wal.append(
+                WalOperation::WriteMetrics,
+                crate::test_support::metrics_gauge_bytes(1),
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        wal.flush().await.unwrap();
+
+        let mut entries = Vec::new();
+        for entry in wal.get_unprocessed_entries().await.unwrap() {
+            let batch = WalProcessor::deserialize_entry_data(&wal, &entry)
+                .await
+                .unwrap();
+            entries.push((entry.id, batch));
+        }
+        assert_eq!(entries.len(), ENTRY_COUNT);
+
+        // First pass: a real commit, so the Iceberg idempotency marker
+        // records every id and the WAL marks every entry processed.
+        processor
+            .process_batch_for_table(
+                &wal,
+                "acme",
+                "production",
+                "metrics_gauge",
+                entries.clone(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        // Replay: the same ids/batches are processed again. Every one of
+        // them hits the "already committed" branch.
+        let probe = common::testing::OtelExportProbe::new();
+        {
+            let _guard = probe.install();
+            processor
+                .process_batch_for_table(
+                    &wal,
+                    "acme",
+                    "production",
+                    "metrics_gauge",
+                    entries,
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            probe.exported_events(),
+            1,
+            "replaying {ENTRY_COUNT} already-committed entries must log one \
+             aggregate line, not one per entry"
         );
     }
 }

@@ -503,10 +503,11 @@ impl IcebergTableWriter {
                     );
                 }
                 tracing::info!(
-                    "Committed {} rows in {} data files to Iceberg table {} (attempt {attempt})",
-                    total_rows,
-                    files.len(),
-                    self.table.identifier()
+                    rows = total_rows,
+                    files = files.len(),
+                    attempt,
+                    table = %self.table.identifier(),
+                    "Committed rows to Iceberg table"
                 );
                 return Ok(());
             }
