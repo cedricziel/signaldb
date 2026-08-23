@@ -233,35 +233,89 @@ aggregation's default grouping (D7) — all three used to be either outright
 rejections or silent behavioural differences; §4 fixed each in `ql-ir`
 itself rather than routing around it.
 
-**Open pre-deletion gate (blocks §5, not §4):** issue #1395. `ql_ir` accepts
-`unwrap <label>` on any field name with no type or schema-registration
-check, but `plan_document` rejects an unwrap target `LogicalSchema::core()`
-doesn't register for that source as `InvalidInput` (physical addressing) —
-and since task 4.1's fallback narrows to `Inexpressible` only (a review
-finding on the §4 PR: the exception set must stay enumerable), that
-`InvalidInput` now propagates instead of silently falling back. The old
-path has no such restriction (`unwrap_label` is a bare physical-column
-reference, no schema lookup), so a currently-working `unwrap` on an
-unregistered field would turn into an error with the switch on — the exact
-regression D5 exists to prevent. Not a §4 fallback-set gap (both accept the
-query; the split happens after lowering, at planning), so it isn't fixed
-here — but it must close, one of two ways, before §5 deletes the old
-lowering:
+**Open pre-deletion gate, resolved (blocked §5, not §4):** issue #1395.
+`ql_ir` accepts `unwrap <label>` on any field name with no type or
+schema-registration check, but `plan_document` rejected an unwrap target
+`LogicalSchema::core()` doesn't register for that source as `InvalidInput`
+(physical addressing) — and since task 4.1's fallback narrows to
+`Inexpressible` only (a review finding on the §4 PR: the exception set must
+stay enumerable), that `InvalidInput` propagated instead of silently
+falling back. The old path has no such restriction (`unwrap_label` is a
+bare physical-column reference, no schema lookup), so a currently-working
+`unwrap` on an unregistered field would turn into an error with the switch
+on — the exact regression D5 exists to prevent.
 
-1. `ir_planner`'s aggregate `of`-field resolution falls back to a bare
-   physical-column reference for an unregistered field, mirroring the old
-   path's own `unwrap_label` — the unwrap target joins §4's coverage rather
-   than the fallback set.
-2. `ql_ir::logql_lower` refuses `unwrap` on a field it cannot resolve as
-   `LowerError::Inexpressible` explicitly, so the case joins the
-   _enumerated_ fallback set above instead of surfacing as a bare
-   `plan_document` rejection.
+**Resolved via attribute resolution, not physical addressing.** LogQL
+`unwrap <label>` never actually names a physical column — it names an
+_attribute_ field (container-coalesced, cast to float at plan time). The
+old path's `unwrap_value`/`column_for_label` (`logs.rs`) only ever worked
+because the label it was given happened to match a physical column name;
+it is a bare `col(label)` reference with zero type or registration
+checking, not evidence that `unwrap` is a physical-addressing construct.
+The real gap: a numeric aggregate's `of` operand rejected an
+attribute-resolved field (`Resolved::JsonPath`/`EventAttribute`) outright,
+even though such a field is exactly what `unwrap` addresses. Fixed as
+#1395: `Resolved::is_advisory_type()` (`query-ir/src/resolver.rs`) marks a
+resolution's type as advisory (unpromoted attribute, no canonical type
+until the attribute-registry work lands) versus authoritative (a real
+column); `check_agg` (`query-ir/src/validate.rs`) accepts an advisory-typed
+String operand for the five numeric aggregates, coercing to a number at
+plan time with a non-numeric value going absent, while a _registered_
+String column stays rejected. Landed as its own PR ahead of the deletion
+(`fix(query-ir): accept an attribute as a numeric aggregate operand`,
+#1403), since it's a real product bug independent of this change.
+
+This is neither of the two options originally sketched here: option 1 (a
+physical-column fallback for an aggregate operand) was considered and
+rejected — it would have punched a hole in the physical-addressing guard
+`is_physical_name` enforces everywhere else, for no reason `unwrap`'s real
+semantics require. Option 2 (`ql_ir::logql_lower` refusing an unresolvable
+`unwrap` as `Inexpressible`) stays available for the residual case — a
+target that resolves to no attribute _and_ no column at all — which is the
+correct, permanent behavior: no unregistered numeric physical column
+exists in the logs schema today that a user could plausibly want to
+`unwrap`, so that residual rejection is by design, not a gap. Pinned by
+`aggregate_of_field_naming_a_physical_column_is_rejected`
+(`ir_planner.rs`). The `logql.rs` test harness fixture that originally
+exposed this (`unwrap duration`) was corrected to carry `duration` as a
+log _attribute_, matching real `unwrap` usage.
 
 (#1394, the old LogQL metric path's own — separate — bug where an
 ungrouped `sum(...)` never collapses to one series, does not gate
 anything: the new path's behavior there is already correct, and the old
 path's bug is filed and deliberately left as-is until §5 deletes the code
 that carries it.)
+
+### §5.3 finding: grouping by an unbacked label was already Loki-faithful
+
+Removing the rollout switch (task 5.3) makes IR routing unconditional,
+which surfaced an apparent behavior difference: `sum by (nope) (...)` where
+no row carries `nope` as a column or attribute used to return
+`QuerierError::Unsupported`/a planning failure on the old LogQL metric
+path, and now succeeds — every row groups under one null/absent label
+instead. Two `logs.rs` tests pinned the old rejection
+(`sum_by_unmaterialized_label_is_unsupported_on_the_old_path`,
+`planning_failure_on_an_existing_table_still_errors`).
+
+Triaged against the harness's three outcomes (above): **outcome (1), one
+lowering was wrong — the old path, now superseded.** Loki itself evaluates
+`sum by (foo) (...)` for a label no stream carries without error: the
+result is one series with `foo` absent/empty, same as any other label a
+matching stream simply doesn't have. The old path's `Unsupported` reflected
+our own storage model (no backing column to group by) rather than LogQL's
+actual semantics — a self-imposed restriction the language never had. The
+IR path's behavior (resolve the name as an attribute, absent everywhere,
+one null-labeled group) is the Loki-faithful one; the deletion doesn't
+introduce a regression, it removes one. No warning is added to the
+LogQL-compat response for this case — Loki's own API has no such warning
+for an absent grouping label, so adding one would be inventing behavior
+the wire format doesn't have; the native Query IR endpoint's
+`unknown_group_by_field` stays specific to that surface, which has its own
+warnings mechanism Loki compatibility doesn't need to match. The two tests
+were rewritten to assert the new (single group, null/absent label, no
+error) behavior:
+`sum_by_an_unknown_label_groups_everything_under_one_null_label` and
+`sum_by_a_nonexistent_attribute_groups_everything_under_one_null_label`.
 
 ### D6 — `logs.body` becomes filterable for string operators
 

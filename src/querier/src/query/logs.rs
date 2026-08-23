@@ -1784,27 +1784,47 @@ mod tests {
     /// cannot find as a promoted or physical column as an unpromoted
     /// attribute lookup, which is absent/null on every row here, so every
     /// row lands in one group under a null label rather than the query
-    /// failing. The old (pre-`ir-single-lowering`) LogQL metric path did
-    /// reject this outright — a behavior change removing the rollout switch
-    /// introduced, since `unknown_group_by_field`'s warning mechanism
-    /// (`router/src/endpoints/query.rs`) exists only for the native Query IR
-    /// endpoint, not the LogQL-compat one. Tracked as #1405 rather than
-    /// fixed here — not part of the D5 fallback set (`ql_ir` accepts and
-    /// lowers this query fine), so it's a genuine behavior difference in an
-    /// *accepted* query, not old code kept reachable for something the IR
-    /// refuses.
+    /// failing. This is the Loki-faithful behavior, not a regression: Loki
+    /// itself evaluates `sum by (foo) (...)` for a label no stream carries
+    /// without error — one series, `foo` absent/empty — the same as any
+    /// other label a matching stream simply doesn't have. The old (pre-
+    /// `ir-single-lowering`) LogQL metric path's `Unsupported` reflected our
+    /// own storage model (no backing column to group by), not LogQL's
+    /// actual semantics; that restriction is superseded, not preserved
+    /// (see design.md's "§5.3 finding"). No `unknown_group_by_field`-style
+    /// warning is added here: Loki's own API has no such warning for an
+    /// absent grouping label, so that mechanism stays specific to the
+    /// native Query IR endpoint (`router/src/endpoints/query.rs`), which
+    /// doesn't need to match Loki wire-format behavior.
     #[tokio::test]
     async fn sum_by_an_unknown_label_groups_everything_under_one_null_label() {
         let service = service_with_materialized_labels();
-        let out = matrix(
-            &service,
-            r#"sum by (nope) (count_over_time({service_name=~".+"}[1000ns]))"#,
-            1000,
-        )
-        .await;
-        // All 3 fixture rows collapse into the one null-labeled group.
-        let total: f64 = out.iter().map(|(v, _)| v).sum();
-        assert_eq!(total, 3.0);
+        let batches = service
+            .query_metric(
+                &metric_params(
+                    r#"sum by (nope) (count_over_time({service_name=~".+"}[1000ns]))"#,
+                    1000,
+                ),
+                "t",
+                "d",
+            )
+            .await
+            .expect("grouping by an unbacked label is accepted, Loki-faithfully");
+        // All 3 fixture rows collapse into a single group, `nope` absent.
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        let batch = &batches[0];
+        let nope = string_column(batch, "nope").expect("group column");
+        assert!(
+            nope.is_null(0),
+            "grouping label must be absent, not empty-string"
+        );
+        let value = batch
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Float64Array>()
+            .unwrap();
+        assert_eq!(value.value(0), 3.0);
     }
 
     #[tokio::test]
@@ -2982,7 +3002,8 @@ mod tests {
     /// one: grouping by an attribute name no row actually carries
     /// (`nonmaterialized_attr` — the fixture's JSON attributes are
     /// `namespace`/`pod`) is accepted and groups everything under one null
-    /// label, same #1405 caveat, rather than surfacing a planning failure.
+    /// label — the Loki-faithful behavior, same reasoning as its companion
+    /// — rather than surfacing a planning failure.
     /// `planner_invalid_input_propagates_instead_of_falling_back` (above)
     /// still covers the general principle this test used to pin — a genuine
     /// planning failure must surface as an error, not read as empty — with a
@@ -2991,15 +3012,32 @@ mod tests {
     #[tokio::test]
     async fn sum_by_a_nonexistent_attribute_groups_everything_under_one_null_label() {
         let service = service_with_data();
-        let out = matrix(
-            &service,
-            r#"sum by (nonmaterialized_attr) (count_over_time({service_name=~".+"}[1000ns]))"#,
-            1000,
-        )
-        .await;
-        let total: f64 = out.iter().map(|(v, _)| v).sum();
-        // All 3 fixture rows collapse into the one null-labeled group.
-        assert_eq!(total, 3.0);
+        let batches = service
+            .query_metric(
+                &metric_params(
+                    r#"sum by (nonmaterialized_attr) (count_over_time({service_name=~".+"}[1000ns]))"#,
+                    1000,
+                ),
+                "t",
+                "d",
+            )
+            .await
+            .expect("grouping by an unbacked attribute is accepted, Loki-faithfully");
+        // All 3 fixture rows collapse into a single group, the attribute absent.
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        let batch = &batches[0];
+        let attr = string_column(batch, "nonmaterialized_attr").expect("group column");
+        assert!(
+            attr.is_null(0),
+            "grouping label must be absent, not empty-string"
+        );
+        let value = batch
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Float64Array>()
+            .unwrap();
+        assert_eq!(value.value(0), 3.0);
     }
 
     /// As for `query_logs`: a malformed selector must be reported as

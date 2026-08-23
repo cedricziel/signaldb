@@ -224,13 +224,12 @@ sum by (level) (rate({service_name="api"}[5m]))
   (`sum by (namespace) (...)` groups on its `label_namespace` column; the
   result series carry the label under its sanitized name). Grouping by any
   other name is also accepted — it resolves as an attribute, coalesced
-  across containers the same way a `where` clause on that name would — but
+  across containers the same way a `where` clause on that name would — and
   if no record in the queried window actually carries that attribute, every
-  row collapses into one series under a null label rather than the query
-  being rejected. There is currently no warning surfaced for this on the
-  LogQL endpoint (unlike the native [Query IR](querying-ir.md)'s
-  `unknown_group_by_field`); see
-  [#1405](https://github.com/cedricziel/signaldb/issues/1405).
+  row collapses into one series with that label absent, same as real Loki:
+  `sum by (foo) (...)` for a label no stream carries returns one series
+  with `foo` absent/empty rather than an error, whether `foo` is a column
+  we happen to store or an attribute we don't.
 
 ### Time bucketing — the key approximation
 

@@ -224,27 +224,28 @@ lowering`.)
       dropped along with the comments describing an "old path"/"new path"
       split that no longer exists. Configuration/tempo-api skills done in
       6.1–6.4.
-      **New finding surfaced by making IR routing unconditional**: two
-      `logs.rs` tests (`sum_by_unmaterialized_label_is_unsupported_on_the_old_path`,
+      **Finding surfaced by making IR routing unconditional, triaged as
+      outcome (1) — old path wrong, superseded** (design.md's "§5.3
+      finding"): two `logs.rs` tests
+      (`sum_by_unmaterialized_label_is_unsupported_on_the_old_path`,
       `planning_failure_on_an_existing_table_still_errors`) pinned the old
       LogQL metric path's behavior for grouping by a label with no backing
       column at all — it rejected the query outright. The IR path resolves
       any such name as an unpromoted attribute instead (never erroring at
       plan time), so the query now succeeds with every row grouped under
-      one null label. Not a D5 fallback-set case (`ql_ir` accepts and
-      lowers this query fine, so there's no old code kept reachable for
-      something the IR refuses) — a genuine behavior difference in an
-      _accepted_ query, and worse for a LogQL client than the old
-      behavior: the native Query IR endpoint has an `unknown_group_by_field`
-      warning for exactly this shape (`router/src/endpoints/query.rs`), but
-      that machinery doesn't run on the LogQL-compat router path, so a
-      client goes from a clear rejection to a silently null-labeled series
-      with no signal anything was wrong. Filed as
-      [#1405](https://github.com/cedricziel/signaldb/issues/1405); the two
-      tests were rewritten to pin the new (accepted, single-path) behavior
-      — `sum_by_an_unknown_label_groups_everything_under_one_null_label` and
-      `sum_by_a_nonexistent_attribute_groups_everything_under_one_null_label`
-      — rather than asserting a rejection that no longer happens.)
+      one absent label. That's Loki-faithful, not a regression: real Loki
+      evaluates `sum by (foo) (...)` for a label no stream carries without
+      error, the same as any label a matching stream simply doesn't have —
+      the old path's `Unsupported` reflected our own storage model, not
+      LogQL's actual semantics. No warning was added to the LogQL-compat
+      response (Loki's own API has none for this case; the native Query
+      IR endpoint's `unknown_group_by_field` stays specific to that
+      surface). The two tests were rewritten and strengthened to assert
+      the Loki-faithful behavior explicitly (one group, the label
+      genuinely absent — `is_null`, not empty-string — the summed value
+      correct) —
+      `sum_by_an_unknown_label_groups_everything_under_one_null_label` and
+      `sum_by_a_nonexistent_attribute_groups_everything_under_one_null_label`.)
 - [x] 5.4 Confirm the harness still passes against the remaining fallback path,
       then decide whether to keep it as a permanent regression test or retire
       it with the code it compared. Say which, and why, in the PR.
@@ -254,8 +255,8 @@ lowering`.)
       half: `logql_metric_corpus_row_level_equivalence` converted from an
       old-vs-new comparison to a row-level regression pin
       (`LOGQL_METRIC_CORPUS_ROWS`) against the IR path alone — there is no
-      old path left to compare for any of `LOGQL_METRIC_CORPUS`'s queries,
-      all `Accept`. `KNOWN_GROUPING_DIVERGENCE_LOGQL_METRIC`/
+      old path left to compare for any of `LOGQL_METRIC_CORPUS_ROWS`'s
+      queries, all `Accept`. `KNOWN_GROUPING_DIVERGENCE_LOGQL_METRIC`/
       `SKIPPED_LOGQL_METRIC_UNWRAP_GROUPED` — skip-lists for
       `unwrap duration` queries that used to diverge because the harness
       fixture carried `duration` as a physical column the old path could
@@ -307,17 +308,18 @@ lowering`.)
 
 - [x] 7.1 Run `/simplify` over the changed code.
       (4 parallel review agents over the full deletion diff. Two real
-      findings, both fixed: two new `logs.rs` tests reimplemented the file's
+      findings, both fixed: two new `logs.rs` tests (initially, before the
+      §5.3-finding reframe below required inline batch assertions again to
+      check the group label's absence explicitly) reimplemented the file's
       own `matrix()` test helper instead of calling it; `differential.rs`'s
       `TRACEQL_CORPUS`/`LOGQL_METRIC_CORPUS` arrays were pure duplication of
       data already carried by `TRACEQL_CORPUS_CLASS`/`LOGQL_METRIC_CORPUS_ROWS`,
       correlated by a weak length check or an O(n) string-equality `find()` —
       deleted, with the two `_CLASS`/`_ROWS` consts as the sole source of
-      truth. Efficiency review found nothing. Altitude review found nothing
-      to fix in-PR; noted that #1405's eventual fix should generalize
-      `router/src/endpoints/query.rs`'s `unknown_group_by_field` mechanism
-      rather than reimplement it for LogQL — guidance left on the issue, not
-      actioned here.)
+      truth. Efficiency review found nothing. Altitude review's one note —
+      that grouping by an unbacked label silently succeeding might warrant
+      a shared warning mechanism — was superseded by the reframe: it's
+      Loki-faithful behavior, not a gap, so there's nothing to generalize.)
 - [x] 7.2 File the tracking issue this change lacks; add `Closes #N` to the PR.
       (Filed as #1382; the final PR of the stack carries `Closes #1382`.)
 - [x] 7.3 Split into a stack: §1–2 (seam + harness), §3 (traces), §4 (logs),
