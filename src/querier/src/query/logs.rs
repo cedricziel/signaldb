@@ -3,9 +3,9 @@
 //! DataFusion-backed execution of LogQL log queries against the
 //! tenant-scoped `logs` Iceberg table. Parses a LogQL query, lowers it to
 //! a filter [`Expr`](datafusion::logical_expr::Expr) via
-//! [`super::logql::log_query_filter`], and runs it through the DataFrame
-//! API — the same shape as [`super::trace`] and [`super::profile`], so
-//! user-controlled query values never enter a SQL string.
+//! [`super::logql::log_query_filter_with_columns`], and runs it through the
+//! DataFrame API — the same shape as [`super::trace`] and [`super::profile`],
+//! so user-controlled query values never enter a SQL string.
 //!
 //! Alongside line queries this service backs the Loki metadata endpoints:
 //! label names, label values, and series discovery.
