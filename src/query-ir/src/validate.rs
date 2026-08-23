@@ -20,7 +20,7 @@ use super::relation::{
     Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,
     Series,
 };
-use super::resolver::FieldResolver;
+use super::resolver::{FieldResolver, Resolved};
 use super::source::{SourceDef, SourceRegistry};
 use super::stage::{
     Agg, AggFn, Aggregate, Describe, DescribeTarget, Extract, Heatmap, HistogramQuantile, Order,
@@ -710,17 +710,37 @@ impl InferCtx<'_> {
             }
         }
 
-        // Numeric requirement for sum/avg/quantile.
+        // Numeric requirement for sum/avg/quantile/stddev/stdvar. An
+        // unpromoted attribute has no declared type — `Resolved::JsonPath`
+        // always reports `String` until the attribute-registry epic (#811)
+        // gives attributes real canonical types — so a bare attribute name
+        // used as one of these aggregates' operand (LogQL's `unwrap <label>`
+        // is exactly this: the label names an attribute field, never a
+        // physical column) is let through here and coerced numerically at
+        // plan time (`ir_planner::numeric_of`'s explicit `cast(_, Float64)`;
+        // an operand that isn't actually numeric-looking casts to `NULL`,
+        // same as any other uncoercible value, not a plan-time error). A
+        // *registered* String field (a real column, e.g. `service.name`)
+        // still can't be summed — only an attribute's inherent lack of a
+        // declared type earns the pass.
         if matches!(
             a.func,
             AggFn::Sum | AggFn::Avg | AggFn::Quantile | AggFn::Stddev | AggFn::Stdvar
         ) && let Some(t) = &of_type
             && !is_numeric(t)
         {
-            return Err(IrError::Invalid(format!(
-                "aggregate '{}' requires a numeric field, got {t}",
-                a.func.as_str()
-            )));
+            let is_attribute = a.of.as_deref().is_some_and(|of| {
+                matches!(
+                    self.resolver.resolve(self.source, of),
+                    Some(Resolved::JsonPath { .. })
+                )
+            });
+            if !(*t == ValueType::String && is_attribute) {
+                return Err(IrError::Invalid(format!(
+                    "aggregate '{}' requires a numeric field, got {t}",
+                    a.func.as_str()
+                )));
+            }
         }
 
         let out_ty = match a.func {
@@ -1125,6 +1145,54 @@ mod tests {
             }
             other => panic!("expected series, got {other:?}"),
         }
+    }
+
+    /// #1395: an unpromoted attribute has no declared type —
+    /// `Resolved::JsonPath` always reports `String` until the
+    /// attribute-registry epic (#811) gives attributes real canonical
+    /// types — so a numeric aggregate over one (LogQL's `unwrap <label>` is
+    /// exactly this: the label names an attribute field, never a physical
+    /// column) must not be rejected at validation; it is coerced numerically
+    /// at plan time instead (`ir_planner::numeric_of`'s explicit
+    /// `cast(_, Float64)`, which turns a non-numeric-looking value into
+    /// `NULL` rather than a plan-time error).
+    #[test]
+    fn numeric_aggregate_accepts_an_attribute_operand() {
+        let v = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": [], "aggs": [
+                    { "fn": "sum", "of": "deployment.environment", "as": "total" }
+                ] } }
+            ]
+        }));
+        assert!(
+            v.is_ok(),
+            "an attribute operand must be accepted for a numeric aggregate, got {v:?}"
+        );
+    }
+
+    /// The #1395 relaxation is scoped to attribute (`Resolved::JsonPath`)
+    /// operands only — a *registered* String column (a real field, not an
+    /// attribute with no declared type) still can't be summed. `service.name`
+    /// is exactly this: registered, typed String, never an attribute.
+    #[test]
+    fn numeric_aggregate_still_rejects_a_registered_string_column() {
+        let err = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": [], "aggs": [
+                    { "fn": "sum", "of": "service.name", "as": "total" }
+                ] } }
+            ]
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref message) if message.contains("numeric field")),
+            "a registered String column must still be rejected, got {err:?}"
+        );
     }
 
     #[test]

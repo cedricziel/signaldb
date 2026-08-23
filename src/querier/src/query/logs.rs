@@ -2389,11 +2389,15 @@ mod tests {
         LogsService::new(ctx)
     }
 
-    /// A context with one `api`/`info` series whose `trace_id` column
-    /// carries the numeric strings 10, 20, 30, 40 — a stand-in for an
-    /// unwrappable numeric column, so `unwrap trace_id` yields those
-    /// samples in a single bucket.
-    fn service_with_numeric_unwrap() -> LogsService {
+    /// A context with one `api`/`info` series whose `log_attributes` map
+    /// carries a `value` attribute set to the numeric strings 10, 20, 30,
+    /// 40 — the realistic shape `unwrap <label>` names (an attribute field,
+    /// never a physical column; #1395), so `unwrap value` yields those
+    /// samples in a single bucket. `trace_id` carries the same numeric
+    /// strings too, for `quantile_over_time_ranks_unwrapped_samples`, which
+    /// has no `ql_ir` equivalent and so always exercises the old lowering's
+    /// bare-physical-column `unwrap` instead (see that test's doc comment).
+    fn service_with_attribute_unwrap() -> LogsService {
         let schema = logs_schema();
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -2404,7 +2408,12 @@ mod tests {
                 str_col(&["info", "info", "info", "info"]),
                 str_col(&["10", "20", "30", "40"]),
                 str_col(&["s1", "s2", "s3", "s4"]),
-                str_col(&["{}", "{}", "{}", "{}"]),
+                str_col(&[
+                    r#"{"value":"10"}"#,
+                    r#"{"value":"20"}"#,
+                    r#"{"value":"30"}"#,
+                    r#"{"value":"40"}"#,
+                ]),
                 str_col(&["{}", "{}", "{}", "{}"]),
             ],
         )
@@ -2422,9 +2431,16 @@ mod tests {
         LogsService::new(ctx)
     }
 
+    /// `quantile_over_time` has no `ql_ir` equivalent (`range_function`
+    /// refuses it as `Inexpressible`), so this always falls back to the old
+    /// lowering regardless of `logql_via_ir` — unlike the other
+    /// `unwrap`-based tests in this module, it deliberately keeps
+    /// `unwrap trace_id` (a registered column, resolved as a bare physical
+    /// reference by the old path's `unwrap_value`) rather than an attribute,
+    /// which only the IR path (unreachable here) can unwrap.
     #[tokio::test]
     async fn quantile_over_time_ranks_unwrapped_samples() {
-        let service = service_with_numeric_unwrap();
+        let service = service_with_attribute_unwrap();
         let q = |phi: &str| {
             let query = format!(
                 r#"quantile_over_time({phi}, {{service_name="api"}} | unwrap trace_id [1000ns])"#
@@ -2446,11 +2462,11 @@ mod tests {
 
     #[tokio::test]
     async fn stddev_stdvar_over_time_reduce_unwrapped_samples() {
-        let service = service_with_numeric_unwrap();
+        let service = service_with_attribute_unwrap().with_logql_via_ir(true);
         // Samples [10, 20, 30, 40]: population variance 125, stddev ~11.18.
         let var = matrix(
             &service,
-            r#"stdvar_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            r#"stdvar_over_time({service_name="api"} | unwrap value [1000ns])"#,
             1000,
         )
         .await;
@@ -2459,7 +2475,7 @@ mod tests {
 
         let dev = matrix(
             &service,
-            r#"stddev_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            r#"stddev_over_time({service_name="api"} | unwrap value [1000ns])"#,
             1000,
         )
         .await;
@@ -2484,7 +2500,7 @@ mod tests {
     /// it is a case for propagating the planner's answer.
     #[tokio::test]
     async fn planner_invalid_input_propagates_instead_of_falling_back() {
-        let service = service_with_numeric_unwrap().with_logql_via_ir(true);
+        let service = service_with_attribute_unwrap().with_logql_via_ir(true);
         let params = MetricQueryParams {
             query: r#"stddev_over_time({service_name="api"} | unwrap trace_id [1000ns])"#
                 .to_string(),
@@ -2727,11 +2743,11 @@ mod tests {
 
     #[tokio::test]
     async fn first_and_last_over_time_pick_by_timestamp() {
-        let service = service_with_numeric_unwrap();
+        let service = service_with_attribute_unwrap().with_logql_via_ir(true);
         // Samples arrive as 10@100, 20@200, 30@300, 40@400 in one bucket.
         let first = matrix(
             &service,
-            r#"first_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            r#"first_over_time({service_name="api"} | unwrap value [1000ns])"#,
             1000,
         )
         .await;
@@ -2740,7 +2756,7 @@ mod tests {
 
         let last = matrix(
             &service,
-            r#"last_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            r#"last_over_time({service_name="api"} | unwrap value [1000ns])"#,
             1000,
         )
         .await;
