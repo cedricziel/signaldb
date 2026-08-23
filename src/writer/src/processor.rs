@@ -1976,15 +1976,11 @@ mod tests {
     async fn test_processor_creation() {
         let temp_dir = tempdir().unwrap();
         let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
             max_segment_size: 1024 * 1024, // 1MB
-            max_buffer_entries: 1000,
             flush_interval_secs: 5,
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
+            ..WalConfig::with_defaults(temp_dir.path().to_path_buf())
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -2000,15 +1996,11 @@ mod tests {
     async fn test_determine_target_table() {
         let temp_dir = tempdir().unwrap();
         let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
             max_segment_size: 1024 * 1024, // 1MB
-            max_buffer_entries: 1000,
             flush_interval_secs: 5,
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
+            ..WalConfig::with_defaults(temp_dir.path().to_path_buf())
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -2110,15 +2102,11 @@ mod tests {
     async fn poison_entry_is_dead_lettered_after_exhausting_retries() {
         let temp_dir = tempdir().unwrap();
         let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 1024 * 1024,
-            max_buffer_entries: 1000,
+            max_segment_size: 1024 * 1024, // 1MB
             flush_interval_secs: 5,
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
+            ..WalConfig::with_defaults(temp_dir.path().to_path_buf())
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -2162,15 +2150,11 @@ mod tests {
         // MAX_ENTRY_FAILURES cycles) and keep processing the entries around it.
         let temp_dir = tempdir().unwrap();
         let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 1024 * 1024,
-            max_buffer_entries: 1000,
+            max_segment_size: 1024 * 1024, // 1MB
             flush_interval_secs: 5,
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
+            ..WalConfig::with_defaults(temp_dir.path().to_path_buf())
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -2363,15 +2347,9 @@ mod tests {
         // telemetry that fed the loop.
         let temp_dir = tempdir().unwrap();
         let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
             max_segment_size: 1024 * 1024,
-            max_buffer_entries: 1000,
             flush_interval_secs: 5,
-            tenant_id: "default".to_string(),
-            dataset_id: "default".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
+            ..WalConfig::with_defaults(temp_dir.path().to_path_buf())
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
@@ -2425,15 +2403,11 @@ mod tests {
     async fn test_process_pending_entries_empty() {
         let temp_dir = tempdir().unwrap();
         let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
             max_segment_size: 1024 * 1024, // 1MB
-            max_buffer_entries: 1000,
             flush_interval_secs: 5,
             tenant_id: "test-tenant".to_string(),
             dataset_id: "test-dataset".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
+            ..WalConfig::with_defaults(temp_dir.path().to_path_buf())
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
