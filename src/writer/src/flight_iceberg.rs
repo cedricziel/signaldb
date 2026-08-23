@@ -901,7 +901,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn do_action_flush_surfaces_commit_failure_as_internal() {
+    async fn do_action_flush_retires_a_schema_mismatched_entry_and_succeeds() {
+        // W2: a schema-mismatched entry is rejected and dead-lettered
+        // immediately during prepare rather than failing the whole group
+        // commit, so the flush RPC must report success once it is retired —
+        // there is nothing else left pending.
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let object_store = Arc::new(InMemory::new());
@@ -913,8 +917,6 @@ mod tests {
             &WriterConfig::default(),
         );
 
-        // Routes to metrics_gauge but the batch schema does not match, so the
-        // commit fails — the flush RPC must report that, not a silent success.
         wal.append(
             WalOperation::WriteMetrics,
             crate::test_support::schema_mismatched_bytes(),
@@ -934,12 +936,22 @@ mod tests {
         flush
             .metadata_mut()
             .insert("x-dataset-id", "production".parse().unwrap());
-        match service.do_action(flush).await {
-            Err(status) => assert_eq!(status.code(), tonic::Code::Internal),
-            Ok(_) => panic!("flush must surface the commit failure as an error"),
-        }
-        // The uncommitted entry remains for retry.
-        assert_eq!(wal.get_unprocessed_entries().await.unwrap().len(), 1);
+        service
+            .do_action(flush)
+            .await
+            .expect("nothing was left pending once the poison entry was retired");
+
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "the rejected entry must be retired (marked processed), not left pending"
+        );
+        assert!(
+            temp_dir
+                .path()
+                .join("acme/production/metrics/dead-letter")
+                .is_dir(),
+            "the rejected entry's payload must be preserved"
+        );
     }
 
     /// A trivial one-column batch, encoded the way a real `do_put` client
