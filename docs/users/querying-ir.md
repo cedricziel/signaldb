@@ -243,6 +243,16 @@ thing a later stage may reference:
 `first` and `last` order by the source's own time column, so they mean
 earliest and latest — not whichever row the scan happened to produce first.
 
+`sum`/`avg`/`quantile`/`stddev`/`stdvar` require a numeric `of` field —
+**with one exception**: an unpromoted attribute (typed `string` until the
+attribute-registry work lands canonical attribute types; see
+[Field resolution is promotion-invariant](#field-resolution-is-promotion-invariant))
+is accepted too, and coerced to a number at query time. A value that
+doesn't parse as a number becomes absent for that row rather than failing
+the query — the same non-numeric-value handling any other field gets. A
+_registered_ string field (a real column, e.g. `service.name`) is not
+exempted; only an attribute's inherent lack of a declared type is.
+
 ### Reporting a rate: `divisor` (v5)
 
 An aggregate may carry an optional `divisor`, which divides its value by that
@@ -335,6 +345,15 @@ a query does not depend on whether a field is currently promoted**; promotion is
 pure performance upside. (Until the attribute-registry work lands canonical
 attribute types, an unpromoted attribute is typed as a string; a field with no
 resolvable type is a defined rejection.)
+
+A table created before the typed-attribute migration stores an attribute
+container as a flat JSON string rather than a `Map<Utf8,Utf8>`. Every
+single-table scan — `logs`, `traces`, `profiles`, `metrics_histogram`, and a
+`metrics` query backed by only one of `metrics_gauge`/`metrics_sum` — coerces
+such a container to the typed form before the plan reaches it, so filtering
+and grouping by attribute work the same way on a legacy table as on a
+migrated one; nothing about a query changes based on when the underlying
+table was created.
 
 ## Result envelopes
 
@@ -476,11 +495,9 @@ predates the typed-attribute change (attribute containers stored as JSON
 strings) while `metrics_gauge` stores maps, or whose tables carry their
 columns in different positions, is reconciled before the union, so both
 filtering and grouping by any resource attribute (`host.name`,
-`k8s.pod.name`, …) work across both. The same reconciliation applies to a
-single-table source too (`logs`, `traces`, `profiles`) — a table that
-predates the typed-attribute change filters and groups by attribute the
-same way a migrated one does; nothing about a query changes based on when
-the underlying table was created. `metrics_histogram` is a separate source (see [Histograms](#histograms))
+`k8s.pod.name`, …) work across both (see
+[Field resolution is promotion-invariant](#field-resolution-is-promotion-invariant)
+for the single-table case). `metrics_histogram` is a separate source (see [Histograms](#histograms))
 since its row shape — a whole bucketed histogram per point, not a scalar
 value — has no equivalent in the generic `where`/`aggregate` pipeline.
 

@@ -340,6 +340,9 @@ async fn scan_source_tables(
     match providers.len() {
         0 => Ok(None),
         1 => {
+            // Also reached for `metrics` when only one of gauge/sum has been
+            // ingested yet — the lone table still gets legacy-container
+            // coercion here, not just genuinely single-table sources.
             let (table_ref, provider) = providers.remove(0);
             let provider = coerce_legacy_containers(provider, source)?;
             Ok(Some(scan_provider(ctx, table_ref, provider)?))
