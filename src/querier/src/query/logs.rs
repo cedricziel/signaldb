@@ -3,9 +3,9 @@
 //! DataFusion-backed execution of LogQL log queries against the
 //! tenant-scoped `logs` Iceberg table. Parses a LogQL query, lowers it to
 //! a filter [`Expr`](datafusion::logical_expr::Expr) via
-//! [`super::logql::log_query_filter`], and runs it through the DataFrame
-//! API — the same shape as [`super::trace`] and [`super::profile`], so
-//! user-controlled query values never enter a SQL string.
+//! [`super::logql::log_query_filter_with_columns`], and runs it through the
+//! DataFrame API — the same shape as [`super::trace`] and [`super::profile`],
+//! so user-controlled query values never enter a SQL string.
 //!
 //! Alongside line queries this service backs the Loki metadata endpoints:
 //! label names, label values, and series discovery.
@@ -135,19 +135,12 @@ enum IrOutcome {
 /// Executes LogQL log queries and Loki metadata lookups.
 pub struct LogsService {
     session_context: Arc<SessionContext>,
-    /// TEMPORARY rollout switch (`ir-single-lowering`, design D3): route
-    /// LogQL through `ql_ir::logql_to_ir` + the shared IR planner for what
-    /// it covers, falling back to this module's dedicated lowering on
-    /// `LowerError::Inexpressible` (design D5). See
-    /// `QuerierConfig::logql_via_ir`.
-    logql_via_ir: bool,
 }
 
 impl Debug for LogsService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogsService")
             .field("session_context", &"set")
-            .field("logql_via_ir", &self.logql_via_ir)
             .finish()
     }
 }
@@ -156,7 +149,6 @@ impl Clone for LogsService {
     fn clone(&self) -> Self {
         Self {
             session_context: Arc::clone(&self.session_context),
-            logql_via_ir: self.logql_via_ir,
         }
     }
 }
@@ -165,15 +157,7 @@ impl LogsService {
     pub fn new(session_context: SessionContext) -> Self {
         Self {
             session_context: Arc::new(session_context),
-            logql_via_ir: common::config::QuerierConfig::default().logql_via_ir,
         }
-    }
-
-    /// Override the `ir-single-lowering` rollout switch (default: the old
-    /// dedicated LogQL lowering).
-    pub fn with_logql_via_ir(mut self, logql_via_ir: bool) -> Self {
-        self.logql_via_ir = logql_via_ir;
-        self
     }
 
     /// Resolve the dataset's `logs` table, or `None` when it has none.
@@ -203,10 +187,9 @@ impl LogsService {
         record_attr_demand(&parsed, tenant_slug, dataset_slug);
         let direction = Direction::parse(params.direction.as_deref());
 
-        if self.logql_via_ir
-            && let Some(batches) = self
-                .query_logs_via_ir(params, direction, tenant_slug, dataset_slug)
-                .await?
+        if let Some(batches) = self
+            .query_logs_via_ir(params, direction, tenant_slug, dataset_slug)
+            .await?
         {
             return Ok(batches);
         }
@@ -226,8 +209,8 @@ impl LogsService {
         df.collect().await.map_err(QuerierError::QueryFailed)
     }
 
-    /// [`Self::query_logs`]'s IR-routed twin (task 4.1 of `ir-single-lowering`,
-    /// behind [`Self::logql_via_ir`]): lowers the query via
+    /// [`Self::query_logs`]'s IR-routed twin (task 4.1 of `ir-single-lowering`):
+    /// lowers the query via
     /// [`Self::lower_and_plan_via_ir`], appending the ordering/limit stages
     /// `query_logs` applies itself and projecting `fields` onto exactly
     /// [`LOG_COLUMNS`] (via `safe_ident`), so the caller and the router's
@@ -393,16 +376,15 @@ impl LogsService {
         }
 
         let plan = plan_metric_query(&metric)?;
-        if self.logql_via_ir
-            && let Some(batches) = self
-                .query_metric_via_ir(
-                    &params.query,
-                    params,
-                    &plan.log_query,
-                    tenant_slug,
-                    dataset_slug,
-                )
-                .await?
+        if let Some(batches) = self
+            .query_metric_via_ir(
+                &params.query,
+                params,
+                &plan.log_query,
+                tenant_slug,
+                dataset_slug,
+            )
+            .await?
         {
             return Ok(batches);
         }
@@ -411,9 +393,9 @@ impl LogsService {
     }
 
     /// [`Self::query_metric`]'s IR-routed twin (task 4.1 of
-    /// `ir-single-lowering`, behind [`Self::logql_via_ir`]) for the plain
-    /// (non-`vector(N)`, non-binary) case. `Ok(None)` is the D5 fallback
-    /// signal, same as [`Self::query_logs_via_ir`].
+    /// `ir-single-lowering`) for the plain (non-`vector(N)`, non-binary)
+    /// case. `Ok(None)` is the D5 fallback signal, same as
+    /// [`Self::query_logs_via_ir`].
     ///
     /// Two post-`plan_document` corrections, both projection/naming only
     /// (never a filter), keep the result schema identical to
@@ -1757,17 +1739,14 @@ mod tests {
 
     #[tokio::test]
     async fn sum_by_materialized_label_groups_on_its_column() {
-        // Old path (switch off, default): the group column is physically
-        // named after the promoted column (`label_namespace`) — a storage
-        // detail. New path (`logql_via_ir`): the group column is named
-        // after the logical field the query actually wrote (`namespace`).
-        // Only the *internal* name differs; the router's `batches_to_matrix`
-        // strips a `label_` prefix from every group column it presents as a
-        // label (`src/router/src/endpoints/logql.rs`), so both paths
-        // present the same `namespace` label to the client either way —
-        // this test asserts on the logical name the IR path already uses
-        // natively, matching what a client sees.
-        let service = service_with_materialized_labels().with_logql_via_ir(true);
+        // The IR planner names the group column after the logical field the
+        // query wrote (`namespace`), not the promoted column's storage name
+        // (`label_namespace`). The router's `batches_to_matrix` strips a
+        // `label_` prefix from every group column it presents as a label
+        // (`src/router/src/endpoints/logql.rs`), so a client sees `namespace`
+        // either way — this test asserts on the logical name, matching what
+        // a client sees.
+        let service = service_with_materialized_labels();
         // namespace: prod, prod, staging → two groups (2 rows, 1 row).
         let batches = service
             .query_metric(
@@ -1800,30 +1779,52 @@ mod tests {
         );
     }
 
-    /// The old path (switch off, default) refuses to group by a label with
-    /// no backing column at all (`nope`, present on no row). Left on the old
-    /// path deliberately: the IR path resolves any name as an unpromoted
-    /// attribute (empty/absent here, so every row groups under one `null`
-    /// label) rather than refusing it outright — a separate, independent
-    /// finding this test does not cover; only the label-naming shape
-    /// (`sum_by_materialized_label_groups_on_its_column`, above) was in
-    /// scope here.
+    /// Grouping by a label with no backing column at all (`nope`, present on
+    /// no row) is not a rejection: the IR planner resolves any name it
+    /// cannot find as a promoted or physical column as an unpromoted
+    /// attribute lookup, which is absent/null on every row here, so every
+    /// row lands in one group under a null label rather than the query
+    /// failing. This is the Loki-faithful behavior, not a regression: Loki
+    /// itself evaluates `sum by (foo) (...)` for a label no stream carries
+    /// without error — one series, `foo` absent/empty — the same as any
+    /// other label a matching stream simply doesn't have. The old (pre-
+    /// `ir-single-lowering`) LogQL metric path's `Unsupported` reflected our
+    /// own storage model (no backing column to group by), not LogQL's
+    /// actual semantics; that restriction is superseded, not preserved
+    /// (see design.md's "§5.3 finding"). No `unknown_group_by_field`-style
+    /// warning is added here: Loki's own API has no such warning for an
+    /// absent grouping label, so that mechanism stays specific to the
+    /// native Query IR endpoint (`router/src/endpoints/query.rs`), which
+    /// doesn't need to match Loki wire-format behavior.
     #[tokio::test]
-    async fn sum_by_unmaterialized_label_is_unsupported_on_the_old_path() {
+    async fn sum_by_an_unknown_label_groups_everything_under_one_null_label() {
         let service = service_with_materialized_labels();
-        assert!(matches!(
-            service
-                .query_metric(
-                    &metric_params(
-                        r#"sum by (nope) (count_over_time({service_name=~".+"}[1000ns]))"#,
-                        1000
-                    ),
-                    "t",
-                    "d"
-                )
-                .await,
-            Err(QuerierError::Unsupported(_))
-        ));
+        let batches = service
+            .query_metric(
+                &metric_params(
+                    r#"sum by (nope) (count_over_time({service_name=~".+"}[1000ns]))"#,
+                    1000,
+                ),
+                "t",
+                "d",
+            )
+            .await
+            .expect("grouping by an unbacked label is accepted, Loki-faithfully");
+        // All 3 fixture rows collapse into a single group, `nope` absent.
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        let batch = &batches[0];
+        let nope = string_column(batch, "nope").expect("group column");
+        assert!(
+            nope.is_null(0),
+            "grouping label must be absent, not empty-string"
+        );
+        let value = batch
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Float64Array>()
+            .unwrap();
+        assert_eq!(value.value(0), 3.0);
     }
 
     #[tokio::test]
@@ -2454,11 +2455,11 @@ mod tests {
 
     /// `quantile_over_time` has no `ql_ir` equivalent (`range_function`
     /// refuses it as `Inexpressible`), so this always falls back to the old
-    /// lowering regardless of `logql_via_ir` — unlike the other
-    /// `unwrap`-based tests in this module, it deliberately keeps
-    /// `unwrap trace_id` (a registered column, resolved as a bare physical
-    /// reference by the old path's `unwrap_value`) rather than an attribute,
-    /// which only the IR path (unreachable here) can unwrap.
+    /// lowering — unlike the other `unwrap`-based tests in this module, it
+    /// deliberately keeps `unwrap trace_id` (a registered column, resolved
+    /// as a bare physical reference by the old path's `unwrap_value`) rather
+    /// than an attribute, which only the IR path (unreachable here) can
+    /// unwrap.
     #[tokio::test]
     async fn quantile_over_time_ranks_unwrapped_samples() {
         let service = service_with_attribute_unwrap();
@@ -2483,7 +2484,7 @@ mod tests {
 
     #[tokio::test]
     async fn stddev_stdvar_over_time_reduce_unwrapped_samples() {
-        let service = service_with_attribute_unwrap().with_logql_via_ir(true);
+        let service = service_with_attribute_unwrap();
         // Samples [10, 20, 30, 40]: population variance 125, stddev ~11.18.
         let var = matrix(
             &service,
@@ -2521,7 +2522,7 @@ mod tests {
     /// it is a case for propagating the planner's answer.
     #[tokio::test]
     async fn planner_invalid_input_propagates_instead_of_falling_back() {
-        let service = service_with_attribute_unwrap().with_logql_via_ir(true);
+        let service = service_with_attribute_unwrap();
         let params = MetricQueryParams {
             query: r#"stddev_over_time({service_name="api"} | unwrap trace_id [1000ns])"#
                 .to_string(),
@@ -2764,7 +2765,7 @@ mod tests {
 
     #[tokio::test]
     async fn first_and_last_over_time_pick_by_timestamp() {
-        let service = service_with_attribute_unwrap().with_logql_via_ir(true);
+        let service = service_with_attribute_unwrap();
         // Samples arrive as 10@100, 20@200, 30@300, 40@400 in one bucket.
         let first = matrix(
             &service,
@@ -2996,25 +2997,47 @@ mod tests {
         ));
     }
 
+    /// Companion to `sum_by_an_unknown_label_groups_everything_under_one_null_label`
+    /// with a real (existing-table) fixture rather than the materialized-label
+    /// one: grouping by an attribute name no row actually carries
+    /// (`nonmaterialized_attr` — the fixture's JSON attributes are
+    /// `namespace`/`pod`) is accepted and groups everything under one null
+    /// label — the Loki-faithful behavior, same reasoning as its companion
+    /// — rather than surfacing a planning failure.
+    /// `planner_invalid_input_propagates_instead_of_falling_back` (above)
+    /// still covers the general principle this test used to pin — a genuine
+    /// planning failure must surface as an error, not read as empty — with a
+    /// query that actually fails to plan (`stddev_over_time` unwrapping a
+    /// non-numeric registered column).
     #[tokio::test]
-    async fn planning_failure_on_an_existing_table_still_errors() {
-        // The table exists but the requested grouping cannot be lowered —
-        // a planning failure that must surface, not read as empty.
+    async fn sum_by_a_nonexistent_attribute_groups_everything_under_one_null_label() {
         let service = service_with_data();
+        let batches = service
+            .query_metric(
+                &metric_params(
+                    r#"sum by (nonmaterialized_attr) (count_over_time({service_name=~".+"}[1000ns]))"#,
+                    1000,
+                ),
+                "t",
+                "d",
+            )
+            .await
+            .expect("grouping by an unbacked attribute is accepted, Loki-faithfully");
+        // All 3 fixture rows collapse into a single group, the attribute absent.
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        let batch = &batches[0];
+        let attr = string_column(batch, "nonmaterialized_attr").expect("group column");
         assert!(
-            service
-                .query_metric(
-                    &metric_params(
-                        r#"sum by (nonmaterialized_attr) (count_over_time({service_name=~".+"}[1000ns]))"#,
-                        1000,
-                    ),
-                    "t",
-                    "d",
-                )
-                .await
-                .is_err(),
-            "planning failure on an existing table must not read as empty"
+            attr.is_null(0),
+            "grouping label must be absent, not empty-string"
         );
+        let value = batch
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Float64Array>()
+            .unwrap();
+        assert_eq!(value.value(0), 3.0);
     }
 
     /// As for `query_logs`: a malformed selector must be reported as

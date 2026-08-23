@@ -56,11 +56,6 @@ pub struct TraceService {
     traces_path: String,
     /// Upper bound for the client-supplied `limit` (trace count) on search.
     max_search_limit: usize,
-    /// TEMPORARY rollout switch (`ir-single-lowering`, design D3): route
-    /// trace search through the shared query-IR planner instead of
-    /// `search_filter`'s dedicated TraceQL lowering. See
-    /// `QuerierConfig::trace_search_via_ir`.
-    trace_search_via_ir: bool,
 }
 
 impl Debug for TraceService {
@@ -69,7 +64,6 @@ impl Debug for TraceService {
             .field("session_context", &"set")
             .field("traces_path", &self.traces_path)
             .field("max_search_limit", &self.max_search_limit)
-            .field("trace_search_via_ir", &self.trace_search_via_ir)
             .finish()
     }
 }
@@ -80,7 +74,6 @@ impl Clone for TraceService {
             session_context: Arc::clone(&self.session_context),
             traces_path: self.traces_path.clone(),
             max_search_limit: self.max_search_limit,
-            trace_search_via_ir: self.trace_search_via_ir,
         }
     }
 }
@@ -91,20 +84,12 @@ impl TraceService {
             session_context: Arc::new(session_context),
             traces_path,
             max_search_limit: common::config::QuerierConfig::default().max_search_limit,
-            trace_search_via_ir: common::config::QuerierConfig::default().trace_search_via_ir,
         }
     }
 
     /// Override the clamp applied to client-supplied search limits.
     pub fn with_max_search_limit(mut self, max_search_limit: usize) -> Self {
         self.max_search_limit = max_search_limit;
-        self
-    }
-
-    /// Override the `ir-single-lowering` rollout switch (default: the old
-    /// `search_filter` lowering).
-    pub fn with_trace_search_via_ir(mut self, trace_search_via_ir: bool) -> Self {
-        self.trace_search_via_ir = trace_search_via_ir;
         self
     }
 
@@ -422,196 +407,36 @@ impl TraceService {
     /// Build the search scan for [`TraceService::find_traces_with_tenant`],
     /// returning the `DataFrame` plus the effective trace-count limit.
     ///
-    /// Split out from the collect/assembly step so tests can assert on the
-    /// logical plan. The plan shape addresses issue #928:
+    /// Builds **one** IR document for the whole search filter — `q`, `tags`,
+    /// and the duration bounds all become predicates conjoined in the same
+    /// `where` stage — then plans it through
+    /// [`super::ir_planner::plan_document`], the single planner entry point
+    /// (D1 of `ir-single-lowering`). Split out from the collect/assembly step
+    /// so tests can assert on the logical plan.
+    ///
+    /// The plan shape addresses issue #928:
     /// - every time bound lands on `start_time_unix_nano` (precise row
     ///   filter) *and* on the `timestamp` partition column, so Iceberg
     ///   hour-partition pruning engages (transform: `Hour(timestamp)`);
     /// - spans are sorted `start_time_unix_nano DESC` before the span limit,
     ///   so "most recent N traces" keeps the newest spans instead of N
     ///   arbitrary rows;
-    /// - only [`TRACE_SEARCH_COLUMNS`] are projected, skipping the fat
-    ///   `events`/`links`/`scope_*` columns the search assembly never reads.
-    async fn build_search_dataframe(
-        &self,
-        query: &SearchQueryParams,
-        tenant_slug: &str,
-        dataset_slug: &str,
-    ) -> Result<Option<(DataFrame, usize)>, QuerierError> {
-        // TEMPORARY rollout switch (`ir-single-lowering`, design D3):
-        // `trace_search_via_ir` routes the whole search filter — `q`, `tags`,
-        // and the duration bounds — through one IR document instead of this
-        // method's dedicated lowering. See `build_search_dataframe_via_ir`.
-        if self.trace_search_via_ir {
-            return self
-                .build_search_dataframe_via_ir(query, tenant_slug, dataset_slug)
-                .await;
-        }
-
-        // Validate the client-supplied selectors and window bounds before
-        // touching the catalog: a malformed query must still be reported as
-        // such on a dataset whose `traces` table does not exist yet.
-        //
-        // Apply the `q` (TraceQL subset) and `tags` (logfmt) selectors.
-        // Unsupported constructs error out instead of silently returning
-        // unfiltered results (issue #551).
-        let mut conditions = Vec::new();
-        if let Some(q) = query.q.as_deref().filter(|s| !s.trim().is_empty()) {
-            conditions.extend(traceql::parse(q)?);
-        }
-        if let Some(tags) = query.tags.as_deref().filter(|s| !s.trim().is_empty()) {
-            conditions.extend(search_filter::parse_tags(tags)?);
-        }
-        let start_bound = query
-            .start
-            .map(|start| unix_seconds_to_nanos("start", start))
-            .transpose()?;
-        let end_bound = query
-            .end
-            .map(|end| unix_seconds_to_nanos("end", end))
-            .transpose()?;
-        let (limit, span_limit) = clamped_limits(query.limit, self.max_search_limit)?;
-
-        // A dataset with no `traces` table has no traces to search.
-        let Some(mut df) =
-            optional_table(&self.session_context, tenant_slug, dataset_slug, "traces").await?
-        else {
-            return Ok(None);
-        };
-
-        // Apply time range filters if provided. Each bound is applied twice:
-        // a precise `start_time_unix_nano` row filter, plus an equivalent
-        // (widened) predicate on the `timestamp` partition column so Iceberg
-        // can prune whole hour partitions — same dual-bound scheme as
-        // `find_by_id_with_tenant`.
-        let timestamp_type = df
-            .schema()
-            .fields()
-            .iter()
-            .find(|f| f.name() == "timestamp")
-            .map(|f| f.data_type().clone());
-        if let Some(start_nanos) = start_bound {
-            df = df
-                .filter(col("start_time_unix_nano").gt_eq(lit(start_nanos)))
-                .map_err(|e| {
-                    tracing::error!("Failed to apply start time filter: {e}");
-                    QuerierError::QueryFailed(e)
-                })?;
-            if let Some(ts_type) = &timestamp_type {
-                df = df
-                    .filter(timestamp_bound_expr(start_nanos, ts_type, false)?)
-                    .map_err(|e| {
-                        tracing::error!("Failed to apply start partition bound: {e}");
-                        QuerierError::QueryFailed(e)
-                    })?;
-            }
-        }
-        if let Some(end_nanos) = end_bound {
-            df = df
-                .filter(col("start_time_unix_nano").lt_eq(lit(end_nanos)))
-                .map_err(|e| {
-                    tracing::error!("Failed to apply end time filter: {e}");
-                    QuerierError::QueryFailed(e)
-                })?;
-            if let Some(ts_type) = &timestamp_type {
-                df = df
-                    .filter(timestamp_bound_expr(end_nanos, ts_type, true)?)
-                    .map_err(|e| {
-                        tracing::error!("Failed to apply end partition bound: {e}");
-                        QuerierError::QueryFailed(e)
-                    })?;
-            }
-        }
-
-        // Apply duration filters
-        if let Some(min_dur) = query.min_duration {
-            df = df
-                .filter(col("duration_nanos").gt_eq(lit(min_dur)))
-                .map_err(|e| {
-                    tracing::error!("Failed to apply min duration filter: {e}");
-                    QuerierError::QueryFailed(e)
-                })?;
-        }
-        if let Some(max_dur) = query.max_duration {
-            df = df
-                .filter(col("duration_nanos").lt_eq(lit(max_dur)))
-                .map_err(|e| {
-                    tracing::error!("Failed to apply max duration filter: {e}");
-                    QuerierError::QueryFailed(e)
-                })?;
-        }
-
-        let attr_ctx = super::logql::AttrContext {
-            materialized: super::logs::materialized_columns_of(&df),
-            map_attrs: is_map_column(&df, "span_attributes"),
-            // Traces tables carry no derived token column (logs only).
-            attr_tokens: false,
-        };
-        // Query demand (epic #737, #733): attribute conditions are
-        // materialization candidates.
-        for condition in &conditions {
-            record_attribute_demand(tenant_slug, dataset_slug, condition);
-        }
-        for condition in &conditions {
-            df = df
-                .filter(search_filter::to_expr(condition, &attr_ctx)?)
-                .map_err(|e| {
-                    tracing::error!("Failed to apply search filter {condition:?}: {e}");
-                    QuerierError::QueryFailed(e)
-                })?;
-        }
-
-        // Projection pushdown: only read the columns the search assembly
-        // consumes, so the scan skips the fat `events` / `links` / `scope_*`
-        // columns entirely. Applied after the filters, which may reference
-        // columns outside the projection (e.g. `label_*`).
-        df = df.select_columns(&TRACE_SEARCH_COLUMNS).map_err(|e| {
-            tracing::error!("Failed to project trace search columns: {e}");
-            QuerierError::QueryFailed(e)
-        })?;
-
-        // Order newest-first before limiting: LIMIT without ORDER BY would
-        // return arbitrary spans, so "most recent N traces" was N arbitrary
-        // traces.
-        df = df
-            .sort(vec![col("start_time_unix_nano").sort(false, false)])
-            .map_err(|e| {
-                tracing::error!("Failed to apply search ordering: {e}");
-                QuerierError::QueryFailed(e)
-            })?;
-
-        // Apply limit — we query for more spans than the requested trace count because
-        // each trace typically contains many spans. This estimate avoids truncating traces.
-        df = df.limit(0, Some(span_limit)).map_err(|e| {
-            tracing::error!("Failed to apply limit: {e}");
-            QuerierError::QueryFailed(e)
-        })?;
-
-        Ok(Some((df, limit)))
-    }
-
-    /// [`Self::build_search_dataframe`]'s IR-routed twin (task 3.3 of
-    /// `ir-single-lowering`, behind [`Self::trace_search_via_ir`]): builds
-    /// **one** IR document for the whole search filter — `q`, `tags`, and
-    /// the duration bounds all become predicates conjoined in the same
-    /// `where` stage, exactly as the old path applies them via successive
-    /// `.filter()` calls — then plans it through
-    /// [`super::ir_planner::plan_document`], the single planner entry point
-    /// (D1 of `ir-single-lowering`).
+    /// - the document's `fields` names the logical fields that resolve to
+    ///   exactly [`TRACE_SEARCH_COLUMNS`], in the same order — a `fields`
+    ///   entry that resolves to a `Column` projects the physical name
+    ///   unchanged (`ir_planner::Lowering::apply_projection`), skipping the
+    ///   fat `events`/`links`/`scope_*` columns the search assembly never
+    ///   reads.
     ///
-    /// The document's `fields` names the logical fields that resolve to
-    /// exactly [`TRACE_SEARCH_COLUMNS`], in the same order, so the assembly
-    /// in [`Self::find_traces_with_tenant`] needs no changes for either path.
-    ///
-    /// **Time range**: the IR always plans over a range, but the old path
-    /// applies a bound only when the client sent one. An absent bound
-    /// becomes `i64::MIN`/`i64::MAX` here rather than e.g. `0`, so it
-    /// excludes nothing the old path kept — a span with a negative or
-    /// far-future `start_time_unix_nano` still matches (see
+    /// **Time range**: the IR always plans over a range, but a client may
+    /// send no `start`/`end` at all. An absent bound becomes
+    /// `UNBOUNDED_SEARCH_START_NS`/`_END_NS` here rather than e.g. `0`, so it
+    /// excludes nothing — a span with a negative or far-future
+    /// `start_time_unix_nano` still matches (see
     /// `unbounded_search_keeps_far_past_and_far_future_spans` below; issue
     /// #920's unix-seconds-overflow lesson applies to a *supplied* bound,
     /// which still goes through `unix_seconds_to_nanos` unchanged).
-    async fn build_search_dataframe_via_ir(
+    async fn build_search_dataframe(
         &self,
         query: &SearchQueryParams,
         tenant_slug: &str,
@@ -965,6 +790,13 @@ const TRACE_LOOKUP_COLUMNS: [&str; 13] = [
 /// v2 names). [`TRACE_LOOKUP_COLUMNS`] minus `events`: search builds span
 /// summaries without events, so projecting the JSON `events` string away
 /// keeps the scan lean.
+///
+/// Test-only since §5 of `ir-single-lowering`: production code names the
+/// projection through [`TRACE_SEARCH_IR_FIELDS`] (the document's `fields`)
+/// rather than selecting these physical columns directly — this list now
+/// exists solely as the expected physical shape the tests below assert
+/// `TRACE_SEARCH_IR_FIELDS` resolves to.
+#[cfg(test)]
 const TRACE_SEARCH_COLUMNS: [&str; 12] = [
     "trace_id",
     "span_id",
@@ -980,7 +812,7 @@ const TRACE_SEARCH_COLUMNS: [&str; 12] = [
     "duration_nanos",
 ];
 
-/// The IR document `fields` used by [`TraceService::build_search_dataframe_via_ir`]:
+/// The IR document `fields` used by [`TraceService::build_search_dataframe`]:
 /// the logical name that resolves to each of [`TRACE_SEARCH_COLUMNS`], in the
 /// same order — a `fields` entry that resolves to a `Column` projects the
 /// physical name unchanged (`ir_planner::Lowering::apply_projection`), so the
@@ -1004,14 +836,14 @@ const TRACE_SEARCH_IR_FIELDS: [&str; 12] = [
 
 /// The absolute-nanosecond bounds an unbounded search (no `start`/`end`)
 /// plans over, one step in from `i64::MIN`/`i64::MAX` — see
-/// [`TraceService::build_search_dataframe_via_ir`]'s doc comment for why the
+/// [`TraceService::build_search_dataframe`]'s doc comment for why the
 /// exact extremes are unusable.
 const UNBOUNDED_SEARCH_START_NS: i64 = i64::MIN + 1;
 const UNBOUNDED_SEARCH_END_NS: i64 = i64::MAX - 1;
 
 /// Record query demand (epic #737, #733) for the attribute key an
 /// attribute-selector condition carries — a materialization candidate.
-/// Shared by [`TraceService::build_search_dataframe_via_ir`]'s `q` and
+/// Shared by [`TraceService::build_search_dataframe`]'s `q` and
 /// `tags` branches, matching the old path's combined demand-recording loop
 /// in [`TraceService::build_search_dataframe`].
 fn record_attribute_demand(tenant_slug: &str, dataset_slug: &str, condition: &traceql::Condition) {
@@ -1505,34 +1337,6 @@ mod tests {
         }
     }
 
-    /// Task 3.3's stated invariant for `TRACE_SEARCH_IR_FIELDS`: it must
-    /// resolve to exactly [`TRACE_SEARCH_COLUMNS`], same physical names,
-    /// same order — the two arrays have no structural link enforcing that
-    /// beyond this assertion, so a future edit to either one that breaks
-    /// the correspondence fails here instead of silently reordering the
-    /// columns `find_traces_with_tenant`'s assembly reads positionally.
-    #[tokio::test]
-    async fn search_via_ir_projects_the_same_columns_in_the_same_order() {
-        let service = TraceService::new(search_session(), "traces".to_string())
-            .with_trace_search_via_ir(true);
-        let (df, _) = service
-            .build_search_dataframe(&search_params(), "t", "d")
-            .await
-            .unwrap()
-            .expect("traces table is registered");
-        let names: Vec<&str> = df
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| f.name().as_str())
-            .collect();
-        assert_eq!(
-            names,
-            TRACE_SEARCH_COLUMNS.to_vec(),
-            "IR search projection must match the old path's column names and order"
-        );
-    }
-
     /// End to end: the "most recent N traces" contract — newest traces, in
     /// deterministic newest-first order, not N arbitrary HashMap entries.
     #[tokio::test]
@@ -1658,12 +1462,11 @@ mod tests {
         ctx
     }
 
-    /// The regression net for task 3.3: a search whose *result* depends on
-    /// attribute promotion (only the GET span should match, and matching
-    /// depends on reading the right column/extraction for a scope-qualified
-    /// attribute either way) must return the same trace whichever lowering
-    /// builds the filter. Passes on the old path today; task 3.4 asserts it
-    /// still passes with the IR switch on.
+    /// A search whose *result* depends on attribute promotion (only the GET
+    /// span should match): a scope-qualified attribute (`span.http.method`)
+    /// must resolve to the promoted `label_http_method` column (D10, fixed
+    /// in task 3.0 of `ir-single-lowering`) rather than the map-extraction
+    /// path.
     #[tokio::test]
     async fn search_filters_on_a_promoted_attribute() {
         let service = TraceService::new(
@@ -1682,63 +1485,26 @@ mod tests {
         assert_eq!(ids, vec!["t-get"]);
     }
 
-    /// Task 3.4: the IR-routed path (switch on) must agree with the old
-    /// path on [`search_filters_on_a_promoted_attribute`]'s `q`-only case —
-    /// including resolving the promoted `label_http_method` column for a
-    /// scope-qualified field (D10, fixed in task 3.0).
+    /// `tags` alone: the same bare (unscoped) attribute key resolves to the
+    /// promoted column through the [`super::tags_to_ir`] shim (task 3.2).
     #[tokio::test]
-    async fn search_via_ir_matches_old_path_for_q_only() {
+    async fn search_filters_on_a_promoted_attribute_via_tags() {
         let service = TraceService::new(
             search_session_with_promoted_attribute(),
             "traces".to_string(),
-        )
-        .with_trace_search_via_ir(true);
-        let query = SearchQueryParams {
-            q: Some(r#"{ span.http.method = "GET" }"#.to_string()),
-            ..search_params()
-        };
-        let traces = service
-            .find_traces_with_tenant(query, "t", "d")
-            .await
-            .unwrap();
-        let ids: Vec<&str> = traces.iter().map(|t| t.trace_id.as_str()).collect();
-        assert_eq!(ids, vec!["t-get"]);
-    }
-
-    /// `tags` alone, switch on: the same bare (unscoped) attribute key the
-    /// old path resolves via [`super::search_filter::to_expr`] must resolve
-    /// to the same promoted column through the 3.2 shim.
-    #[tokio::test]
-    async fn search_via_ir_matches_old_path_for_tags_only() {
-        let old = TraceService::new(
-            search_session_with_promoted_attribute(),
-            "traces".to_string(),
         );
-        let new = TraceService::new(
-            search_session_with_promoted_attribute(),
-            "traces".to_string(),
-        )
-        .with_trace_search_via_ir(true);
         let query = SearchQueryParams {
             tags: Some("http.method=GET".to_string()),
             ..search_params()
         };
-        let old_ids: Vec<String> = old
-            .find_traces_with_tenant(query.clone(), "t", "d")
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|t| t.trace_id)
-            .collect();
-        let new_ids: Vec<String> = new
+        let ids: Vec<String> = service
             .find_traces_with_tenant(query, "t", "d")
             .await
             .unwrap()
             .into_iter()
             .map(|t| t.trace_id)
             .collect();
-        assert_eq!(old_ids, vec!["t-get"]);
-        assert_eq!(new_ids, old_ids);
+        assert_eq!(ids, vec!["t-get"]);
     }
 
     /// `q` and `tags` together become one conjoined IR document (task 3.3);
@@ -1747,74 +1513,48 @@ mod tests {
     /// narrows further to `http.method = "POST"` (only `t-post`), so the
     /// combination is the only way to reach a single-trace result.
     #[tokio::test]
-    async fn search_via_ir_matches_old_path_for_q_and_tags_together() {
-        let old = TraceService::new(
+    async fn search_filters_on_q_and_tags_together() {
+        let service = TraceService::new(
             search_session_with_promoted_attribute(),
             "traces".to_string(),
         );
-        let new = TraceService::new(
-            search_session_with_promoted_attribute(),
-            "traces".to_string(),
-        )
-        .with_trace_search_via_ir(true);
         let query = SearchQueryParams {
             q: Some(r#"{ resource.service.name = "api" }"#.to_string()),
             tags: Some("http.method=POST".to_string()),
             ..search_params()
         };
-        let old_ids: Vec<String> = old
-            .find_traces_with_tenant(query.clone(), "t", "d")
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|t| t.trace_id)
-            .collect();
-        let new_ids: Vec<String> = new
+        let ids: Vec<String> = service
             .find_traces_with_tenant(query, "t", "d")
             .await
             .unwrap()
             .into_iter()
             .map(|t| t.trace_id)
             .collect();
-        assert_eq!(old_ids, vec!["t-post"]);
-        assert_eq!(new_ids, old_ids);
+        assert_eq!(ids, vec!["t-post"]);
     }
 
-    /// Neither `q` nor `tags`: no filter stage at all, on either path.
+    /// Neither `q` nor `tags`: no filter stage at all.
     #[tokio::test]
-    async fn search_via_ir_matches_old_path_for_neither_q_nor_tags() {
-        let old = TraceService::new(
+    async fn search_without_q_or_tags_returns_every_matching_trace() {
+        let service = TraceService::new(
             search_session_with_promoted_attribute(),
             "traces".to_string(),
         );
-        let new = TraceService::new(
-            search_session_with_promoted_attribute(),
-            "traces".to_string(),
-        )
-        .with_trace_search_via_ir(true);
-        let old_ids: Vec<String> = old
+        let ids: Vec<String> = service
             .find_traces_with_tenant(search_params(), "t", "d")
             .await
             .unwrap()
             .into_iter()
             .map(|t| t.trace_id)
             .collect();
-        let new_ids: Vec<String> = new
-            .find_traces_with_tenant(search_params(), "t", "d")
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|t| t.trace_id)
-            .collect();
-        assert_eq!(old_ids.len(), 2);
-        assert_eq!(new_ids, old_ids);
+        assert_eq!(ids.len(), 2);
     }
 
     /// A traces table with one span far in the past (a negative
     /// `start_time_unix_nano`, same shape as the existing `traces_ctx`
     /// fixture in `ir_planner.rs`) and one far in the future, for the
     /// unbounded-search time-range warning (task 3.3's doc comment on
-    /// `build_search_dataframe_via_ir`).
+    /// `build_search_dataframe`).
     fn search_session_with_extreme_timestamps() -> SessionContext {
         use datafusion::arrow::array::{
             ArrayRef, BooleanArray, MapBuilder, MapFieldNames, StringBuilder,
@@ -1910,42 +1650,26 @@ mod tests {
         ctx
     }
 
-    /// The time-range warning in `build_search_dataframe_via_ir`'s doc
-    /// comment: an unbounded search (no `start`/`end`) must exclude nothing
-    /// the old path kept, and must not overflow converting the range to a
-    /// document. A far-past (negative) and a far-future
-    /// `start_time_unix_nano` both survive on the old path (it applies no
-    /// time filter at all when neither bound is given) and must survive on
-    /// the IR path too.
+    /// The time-range warning in `build_search_dataframe`'s doc comment: an
+    /// unbounded search (no `start`/`end`) must exclude nothing and must not
+    /// overflow converting the range to a document. A far-past (negative)
+    /// and a far-future `start_time_unix_nano` both survive, since no time
+    /// filter at all applies when neither bound is given.
     #[tokio::test]
     async fn unbounded_search_keeps_far_past_and_far_future_spans() {
-        let old = TraceService::new(
+        let service = TraceService::new(
             search_session_with_extreme_timestamps(),
             "traces".to_string(),
         );
-        let new = TraceService::new(
-            search_session_with_extreme_timestamps(),
-            "traces".to_string(),
-        )
-        .with_trace_search_via_ir(true);
-        let mut old_ids: Vec<String> = old
+        let mut ids: Vec<String> = service
             .find_traces_with_tenant(search_params(), "t", "d")
             .await
             .unwrap()
             .into_iter()
             .map(|t| t.trace_id)
             .collect();
-        let mut new_ids: Vec<String> = new
-            .find_traces_with_tenant(search_params(), "t", "d")
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|t| t.trace_id)
-            .collect();
-        old_ids.sort();
-        new_ids.sort();
-        assert_eq!(old_ids, vec!["t-future", "t-past"]);
-        assert_eq!(new_ids, old_ids);
+        ids.sort();
+        assert_eq!(ids, vec!["t-future", "t-past"]);
     }
 
     fn test_span(trace_id: &str, span_id: &str, start: u64) -> Span {

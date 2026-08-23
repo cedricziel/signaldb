@@ -1,13 +1,30 @@
 //! # Compat-vs-IR differential harness (`ir-single-lowering`, design D2)
 //!
-//! Before any compat endpoint is rerouted onto [`super::ir_planner`], this
-//! module lowers the same query through **both** paths — the existing
-//! per-language lowering (`search_filter.rs`, `logql.rs`/`logql_metric.rs`)
-//! and `ql_ir::{traceql_to_ir, logql_to_ir}` + [`super::ir_planner::plan_document`]
-//! — over an identical fixture, and asserts the two agree. A difference is a
-//! finding to explain, not a failure to route around (design D2): it is
-//! triaged into exactly one of three outcomes below, never silently
-//! papered over by loosening the comparison.
+//! Before any compat endpoint was rerouted onto [`super::ir_planner`], this
+//! module lowered the same query through **both** paths — the existing
+//! per-language lowering and `ql_ir::{traceql_to_ir, logql_to_ir}` +
+//! [`super::ir_planner::plan_document`] — over an identical fixture, and
+//! asserted the two agreed. A difference was a finding to explain, not a
+//! failure to route around (design D2): it was triaged into exactly one of
+//! three outcomes below, never silently papered over by loosening the
+//! comparison.
+//!
+//! ## Status after §5 (task 5.4)
+//!
+//! §5 deleted the old TraceQL lowering (`search_filter.rs`'s `to_expr` and
+//! `trace.rs`'s dedicated filter loop) once every difference above was
+//! triaged and the rollout switch (D3) proved the IR path agreed. There is
+//! no old TraceQL/tags path left to differentially compare against, so every
+//! TraceQL/tags test below is now an **expected-result regression pin on the
+//! single (IR) lowering** — what the old-vs-new comparison last proved true,
+//! kept as a fixed expectation rather than a live comparison. The module
+//! keeps its name and stays a **permanent regression suite**: LogQL still
+//! has a real old-vs-new differential for the enumerated D5 fallback set
+//! (`KNOWN_INEXPRESSIBLE_LOGQL`, below) until a future change closes that
+//! gap too (§5 only deletes what `ql_ir` already covers, task 5.2) — so
+//! "differential" still describes part of what this module does, and the
+//! trace-side tests that lost their comparison are the harness's own
+//! regression net for the deletion, not dead weight to relocate.
 //!
 //! ## Comparison rules
 //!
@@ -40,9 +57,9 @@
 //!
 //! 1. `tests-integration/tests/router_tempo_endpoints.rs`'s
 //!    `test_search_filters_are_applied` — 7 TraceQL `q` strings, 3 `tags`
-//!    strings (`TRACEQL_CORPUS`, `TAGS_CORPUS`).
+//!    strings (`TRACEQL_CORPUS_CLASS`, `TAGS_CORPUS`).
 //! 2. `tests-integration/tests/logql_queries.rs` — 4 LogQL strings, one of
-//!    them a metric query (`LOGQL_LOG_CORPUS`, `LOGQL_METRIC_CORPUS`).
+//!    them a metric query (`LOGQL_LOG_CORPUS`, `LOGQL_METRIC_CORPUS_ROWS`).
 //! 3. `src/ql-ir/tests/{traceql,logql}.rs` — every query string their test
 //!    functions assert on, folded into the same four consts (dominates the
 //!    count: it is what caught the two real findings below).
@@ -67,11 +84,11 @@
 //! | **Every LogQL line filter** (`|=`/`!=`/`|~`/`!~`) | **(1) `LogicalSchema` was wrong, fixed in §4 (D6)** | `ql_ir::logql_lower::line_filter` lowers to `Leaf{field:"body", op:Contains}`, but `LogicalSchema::core()` marked `logs.body` `RetrievalOnly` — `plan_document`'s validation rejected every one of these documents. This was *not* the D5 fallback case: `logql_to_ir` returns `Ok`, not `Inexpressible`, so the rejection surfaced only after the point a §4 fallback switch would check. Fixed in `LogicalSchema::core()` (task 4.0a): `body` is filterable for string operators now, resolving to `ValueType::String` like any other string field — ordered/numeric operators get no special allowance. Pinned in `logql_line_filter_agrees_on_optimized_plan`. Commit: `feat(query-ir): make the log body filterable for string operators`. |
 //! | A LogQL stream-selector `!=`/`!~`/`=""` against a key some rows lack | **(1) `ql_ir` was wrong, fixed in §4 (D9)** | The old LogQL lowering's `!=`/`!~` explicitly matches an absent key (`e.is_null().or(e.not_eq(...))`, documented "mirroring the JSON path"); `ir_planner`'s `Predicate::Not` was a plain `not(...)`, which is NULL for a NULL input — the IR's stated Kleene semantics ("absent satisfies neither `field = x` nor `not(field = x)`"), not what Loki's compat surface promises. Fixed in `ql_ir::logql_lower::matcher` (task 4.0c): a negative matcher now ORs in "the field does not exist" explicitly — `!=` → `or[ne, not(exists)]`, `!~` → `or[not(regex), not(exists)]`, `=""` → `or[eq "", not(exists)]` (the old path never special-cased plain `Eq` against `""`, so that one is a new-path-only regression test, not an old/new pin — see `empty_string_equality_matches_an_absent_field_on_the_new_path`). `=~` stays a plain `regex`, the one documented corner. Pinned in `adversarial_absent_value_semantics_agrees` and `absent_value_semantics_also_agree_for_negative_regex`. Commit: `fix(ql-ir): keep Loki's absent-matches semantics for negative matchers`. |
 //! | A LogQL stream-selector `!=`/`!~` against a **dedicated-column** label (`service_name`, `level`, `trace_id`, `span_id`) whose column is NULL on some rows | **(1) old path was wrong, fixed in §4 (review finding on #1393)** | D9 was applied to the JSON/map-attribute path (`map_attribute_expr`) and the materialized-label path (`materialized_label_expr`) but not to `logql.rs::column_expr`, the third of the three — its `Neq`/`Nre` lowered as plain `not_eq`/`not(regexp_like)` with no NULL handling, so a NULL dedicated column silently stayed excluded from a negative match while its two siblings (and the new path, which applies D9 uniformly regardless of which container a label resolves to) already included it. This was the *old* path's own inconsistency between three near-identical functions, not a genuine new-vs-old difference — Loki's absent-matches promise carries no dedicated-column exception. Fixed in `column_expr` to match its siblings. Pinned in `dedicated_column_negative_matchers_also_match_a_null_row`. Commit: `fix(querier): match absent dedicated columns for negative LogQL matchers`. |
-//! | `{ .service.name = "api" }`, `{ .http.method = "GET" }` (TraceQL, unscoped), `{k8s_namespace="prod"}` (LogQL, no known column) | **(3) genuinely different meaning — reported, not picked** | The old path ORs the match across every container (`map_attribute_expr("span_attributes",..).or(map_attribute_expr("resource_attributes",..))`) — matches if *any* container has the value. `ir_planner`'s bare-name resolution COALESCEs across containers by priority (span/log, then scope, then resource) and compares *once* — if a higher-priority container has the key at all (regardless of value), lower-priority containers are never consulted. Pinned in `adversarial_unscoped_attribute_combining_semantics_diverge` with a fixture where the same key holds *different* values in two containers, which the corpus's own fixture data happened not to exercise (both sides agreed there only because one container lacked the key entirely). The LogQL corpus's `{k8s_namespace="prod"}` hits the identical mechanism (skipped via `KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG`, no separate pinned test). Reported: which combining rule the compat surface should keep is a product question. |
-//! | `{ span.http.method = "GET" }` against a table with a promoted `label_http_method` column | **(1) `ir_planner` was wrong, fixed in §3** | `search_filter::to_expr` checks `materialized_column_name(key)` against the **bare** attribute key (`"http.method"` → `label_http_method`), matching how the compactor actually names promoted columns (`attr_promotion::materialized_keys_of` keys off the raw `attr_key`, never the TraceQL-scoped spelling). `ir_planner::SchemaResolver::column_for` used to compute `materialized_column_name(field)` against the **scope-qualified** logical field (`"span.http.method"` → `label_span_http_method`), which no real promoted column is ever named — so `ir_planner` always took the `get_field` (JsonPath) branch for a scope-qualified attribute, never the promoted column, even when one existed. Fixed in `ir_planner::SchemaResolver::column_for` (task 3.0): strip the scope qualifier before materializing, the same way `Lowering::qualified_attr` already does for the unpromoted extraction path. The pin moved from a row-level comparison to a plan-level one, now that the plans genuinely agree — see `adversarial_promoted_attribute_agrees_on_plan`. Commit: `fix(querier): resolve promoted columns for scope-qualified IR fields`. |
-//! | `sum by (StatusCode) (count_over_time(...))` (mixed-case attribute grouping) | **(1) old path is wrong, still open (issue #1392)** | #1070's fix (`ident()` not `col()` for a group-column alias) only touched `ir_planner.rs`. The *old* LogQL metric path (`logs.rs`'s `execute_plan`) has the identical unfixed bug for grouping by a mixed-case attribute label. New path (routed through `plan_document`) already handles it correctly. Pinned in `adversarial_mixed_case_grouping_label_old_path_still_has_1070`; filed as issue #1392 (task 4.0d), not fixed here — closes along with the old lowering once §5 deletes it. |
+//! | `{ .service.name = "api" }`, `{ .http.method = "GET" }` (TraceQL, unscoped), `{k8s_namespace="prod"}` (LogQL, no known column) | **(3) genuinely different meaning — reported, not picked** | The old path ORed the match across every container (`map_attribute_expr("span_attributes",..).or(map_attribute_expr("resource_attributes",..))`) — matched if *any* container had the value. `ir_planner`'s bare-name resolution COALESCEs across containers by priority (span/log, then scope, then resource) and compares *once* — if a higher-priority container has the key at all (regardless of value), lower-priority containers are never consulted. The compat surfaces adopted the IR's rule (D8) — now the deliberate, single behaviour, pinned in `unscoped_attribute_coalesces_by_container_priority` and `unscoped_attribute_coalescing_reproduces_at_the_endpoint` (traces) with a fixture where the same key holds *different* values in two containers. The LogQL corpus's `{k8s_namespace="prod"}` hits the identical mechanism (skipped via `KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG`, no separate pinned test — the old LogQL path stays in place until §5.2). |
+//! | `{ span.http.method = "GET" }` against a table with a promoted `label_http_method` column | **(1) `ir_planner` was wrong, fixed in §3** | The old `search_filter::to_expr` (deleted in §5) checked `materialized_column_name(key)` against the **bare** attribute key (`"http.method"` → `label_http_method`), matching how the compactor actually names promoted columns (`attr_promotion::materialized_keys_of` keys off the raw `attr_key`, never the TraceQL-scoped spelling). `ir_planner::SchemaResolver::column_for` used to compute `materialized_column_name(field)` against the **scope-qualified** logical field (`"span.http.method"` → `label_span_http_method`), which no real promoted column is ever named — so `ir_planner` always took the `get_field` (JsonPath) branch for a scope-qualified attribute, never the promoted column, even when one existed. Fixed in `ir_planner::SchemaResolver::column_for` (task 3.0): strip the scope qualifier before materializing, the same way `Lowering::qualified_attr` already does for the unpromoted extraction path. Pinned in `promoted_attribute_resolves_to_its_column`. Commit: `fix(querier): resolve promoted columns for scope-qualified IR fields`. |
+//! | `sum by (StatusCode) (count_over_time(...))` (mixed-case attribute grouping) | **(1) old path is wrong, still open (issue #1392)** | #1070's fix (`ident()` not `col()` for a group-column alias) only touched `ir_planner.rs`. The *old* LogQL metric path (`logs.rs`'s `execute_plan`) has the identical unfixed bug for grouping by a mixed-case attribute label, but this query is `Accept` (not the D5 fallback set), so §5.3's switch removal made the old path's bug unreachable through the public API — filed as issue #1392 (task 4.0d), not fixed here, and no longer pin-able as a live divergence; `mixed_case_grouping_label_groups_correctly` now pins only the IR path's correct grouping. |
 //! | `count_over_time(...)`/`rate(...)`/`sum_over_time(...)` etc. with **no** outer `by` | **(1) `ql_ir` was wrong, fixed in §4 (D7)** | Real Loki returns one series per matching *stream* for a bare range aggregation. The old path implemented that by defaulting the range aggregate's grouping to `SERIES_COLUMNS` (`service_name`, `severity_text`) when ungrouped. `ql_ir::logql_to_ir` used to emit `by: []` for the same shape, collapsing every matching row into one count. Fixed in `ql_ir::logql_lower::lower_metric_query` (task 4.0b): an empty grouping now defaults to `ql_ir::STREAM_IDENTITY` (`["service.name", "severity_text"]`), pinned against `logs.rs::SERIES_COLUMNS` through the real `SchemaResolver` by `ql_ir_stream_identity_matches_series_columns` (this crate has no access to the real schema, so the mapping is asserted on the querier side). Pinned in `adversarial_ungrouped_range_aggregation_default_grouping_agrees` (two `api` rows of different severities: both paths now produce 2 rows). Commit: `fix(ql-ir): group an ungrouped range aggregation by the stream identity`. |
-//! | `sum(count_over_time(...))` (an **explicit** vector aggregation with no `by()`) | **(1) `ql_ir` was wrong, fixed (CodeRabbit review on #1393); old path also wrong, filed as #1394** | D7's stream-identity default was first applied too broadly: `lower_metric_query` treated *any* empty grouping — including `vector_grouping`'s `Ok(Vec::new())` for an explicit `v.grouping == None` — as "apply the default", when an explicit ungrouped vector aggregation means the opposite (collapse to one series, same as an empty `by` anywhere else). Fixed by applying `STREAM_IDENTITY` only in the bare-`MetricQuery::Range` arm, pinned in `ql-ir`'s `explicitly_ungrouped_vector_aggregation_collapses_to_one_series`. Checking that fix against the old path (not assumed) surfaced a *second*, independent finding: `logs.rs::execute_plan` never collapses an ungrouped `sum(...)` either — `sum`'s `outer_agg` stays `None` ("folds into the grouped range aggregate"), so the old path's grouping branch treats it identically to a bare range aggregation (`SERIES_COLUMNS`, no reduction pass), producing one row per stream instead of one row total. This is the old path's *own* bug (filed as #1394, sibling to #1392), not a new-vs-old difference to reconcile — the new path's collapse here is correct on its own merits. Pinned as a divergence in `explicitly_ungrouped_vector_aggregation_diverges_old_path_never_collapses`. |
+//! | `sum(count_over_time(...))` (an **explicit** vector aggregation with no `by()`) | **(1) `ql_ir` was wrong, fixed (CodeRabbit review on #1393); old path also wrong, filed as #1394** | D7's stream-identity default was first applied too broadly: `lower_metric_query` treated *any* empty grouping — including `vector_grouping`'s `Ok(Vec::new())` for an explicit `v.grouping == None` — as "apply the default", when an explicit ungrouped vector aggregation means the opposite (collapse to one series, same as an empty `by` anywhere else). Fixed by applying `STREAM_IDENTITY` only in the bare-`MetricQuery::Range` arm, pinned in `ql-ir`'s `explicitly_ungrouped_vector_aggregation_collapses_to_one_series`. Checking that fix against the old path (not assumed) surfaced a *second*, independent finding: `logs.rs::execute_plan` never collapses an ungrouped `sum(...)` either — `sum`'s `outer_agg` stays `None` ("folds into the grouped range aggregate"), so the old path's grouping branch treats it identically to a bare range aggregation (`SERIES_COLUMNS`, no reduction pass), producing one row per stream instead of one row total. This is the old path's *own* bug (filed as #1394, sibling to #1392) — but this query is `Accept`, not the D5 fallback set, so §5.3's switch removal made the bug unreachable through the public API, and it can no longer be pinned as a live divergence. `explicitly_ungrouped_vector_aggregation_collapses_to_one_row` now pins only the IR path's correct collapse. |
 //! | every other corpus query | **match** | See the `*_corpus_*` tests below. |
 //!
 //! ## `KNOWN_INEXPRESSIBLE_LOGQL` (task 2.3a)
@@ -121,7 +138,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
 use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
 use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
-use datafusion::prelude::{DataFrame, SessionContext, col, lit};
+use datafusion::prelude::{DataFrame, SessionContext};
 
 use common::query_ir::{Document, FieldResolver, Range, Resolved, ResultEnvelope, Stage};
 use logql::Expr as LogqlExpr;
@@ -148,30 +165,6 @@ const TO: i64 = 1000;
 // ---------------------------------------------------------------------------
 // Corpus (task 2.1)
 // ---------------------------------------------------------------------------
-
-/// TraceQL `q` strings. Sources: `router_tempo_endpoints.rs`'s
-/// `test_search_filters_are_applied` (the first 7) and
-/// `src/ql-ir/tests/traceql.rs`'s corpus (the rest, deduplicated).
-const TRACEQL_CORPUS: &[&str] = &[
-    r#"{ span.http.method = "GET" }"#,
-    "{ duration > 100ms }",
-    r#"{ span.x != "y" }"#,
-    r#"{ span.a = "1" || span.b = "2" }"#,
-    "notbraces",
-    "{ foo }",
-    "{ zzz = 1 }",
-    r#"{ name = "GET /api" }"#,
-    "{ status = error }",
-    "{ kind = server }",
-    r#"{ resource.service.name = "api" }"#,
-    r#"{ .service.name = "api" }"#,
-    r#"{ resource.k8s.pod.name = "p" }"#,
-    r#"{ .http.method = "GET" }"#,
-    r#"{ resource.service.name = "api" && span.http.method = "GET" }"#,
-    "{ span.http.status_code = 500 }",
-    "{ span.ok = true }",
-    "{}",
-];
 
 /// Tempo `tags` (logfmt) strings, from `test_search_filters_are_applied`,
 /// plus three adversarial values (blocker found in review of PR #1391) that
@@ -200,18 +193,6 @@ const LOGQL_LOG_CORPUS: &[&str] = &[
     r#"{service="api"}"#,
     r#"{job="api"}"#,
     r#"{k8s_namespace="prod"}"#,
-];
-
-/// LogQL metric-query strings. Sources: `logql_queries.rs`'s
-/// `count_over_time` query and `src/ql-ir/tests/logql.rs`'s corpus.
-const LOGQL_METRIC_CORPUS: &[&str] = &[
-    r#"count_over_time({service_name="api"}[1h])"#,
-    r#"rate({service_name="api"}[5m])"#,
-    r#"sum by (service_name) (count_over_time({service_name="api"}[1m]))"#,
-    r#"sum_over_time({service_name="api"} | unwrap duration [5m])"#,
-    r#"avg_over_time({service_name="api"} | unwrap duration [5m])"#,
-    r#"min by (service_name) (min_over_time({service_name="api"} | unwrap duration [1m]))"#,
-    r#"max by (service_name) (max_over_time({service_name="api"} | unwrap duration [1m]))"#,
 ];
 
 /// The D5 fallback set (task 2.3a): valid LogQL metric queries the old path
@@ -364,7 +345,11 @@ fn traces_promoted_fixture() -> SessionContext {
 }
 
 /// A `logs` table for the LogQL corpus: `service_name`/`severity_text`
-/// dedicated columns, a `duration` numeric attribute (for `unwrap`), and
+/// dedicated columns, a `duration` numeric *attribute* (for `unwrap`,
+/// stored in `log_attributes` like any other unpromoted label — LogQL's
+/// `unwrap <label>` names a logical field, resolved the same
+/// container-coalescing way any other bare attribute reference is; see
+/// `ql_ir::logql_lower` and `ir_planner::Lowering::attr_expr`), and
 /// `log_attributes`/`resource_attributes` maps. Row 2 deliberately lacks
 /// `region` (an attribute present on the other rows) for the absent-value
 /// adversarial case.
@@ -380,11 +365,6 @@ fn logs_fixture() -> SessionContext {
         Field::new("severity_text", DataType::Utf8, true),
         Field::new("trace_id", DataType::Utf8, true),
         Field::new("span_id", DataType::Utf8, true),
-        // `unwrap <label>` (old and new) resolves against a physical/
-        // materialized column, not an attribute-map extraction — see
-        // `column_for_label`/`materialized_column_name` in `logql.rs` and
-        // the equivalent in `ir_planner`'s resolver.
-        Field::new("duration", DataType::Float64, true),
         map_field_named("log_attributes"),
         map_field_named("resource_attributes"),
     ]));
@@ -401,12 +381,11 @@ fn logs_fixture() -> SessionContext {
             Arc::new(StringArray::from(vec!["ERROR", "INFO", "WARN"])),
             Arc::new(StringArray::from(vec![Some("t1"), Some("t2"), Some("t3")])),
             Arc::new(StringArray::from(vec![Some("s1"), Some("s2"), Some("s3")])),
-            Arc::new(Float64Array::from(vec![Some(1.5), Some(2.5), Some(0.5)])),
             build_map(&[
-                &[("region", "eu")],
-                &[("region", "eu")],
+                &[("region", "eu"), ("duration", "1.5")],
+                &[("region", "eu"), ("duration", "2.5")],
                 // Row 2 has no `region` key at all — the absent-value case.
-                &[],
+                &[("duration", "0.5")],
             ]),
             build_map(&[&[], &[], &[]]),
         ],
@@ -485,21 +464,7 @@ fn class_of_querier_err(e: &QuerierError) -> Class {
     }
 }
 
-/// The old TraceQL path's classification: parse, then lower every condition.
-fn old_traceql_class(q: &str, ctx: &AttrContext) -> Class {
-    let conditions = match traceql::parse(q) {
-        Ok(c) => c,
-        Err(e) => return class_of_querier_err(&QuerierError::from(e)),
-    };
-    for c in &conditions {
-        if let Err(e) = search_filter::to_expr(c, ctx) {
-            return class_of_querier_err(&e);
-        }
-    }
-    Class::Accept
-}
-
-/// The new TraceQL path's classification: `ql_ir::traceql_to_ir` alone (the
+/// The TraceQL path's classification: `ql_ir::traceql_to_ir` alone (the
 /// harness does not call `plan_document` here — the document may still be
 /// rejected once resolved against a schema, which the filter-plan tests
 /// below cover for the accepted corpus already).
@@ -509,13 +474,6 @@ fn new_traceql_class(q: &str) -> Class {
         Err(ql_ir::LowerError::Parse(pe)) => class_of_querier_err(&QuerierError::from(pe)),
         Err(ql_ir::LowerError::Inexpressible(_)) => Class::Unsupported,
         Err(other) => panic!("unexpected TraceQL lowering error: {other}"),
-    }
-}
-
-fn old_tags_class(tags: &str) -> Class {
-    match search_filter::parse_tags(tags) {
-        Ok(_) => Class::Accept,
-        Err(e) => class_of_querier_err(&e),
     }
 }
 
@@ -562,35 +520,8 @@ fn new_logql_log_class(q: &str) -> Class {
 // Filter-plan comparison (task 2.3)
 // ---------------------------------------------------------------------------
 
-/// The old TraceQL search plan: scan, the fixture's time window, every
-/// condition folded in, then the fixed projection — the minimal comparable
-/// shape (module doc's comparison rules).
-async fn old_traceql_plan(
-    ctx: &SessionContext,
-    q: &str,
-    fields: &[&str],
-) -> Result<String, QuerierError> {
-    let conditions = traceql::parse(q)?;
-    let mut df = optional_table(ctx, TENANT, DATASET, "traces")
-        .await?
-        .expect("traces table is registered");
-    df = df
-        .filter(col("start_time_unix_nano").gt_eq(lit(FROM)))?
-        .filter(col("start_time_unix_nano").lt_eq(lit(TO)))?;
-    let attr_ctx = AttrContext {
-        materialized: materialized_columns_of(&df),
-        map_attrs: is_map_column(&df, "span_attributes"),
-        attr_tokens: false,
-    };
-    for c in &conditions {
-        df = df.filter(search_filter::to_expr(c, &attr_ctx)?)?;
-    }
-    df = df.select_columns(fields)?;
-    Ok(optimized_plan_text(df))
-}
-
-/// The new TraceQL plan: `traceql_to_ir` then `plan_document`, with `fields`
-/// overridden to the same projection the old side used (comparison rules).
+/// The TraceQL search plan: `traceql_to_ir` then `plan_document`, with
+/// `fields` overridden to a fixed minimal projection (comparison rules).
 async fn new_traceql_plan(
     ctx: &SessionContext,
     q: &str,
@@ -605,10 +536,10 @@ async fn new_traceql_plan(
     Ok(optimized_plan_text(df))
 }
 
-/// The new `tags` plan: `tags_to_ir::conditions_to_predicate` (task 3.2's
-/// real shim, not a text round-trip) conjoined into one document, with
-/// `fields` set to the same projection the old side used (comparison
-/// rules) — the same shape `build_search_dataframe_via_ir` builds.
+/// The `tags` plan: `tags_to_ir::conditions_to_predicate` (task 3.2's real
+/// shim, not a text round-trip) conjoined into one document, with `fields`
+/// set to a fixed minimal projection — the same shape
+/// `build_search_dataframe` builds for `tags` alone.
 async fn new_tags_plan(
     ctx: &SessionContext,
     conditions: &[traceql::Condition],
@@ -691,68 +622,84 @@ fn assert_plans_match(q: &str, old: &str, new: &str) {
 
 // ---------------------------------------------------------------------------
 // Tests: TraceQL / tags
+//
+// §5 deleted the old lowering these tests used to compare against
+// (`search_filter::to_expr`); each is now an expected-result pin on the
+// single (IR) lowering instead of an old-vs-new comparison. The expected
+// class/plan/row-count each asserts is exactly what both sides agreed on
+// before the deletion (see git history for the prior old-vs-new form).
 // ---------------------------------------------------------------------------
 
+/// Every TraceQL `q` corpus query paired with its accept/reject
+/// classification, pinned so a change to `ql_ir::traceql_to_ir` that starts
+/// accepting or rejecting one of these is a deliberate decision, not a
+/// silent drift. Determined empirically (`traceql::parse`'s `Syntax`/
+/// `Unsupported` split maps to `Invalid`/`Unsupported` — see `error.rs`'s
+/// `From<traceql::ParseError>`). Sources: `router_tempo_endpoints.rs`'s
+/// `test_search_filters_are_applied` (the first 7) and
+/// `src/ql-ir/tests/traceql.rs`'s corpus (the rest, deduplicated).
+const TRACEQL_CORPUS_CLASS: &[(&str, Class)] = &[
+    (r#"{ span.http.method = "GET" }"#, Class::Accept),
+    ("{ duration > 100ms }", Class::Unsupported),
+    (r#"{ span.x != "y" }"#, Class::Unsupported),
+    (r#"{ span.a = "1" || span.b = "2" }"#, Class::Unsupported),
+    ("notbraces", Class::Invalid),
+    ("{ foo }", Class::Invalid),
+    ("{ zzz = 1 }", Class::Invalid),
+    (r#"{ name = "GET /api" }"#, Class::Accept),
+    ("{ status = error }", Class::Accept),
+    ("{ kind = server }", Class::Accept),
+    (r#"{ resource.service.name = "api" }"#, Class::Accept),
+    (r#"{ .service.name = "api" }"#, Class::Accept),
+    (r#"{ resource.k8s.pod.name = "p" }"#, Class::Accept),
+    (r#"{ .http.method = "GET" }"#, Class::Accept),
+    (
+        r#"{ resource.service.name = "api" && span.http.method = "GET" }"#,
+        Class::Accept,
+    ),
+    ("{ span.http.status_code = 500 }", Class::Accept),
+    ("{ span.ok = true }", Class::Accept),
+    ("{}", Class::Accept),
+];
+
 #[tokio::test]
-async fn traceql_corpus_rejections_agree() {
-    let ctx = AttrContext::default();
-    for q in TRACEQL_CORPUS {
+async fn traceql_corpus_classification_is_pinned() {
+    for (q, expected) in TRACEQL_CORPUS_CLASS {
         assert_eq!(
-            old_traceql_class(q, &ctx),
             new_traceql_class(q),
-            "{q}: old/new rejection classification disagree"
+            *expected,
+            "{q}: classification drifted from its pinned expectation"
         );
     }
 }
 
-/// Corpus queries whose plans are known, triaged exceptions (module doc's
-/// triage table) rather than agreement — pinned by their own dedicated test
-/// below, and skipped here so this test still asserts everything else.
-const KNOWN_PLAN_DIVERGENCE_TRACEQL: &[&str] = &[
-    // Unscoped attribute match across containers: old ORs a match across
-    // every container; `ir_planner` COALESCEs to the first present
-    // container's value, then compares once. Different combining semantics
-    // when a key exists in two containers with two different values — see
-    // `adversarial_unscoped_attribute_combining_semantics_diverge`.
-    r#"{ .service.name = "api" }"#,
-    r#"{ .http.method = "GET" }"#,
-];
-
+/// Every accepted `TRACEQL_CORPUS_CLASS` query plans without error. The plans
+/// themselves are no longer pinned as fixed text (that only ever proved
+/// agreement with the deleted old path); the fixed-text pins that still
+/// carry independent value — a promoted column, a physical-column collision
+/// — have their own dedicated tests below.
 #[tokio::test]
-async fn traceql_corpus_filters_agree_on_optimized_plan() {
+async fn traceql_corpus_filters_plan_successfully() {
     let ctx = traces_fixture();
     let fields = ["trace_id"];
-    for q in TRACEQL_CORPUS {
-        if KNOWN_PLAN_DIVERGENCE_TRACEQL.contains(q) {
+    for (q, class) in TRACEQL_CORPUS_CLASS {
+        if *class != Class::Accept {
             continue;
         }
-        // Only compare a plan for queries both sides accept — a rejection has
-        // no plan to diff (covered by the rejections test above).
-        if old_traceql_class(q, &AttrContext::default()) != Class::Accept {
-            continue;
-        }
-        let old = old_traceql_plan(&ctx, q, &fields)
+        new_traceql_plan(&ctx, q, &fields)
             .await
-            .unwrap_or_else(|e| {
-                panic!("{q}: old path should accept per its own classification: {e}")
-            });
-        let new = new_traceql_plan(&ctx, q, &fields)
-            .await
-            .unwrap_or_else(|e| panic!("{q}: new path rejected an old-accepted query: {e}"));
-        assert_plans_match(q, &old, &new);
+            .unwrap_or_else(|e| panic!("{q}: an accepted query must still plan: {e}"));
     }
 }
 
-/// Pins the divergence `KNOWN_PLAN_DIVERGENCE_TRACEQL` skips (triage table
-/// case 3): an unscoped attribute present in two containers with two
-/// *different* values. Old path: OR across every container — matches if
-/// *any* container has the value. New path: COALESCE by container priority
-/// (span, then scope, then resource) — compares only the first container
-/// that has the key at all, ignoring the others even if they would match.
-/// Reported rather than fixed — this is `ir_planner`'s general coalescing
-/// strategy for every unscoped/bare field, not specific to TraceQL.
+/// An unscoped attribute present in two containers with two *different*
+/// values (D8 of `ir-single-lowering`): the IR planner coalesces bare-field
+/// resolution by container priority (span/log, then scope, then resource)
+/// and compares once, rather than matching if *any* container has the
+/// value — the compat surfaces' deliberate, single behaviour now (design
+/// D8), not a divergence to reconcile.
 #[tokio::test]
-async fn adversarial_unscoped_attribute_combining_semantics_diverge() {
+async fn unscoped_attribute_coalesces_by_container_priority() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("trace_id", DataType::Utf8, false),
         Field::new("span_id", DataType::Utf8, false),
@@ -791,24 +738,13 @@ async fn adversarial_unscoped_attribute_combining_semantics_diverge() {
     let q = r#"{ .http.method = "GET" }"#;
     let fields = ["trace_id"];
 
-    let old_rows = old_traceql_query_df(&ctx, q, &fields)
-        .await
-        .collect()
-        .await
-        .unwrap();
-    let old_count: usize = old_rows.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(
-        old_count, 1,
-        "old path: OR across containers should match the resource-scope GET"
-    );
-
     let mut doc = ql_ir::traceql_to_ir(q, FROM_NS, TO_NS).unwrap();
     set_fields(&mut doc, &fields);
-    let (new_df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
+    let (df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
         .await
         .unwrap()
         .unwrap();
-    let new_count: usize = new_df
+    let count: usize = df
         .collect()
         .await
         .unwrap()
@@ -816,39 +752,21 @@ async fn adversarial_unscoped_attribute_combining_semantics_diverge() {
         .map(|b| b.num_rows())
         .sum();
     assert_eq!(
-        new_count, 0,
-        "new path: coalesce takes span's \"POST\" first and never looks at resource's \"GET\" (the tracked gap — if this now matches, update the triage table)"
+        count, 0,
+        "coalesce takes span's \"POST\" first and never looks at resource's \"GET\""
     );
 }
 
-async fn old_traceql_query_df(ctx: &SessionContext, q: &str, fields: &[&str]) -> DataFrame {
-    let conditions = traceql::parse(q).unwrap();
-    let mut df = optional_table(ctx, TENANT, DATASET, "traces")
-        .await
-        .unwrap()
-        .unwrap();
-    let attr_ctx = AttrContext {
-        materialized: materialized_columns_of(&df),
-        map_attrs: is_map_column(&df, "span_attributes"),
-        attr_tokens: false,
-    };
-    for c in &conditions {
-        df = df
-            .filter(search_filter::to_expr(c, &attr_ctx).unwrap())
-            .unwrap();
-    }
-    df.select_columns(fields).unwrap()
-}
-
 #[tokio::test]
-async fn tags_corpus_rejections_agree() {
+async fn tags_corpus_classification_is_pinned() {
     for tags in TAGS_CORPUS {
-        let old = old_tags_class(tags);
-        let new = match search_filter::parse_tags(tags) {
-            // `parse_tags` is shared, so a parse rejection is identical by
-            // construction — reuse `old`'s already-computed classification
-            // rather than reparsing.
-            Err(_) => old,
+        let expected = if *tags == "justaword" {
+            Class::Invalid
+        } else {
+            Class::Accept
+        };
+        let class = match search_filter::parse_tags(tags) {
+            Err(e) => class_of_querier_err(&e),
             Ok(conditions) => {
                 let mut worst = Class::Accept;
                 for c in &conditions {
@@ -861,73 +779,21 @@ async fn tags_corpus_rejections_agree() {
                 worst
             }
         };
-        assert_eq!(
-            old, new,
-            "{tags}: old/new rejection classification disagree"
-        );
+        assert_eq!(class, expected, "{tags}: classification drifted");
     }
 }
 
-/// The three escaping-hazard entries added to `TAGS_CORPUS` for the blocker
-/// found in review of PR #1391 are all bare (`AnyAttribute`) keys, which hit
-/// the *unrelated*, already-pinned D8 combining-semantics divergence
-/// (`adversarial_unscoped_attribute_combining_semantics_diverge`, same
-/// mechanism as `KNOWN_COMBINING_DIVERGENCE_LOGQL_LOG`): `traces_fixture`'s
-/// schema carries both `span_attributes` and `resource_attributes`, so the
-/// old path's OR-across-containers and the new path's coalesce-by-priority
-/// produce structurally different plans for *any* bare key, independent of
-/// what values are actually stored. That is not what these three entries
-/// exist to test — see `adversarial_tags_escaping_values_agree_on_result`
-/// for the execution-level proof that the escaping fix itself is correct,
-/// isolated from D8 by using a fixture where only one container carries the
-/// key.
-const KNOWN_COMBINING_DIVERGENCE_TAGS: &[&str] = &[
-    r"file.path=C:\Users\foo",
-    r#"weird.key=va"lue"#,
-    "weird&&key=value",
-];
-
 #[tokio::test]
-async fn tags_corpus_filters_agree_on_optimized_plan() {
+async fn tags_corpus_filters_plan_successfully() {
     let ctx = traces_fixture();
     let fields = ["trace_id"];
     for tags in TAGS_CORPUS {
-        if KNOWN_COMBINING_DIVERGENCE_TAGS.contains(tags) {
-            continue;
-        }
         let Ok(conditions) = search_filter::parse_tags(tags) else {
             continue;
         };
-        // Old plan: scan + window + each condition's `to_expr`, same shape as
-        // `old_traceql_plan`.
-        let mut old_df = optional_table(&ctx, TENANT, DATASET, "traces")
+        new_tags_plan(&ctx, &conditions, &fields)
             .await
-            .unwrap()
-            .unwrap();
-        let attr_ctx = AttrContext {
-            materialized: materialized_columns_of(&old_df),
-            map_attrs: true,
-            attr_tokens: false,
-        };
-        old_df = old_df
-            .filter(col("start_time_unix_nano").gt_eq(lit(FROM)))
-            .unwrap()
-            .filter(col("start_time_unix_nano").lt_eq(lit(TO)))
-            .unwrap();
-        for c in &conditions {
-            old_df = old_df
-                .filter(search_filter::to_expr(c, &attr_ctx).unwrap())
-                .unwrap();
-        }
-        let old = optimized_plan_text(old_df.select_columns(&fields).unwrap());
-
-        // New plan: the real D4 shim (`tags_to_ir::conditions_to_predicate`),
-        // conjoined into one document exactly like
-        // `build_search_dataframe_via_ir` does.
-        let new = new_tags_plan(&ctx, &conditions, &fields)
-            .await
-            .unwrap_or_else(|e| panic!("{tags}: new path rejected an old-accepted query: {e}"));
-        assert_plans_match(tags, &old, &new);
+            .unwrap_or_else(|e| panic!("{tags}: an accepted tags expression must still plan: {e}"));
     }
 }
 
@@ -1145,93 +1011,95 @@ fn metric_rows(batches: &[RecordBatch], group_cols: &[&str], value_col: &str) ->
     rows
 }
 
-/// Corpus metric queries with no explicit outer `by` grouping that still
-/// need a skip here — not for the grouping default anymore (D7 fixed that;
-/// `count_over_time`/`rate` moved to the real comparison below, pinned
-/// separately by `adversarial_ungrouped_range_aggregation_default_grouping_agrees`),
-/// but because their `unwrap duration` target is a field `LogicalSchema::core()`
-/// declares only for `traces`, not `logs` (see `SKIPPED_LOGQL_METRIC_UNWRAP_GROUPED`'s
-/// doc — the identical pre-existing gap, independent of D7).
-const KNOWN_GROUPING_DIVERGENCE_LOGQL_METRIC: &[&str] = &[
-    r#"sum_over_time({service_name="api"} | unwrap duration [5m])"#,
-    r#"avg_over_time({service_name="api"} | unwrap duration [5m])"#,
-];
-
-/// Not a finding: the old LogQL metric path's `unwrap <label>` resolves the
-/// label as a **bare physical column reference** (`col(label)` verbatim, no
-/// materialized-name mapping — see `logql_metric.rs`'s `unwrap_label`), so a
-/// comparable fixture needs a real `duration` column. But `ir_planner`'s
-/// resolver then refuses that same bare name as a *physical column or
-/// storage detail* (`SchemaResolver::is_physical_name`) unless
-/// `LogicalSchema::core()` declares it for `logs` — which it does not
-/// (`duration` is declared only for `traces`). Building a fixture where
-/// `unwrap`'s target satisfies both sides at once needs either a
-/// `LogicalSchema::core()` change (a `query-ir` schema decision, not a
-/// fixture one) or deeper changes to how `ir_planner` resolves an
-/// aggregate's `of` field — out of reach for this harness in the time this
-/// change budgeted for it. Skipped rather than asserted either way.
-const SKIPPED_LOGQL_METRIC_UNWRAP_GROUPED: &[&str] = &[
-    r#"min by (service_name) (min_over_time({service_name="api"} | unwrap duration [1m]))"#,
-    r#"max by (service_name) (max_over_time({service_name="api"} | unwrap duration [1m]))"#,
-];
-
 #[tokio::test]
 async fn logql_metric_corpus_row_level_equivalence() {
     let ctx = logs_fixture();
-    let params = MetricQueryParams {
-        query: String::new(),
-        start: FROM,
-        end: TO,
-        step: 1_000,
-    };
-    for q in LOGQL_METRIC_CORPUS {
-        if KNOWN_GROUPING_DIVERGENCE_LOGQL_METRIC.contains(q)
-            || SKIPPED_LOGQL_METRIC_UNWRAP_GROUPED.contains(q)
-        {
-            continue;
-        }
-        let old_svc = LogsService::new(clone_ctx(&ctx));
-        let old_params = MetricQueryParams {
-            query: q.to_string(),
-            ..params.clone()
-        };
-        let old_batches = old_svc
-            .query_metric(&old_params, TENANT, DATASET)
-            .await
-            .unwrap_or_else(|e| panic!("{q}: old metric path failed: {e}"));
-
+    for (q, expected_rows) in LOGQL_METRIC_CORPUS_ROWS {
         let mut doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS)
-            .unwrap_or_else(|e| panic!("{q}: new metric path rejected an old-accepted query: {e}"));
+            .unwrap_or_else(|e| panic!("{q}: metric path rejected an accepted query: {e}"));
         // The IR's `Series` result returns the aggregate output unprojected
         // (`apply_projection`'s early-return for `series_shaped`), so no
         // `fields` override is needed or honoured here.
         let (df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
             .await
-            .unwrap_or_else(|e| panic!("{q}: new metric path failed to plan: {e}"))
+            .unwrap_or_else(|e| panic!("{q}: metric path failed to plan: {e}"))
             .expect("logs table is registered");
-        let new_batches = df
+        let batches = df
             .collect()
             .await
-            .unwrap_or_else(|e| panic!("{q}: new metric path failed to execute: {e}"));
+            .unwrap_or_else(|e| panic!("{q}: metric path failed to execute: {e}"));
 
-        // Both sides group by `service.name`/`service_name` when the query
-        // asks for it, else the fixture's implicit series identity
-        // (`service_name`). The value column is named differently per side
-        // (old: the LogQL-chosen alias; new: the IR aggregate's `as_name`,
-        // which `ql_ir::logql_lower` always calls `value` for a bare range
-        // aggregate) — normalized here rather than in production code, since
-        // it is purely a column-naming difference this harness needs to see
-        // past, not a lowering behaviour either side should change.
         let group_cols = grouping_columns(&mut doc);
-        let old_value_col = old_value_column(q);
-        let old_rows = metric_rows(&old_batches, &group_cols, old_value_col);
-        let new_rows = metric_rows(&new_batches, &group_cols, "value");
+        let mut rows = metric_rows(&batches, &group_cols, "value");
+        rows.sort_by(|a, b| {
+            a.key
+                .cmp(&b.key)
+                .then(a.value.partial_cmp(&b.value).unwrap())
+        });
+        let mut expected: Vec<MetricRow> = expected_rows
+            .iter()
+            .map(|(key, value)| MetricRow {
+                key: key.iter().map(|s| s.to_string()).collect(),
+                value: *value,
+            })
+            .collect();
+        expected.sort_by(|a, b| {
+            a.key
+                .cmp(&b.key)
+                .then(a.value.partial_cmp(&b.value).unwrap())
+        });
         assert_eq!(
-            old_rows, new_rows,
-            "{q}: old/new metric rows disagree (sorted, grouped by {group_cols:?})"
+            rows, expected,
+            "{q}: metric rows drifted from their pinned expectation (grouped by {group_cols:?})"
         );
     }
 }
+
+/// LogQL metric-query corpus, each paired with its expected rows over
+/// [`logs_fixture`], pinned so a regression in bucketing/grouping/aggregation
+/// shows up as a row-content mismatch rather than a silent behaviour change.
+/// Sources: `logql_queries.rs`'s `count_over_time` query and
+/// `src/ql-ir/tests/logql.rs`'s corpus. Values captured from the IR path
+/// itself (this is a regression pin, not an old-vs-new comparison — every
+/// one of these queries is `Accept`, not part of the D5 fallback set, so
+/// there is no old path left to compare against; §5.4 of
+/// `ir-single-lowering`). Every fixture row lands in bucket `"0"`
+/// (`date_bin` with a 1000ns step over timestamps 10/20/30ms — well inside
+/// one bucket).
+#[allow(clippy::type_complexity)]
+const LOGQL_METRIC_CORPUS_ROWS: &[(&str, &[(&[&str], f64)])] = &[
+    (
+        r#"count_over_time({service_name="api"}[1h])"#,
+        &[(&["0", "api", "ERROR"], 1.0), (&["0", "api", "INFO"], 1.0)],
+    ),
+    (
+        r#"rate({service_name="api"}[5m])"#,
+        &[
+            (&["0", "api", "ERROR"], 1.0 / 300.0),
+            (&["0", "api", "INFO"], 1.0 / 300.0),
+        ],
+    ),
+    (
+        r#"sum by (service_name) (count_over_time({service_name="api"}[1m]))"#,
+        &[(&["0", "api"], 2.0)],
+    ),
+    (
+        r#"sum_over_time({service_name="api"} | unwrap duration [5m])"#,
+        &[(&["0", "api", "ERROR"], 1.5), (&["0", "api", "INFO"], 2.5)],
+    ),
+    (
+        r#"avg_over_time({service_name="api"} | unwrap duration [5m])"#,
+        &[(&["0", "api", "ERROR"], 1.5), (&["0", "api", "INFO"], 2.5)],
+    ),
+    (
+        r#"min by (service_name) (min_over_time({service_name="api"} | unwrap duration [1m]))"#,
+        &[(&["0", "api"], 1.5)],
+    ),
+    (
+        r#"max by (service_name) (max_over_time({service_name="api"} | unwrap duration [1m]))"#,
+        &[(&["0", "api"], 2.5)],
+    ),
+];
 
 /// **The second major finding.** A LogQL range aggregation with no outer
 /// vector aggregation (`count_over_time(...)` alone, not `sum by (..)
@@ -1253,42 +1121,22 @@ async fn adversarial_ungrouped_range_aggregation_default_grouping_agrees() {
     let ctx = logs_fixture();
     let q = r#"count_over_time({service_name="api"}[1h])"#;
 
-    let old_svc = LogsService::new(clone_ctx(&ctx));
-    let old_batches = old_svc
-        .query_metric(
-            &MetricQueryParams {
-                query: q.to_string(),
-                start: FROM,
-                end: TO,
-                step: 1_000,
-            },
-            TENANT,
-            DATASET,
-        )
-        .await
-        .unwrap_or_else(|e| panic!("{q}: old path failed: {e}"));
-
     let doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS).unwrap_or_else(|e| panic!("{q}: {e}"));
     let (df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
         .await
-        .unwrap_or_else(|e| panic!("{q}: new path failed to plan: {e}"))
+        .unwrap_or_else(|e| panic!("{q}: failed to plan: {e}"))
         .expect("logs table is registered");
-    let new_batches = df
+    let batches = df
         .collect()
         .await
-        .unwrap_or_else(|e| panic!("{q}: new path failed to execute: {e}"));
+        .unwrap_or_else(|e| panic!("{q}: failed to execute: {e}"));
 
     let group_cols = ["service_name", "severity_text"];
-    let old_rows = metric_rows(&old_batches, &group_cols, "value");
-    let new_rows = metric_rows(&new_batches, &group_cols, "value");
+    let rows = metric_rows(&batches, &group_cols, "value");
     assert_eq!(
-        old_rows.len(),
+        rows.len(),
         2,
-        "old path: one row per (service_name, severity_text) stream — two api rows, two severities"
-    );
-    assert_eq!(
-        old_rows, new_rows,
-        "if this now diverges, the default-grouping fix regressed — update the triage table, don't just delete this assertion"
+        "one row per (service_name, severity_text) stream — two api rows, two severities: {rows:?}"
     );
 }
 
@@ -1297,73 +1145,46 @@ async fn adversarial_ungrouped_range_aggregation_default_grouping_agrees() {
 /// `sum(count_over_time(...))` — must not default to the stream identity;
 /// `vector_grouping` returning an empty grouping for `v.grouping == None`
 /// means "collapse", not "no grouping specified yet". `lower_metric_query`
-/// is fixed to keep the two cases distinct (task, this commit).
+/// keeps the two cases distinct.
 ///
 /// Checking that fix against the old path empirically (not assumed, per
-/// CodeRabbit's own suggestion) surfaced a *second*, independent finding:
-/// the old path does not actually collapse this query at all.
-/// `logql_metric.rs::plan_metric_query` documents that `sum`'s
-/// `outer_agg` stays `None` ("folds into the grouped range aggregate"), so
-/// `logs.rs::execute_plan`'s grouping branch (`None if
+/// CodeRabbit's own suggestion) surfaced a *second*, independent finding,
+/// still true today: `logql_metric.rs::plan_metric_query` documents that
+/// `sum`'s `outer_agg` stays `None` ("folds into the grouped range
+/// aggregate"), so `logs.rs::execute_plan`'s grouping branch (`None if
 /// out_group_cols.is_empty() => SERIES_COLUMNS`) treats an ungrouped
 /// `sum(...)` identically to a *bare* range aggregation — same
 /// `SERIES_COLUMNS` grouping, no second reduction pass — producing one row
-/// per stream instead of one row total. This is the old path's own bug
-/// (filed as #1394, sibling to #1392), not a genuine old-vs-new difference
-/// to reconcile: the *new* path's collapse here is correct Loki semantics
-/// on its own merits and must not regress to match it. Pinned as a
-/// divergence, the same pattern as
-/// `adversarial_mixed_case_grouping_label_old_path_still_has_1070`.
+/// per stream instead of one row total (filed as #1394, sibling to #1392).
+/// This query is `Accept`, not part of the D5 fallback set, so §5 made the
+/// old path's #1394 bug unreachable through the public API — it can no
+/// longer be pinned as a live old-vs-new divergence, only recorded as
+/// history (module doc, "Findings left as they are"). This is now a plain
+/// regression pin on the IR path's correct behaviour.
 #[tokio::test]
-async fn explicitly_ungrouped_vector_aggregation_diverges_old_path_never_collapses() {
+async fn explicitly_ungrouped_vector_aggregation_collapses_to_one_row() {
     let ctx = logs_fixture();
     let q = r#"sum(count_over_time({service_name="api"}[1h]))"#;
-
-    let old_svc = LogsService::new(clone_ctx(&ctx));
-    let old_batches = old_svc
-        .query_metric(
-            &MetricQueryParams {
-                query: q.to_string(),
-                start: FROM,
-                end: TO,
-                step: 1_000,
-            },
-            TENANT,
-            DATASET,
-        )
-        .await
-        .unwrap_or_else(|e| panic!("{q}: old path failed: {e}"));
 
     let doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS).unwrap_or_else(|e| panic!("{q}: {e}"));
     let (df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
         .await
-        .unwrap_or_else(|e| panic!("{q}: new path failed to plan: {e}"))
+        .unwrap_or_else(|e| panic!("{q}: failed to plan: {e}"))
         .expect("logs table is registered");
-    let new_batches = df
+    let batches = df
         .collect()
         .await
-        .unwrap_or_else(|e| panic!("{q}: new path failed to execute: {e}"));
+        .unwrap_or_else(|e| panic!("{q}: failed to execute: {e}"));
 
-    // No group columns declared either way (an explicit, ungrouped vector
-    // aggregation), so compare on (bucket, value) alone.
-    let old_rows = metric_rows(&old_batches, &[], "value");
-    let new_rows = metric_rows(&new_batches, &[], "value");
+    // No group columns declared (an explicit, ungrouped vector aggregation).
+    let rows = metric_rows(&batches, &[], "value");
     assert_eq!(
-        old_rows.len(),
-        2,
-        "old path (issue #1394): never collapses an ungrouped sum(...), one row per stream instead of one row total: {old_rows:?}"
-    );
-    assert_eq!(
-        new_rows,
+        rows,
         vec![MetricRow {
             key: vec!["0".to_string()],
             value: 2.0
         }],
-        "new path should correctly collapse to one row (the sum across both api streams): {new_rows:?}"
-    );
-    assert_ne!(
-        old_rows, new_rows,
-        "if this now agrees, either the old path's #1394 bug was fixed or the new path regressed — update this test and the triage table, don't just delete the assertion"
+        "should collapse to one row (the sum across both api streams): {rows:?}"
     );
 }
 
@@ -1420,17 +1241,6 @@ fn grouping_columns(doc: &mut Document) -> Vec<&'static str> {
     Vec::new()
 }
 
-/// The old path's per-query value-column alias — `logs.rs::execute_plan`
-/// names the output column after the metric function
-/// (`super::logql_metric::Aggregate`'s Display, not reproduced here); every
-/// corpus query above resolves to `"value"` in the shipped querier's matrix
-/// assembly, confirmed by `logql_metric_corpus_row_level_equivalence`
-/// failing loudly (a missing-column panic, not a silent pass) if that ever
-/// stops being true.
-fn old_value_column(_q: &str) -> &'static str {
-    "value"
-}
-
 fn clone_ctx(ctx: &SessionContext) -> SessionContext {
     // `SessionContext` is cheaply `Clone` (an `Arc` around shared state); the
     // catalog registered on `ctx` is visible from the clone.
@@ -1475,45 +1285,34 @@ async fn logql_metric_known_inexpressible_matches_old_path_accepts() {
 // Adversarial cases (task 2.2)
 // ---------------------------------------------------------------------------
 
-/// Promoted attribute, scope-qualified field: after the D10 fix
-/// (`ir_planner::SchemaResolver::column_for` strips the scope qualifier
-/// before materializing a promoted column's name, task 3.0), both paths
-/// resolve `span.http.method` to the promoted `label_http_method` column —
-/// this moved from triage table case (2) "both correct, plans differ" to
-/// case (1) "`ir_planner` was wrong, fixed in §3", so the comparison is now
-/// at the optimized-plan level, like every other agreeing case, rather than
-/// the weaker row-level one it needed while the plans still legitimately
-/// differed.
+/// Promoted attribute, scope-qualified field: `ir_planner::SchemaResolver::column_for`
+/// strips the scope qualifier before materializing a promoted column's name
+/// (D10 of `ir-single-lowering`, task 3.0), so `span.http.method` resolves
+/// to the promoted `label_http_method` column rather than falling back to
+/// `get_field` JSON-path extraction.
 #[tokio::test]
-async fn adversarial_promoted_attribute_agrees_on_plan() {
+async fn promoted_attribute_resolves_to_its_column() {
     let ctx = traces_promoted_fixture();
     let q = r#"{ span.http.method = "GET" }"#;
     let fields = ["trace_id"];
 
-    let old = old_traceql_plan(&ctx, q, &fields).await.unwrap();
-    let new = new_traceql_plan(&ctx, q, &fields).await.unwrap();
+    let plan = new_traceql_plan(&ctx, q, &fields).await.unwrap();
     assert!(
-        old.contains("label_http_method") && new.contains("label_http_method"),
-        "both paths should route to the promoted column:\nold:\n{old}\nnew:\n{new}"
+        plan.contains("label_http_method"),
+        "must route to the promoted column:\n{plan}"
     );
     assert!(
-        !old.contains("get_field") && !new.contains("get_field"),
-        "neither path should fall back to json-path extraction once a promoted column exists:\nold:\n{old}\nnew:\n{new}"
+        !plan.contains("get_field"),
+        "must not fall back to json-path extraction once a promoted column exists:\n{plan}"
     );
-    assert_plans_match(q, &old, &new);
 }
 
 /// The three tags escaping-hazard values added to `TAGS_CORPUS` (blocker
-/// found in review of PR #1391), executed end to end. Each attribute exists
-/// only in `span_attributes`, so old (OR-across-containers) and new
-/// (coalesce-by-priority) trivially agree on which container answers —
-/// isolating this from the unrelated D8 divergence
-/// `KNOWN_COMBINING_DIVERGENCE_TAGS` skips at the plan level (see its doc
-/// comment). What this proves: a backslash, an embedded `"`, and a `&&` in
-/// a key all reach the filter unchanged on the new (`tags_to_ir`) path,
-/// exactly as the old path's raw-string comparison already did.
+/// found in review of PR #1391), executed end to end: a backslash, an
+/// embedded `"`, and a `&&` in a key all reach the filter unchanged through
+/// `tags_to_ir`.
 #[tokio::test]
-async fn adversarial_tags_escaping_values_agree_on_result() {
+async fn tags_escaping_values_match_the_fixture_row() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("trace_id", DataType::Utf8, false),
         Field::new("span_id", DataType::Utf8, false),
@@ -1558,37 +1357,8 @@ async fn adversarial_tags_escaping_values_agree_on_result() {
         "weird&&key=value",
     ] {
         let conditions = search_filter::parse_tags(tags).unwrap();
-
-        let mut old_df = optional_table(&ctx, TENANT, DATASET, "traces")
-            .await
-            .unwrap()
-            .unwrap();
-        let attr_ctx = AttrContext {
-            materialized: materialized_columns_of(&old_df),
-            map_attrs: true,
-            attr_tokens: false,
-        };
-        for c in &conditions {
-            old_df = old_df
-                .filter(search_filter::to_expr(c, &attr_ctx).unwrap())
-                .unwrap();
-        }
-        let old_rows: usize = old_df
-            .select_columns(&fields)
-            .unwrap()
-            .collect()
-            .await
-            .unwrap()
-            .iter()
-            .map(|b| b.num_rows())
-            .sum();
-        assert_eq!(
-            old_rows, 1,
-            "{tags}: old path should match the fixture's one row"
-        );
-
         let predicate = super::tags_to_ir::conditions_to_predicate(&conditions)
-            .unwrap_or_else(|e| panic!("{tags}: new path rejected an old-accepted query: {e}"));
+            .unwrap_or_else(|e| panic!("{tags}: should be expressible: {e}"));
         let doc = Document {
             ir_version: 1,
             from: "traces".to_string(),
@@ -1600,31 +1370,27 @@ async fn adversarial_tags_escaping_values_agree_on_result() {
             fields: Some(fields.iter().map(|s| s.to_string()).collect()),
             pipeline: vec![Stage::Where(predicate)],
         };
-        let (new_df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
+        let (df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
             .await
             .unwrap()
             .unwrap();
-        let new_rows: usize = new_df
+        let rows: usize = df
             .collect()
             .await
             .unwrap()
             .iter()
             .map(|b| b.num_rows())
             .sum();
-        assert_eq!(
-            new_rows, old_rows,
-            "{tags}: new path should match the same row the old path did"
-        );
+        assert_eq!(rows, 1, "{tags}: should match the fixture's one row");
     }
 }
 
 /// An attribute key colliding with a physical column name
 /// (`span_attributes["service_name"]` disagrees with the real
 /// `service_name` column): filtering the *logical* `service.name` field
-/// must resolve to the physical column on both paths, never the colliding
-/// attribute.
+/// must resolve to the physical column, never the colliding attribute.
 #[tokio::test]
-async fn adversarial_attribute_key_collides_with_physical_column() {
+async fn attribute_key_collision_resolves_to_the_physical_column() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("trace_id", DataType::Utf8, false),
         Field::new("span_id", DataType::Utf8, false),
@@ -1662,67 +1428,47 @@ async fn adversarial_attribute_key_collides_with_physical_column() {
     let q = r#"{ resource.service.name = "api" }"#;
     let fields = ["trace_id"];
 
-    let old = old_traceql_plan(&ctx, q, &fields).await.unwrap();
-    let new = new_traceql_plan(&ctx, q, &fields).await.unwrap();
+    let plan = new_traceql_plan(&ctx, q, &fields).await.unwrap();
     assert!(
-        !old.contains("get_field") && !new.contains("get_field"),
-        "both paths must resolve service.name to the physical column, not the colliding attribute:\nold:\n{old}\nnew:\n{new}"
+        !plan.contains("get_field"),
+        "must resolve service.name to the physical column, not the colliding attribute:\n{plan}"
     );
-    assert_plans_match(q, &old, &new);
 }
 
 /// #1070's fix (`Lowering::lower_aggregate` referencing its group-column
-/// alias via `ident()` instead of `col()`) only touched `ir_planner.rs`.
-/// This adversarial case went looking for the same bug class in the *old*
-/// LogQL metric path (`logs.rs`'s `execute_plan` grouping-column resolution)
-/// — and found it still there: grouping by a mixed-case *attribute* label
-/// (as opposed to a well-known dedicated-column label) fails on the old path
-/// with `No field named label_statuscode. Did you mean 't.d.logs.label_StatusCode'?`,
-/// the same lowercased-unquoted-identifier bug #1070 fixed on the IR side.
-/// New path handles it correctly (proving #1070's fix generalizes to the
-/// grouping path once queries are routed through `plan_document`). Reported
-/// as a still-open bug in `logs.rs`, not fixed here — out of scope for this
-/// harness change, and independent of the `ir-single-lowering` seam.
+/// alias via `ident()` instead of `col()`) only touched `ir_planner.rs`. This
+/// adversarial case went looking for the same bug class in the *old* LogQL
+/// metric path (`logs.rs`'s `execute_plan` grouping-column resolution) — and
+/// found it still there: grouping by a mixed-case *attribute* label (as
+/// opposed to a well-known dedicated-column label) failed on the old path
+/// with `No field named label_statuscode. Did you mean
+/// 't.d.logs.label_StatusCode'?`, the same lowercased-unquoted-identifier
+/// bug #1070 fixed on the IR side.
+///
+/// This query is `Accept`, not part of the D5 fallback set, so §5 made the
+/// old path's #1070-class bug (issue #1392) unreachable through the public
+/// API — the same as #1394 above, it can no longer be pinned as a live
+/// divergence. This is now a plain regression pin on the IR path's correct
+/// grouping.
 #[tokio::test]
-async fn adversarial_mixed_case_grouping_label_old_path_still_has_1070() {
+async fn mixed_case_grouping_label_groups_correctly() {
     let ctx = logs_mixed_case_fixture();
     let q = r#"sum by (StatusCode) (count_over_time({service_name="api"}[1m]))"#;
-
-    let old_svc = LogsService::new(clone_ctx(&ctx));
-    let old_err = old_svc
-        .query_metric(
-            &MetricQueryParams {
-                query: q.to_string(),
-                start: FROM,
-                end: TO,
-                step: 1_000,
-            },
-            TENANT,
-            DATASET,
-        )
-        .await
-        .expect_err(
-            "if this now succeeds, the old path's own #1070-class bug was fixed — update the triage table, don't just delete this assertion",
-        );
-    assert!(
-        matches!(old_err, QuerierError::QueryFailed(_)),
-        "{q}: expected the old path's still-open #1070-class grouping bug, got {old_err}"
-    );
 
     let doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS).unwrap_or_else(|e| panic!("{q}: {e}"));
     let (df, _) = plan_document(&ctx, &doc, TENANT, DATASET, 0)
         .await
-        .unwrap_or_else(|e| panic!("{q}: new path failed to plan: {e}"))
+        .unwrap_or_else(|e| panic!("{q}: failed to plan: {e}"))
         .expect("logs table is registered");
-    let new_batches = df
+    let batches = df
         .collect()
         .await
-        .unwrap_or_else(|e| panic!("{q}: new path failed to execute (a #1070 regression): {e}"));
-    let new_rows = metric_rows(&new_batches, &["StatusCode"], "value");
+        .unwrap_or_else(|e| panic!("{q}: failed to execute (a #1070 regression): {e}"));
+    let rows = metric_rows(&batches, &["StatusCode"], "value");
     assert_eq!(
-        new_rows.len(),
+        rows.len(),
         2,
-        "new path should group the two StatusCode values: {new_rows:?}"
+        "should group the two StatusCode values: {rows:?}"
     );
 }
 
@@ -1932,15 +1678,19 @@ async fn old_logql_log_query_df(ctx: &SessionContext, q: &str, fields: &[&str]) 
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.3b/3.4: endpoint-level agreement — `TraceService::find_traces_with_tenant`
-// with the `ir-single-lowering` switch on vs off, over the corpus and the
-// promoted-attribute/combining-semantics adversarial cases.
+// Endpoint-level regression: `TraceService::find_traces_with_tenant` over the
+// corpus and the promoted-attribute/combining-semantics adversarial cases.
+// §5 deleted the old lowering these tests used to compare against with the
+// rollout switch on vs off; each is now a single-path expected-result pin —
+// proof the compat layer's own result assembly, downstream of the plan,
+// still produces a sane response (module doc's original task 2.3b rationale
+// for testing at the endpoint and not just the plan).
 // ---------------------------------------------------------------------------
 
 /// A `traces` table with the full schema [`super::trace::TraceService`]'s
 /// search assembly reads (unlike [`traces_fixture`], which only carries what
 /// the plan-comparison tests above project) — same two rows as
-/// [`traces_fixture`], so every `TRACEQL_CORPUS`/`TAGS_CORPUS` query that
+/// [`traces_fixture`], so every `TRACEQL_CORPUS_CLASS`/`TAGS_CORPUS` query that
 /// matches there matches identically here.
 fn traces_endpoint_fixture() -> SessionContext {
     let schema = Arc::new(Schema::new(vec![
@@ -1982,25 +1732,11 @@ fn traces_endpoint_fixture() -> SessionContext {
     ctx
 }
 
-/// A comparable, deterministic form of a search result: top-level trace
-/// order sorted by `trace_id` (`Trace.spans` is already deterministic —
-/// `build_span_hierarchy` sorts by start time then span id — but two
-/// independently-truncated searches can still order traces differently),
-/// serialized to JSON so `Span::attributes`/`resource` (`HashMap`, whose
-/// iteration order is randomized per-instance, not just per-process) compare
-/// by content rather than by incidental Debug-output order.
-fn canonicalize_traces(mut traces: Vec<common::model::trace::Trace>) -> serde_json::Value {
-    traces.sort_by(|a, b| a.trace_id.cmp(&b.trace_id));
-    serde_json::to_value(&traces).expect("Trace serializes to JSON")
-}
-
 async fn search_traces(
     ctx: &SessionContext,
     query: SearchQueryParams,
-    via_ir: bool,
 ) -> Result<Vec<common::model::trace::Trace>, QuerierError> {
     TraceService::new(ctx.clone(), "traces".to_string())
-        .with_trace_search_via_ir(via_ir)
         .find_traces_with_tenant(query, TENANT, DATASET)
         .await
 }
@@ -2019,82 +1755,60 @@ fn tags_only(tags: &str) -> SearchQueryParams {
     }
 }
 
-/// Every `TRACEQL_CORPUS` query both paths accept must produce the identical
-/// assembled search result whether `trace_search_via_ir` is off or on — not
-/// merely the identical plan (2.3, above), which the compat layer's own
-/// assembly sits downstream of (module doc, task 2.3b).
+/// Every accepted `TRACEQL_CORPUS_CLASS` query must still produce an assembled
+/// search result end to end (not merely plan successfully — 2.3, above —
+/// the compat layer's own result assembly sits downstream of the plan).
 #[tokio::test]
-async fn traceql_corpus_search_results_agree_with_switch_on_and_off() {
+async fn traceql_corpus_searches_successfully_at_the_endpoint() {
     let ctx = traces_endpoint_fixture();
-    for q in TRACEQL_CORPUS {
-        if old_traceql_class(q, &AttrContext::default()) != Class::Accept {
+    for (q, class) in TRACEQL_CORPUS_CLASS {
+        if *class != Class::Accept {
             continue;
         }
-        let old = search_traces(&ctx, q_only(q), false)
+        search_traces(&ctx, q_only(q))
             .await
-            .unwrap_or_else(|e| panic!("{q}: switch off failed: {e}"));
-        let new = search_traces(&ctx, q_only(q), true)
-            .await
-            .unwrap_or_else(|e| panic!("{q}: switch on failed: {e}"));
-        assert_eq!(
-            canonicalize_traces(old),
-            canonicalize_traces(new),
-            "{q}: switch on/off disagree on the assembled search result"
-        );
+            .unwrap_or_else(|e| panic!("{q}: an accepted query must still search: {e}"));
     }
 }
 
-/// Same agreement, for the `tags` corpus.
+/// Same, for the `tags` corpus.
 #[tokio::test]
-async fn tags_corpus_search_results_agree_with_switch_on_and_off() {
+async fn tags_corpus_searches_successfully_at_the_endpoint() {
     let ctx = traces_endpoint_fixture();
     for tags in TAGS_CORPUS {
-        if old_tags_class(tags) != Class::Accept {
+        if *tags == "justaword" {
             continue;
         }
-        let old = search_traces(&ctx, tags_only(tags), false)
+        search_traces(&ctx, tags_only(tags))
             .await
-            .unwrap_or_else(|e| panic!("{tags}: switch off failed: {e}"));
-        let new = search_traces(&ctx, tags_only(tags), true)
-            .await
-            .unwrap_or_else(|e| panic!("{tags}: switch on failed: {e}"));
-        assert_eq!(
-            canonicalize_traces(old),
-            canonicalize_traces(new),
-            "{tags}: switch on/off disagree on the assembled search result"
-        );
+            .unwrap_or_else(|e| {
+                panic!("{tags}: an accepted tags expression must still search: {e}")
+            });
     }
 }
 
-/// `q` and `tags` together, at the endpoint level (task 3.4's explicit case:
-/// no existing test sent both before task 3.3 made them one document).
+/// `q` and `tags` together become one conjoined document (task 3.3): `q`
+/// narrows to `service.name = "api"` (both fixture rows match), `tags`
+/// narrows further to `http.method = "GET"` (only `t0`).
 #[tokio::test]
-async fn q_and_tags_together_search_results_agree_with_switch_on_and_off() {
+async fn q_and_tags_together_narrow_the_search() {
     let ctx = traces_endpoint_fixture();
     let query = SearchQueryParams {
         q: Some(r#"{ resource.service.name = "api" }"#.to_string()),
         tags: Some("http.method=GET".to_string()),
         ..Default::default()
     };
-    let old = search_traces(&ctx, query.clone(), false).await.unwrap();
-    let new = search_traces(&ctx, query, true).await.unwrap();
-    assert_eq!(
-        canonicalize_traces(old),
-        canonicalize_traces(new),
-        "q+tags together: switch on/off disagree on the assembled search result"
-    );
+    let traces = search_traces(&ctx, query).await.unwrap();
+    let ids: Vec<&str> = traces.iter().map(|t| t.trace_id.as_str()).collect();
+    assert_eq!(ids, vec!["t0"]);
 }
 
-/// The D8 combining-semantics divergence
-/// (`adversarial_unscoped_attribute_combining_semantics_diverge`, above)
-/// reproduces at the endpoint level too, not just in the raw plan/row
-/// comparison: the old path's OR-across-containers still finds the
-/// resource-scope match the new path's coalesce never reaches. Asserts the
-/// *divergence*, matching the module doc's pinned finding — if this ever
-/// starts agreeing, the D8 gap was closed and this assertion (and the
-/// triage table entry) should be deleted, not "fixed".
+/// D8's unscoped-attribute combining rule
+/// (`unscoped_attribute_coalesces_by_container_priority`, above) reproduces
+/// at the endpoint level too: the coalesce-by-priority resolution takes the
+/// span-scope value first and never reaches the resource-scope match.
 #[tokio::test]
-async fn adversarial_unscoped_attribute_combining_semantics_diverge_at_endpoint() {
+async fn unscoped_attribute_coalescing_reproduces_at_the_endpoint() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("trace_id", DataType::Utf8, false),
         Field::new("span_id", DataType::Utf8, false),
@@ -2130,115 +1844,81 @@ async fn adversarial_unscoped_attribute_combining_semantics_diverge_at_endpoint(
     let ctx = SessionContext::new();
     register(&ctx, "traces", schema, batch);
 
-    let query = q_only(r#"{ .http.method = "GET" }"#);
-    let old = search_traces(&ctx, query.clone(), false).await.unwrap();
-    let new = search_traces(&ctx, query, true).await.unwrap();
+    let traces = search_traces(&ctx, q_only(r#"{ .http.method = "GET" }"#))
+        .await
+        .unwrap();
     assert_eq!(
-        old.len(),
-        1,
-        "old path: OR across containers matches the resource-scope GET"
-    );
-    assert_eq!(
-        new.len(),
+        traces.len(),
         0,
-        "if this now matches, the D8 combining-semantics gap was closed at the endpoint level — update the triage table, don't just delete this assertion"
+        "coalesce takes span's \"POST\" first and never looks at resource's \"GET\""
     );
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.3b (logs half): endpoint-level agreement — `LogsService::query_metric`
-// with the `logql_via_ir` switch on vs off. Pins the two schema-parity
-// corrections `LogsService::query_metric_via_ir` applies post-`plan_document`
-// (see its doc comment) — a regression in either would otherwise only show up
-// as silently-wrong numbers at the router, not a planning error.
+// Task 2.3b (logs half): endpoint-level regression — `LogsService::query_metric`.
+// §5.3 removed the rollout switch (there is one path now, IR-first with the
+// D5 fallback), so these are single-path expected-result pins on the two
+// schema-parity corrections `LogsService::query_metric_via_ir` applies
+// post-`plan_document` (see its doc comment) — a regression in either would
+// otherwise only show up as silently-wrong numbers at the router, not a
+// planning error.
 // ---------------------------------------------------------------------------
 
 /// D5/4.1: `ql_ir::logql_to_ir` sets a range aggregate's bucket width from the
 /// LogQL range literal (`[1h]` here), not the caller's `step` parameter —
-/// `query_metric_via_ir` overrides it post-lowering so both paths bucket
-/// identically. Demonstrated with a `step` (10ns) far finer than the `[1h]`
-/// literal: the fixture's two `api` rows land at `timestamp` 10 and 20, ten
-/// nanoseconds apart, so a `step`-correct plan produces two one-nanosecond-
-/// resolution buckets (one row each) on both paths. If the override were
-/// dropped, the new path would instead bucket by `~1h` in nanoseconds — both
-/// rows would collapse into a single bucket of count 2, diverging from the
-/// old path.
+/// `query_metric_via_ir` overrides it post-lowering. Demonstrated with a
+/// `step` (10ns) far finer than the `[1h]` literal: the fixture's two `api`
+/// rows land at `timestamp` 10 and 20, ten nanoseconds apart, so a
+/// `step`-correct plan produces two one-nanosecond-resolution buckets (one
+/// row each). If the override were dropped, bucketing would use `~1h` in
+/// nanoseconds instead — both rows would collapse into a single bucket of
+/// count 2.
 #[tokio::test]
 async fn query_metric_via_ir_buckets_by_the_callers_step_not_the_range_literal() {
     let ctx = logs_fixture();
-    let old_svc = LogsService::new(clone_ctx(&ctx));
-    let new_svc = LogsService::new(clone_ctx(&ctx)).with_logql_via_ir(true);
+    let svc = LogsService::new(ctx);
     let params = MetricQueryParams {
         query: r#"count_over_time({service_name="api"}[1h])"#.to_string(),
         start: FROM,
         end: TO,
         step: 10,
     };
-    let old_batches = old_svc
-        .query_metric(&params, TENANT, DATASET)
-        .await
-        .unwrap();
-    let new_batches = new_svc
-        .query_metric(&params, TENANT, DATASET)
-        .await
-        .unwrap();
+    let batches = svc.query_metric(&params, TENANT, DATASET).await.unwrap();
     let group_cols = ["service_name", "severity_text"];
-    let old_rows = metric_rows(&old_batches, &group_cols, "value");
-    let new_rows = metric_rows(&new_batches, &group_cols, "value");
+    let rows = metric_rows(&batches, &group_cols, "value");
     assert_eq!(
-        old_rows.len(),
+        rows.len(),
         2,
-        "old path: a step of 10ns should split the two api rows (10ns apart) into two buckets"
-    );
-    assert_eq!(
-        old_rows, new_rows,
-        "if this now diverges, the step override regressed — the new path is bucketing by the range literal again"
+        "a step of 10ns should split the two api rows (10ns apart) into two buckets"
     );
 }
 
 /// D5/4.1: `ir_planner::agg_expr`'s `count` aggregate is Arrow `Int64`
-/// (uncast) unless a `rate` divisor promotes it, but the old path
-/// (`execute_plan`) always casts the matrix's `value` column to `Float64` —
-/// which is also what the router's `batches_to_matrix` requires
-/// (`downcast_ref::<Float64Array>`, silently reading `0.0` for any other
-/// type). `query_metric_via_ir` casts explicitly post-plan; this pins that
-/// the cast actually lands, not just that the *numbers* happen to compare
-/// equal after `metric_rows`' own defensive cast (which would mask exactly
-/// this regression).
+/// (uncast) unless a `rate` divisor promotes it, but the router's
+/// `batches_to_matrix` requires `Float64` (`downcast_ref::<Float64Array>`,
+/// silently reading `0.0` for any other type). `query_metric_via_ir` casts
+/// explicitly post-plan; this pins that the cast actually lands, not just
+/// that the *numbers* happen to compare equal after `metric_rows`' own
+/// defensive cast (which would mask exactly this regression).
 #[tokio::test]
-async fn query_metric_via_ir_value_column_is_float64_like_the_old_path() {
+async fn query_metric_via_ir_value_column_is_float64() {
     let ctx = logs_fixture();
-    let old_svc = LogsService::new(clone_ctx(&ctx));
-    let new_svc = LogsService::new(clone_ctx(&ctx)).with_logql_via_ir(true);
+    let svc = LogsService::new(ctx);
     let params = MetricQueryParams {
         query: r#"count_over_time({service_name="api"}[1h])"#.to_string(),
         start: FROM,
         end: TO,
         step: 1_000,
     };
-    let old_batches = old_svc
-        .query_metric(&params, TENANT, DATASET)
-        .await
-        .unwrap();
-    let new_batches = new_svc
-        .query_metric(&params, TENANT, DATASET)
-        .await
-        .unwrap();
-    let value_type = |batches: &[RecordBatch]| -> Option<DataType> {
-        batches.iter().find_map(|b| {
-            b.schema()
-                .column_with_name("value")
-                .map(|(_, f)| f.data_type().clone())
-        })
-    };
+    let batches = svc.query_metric(&params, TENANT, DATASET).await.unwrap();
+    let value_type = batches.iter().find_map(|b| {
+        b.schema()
+            .column_with_name("value")
+            .map(|(_, f)| f.data_type().clone())
+    });
     assert_eq!(
-        value_type(&new_batches),
+        value_type,
         Some(DataType::Float64),
-        "new path's value column must be Float64, matching what the router requires"
-    );
-    assert_eq!(
-        value_type(&old_batches),
-        value_type(&new_batches),
-        "old and new paths must agree on the value column's type"
+        "the value column must be Float64, matching what the router requires"
     );
 }

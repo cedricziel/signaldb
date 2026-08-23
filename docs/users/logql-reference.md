@@ -219,10 +219,17 @@ sum by (level) (rate({service_name="api"}[5m]))
   The regex is anchored to the whole source value; a non-match leaves the
   series unchanged, and an empty result deletes the label. A new `dst`
   becomes an additional series label.
-- **Grouping** is supported by labels backed by a column: the built-in
+- **Grouping** by a label backed by a column works as expected: the built-in
   ones (`service_name`, `level`, ...) and any **materialized** label
   (`sum by (namespace) (...)` groups on its `label_namespace` column; the
-  result series carry the label under its sanitized name).
+  result series carry the label under its sanitized name). Grouping by any
+  other name is also accepted — it resolves as an attribute, coalesced
+  across containers the same way a `where` clause on that name would — and
+  if no record in the queried window actually carries that attribute, every
+  row collapses into one series with that label absent, same as real Loki:
+  `sum by (foo) (...)` for a label no stream carries returns one series
+  with `foo` absent/empty rather than an error, whether `foo` is a column
+  we happen to store or an attribute we don't.
 
 ### Time bucketing — the key approximation
 
@@ -240,7 +247,6 @@ These parse but return an "unsupported" error at execution:
 - Many-to-one vector matching (`group_left` / `group_right`) and
   `... or vector(0)` fallbacks
 - `sum without (labels)` with a non-empty label list
-- Grouping by a plain (non-materialized) attribute label
 
 ## Examples
 

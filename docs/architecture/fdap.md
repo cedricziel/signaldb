@@ -79,8 +79,15 @@ vectorized query engine written in Rust with Arrow as its memory model
 querier plans and executes every query with it. Notably, SignalDB's
 query APIs — TraceQL, LogQL, PromQL, and SQL — do not template SQL
 strings: each parsed query is lowered to DataFusion `Expr`s and logical
-plans directly, and DataFusion handles predicate pushdown, partition
-pruning, and vectorized execution against the Parquet files.
+plans, and DataFusion handles predicate pushdown, partition pruning, and
+vectorized execution against the Parquet files. TraceQL and LogQL take
+one further step first: the parsed query lowers to a shared, versioned
+query-IR document, which a single planner then lowers to the DataFusion
+plan — the native `POST /api/v1/query` surface plans the same IR
+documents directly, so the compat and first-party query paths share one
+lowering rather than each maintaining its own. PromQL and SQL still
+lower straight to a DataFusion plan with no IR step. See
+[Querying with the IR](../users/querying-ir.md).
 
 ### Parquet — the storage format
 
@@ -135,7 +142,7 @@ through a trait the querier implements, which is what keeps attribute
 promotion invisible to the IR.
 
 `ql-ir` joins the two: it lowers a parsed LogQL or TraceQL query into an IR
-document, and because every one of its dependencies is itself FDAP-free, so is it. That is what makes client-side query *construction* possible rather
+document, and because every one of its dependencies is itself FDAP-free, so is it. That is what makes client-side query _construction_ possible rather
 than only client-side syntax checking — turning query text into something
 executable has never needed the engine that executes it. TraceQL and LogQL both lower today; what
 remains out of reach is cross-series arithmetic (`a / b`, `label_replace`),

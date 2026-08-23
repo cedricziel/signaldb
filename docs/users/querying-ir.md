@@ -244,10 +244,11 @@ thing a later stage may reference:
 earliest and latest — not whichever row the scan happened to produce first.
 
 `sum`/`avg`/`quantile`/`stddev`/`stdvar` require a numeric `of` field —
-**with one exception**: an unpromoted attribute (typed `string` until the
-attribute-registry work lands canonical attribute types; see
+**with one exception**: an unpromoted attribute, or an attribute captured on
+a span event (e.g. `exception.message`) — both typed `string` until the
+attribute-registry work lands canonical attribute types (see
 [Field resolution is promotion-invariant](#field-resolution-is-promotion-invariant))
-is accepted too, and coerced to a number at query time. A value that
+— is accepted too, and coerced to a number at query time. A value that
 doesn't parse as a number becomes absent for that row rather than failing
 the query — the same non-numeric-value handling any other field gets. A
 _registered_ string field (a real column, e.g. `service.name`) is not

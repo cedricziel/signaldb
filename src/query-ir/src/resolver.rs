@@ -62,12 +62,18 @@ impl Resolved {
     /// Whether this resolution's [`ValueType`] is *advisory* rather than
     /// authoritative: an unpromoted attribute (`JsonPath`) or an attribute
     /// captured on a span event (`EventAttribute`) has no canonical type of
-    /// its own — both report `String` unconditionally, since the
-    /// attribute-registry epic (#811) hasn't landed a real type source yet —
-    /// so a caller that would otherwise coerce the value at plan time (a
-    /// numeric aggregate operand casting to `Float64`, tolerating `NULL` for
-    /// a non-numeric-looking value rather than erroring) may treat this
-    /// resolution's advertised type as a hint, not a guarantee. A `Column`
+    /// its own until the attribute-registry epic (#811) lands a real type
+    /// source, so a caller that would otherwise coerce the value at plan
+    /// time (a numeric aggregate operand casting to `Float64`, tolerating
+    /// `NULL` for a non-numeric-looking value rather than erroring) may
+    /// treat this resolution's advertised type as a hint, not a guarantee —
+    /// whatever that type actually is. It is *not* always `String`: a
+    /// resolver's unknown-name fallback (an unrecognized field, resolved
+    /// permissively as a String attribute extraction) does hardcode
+    /// `String`, but a declared-but-unpromoted logical field resolves
+    /// through the same `JsonPath` shape carrying whatever type the logical
+    /// schema declares for it — this method judges advisory-ness structurally,
+    /// by resolution shape, not by inspecting the carried type. A `Column`
     /// (a real physical or promoted field) is authoritative: its type is
     /// this document's actual, load-bearing contract, and coercion there
     /// stays strict.

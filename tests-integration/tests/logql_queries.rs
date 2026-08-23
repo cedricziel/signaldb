@@ -96,10 +96,9 @@ fn test_config(catalog_dsn: &str) -> Configuration {
     config
 }
 
-/// Sets up the full stack with the `ir-single-lowering` rollout switch
-/// (design D3) set explicitly — lets a test exercise the same LogQL
-/// endpoint through both lowerings (task 4.3).
-async fn setup_with_logql_via_ir(logql_via_ir: bool) -> TestServices {
+/// Sets up the full stack: acceptor → WAL → writer → Iceberg → querier →
+/// router, wired for a LogQL end-to-end test.
+async fn setup() -> TestServices {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().join("storage");
     std::fs::create_dir_all(&storage_path).unwrap();
@@ -186,10 +185,7 @@ async fn setup_with_logql_via_ir(logql_via_ir: bool) -> TestServices {
     let querier_service = QuerierFlightService::new_with_catalog_manager(
         flight_transport.clone(),
         catalog_manager,
-        common::config::QuerierConfig {
-            logql_via_ir,
-            ..common::config::QuerierConfig::default()
-        },
+        common::config::QuerierConfig::default(),
     )
     .await
     .expect("querier service");
@@ -393,13 +389,7 @@ fn window() -> String {
 /// data deterministically. Shared arrange step for every LogQL endpoint
 /// test below.
 async fn setup_with_ingested_logs() -> (TestServices, Router) {
-    setup_with_ingested_logs_via_ir(false).await
-}
-
-/// Like [`setup_with_ingested_logs`], with the `ir-single-lowering` rollout
-/// switch set explicitly (task 4.3).
-async fn setup_with_ingested_logs_via_ir(logql_via_ir: bool) -> (TestServices, Router) {
-    let services = setup_with_logql_via_ir(logql_via_ir).await;
+    let services = setup().await;
     let ctx = test_tenant_context();
 
     services
@@ -460,13 +450,9 @@ async fn setup_with_ingested_logs_via_ir(logql_via_ir: bool) -> (TestServices, R
     (services, app)
 }
 
-/// Runs unmodified with the `ir-single-lowering` rollout switch (design D3)
-/// both off and on (task 4.3):
-/// [`logql_stream_query_returns_all_lines_for_service`] and
-/// [`logql_stream_query_returns_all_lines_for_service_via_ir`] are thin
-/// wrappers over this body.
-async fn stream_query_returns_all_lines_for_service_body(logql_via_ir: bool) {
-    let (_services, app) = setup_with_ingested_logs_via_ir(logql_via_ir).await;
+#[tokio::test]
+async fn logql_stream_query_returns_all_lines_for_service() {
+    let (_services, app) = setup_with_ingested_logs().await;
     let w = window();
 
     let (status, body) = get(
@@ -481,23 +467,11 @@ async fn stream_query_returns_all_lines_for_service_body(logql_via_ir: bool) {
     assert_eq!(entries, 2, "api should have two log lines: {body}");
 }
 
-#[tokio::test]
-async fn logql_stream_query_returns_all_lines_for_service() {
-    stream_query_returns_all_lines_for_service_body(false).await;
-}
-
-#[tokio::test]
-async fn logql_stream_query_returns_all_lines_for_service_via_ir() {
-    stream_query_returns_all_lines_for_service_body(true).await;
-}
-
 /// D6 (`ir-single-lowering`): a LogQL line filter used to be rejected
 /// outright once routed through the IR (`logs.body` was retrieval-only).
-/// Runs both off and on (task 4.3): [`logql_line_filter_narrows_to_matching_lines`]
-/// and [`logql_line_filter_narrows_to_matching_lines_via_ir`] are thin
-/// wrappers over this body.
-async fn line_filter_narrows_to_matching_lines_body(logql_via_ir: bool) {
-    let (_services, app) = setup_with_ingested_logs_via_ir(logql_via_ir).await;
+#[tokio::test]
+async fn logql_line_filter_narrows_to_matching_lines() {
+    let (_services, app) = setup_with_ingested_logs().await;
     let w = window();
 
     let (status, body) = get(
@@ -514,16 +488,6 @@ async fn line_filter_narrows_to_matching_lines_body(logql_via_ir: bool) {
         1,
         "line filter should match one: {body}"
     );
-}
-
-#[tokio::test]
-async fn logql_line_filter_narrows_to_matching_lines() {
-    line_filter_narrows_to_matching_lines_body(false).await;
-}
-
-#[tokio::test]
-async fn logql_line_filter_narrows_to_matching_lines_via_ir() {
-    line_filter_narrows_to_matching_lines_body(true).await;
 }
 
 #[tokio::test]
@@ -577,15 +541,13 @@ async fn logql_series_endpoint_returns_matching_series() {
     );
 }
 
-/// D7 (`ir-single-lowering`): an ungrouped range aggregation used to
-/// collapse to one series total on the IR path instead of one per stream;
-/// also exercises the `step`/`value`-type corrections
-/// `LogsService::query_metric_via_ir` applies (see its doc comment). Runs
-/// both off and on (task 4.3): [`logql_metric_query_count_over_time_returns_matrix`]
-/// and [`logql_metric_query_count_over_time_returns_matrix_via_ir`] are thin
-/// wrappers over this body.
-async fn metric_query_count_over_time_returns_matrix_body(logql_via_ir: bool) {
-    let (_services, app) = setup_with_ingested_logs_via_ir(logql_via_ir).await;
+/// D7 (`ir-single-lowering`): an ungrouped range aggregation collapses to
+/// one series total, not one per stream; also exercises the `step`/`value`
+/// type corrections `LogsService::query_metric_via_ir` applies (see its doc
+/// comment).
+#[tokio::test]
+async fn logql_metric_query_count_over_time_returns_matrix() {
+    let (_services, app) = setup_with_ingested_logs().await;
     let w = window();
 
     let (status, body) = get(
@@ -603,16 +565,6 @@ async fn metric_query_count_over_time_returns_matrix_body(logql_via_ir: bool) {
         (total - 2.0).abs() < 1e-9,
         "api count should total 2: {body}"
     );
-}
-
-#[tokio::test]
-async fn logql_metric_query_count_over_time_returns_matrix() {
-    metric_query_count_over_time_returns_matrix_body(false).await;
-}
-
-#[tokio::test]
-async fn logql_metric_query_count_over_time_returns_matrix_via_ir() {
-    metric_query_count_over_time_returns_matrix_body(true).await;
 }
 
 /// Sum the number of `values` entries across all streams in a response.

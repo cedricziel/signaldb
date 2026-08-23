@@ -2639,6 +2639,12 @@ mod tests {
             Field::new("trace_id", DataType::Utf8, true),
             Field::new("span_id", DataType::Utf8, true),
             Field::new("label_env", DataType::Utf8, true),
+            // A genuine physical column `LogicalSchema::core()` registers
+            // only for `traces`, not `logs` (#1395) — used by
+            // `aggregate_of_field_naming_a_physical_column_is_rejected` to
+            // pin that physical addressing stays rejected for an aggregate
+            // operand too.
+            Field::new("duration", DataType::Float64, true),
             // The OTel LogRecord fields the explore UI renders.
             Field::new("trace_flags", DataType::Int64, true),
             Field::new("scope_name", DataType::Utf8, true),
@@ -2662,6 +2668,10 @@ mod tests {
         let span = StringArray::from(vec![Some("s1"), Some("s2"), Some("s3"), Some("s4")]);
         // `env` promoted into label_env for two rows; the third row has no env.
         let env = StringArray::from(vec![Some("prod"), Some("prod"), None, Some("prod")]);
+        // Unused by any passing test — `duration` is a physical column no
+        // logical field registers for `logs`, so it's addressable only to
+        // confirm that stays rejected (`aggregate_of_field_naming_a_physical_column_is_rejected`).
+        let duration = Float64Array::from(vec![Some(1.5), Some(2.5), Some(3.5), Some(4.5)]);
         let flags = Int64Array::from(vec![Some(1), Some(0), Some(1), Some(1)]);
         let scope_name = StringArray::from(vec![
             Some("app.http"),
@@ -2702,6 +2712,7 @@ mod tests {
                 Arc::new(trace),
                 Arc::new(span),
                 Arc::new(env),
+                Arc::new(duration),
                 Arc::new(flags),
                 Arc::new(scope_name),
                 Arc::new(scope_version),
@@ -4266,6 +4277,39 @@ mod tests {
             .expect_err("physical addressing must stay rejected");
         assert!(
             format!("{err}").contains("log_attributes"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// #1395's residual: an aggregate's `of` operand naming a genuine
+    /// physical column `LogicalSchema::core()` does not register for this
+    /// source (`duration` is registered only for `traces`, not `logs`) stays
+    /// rejected, exactly like a `where`/`by`/`fields` reference to the same
+    /// name (`a_client_still_cannot_address_a_container_by_storage_name`).
+    /// Physical addressing is not a LogQL/TraceQL construct any compat
+    /// surface can reach — `unwrap <label>` lowers a *logical* field (an
+    /// attribute, resolved by name through the ordinary coalesce path; see
+    /// `ql_ir::logql_lower`), never a literal storage column, so no working
+    /// query is regressed by keeping this rejected. See design.md's
+    /// fallback-set subsection for the resolution.
+    #[tokio::test]
+    async fn aggregate_of_field_naming_a_physical_column_is_rejected() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["service.name"], "aggs": [
+                    { "fn": "sum", "of": "duration", "as": "total" }
+                ] } }
+            ]
+        }));
+        let err = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .expect_err("an aggregate over an unregistered physical column must stay rejected");
+        assert!(
+            format!("{err}").contains("duration"),
             "unexpected error: {err}"
         );
     }

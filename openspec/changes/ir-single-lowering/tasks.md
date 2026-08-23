@@ -152,46 +152,180 @@
 
 ## 5. Delete the duplication
 
-- [ ] 5.0 Close #1395 before 5.2 (design.md's "Open pre-deletion gate" under
+- [x] 5.0 Close #1395 before 5.2 (design.md's "Open pre-deletion gate" under
       D5's fallback set): `ql_ir` accepts `unwrap <label>` on any field name,
       but `plan_document` rejects an unregistered unwrap target as
       `InvalidInput`, which task 4.1's narrowed fallback (`Inexpressible`
       only) now propagates instead of masking — a currently-working `unwrap`
       query must not turn into an error once §5 deletes the old path that
-      silently absorbed it. Either (a) `ir_planner`'s aggregate `of`-field
-      resolution falls back to a bare physical-column reference for an
-      unregistered field, or (b) `ql_ir::logql_lower` refuses it as
-      `Inexpressible` explicitly, joining the enumerated fallback set.
-- [ ] 5.1 With both switches on and differential evidence green, delete
+      silently absorbed it.
+      (Resolved via **attribute resolution**, not the physical-column
+      fallback the brief's option (a) was first read as: LogQL `unwrap
+<label>` names an _attribute_ field (container-coalesced, cast to
+      float at plan time) — it never named a physical column even on the
+      old path, whose `unwrap_value`/`column_for_label` (`logs.rs`) is a
+      bare `col(label)` reference with zero type or registration checking,
+      which only ever worked because the label it was given happened to
+      match a physical column name. The actual gap was that a numeric
+      aggregate's `of` operand rejected an attribute-resolved field
+      (`Resolved::JsonPath`/`EventAttribute`) outright, even though such a
+      field is exactly what `unwrap` addresses — filed and fixed as #1395:
+      `Resolved::is_advisory_type()` (`query-ir/src/resolver.rs`) marks a
+      resolution's type as advisory (unpromoted attribute, no canonical
+      type until the attribute-registry work lands) versus authoritative
+      (a real column); `check_agg` (`query-ir/src/validate.rs`) accepts an
+      advisory-typed String operand for the five numeric aggregates,
+      coercing to a number at plan time with a non-numeric value going
+      absent, while a _registered_ String column stays rejected. Landed as
+      its own PR ahead of this one (`fix(query-ir): accept an attribute as
+a numeric aggregate operand`, #1403) since it's a real product bug
+      independent of this change. Option (b) — `ql_ir::logql_lower`
+      refusing an unresolvable `unwrap` as `Inexpressible` — stays
+      available for a target that resolves to nothing at all (no
+      attribute, no column), which is the correct, permanent behavior for
+      that case; see design.md's updated write-up for the residual-case
+      analysis (no unregistered numeric physical column exists in the logs
+      schema today that a user could plausibly want to `unwrap`, so that
+      residual rejection is by design, not a gap). The `logql.rs` test
+      harness fixture that originally exposed this (`unwrap duration`) was
+      corrected to carry `duration` as a log _attribute_, matching real
+      `unwrap` usage.)
+- [x] 5.1 With both switches on and differential evidence green, delete
       `search_filter.rs`'s lowering half. Keep `parse_tags` and `take_value`.
-- [ ] 5.2 Delete the portion of `logql.rs`/`logql_metric.rs` that `ql-ir`
+      (`to_expr`/`string_value`/`materialized_expr`/`map_attribute_expr`/
+      `stored_string`/`attribute_expr` deleted along with their shape tests;
+      `trace.rs`'s old `build_search_dataframe` body and the
+      `trace_search_via_ir` field/switch deleted — the IR-routed twin is now
+      the only path. `differential.rs`'s TraceQL/tags comparisons converted
+      to single-path expected-result pins, task 5.4's trace half — see the
+      module's new "Status after §5" doc section and commit
+      `refactor(querier): make the IR planner the only trace-search
+lowering`.)
+- [x] 5.2 Delete the portion of `logql.rs`/`logql_metric.rs` that `ql-ir`
       covers. What backs the 4.2 fallback set stays.
-- [ ] 5.3 Remove both switches and their config keys (D3 — a rollout switch
+      (Finding, recorded in design.md: the D5 fallback is a whole-document
+      decision, so almost all of `logql.rs`/`logql_metric.rs` remains
+      reachable for some `Inexpressible` shape and is not safely deletable.
+      Only `logql.rs::log_query_filter` — an orphaned public convenience
+      wrapper with zero callers outside its own tests, re-exported at the
+      querier crate root — was actually dead code. Deleted, along with the
+      `lib.rs` re-export; its tests switched to calling
+      `log_query_filter_with_columns` directly.)
+- [x] 5.3 Remove both switches and their config keys (D3 — a rollout switch
       that outlives its rollout is a second untested path).
-- [ ] 5.4 Confirm the harness still passes against the remaining fallback path,
+      (`QuerierConfig::trace_search_via_ir`/`logql_via_ir` deleted along
+      with `LogsService`'s own switch field/setter; `signaldb.dist.toml`'s
+      two commented-out entries removed; the `_via_ir` integration test
+      twins in `logql_queries.rs`/`router_tempo_endpoints.rs` collapsed
+      into their single unconditional test each (`setup_with_logql_via_ir`/
+      `setup_test_services_with_trace_search_via_ir` lost their `bool`
+      parameter and became plain `setup`/`setup_test_services`).
+      `logql_via_ir`-conditioned test call sites in `logs.rs` (`.with_logql_via_ir(true)`)
+      dropped along with the comments describing an "old path"/"new path"
+      split that no longer exists. Configuration/tempo-api skills done in
+      6.1–6.4.
+      **Finding surfaced by making IR routing unconditional, triaged as
+      outcome (1) — old path wrong, superseded** (design.md's "§5.3
+      finding"): two `logs.rs` tests
+      (`sum_by_unmaterialized_label_is_unsupported_on_the_old_path`,
+      `planning_failure_on_an_existing_table_still_errors`) pinned the old
+      LogQL metric path's behavior for grouping by a label with no backing
+      column at all — it rejected the query outright. The IR path resolves
+      any such name as an unpromoted attribute instead (never erroring at
+      plan time), so the query now succeeds with every row grouped under
+      one absent label. That's Loki-faithful, not a regression: real Loki
+      evaluates `sum by (foo) (...)` for a label no stream carries without
+      error, the same as any label a matching stream simply doesn't have —
+      the old path's `Unsupported` reflected our own storage model, not
+      LogQL's actual semantics. No warning was added to the LogQL-compat
+      response (Loki's own API has none for this case; the native Query
+      IR endpoint's `unknown_group_by_field` stays specific to that
+      surface). The two tests were rewritten and strengthened to assert
+      the Loki-faithful behavior explicitly (one group, the label
+      genuinely absent — `is_null`, not empty-string — the summed value
+      correct) —
+      `sum_by_an_unknown_label_groups_everything_under_one_null_label` and
+      `sum_by_a_nonexistent_attribute_groups_everything_under_one_null_label`.)
+- [x] 5.4 Confirm the harness still passes against the remaining fallback path,
       then decide whether to keep it as a permanent regression test or retire
       it with the code it compared. Say which, and why, in the PR.
+      (Trace half done in 5.1: `differential.rs` keeps its name — a
+      permanent regression suite, and still a real differential for the
+      LogQL D5 fallback set until a future change closes that gap. Logs
+      half: `logql_metric_corpus_row_level_equivalence` converted from an
+      old-vs-new comparison to a row-level regression pin
+      (`LOGQL_METRIC_CORPUS_ROWS`) against the IR path alone — there is no
+      old path left to compare for any of `LOGQL_METRIC_CORPUS_ROWS`'s
+      queries, all `Accept`. `KNOWN_GROUPING_DIVERGENCE_LOGQL_METRIC`/
+      `SKIPPED_LOGQL_METRIC_UNWRAP_GROUPED` — skip-lists for
+      `unwrap duration` queries that used to diverge because the harness
+      fixture carried `duration` as a physical column the old path could
+      address bare but the IR path's physical-addressing guard rejected —
+      deleted along with that fixture shape (5.0's fix moved `duration` to
+      an attribute; all four previously-skipped queries now have pinned
+      rows like every other corpus entry). Kept as a permanent regression
+      suite for the same reason as the trace half: `logql.rs`'s remaining
+      D5 fallback set (`quantile_over_time`, etc.) is real, ongoing
+      coverage, not a comparison against code this change deletes.)
 
 ## 6. Docs and skills
 
-- [ ] 6.1 Update the `architecture` skill: the query path has one lowering, and
+- [x] 6.1 Update the `architecture` skill: the query path has one lowering, and
       compat surfaces reach it through `ql-ir`.
-- [ ] 6.2 Update `docs/architecture/fdap.md` — its DataFusion section says each
+      (Point 6's query-path paragraph rewritten: TraceQL/LogQL lower through
+      `ql_ir` onto the query IR, planned by `ir_planner.rs`, with
+      `logql.rs`/`logql_metric.rs`/`search_filter.rs` reduced to the
+      `Inexpressible` fallback and response assembly; PromQL called out as
+      unaffected.)
+- [x] 6.2 Update `docs/architecture/fdap.md` — its DataFusion section says each
       parsed query "is lowered to DataFusion `Expr`s and logical plans
       directly", which stops being how traces and logs work.
-- [ ] 6.3 Update the `crate-map` skill entries for the querier modules that
+      (Rewritten: TraceQL/LogQL take an IR-document detour through the same
+      planner `POST /api/v1/query` uses; PromQL/SQL still lower straight to
+      a DataFusion plan.)
+- [x] 6.3 Update the `crate-map` skill entries for the querier modules that
       shrink or disappear.
-- [ ] 6.4 Update `docs/contributing/compat-crates.md`: the rule "lowering lives
+      (`logql`/`traceql` crate rows and the querier module table updated;
+      added the `ir_planner.rs` row, missing even before this change.)
+- [x] 6.4 Update `docs/contributing/compat-crates.md`: the rule "lowering lives
       in the querier" becomes "lowering targets the IR".
-- [ ] 6.5 Run the docs-freshness gate **after committing**, and again after any
+      (Rewritten; `src/ql-ir/**`/`src/query-ir/**` added to the doc's
+      `sources:` frontmatter, since Rule 1 is now substantially about them.)
+- [x] 6.5 Run the docs-freshness gate **after committing**, and again after any
       fix (it diffs committed history and cascades code → doc → skill).
+      (Run repeatedly through §5.3/§6; final state against `origin/main...HEAD`
+      flags 6 files as "sources changed" — `.claude/skills/multi-tenancy/SKILL.md`,
+      `docs/architecture/flight-communication.md`, `docs/architecture/overview.md`,
+      `docs/operations/compactor/configuration.md`,
+      `docs/operations/query-ordering.md`, `docs/users/mcp.md` — all verified
+      false positives: each watches the whole of `config/mod.rs` or
+      `flight.rs`, but none document the two deleted rollout-switch fields or
+      anything else this change touched. Waved off with the `docs-not-needed`
+      label rather than editing files with nothing genuinely stale, same
+      convention as PR #1403.)
 
 ## 7. Ship
 
-- [ ] 7.1 Run `/simplify` over the changed code.
+- [x] 7.1 Run `/simplify` over the changed code.
+      (4 parallel review agents over the full deletion diff. Two real
+      findings, both fixed: two new `logs.rs` tests (initially, before the
+      §5.3-finding reframe below required inline batch assertions again to
+      check the group label's absence explicitly) reimplemented the file's
+      own `matrix()` test helper instead of calling it; `differential.rs`'s
+      `TRACEQL_CORPUS`/`LOGQL_METRIC_CORPUS` arrays were pure duplication of
+      data already carried by `TRACEQL_CORPUS_CLASS`/`LOGQL_METRIC_CORPUS_ROWS`,
+      correlated by a weak length check or an O(n) string-equality `find()` —
+      deleted, with the two `_CLASS`/`_ROWS` consts as the sole source of
+      truth. Efficiency review found nothing. Altitude review's one note —
+      that grouping by an unbacked label silently succeeding might warrant
+      a shared warning mechanism — was superseded by the reframe: it's
+      Loki-faithful behavior, not a gap, so there's nothing to generalize.)
 - [x] 7.2 File the tracking issue this change lacks; add `Closes #N` to the PR.
       (Filed as #1382; the final PR of the stack carries `Closes #1382`.)
-- [ ] 7.3 Split into a stack: §1–2 (seam + harness), §3 (traces), §4 (logs),
+- [x] 7.3 Split into a stack: §1–2 (seam + harness), §3 (traces), §4 (logs),
       §5 (deletion). Each is independently revertible, which is the point of
       the ordering.
-- [ ] 7.4 Open each PR; check for CodeRabbit findings and act on them.
+      (§1–2 merged as #1387; §3 as #1391; §4 as #1393; two pre-deletion fix
+      PRs the §5 work surfaced merged ahead of it as #1401/#1403; this PR is
+      §5/§6/§7 — the deletion, docs, and ship tasks.)
+- [x] 7.4 Open each PR; check for CodeRabbit findings and act on them.

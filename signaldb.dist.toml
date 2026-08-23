@@ -254,21 +254,6 @@ max_search_limit = 1000
 # Maximum queries a single tenant may run concurrently; excess queries
 # are rejected with RESOURCE_EXHAUSTED (retryable). Unset = unlimited.
 # max_concurrent_queries_per_tenant = 8
-#
-# TEMPORARY rollout switch (ir-single-lowering, design D3): route Tempo
-# trace search through the shared query-IR planner instead of the
-# dedicated TraceQL lowering. Defaults to the old path; removed, along
-# with the old lowering, once traces have run on the IR path in
-# production with the differential harness green.
-# trace_search_via_ir = false
-#
-# TEMPORARY rollout switch (ir-single-lowering, design D3): route LogQL log
-# and metric queries through ql_ir::logql_to_ir + the shared query-IR
-# planner for what it covers, falling back to the dedicated LogQL lowering
-# for constructs ql_ir refuses (design D5). Defaults to the old path;
-# removed, along with the old lowering, once LogQL has run on the IR path
-# in production with the differential harness green.
-# logql_via_ir = false
 
 [querier.datafusion]
 # DataFusion scan/pushdown tuning. All three default to true (DataFusion's
