@@ -57,9 +57,9 @@
 //!
 //! 1. `tests-integration/tests/router_tempo_endpoints.rs`'s
 //!    `test_search_filters_are_applied` — 7 TraceQL `q` strings, 3 `tags`
-//!    strings (`TRACEQL_CORPUS`, `TAGS_CORPUS`).
+//!    strings (`TRACEQL_CORPUS_CLASS`, `TAGS_CORPUS`).
 //! 2. `tests-integration/tests/logql_queries.rs` — 4 LogQL strings, one of
-//!    them a metric query (`LOGQL_LOG_CORPUS`, `LOGQL_METRIC_CORPUS`).
+//!    them a metric query (`LOGQL_LOG_CORPUS`, `LOGQL_METRIC_CORPUS_ROWS`).
 //! 3. `src/ql-ir/tests/{traceql,logql}.rs` — every query string their test
 //!    functions assert on, folded into the same four consts (dominates the
 //!    count: it is what caught the two real findings below).
@@ -166,30 +166,6 @@ const TO: i64 = 1000;
 // Corpus (task 2.1)
 // ---------------------------------------------------------------------------
 
-/// TraceQL `q` strings. Sources: `router_tempo_endpoints.rs`'s
-/// `test_search_filters_are_applied` (the first 7) and
-/// `src/ql-ir/tests/traceql.rs`'s corpus (the rest, deduplicated).
-const TRACEQL_CORPUS: &[&str] = &[
-    r#"{ span.http.method = "GET" }"#,
-    "{ duration > 100ms }",
-    r#"{ span.x != "y" }"#,
-    r#"{ span.a = "1" || span.b = "2" }"#,
-    "notbraces",
-    "{ foo }",
-    "{ zzz = 1 }",
-    r#"{ name = "GET /api" }"#,
-    "{ status = error }",
-    "{ kind = server }",
-    r#"{ resource.service.name = "api" }"#,
-    r#"{ .service.name = "api" }"#,
-    r#"{ resource.k8s.pod.name = "p" }"#,
-    r#"{ .http.method = "GET" }"#,
-    r#"{ resource.service.name = "api" && span.http.method = "GET" }"#,
-    "{ span.http.status_code = 500 }",
-    "{ span.ok = true }",
-    "{}",
-];
-
 /// Tempo `tags` (logfmt) strings, from `test_search_filters_are_applied`,
 /// plus three adversarial values (blocker found in review of PR #1391) that
 /// a text round-trip through TraceQL mishandled: `parse_tags`/`take_value`
@@ -217,18 +193,6 @@ const LOGQL_LOG_CORPUS: &[&str] = &[
     r#"{service="api"}"#,
     r#"{job="api"}"#,
     r#"{k8s_namespace="prod"}"#,
-];
-
-/// LogQL metric-query strings. Sources: `logql_queries.rs`'s
-/// `count_over_time` query and `src/ql-ir/tests/logql.rs`'s corpus.
-const LOGQL_METRIC_CORPUS: &[&str] = &[
-    r#"count_over_time({service_name="api"}[1h])"#,
-    r#"rate({service_name="api"}[5m])"#,
-    r#"sum by (service_name) (count_over_time({service_name="api"}[1m]))"#,
-    r#"sum_over_time({service_name="api"} | unwrap duration [5m])"#,
-    r#"avg_over_time({service_name="api"} | unwrap duration [5m])"#,
-    r#"min by (service_name) (min_over_time({service_name="api"} | unwrap duration [1m]))"#,
-    r#"max by (service_name) (max_over_time({service_name="api"} | unwrap duration [1m]))"#,
 ];
 
 /// The D5 fallback set (task 2.3a): valid LogQL metric queries the old path
@@ -666,11 +630,14 @@ fn assert_plans_match(q: &str, old: &str, new: &str) {
 // before the deletion (see git history for the prior old-vs-new form).
 // ---------------------------------------------------------------------------
 
-/// Every `TRACEQL_CORPUS` query's accept/reject classification, pinned so a
-/// change to `ql_ir::traceql_to_ir` that starts accepting or rejecting one of
-/// these is a deliberate decision, not a silent drift. Determined empirically
-/// (`traceql::parse`'s `Syntax`/`Unsupported` split maps to `Invalid`/
-/// `Unsupported` — see `error.rs`'s `From<traceql::ParseError>`).
+/// Every TraceQL `q` corpus query paired with its accept/reject
+/// classification, pinned so a change to `ql_ir::traceql_to_ir` that starts
+/// accepting or rejecting one of these is a deliberate decision, not a
+/// silent drift. Determined empirically (`traceql::parse`'s `Syntax`/
+/// `Unsupported` split maps to `Invalid`/`Unsupported` — see `error.rs`'s
+/// `From<traceql::ParseError>`). Sources: `router_tempo_endpoints.rs`'s
+/// `test_search_filters_are_applied` (the first 7) and
+/// `src/ql-ir/tests/traceql.rs`'s corpus (the rest, deduplicated).
 const TRACEQL_CORPUS_CLASS: &[(&str, Class)] = &[
     (r#"{ span.http.method = "GET" }"#, Class::Accept),
     ("{ duration > 100ms }", Class::Unsupported),
@@ -697,11 +664,6 @@ const TRACEQL_CORPUS_CLASS: &[(&str, Class)] = &[
 
 #[tokio::test]
 async fn traceql_corpus_classification_is_pinned() {
-    assert_eq!(
-        TRACEQL_CORPUS_CLASS.len(),
-        TRACEQL_CORPUS.len(),
-        "TRACEQL_CORPUS_CLASS must cover every corpus entry"
-    );
     for (q, expected) in TRACEQL_CORPUS_CLASS {
         assert_eq!(
             new_traceql_class(q),
@@ -711,7 +673,7 @@ async fn traceql_corpus_classification_is_pinned() {
     }
 }
 
-/// Every accepted `TRACEQL_CORPUS` query plans without error. The plans
+/// Every accepted `TRACEQL_CORPUS_CLASS` query plans without error. The plans
 /// themselves are no longer pinned as fixed text (that only ever proved
 /// agreement with the deleted old path); the fixed-text pins that still
 /// carry independent value — a promoted column, a physical-column collision
@@ -1052,7 +1014,7 @@ fn metric_rows(batches: &[RecordBatch], group_cols: &[&str], value_col: &str) ->
 #[tokio::test]
 async fn logql_metric_corpus_row_level_equivalence() {
     let ctx = logs_fixture();
-    for q in LOGQL_METRIC_CORPUS {
+    for (q, expected_rows) in LOGQL_METRIC_CORPUS_ROWS {
         let mut doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS)
             .unwrap_or_else(|e| panic!("{q}: metric path rejected an accepted query: {e}"));
         // The IR's `Series` result returns the aggregate output unprojected
@@ -1074,11 +1036,7 @@ async fn logql_metric_corpus_row_level_equivalence() {
                 .cmp(&b.key)
                 .then(a.value.partial_cmp(&b.value).unwrap())
         });
-        let mut expected: Vec<MetricRow> = LOGQL_METRIC_CORPUS_ROWS
-            .iter()
-            .find(|(query, _)| query == q)
-            .unwrap_or_else(|| panic!("{q}: missing an entry in LOGQL_METRIC_CORPUS_ROWS"))
-            .1
+        let mut expected: Vec<MetricRow> = expected_rows
             .iter()
             .map(|(key, value)| MetricRow {
                 key: key.iter().map(|s| s.to_string()).collect(),
@@ -1097,13 +1055,15 @@ async fn logql_metric_corpus_row_level_equivalence() {
     }
 }
 
-/// Every `LOGQL_METRIC_CORPUS` query's expected rows over [`logs_fixture`],
-/// pinned so a regression in bucketing/grouping/aggregation shows up as a
-/// row-content mismatch rather than a silent behaviour change. Values
-/// captured from the IR path itself (this is a regression pin, not an
-/// old-vs-new comparison — every one of these queries is `Accept`, not part
-/// of the D5 fallback set, so there is no old path left to compare against;
-/// §5.4 of `ir-single-lowering`). Every fixture row lands in bucket `"0"`
+/// LogQL metric-query corpus, each paired with its expected rows over
+/// [`logs_fixture`], pinned so a regression in bucketing/grouping/aggregation
+/// shows up as a row-content mismatch rather than a silent behaviour change.
+/// Sources: `logql_queries.rs`'s `count_over_time` query and
+/// `src/ql-ir/tests/logql.rs`'s corpus. Values captured from the IR path
+/// itself (this is a regression pin, not an old-vs-new comparison — every
+/// one of these queries is `Accept`, not part of the D5 fallback set, so
+/// there is no old path left to compare against; §5.4 of
+/// `ir-single-lowering`). Every fixture row lands in bucket `"0"`
 /// (`date_bin` with a 1000ns step over timestamps 10/20/30ms — well inside
 /// one bucket).
 #[allow(clippy::type_complexity)]
@@ -1730,7 +1690,7 @@ async fn old_logql_log_query_df(ctx: &SessionContext, q: &str, fields: &[&str]) 
 /// A `traces` table with the full schema [`super::trace::TraceService`]'s
 /// search assembly reads (unlike [`traces_fixture`], which only carries what
 /// the plan-comparison tests above project) — same two rows as
-/// [`traces_fixture`], so every `TRACEQL_CORPUS`/`TAGS_CORPUS` query that
+/// [`traces_fixture`], so every `TRACEQL_CORPUS_CLASS`/`TAGS_CORPUS` query that
 /// matches there matches identically here.
 fn traces_endpoint_fixture() -> SessionContext {
     let schema = Arc::new(Schema::new(vec![
@@ -1795,7 +1755,7 @@ fn tags_only(tags: &str) -> SearchQueryParams {
     }
 }
 
-/// Every accepted `TRACEQL_CORPUS` query must still produce an assembled
+/// Every accepted `TRACEQL_CORPUS_CLASS` query must still produce an assembled
 /// search result end to end (not merely plan successfully — 2.3, above —
 /// the compat layer's own result assembly sits downstream of the plan).
 #[tokio::test]

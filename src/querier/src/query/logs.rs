@@ -1796,30 +1796,14 @@ mod tests {
     #[tokio::test]
     async fn sum_by_an_unknown_label_groups_everything_under_one_null_label() {
         let service = service_with_materialized_labels();
-        let batches = service
-            .query_metric(
-                &metric_params(
-                    r#"sum by (nope) (count_over_time({service_name=~".+"}[1000ns]))"#,
-                    1000,
-                ),
-                "t",
-                "d",
-            )
-            .await
-            .expect("an unknown grouping label is accepted, not rejected (#1405)");
-        let total: f64 = batches
-            .iter()
-            .map(|batch| {
-                let value = batch
-                    .column_by_name("value")
-                    .unwrap()
-                    .as_any()
-                    .downcast_ref::<datafusion::arrow::array::Float64Array>()
-                    .unwrap();
-                (0..batch.num_rows()).map(|i| value.value(i)).sum::<f64>()
-            })
-            .sum();
+        let out = matrix(
+            &service,
+            r#"sum by (nope) (count_over_time({service_name=~".+"}[1000ns]))"#,
+            1000,
+        )
+        .await;
         // All 3 fixture rows collapse into the one null-labeled group.
+        let total: f64 = out.iter().map(|(v, _)| v).sum();
         assert_eq!(total, 3.0);
     }
 
@@ -3007,29 +2991,13 @@ mod tests {
     #[tokio::test]
     async fn sum_by_a_nonexistent_attribute_groups_everything_under_one_null_label() {
         let service = service_with_data();
-        let batches = service
-            .query_metric(
-                &metric_params(
-                    r#"sum by (nonmaterialized_attr) (count_over_time({service_name=~".+"}[1000ns]))"#,
-                    1000,
-                ),
-                "t",
-                "d",
-            )
-            .await
-            .expect("an unknown grouping attribute is accepted, not rejected (#1405)");
-        let total: f64 = batches
-            .iter()
-            .map(|batch| {
-                let value = batch
-                    .column_by_name("value")
-                    .unwrap()
-                    .as_any()
-                    .downcast_ref::<datafusion::arrow::array::Float64Array>()
-                    .unwrap();
-                (0..batch.num_rows()).map(|i| value.value(i)).sum::<f64>()
-            })
-            .sum();
+        let out = matrix(
+            &service,
+            r#"sum by (nonmaterialized_attr) (count_over_time({service_name=~".+"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        let total: f64 = out.iter().map(|(v, _)| v).sum();
         // All 3 fixture rows collapse into the one null-labeled group.
         assert_eq!(total, 3.0);
     }
