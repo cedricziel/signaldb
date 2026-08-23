@@ -13,6 +13,18 @@
 //! Every literal is coerced against its field's canonical type here (coercibility
 //! only for relative timestamps); an un-coercible literal is rejected, never
 //! silently cast at runtime.
+//!
+//! **One deliberate exception**: a numeric aggregate's `of` operand (`sum`,
+//! `avg`, `quantile`, `stddev`, `stdvar`) accepts a `String`-typed operand
+//! when that type is *advisory* rather than authoritative
+//! ([`resolver::Resolved::is_advisory_type`]) — an unpromoted attribute has
+//! no declared canonical type until the attribute-registry epic (#811)
+//! lands, so `String` there is a placeholder, not a real contract. That
+//! operand is coerced numerically at plan time instead
+//! (`ir_planner::numeric_of`'s `cast(_, Float64)`; a non-numeric-looking
+//! value casts to `NULL`, not a plan-time error) — the one place validation
+//! defers to a runtime cast rather than rejecting outright. A field whose
+//! type *is* authoritative (a real column) is never exempted.
 
 use super::document::{Document, Range, ResultEnvelope};
 use super::predicate::{ComparisonOp, Leaf, Predicate};
@@ -250,6 +262,18 @@ impl InferCtx<'_> {
     /// Resolve a referenced name to its type in the current relation, applying
     /// the logical-namespace and expression-string guards.
     fn ref_type(&self, name: &str) -> Result<ValueType, IrError> {
+        self.ref_type_and_advisory(name).map(|(t, _)| t)
+    }
+
+    /// Like [`Self::ref_type`], but also reports whether the resolved type
+    /// is *advisory* rather than authoritative ([`Resolved::is_advisory_type`])
+    /// — an aggregate operand's numeric check (`check_agg`) needs this from
+    /// the same resolution `ref_type` already performs, rather than calling
+    /// [`FieldResolver::resolve`] a second time for the same name. A name
+    /// resolved from the relation's own columns (an `extract`-derived field,
+    /// or a closed aggregated schema's output) is never advisory — only a
+    /// resolver-provided [`Resolved`] carries that judgment.
+    fn ref_type_and_advisory(&self, name: &str) -> Result<(ValueType, bool), IrError> {
         if is_expression_string(name) {
             return Err(IrError::ExpressionString {
                 operand: name.to_string(),
@@ -264,7 +288,7 @@ impl InferCtx<'_> {
             }
             RelationType::RowSet(rs) => {
                 if let Some(col) = rs.columns.iter().find(|c| c.name == name) {
-                    return Ok(col.value_type.clone());
+                    return Ok((col.value_type.clone(), false));
                 }
                 if rs.aggregated {
                     // Closed schema: only the aggregate/group outputs exist.
@@ -273,7 +297,7 @@ impl InferCtx<'_> {
                     });
                 }
                 match self.resolver.resolve(self.source, name) {
-                    Some(r) => Ok(r.value_type().clone()),
+                    Some(r) => Ok((r.value_type().clone(), r.is_advisory_type())),
                     // Defined rejection: a field with no canonical type (12.1a).
                     None => Err(IrError::UnknownFieldType {
                         field: name.to_string(),
@@ -653,11 +677,15 @@ impl InferCtx<'_> {
             result?;
         }
 
-        // Field operand requirements.
-        let of_type = match (&a.of, a.func.needs_field()) {
+        // Field operand requirements. `of_advisory` records whether that
+        // resolution's type is advisory rather than authoritative
+        // (`Resolved::is_advisory_type`) — the numeric-aggregate check below
+        // reuses it instead of resolving `of` a second time.
+        let (of_type, of_advisory) = match (&a.of, a.func.needs_field()) {
             (Some(of), _) => {
                 self.require_filterable(of)?;
-                Some(self.ref_type(of)?)
+                let (t, advisory) = self.ref_type_and_advisory(of)?;
+                (Some(t), advisory)
             }
             (None, true) => {
                 return Err(IrError::Invalid(format!(
@@ -665,7 +693,7 @@ impl InferCtx<'_> {
                     a.func.as_str()
                 )));
             }
-            (None, false) => None,
+            (None, false) => (None, false),
         };
         if a.of.is_some() && !a.func.needs_field() {
             return Err(IrError::Invalid(format!(
@@ -710,12 +738,26 @@ impl InferCtx<'_> {
             }
         }
 
-        // Numeric requirement for sum/avg/quantile.
+        // Numeric requirement for sum/avg/quantile/stddev/stdvar. An
+        // advisory-typed operand — an unpromoted attribute or an
+        // event-captured one (`Resolved::is_advisory_type`) — always reports
+        // `String` until the attribute-registry epic (#811) gives attributes
+        // real canonical types, so a bare attribute name used as one of
+        // these aggregates' operand (LogQL's `unwrap <label>` is exactly
+        // this: the label names an attribute field, never a physical
+        // column) is let through here and coerced numerically at plan time
+        // (`ir_planner::numeric_of`'s explicit `cast(_, Float64)`; an
+        // operand that isn't actually numeric-looking casts to `NULL`, same
+        // as any other uncoercible value, not a plan-time error). A
+        // *registered* String field (a real column, e.g. `service.name`) is
+        // authoritative and still can't be summed — only an advisory type's
+        // inherent lack of a declared type earns the pass.
         if matches!(
             a.func,
             AggFn::Sum | AggFn::Avg | AggFn::Quantile | AggFn::Stddev | AggFn::Stdvar
         ) && let Some(t) = &of_type
             && !is_numeric(t)
+            && !(*t == ValueType::String && of_advisory)
         {
             return Err(IrError::Invalid(format!(
                 "aggregate '{}' requires a numeric field, got {t}",
@@ -1125,6 +1167,54 @@ mod tests {
             }
             other => panic!("expected series, got {other:?}"),
         }
+    }
+
+    /// #1395: an unpromoted attribute has no declared type —
+    /// `Resolved::JsonPath` always reports `String` until the
+    /// attribute-registry epic (#811) gives attributes real canonical
+    /// types — so a numeric aggregate over one (LogQL's `unwrap <label>` is
+    /// exactly this: the label names an attribute field, never a physical
+    /// column) must not be rejected at validation; it is coerced numerically
+    /// at plan time instead (`ir_planner::numeric_of`'s explicit
+    /// `cast(_, Float64)`, which turns a non-numeric-looking value into
+    /// `NULL` rather than a plan-time error).
+    #[test]
+    fn numeric_aggregate_accepts_an_attribute_operand() {
+        let v = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": [], "aggs": [
+                    { "fn": "sum", "of": "deployment.environment", "as": "total" }
+                ] } }
+            ]
+        }));
+        assert!(
+            v.is_ok(),
+            "an attribute operand must be accepted for a numeric aggregate, got {v:?}"
+        );
+    }
+
+    /// The #1395 relaxation is scoped to attribute (`Resolved::JsonPath`)
+    /// operands only — a *registered* String column (a real field, not an
+    /// attribute with no declared type) still can't be summed. `service.name`
+    /// is exactly this: registered, typed String, never an attribute.
+    #[test]
+    fn numeric_aggregate_still_rejects_a_registered_string_column() {
+        let err = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": [], "aggs": [
+                    { "fn": "sum", "of": "service.name", "as": "total" }
+                ] } }
+            ]
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref message) if message.contains("numeric field")),
+            "a registered String column must still be rejected, got {err:?}"
+        );
     }
 
     #[test]

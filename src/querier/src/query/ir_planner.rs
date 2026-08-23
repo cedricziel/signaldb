@@ -340,6 +340,9 @@ async fn scan_source_tables(
     match providers.len() {
         0 => Ok(None),
         1 => {
+            // Also reached for `metrics` when only one of gauge/sum has been
+            // ingested yet — the lone table still gets legacy-container
+            // coercion here, not just genuinely single-table sources.
             let (table_ref, provider) = providers.remove(0);
             let provider = coerce_legacy_containers(provider, source)?;
             Ok(Some(scan_provider(ctx, table_ref, provider)?))
@@ -1811,15 +1814,22 @@ impl Lowering<'_> {
             // wider distribution from it, and the compat path already uses the
             // population form.
             // Ordered by the source's own time column — `timestamp` on most
-            // sources, `start_time_unix_nano` on traces — so "first" means
-            // earliest rather than whatever order the scan produced.
+            // sources, `start_time_unix_nano` on traces — so "first"/"last"
+            // mean earliest/latest rather than whatever order the scan
+            // produced. Both order *ascending*: `first_value`/`last_value`
+            // pick the value at the start/end of the ordered frame, so
+            // ascending time puts the earliest row first and the latest row
+            // last — the same order both functions share, only which end of
+            // it they read differs. (`last_value` ordered *descending* —
+            // the bug this fixes — put the earliest row last too, so `last`
+            // silently returned the same value `first` did.)
             AggFn::First => first_value(
                 self.value_expr(a.of.as_deref().unwrap_or_default())?,
                 vec![SortExpr::new(col(self.source.time_col), true, true)],
             ),
             AggFn::Last => last_value(
                 self.value_expr(a.of.as_deref().unwrap_or_default())?,
-                vec![SortExpr::new(col(self.source.time_col), false, true)],
+                vec![SortExpr::new(col(self.source.time_col), true, true)],
             ),
         };
 
@@ -6292,5 +6302,62 @@ mod tests {
         )
         .await;
         assert_eq!(n, 1, "only t1 has http.method=POST");
+    }
+
+    // -----------------------------------------------------------------
+    // `first`/`last` aggregate ordering (found while removing
+    // `ir-single-lowering`'s rollout switches): `AggFn::Last` ordered by
+    // `time_col` *descending*, so "last" in that order picked the row with
+    // the *smallest* time — the earliest sample, the same one `first`
+    // already picked. Fixed by ordering both ascending and letting
+    // `last_value`'s own semantics (the value at the end of the frame) pick
+    // the true latest row.
+    // -----------------------------------------------------------------
+
+    /// `logs_ctx`'s four rows carry `severity_number` 17, 9, 17, 21 at
+    /// `timestamp` 10, 20, 30, 40 — `first` (earliest) must be 17 (row 1),
+    /// `last` (latest) must be 21 (row 4), never the same value as `first`.
+    #[tokio::test]
+    async fn first_and_last_aggregates_order_by_time() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 5, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": [], "aggs": [
+                    { "fn": "first", "of": "severity_number", "as": "first_sev" },
+                    { "fn": "last", "of": "severity_number", "as": "last_sev" }
+                ] } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("logs table is registered");
+        let batches = df.collect().await.unwrap();
+        let batch = &batches[0];
+        let first = batch
+            .column_by_name("first_sev")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(0);
+        let last = batch
+            .column_by_name("last_sev")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(
+            first, 17,
+            "first (earliest, ts=10) should be row 1's severity_number"
+        );
+        assert_eq!(
+            last, 21,
+            "last (latest, ts=40) should be row 4's severity_number, not row 1's again"
+        );
     }
 }

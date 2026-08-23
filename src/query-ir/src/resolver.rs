@@ -58,6 +58,25 @@ impl Resolved {
             Resolved::SpanEvents { .. } => &ValueType::String,
         }
     }
+
+    /// Whether this resolution's [`ValueType`] is *advisory* rather than
+    /// authoritative: an unpromoted attribute (`JsonPath`) or an attribute
+    /// captured on a span event (`EventAttribute`) has no canonical type of
+    /// its own — both report `String` unconditionally, since the
+    /// attribute-registry epic (#811) hasn't landed a real type source yet —
+    /// so a caller that would otherwise coerce the value at plan time (a
+    /// numeric aggregate operand casting to `Float64`, tolerating `NULL` for
+    /// a non-numeric-looking value rather than erroring) may treat this
+    /// resolution's advertised type as a hint, not a guarantee. A `Column`
+    /// (a real physical or promoted field) is authoritative: its type is
+    /// this document's actual, load-bearing contract, and coercion there
+    /// stays strict.
+    pub fn is_advisory_type(&self) -> bool {
+        matches!(
+            self,
+            Resolved::JsonPath { .. } | Resolved::EventAttribute { .. }
+        )
+    }
 }
 
 /// Resolves a logical, dotted OTel-native field name to its physical location.
