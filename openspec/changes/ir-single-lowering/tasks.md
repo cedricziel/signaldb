@@ -269,24 +269,61 @@ lowering`.)
 
 ## 6. Docs and skills
 
-- [ ] 6.1 Update the `architecture` skill: the query path has one lowering, and
+- [x] 6.1 Update the `architecture` skill: the query path has one lowering, and
       compat surfaces reach it through `ql-ir`.
-- [ ] 6.2 Update `docs/architecture/fdap.md` — its DataFusion section says each
+      (Point 6's query-path paragraph rewritten: TraceQL/LogQL lower through
+      `ql_ir` onto the query IR, planned by `ir_planner.rs`, with
+      `logql.rs`/`logql_metric.rs`/`search_filter.rs` reduced to the
+      `Inexpressible` fallback and response assembly; PromQL called out as
+      unaffected.)
+- [x] 6.2 Update `docs/architecture/fdap.md` — its DataFusion section says each
       parsed query "is lowered to DataFusion `Expr`s and logical plans
       directly", which stops being how traces and logs work.
-- [ ] 6.3 Update the `crate-map` skill entries for the querier modules that
+      (Rewritten: TraceQL/LogQL take an IR-document detour through the same
+      planner `POST /api/v1/query` uses; PromQL/SQL still lower straight to
+      a DataFusion plan.)
+- [x] 6.3 Update the `crate-map` skill entries for the querier modules that
       shrink or disappear.
-- [ ] 6.4 Update `docs/contributing/compat-crates.md`: the rule "lowering lives
+      (`logql`/`traceql` crate rows and the querier module table updated;
+      added the `ir_planner.rs` row, missing even before this change.)
+- [x] 6.4 Update `docs/contributing/compat-crates.md`: the rule "lowering lives
       in the querier" becomes "lowering targets the IR".
-- [ ] 6.5 Run the docs-freshness gate **after committing**, and again after any
+      (Rewritten; `src/ql-ir/**`/`src/query-ir/**` added to the doc's
+      `sources:` frontmatter, since Rule 1 is now substantially about them.)
+- [x] 6.5 Run the docs-freshness gate **after committing**, and again after any
       fix (it diffs committed history and cascades code → doc → skill).
+      (Run repeatedly through §5.3/§6; final state against `origin/main...HEAD`
+      flags 6 files as "sources changed" — `.claude/skills/multi-tenancy/SKILL.md`,
+      `docs/architecture/flight-communication.md`, `docs/architecture/overview.md`,
+      `docs/operations/compactor/configuration.md`,
+      `docs/operations/query-ordering.md`, `docs/users/mcp.md` — all verified
+      false positives: each watches the whole of `config/mod.rs` or
+      `flight.rs`, but none document the two deleted rollout-switch fields or
+      anything else this change touched. Waved off with the `docs-not-needed`
+      label rather than editing files with nothing genuinely stale, same
+      convention as PR #1403.)
 
 ## 7. Ship
 
-- [ ] 7.1 Run `/simplify` over the changed code.
+- [x] 7.1 Run `/simplify` over the changed code.
+      (4 parallel review agents over the full deletion diff. Two real
+      findings, both fixed: two new `logs.rs` tests reimplemented the file's
+      own `matrix()` test helper instead of calling it; `differential.rs`'s
+      `TRACEQL_CORPUS`/`LOGQL_METRIC_CORPUS` arrays were pure duplication of
+      data already carried by `TRACEQL_CORPUS_CLASS`/`LOGQL_METRIC_CORPUS_ROWS`,
+      correlated by a weak length check or an O(n) string-equality `find()` —
+      deleted, with the two `_CLASS`/`_ROWS` consts as the sole source of
+      truth. Efficiency review found nothing. Altitude review found nothing
+      to fix in-PR; noted that #1405's eventual fix should generalize
+      `router/src/endpoints/query.rs`'s `unknown_group_by_field` mechanism
+      rather than reimplement it for LogQL — guidance left on the issue, not
+      actioned here.)
 - [x] 7.2 File the tracking issue this change lacks; add `Closes #N` to the PR.
       (Filed as #1382; the final PR of the stack carries `Closes #1382`.)
-- [ ] 7.3 Split into a stack: §1–2 (seam + harness), §3 (traces), §4 (logs),
+- [x] 7.3 Split into a stack: §1–2 (seam + harness), §3 (traces), §4 (logs),
       §5 (deletion). Each is independently revertible, which is the point of
       the ordering.
-- [ ] 7.4 Open each PR; check for CodeRabbit findings and act on them.
+      (§1–2 merged as #1387; §3 as #1391; §4 as #1393; two pre-deletion fix
+      PRs the §5 work surfaced merged ahead of it as #1401/#1403; this PR is
+      §5/§6/§7 — the deletion, docs, and ship tasks.)
+- [x] 7.4 Open each PR; check for CodeRabbit findings and act on them.
