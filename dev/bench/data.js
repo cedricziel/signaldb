@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787458989314,
+  "lastUpdate": 1787546295311,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -1849,6 +1849,244 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 857746,
             "range": "± 8362",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "43422e6f4ac08af152109e8160e0c3dfce40e703",
+          "message": "fix(writer): hygiene follow-ups from writer review (W8, W10, W11) (#1409)\n\n* fix(writer): reject unrepresentable casts when coercing to table schema\n\ncoerce_batch_to_schema used arrow::compute::cast's default safe:true\noptions, so a batch column that drifted from the table's Iceberg\nschema (e.g. Utf8 landing on an Int64 column) silently nulled the\nrow instead of failing. Switch to cast_with_options with safe:false\nso an unrepresentable value errors loudly.\n\nCloses #1404 (W8)\n\n* refactor(writer): remove unused RetryConfig setter/getter\n\nset_retry_config/retry_config on IcebergTableWriter had no callers\noutside the crate (grep across the workspace confirms it, including\ntests-integration) -- every writer runs the Default retry policy.\nDrop the dead API and the README section that documented it.\n\nRefs #1404 (W10)\n\n* test(writer): delete vacuous RetryConfig default-value test\n\ntest_retry_logic.rs only pinned RetryConfig::default()'s literal\nfield values -- it exercised no writer behavior and would still pass\nafter deleting the setter this stack just removed. Delete it and\ndrop the module's now-stale \"remain in writer crate\" comment.\n\nRefs #1404 (W10)\n\n* test(writer): dedupe repeated WalConfig test literals\n\nSix processor.rs tests each hand-typed a full WalConfig struct\nliteral differing only in wal_dir/max_segment_size/flush_interval_secs\n/tenant_id/dataset_id. Build from WalConfig::with_defaults(dir) with\njust the differing fields overridden, matching the pattern\ncoalescing_wal_config already used.\n\nRefs #1404 (W10)\n\n* chore(writer): fix Cargo.toml dependency misdeclarations\n\nasync-trait was machete-ignored with a stale justification (\"used by\nthe trait implementations\") -- the crate only uses tonic's re-exported\n#[tonic::async_trait], never `async_trait` directly, so the direct\ndependency was dead weight; drop it and its ignore entry. tempfile is\nonly used under #[cfg(test)]; move it from [dependencies] to\n[dev-dependencies].\n\nRefs #1404 (W10)\n\n* test(writer): derive metrics schema-consistency touched sets from Arrow schema\n\nThe five metrics schema_consistency tests compared schemas.toml\nagainst hand-typed field lists that could drift from the transform's\nactual create_metrics_*_arrow_schema() output without either list\nbeing wrong on its own. Derive the touched set from the Arrow schema\ninstead (minus the computed date_day/hour columns), matching how the\ntraces/logs/profiles tests already self-check at runtime. Add a\nnegative test proving a field present in the Arrow schema but absent\nfrom schemas.toml fails the check.\n\nCloses #1404 (W11)",
+          "timestamp": "2026-08-23T08:38:01Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/43422e6f4ac08af152109e8160e0c3dfce40e703"
+        },
+        "date": 1787546292941,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1972848,
+            "range": "± 21091",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1157202,
+            "range": "± 13397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 735565,
+            "range": "± 3966",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1575890,
+            "range": "± 54862",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 774407,
+            "range": "± 6240",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1836880,
+            "range": "± 18985",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1129311,
+            "range": "± 11919",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1421210,
+            "range": "± 6560",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2667666,
+            "range": "± 124528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 12351234,
+            "range": "± 81306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 112081840,
+            "range": "± 3022930",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 4118328,
+            "range": "± 19573",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8434748,
+            "range": "± 82324",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 15568761,
+            "range": "± 141243",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 30659051,
+            "range": "± 107422",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 985163,
+            "range": "± 4576",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2353867,
+            "range": "± 45182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3501903,
+            "range": "± 75763",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6670341,
+            "range": "± 106278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 557167,
+            "range": "± 5716",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 21973818,
+            "range": "± 512769",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 29860231,
+            "range": "± 582173",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 28537795,
+            "range": "± 438603",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 28495372,
+            "range": "± 222088",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 28220854,
+            "range": "± 220565",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 7031681,
+            "range": "± 114050",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 16987131,
+            "range": "± 439603",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 35674759,
+            "range": "± 297279",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 31144124,
+            "range": "± 2461542",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 7141700,
+            "range": "± 110682",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 79802171,
+            "range": "± 1566657",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 142614758,
+            "range": "± 2187064",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 151712338,
+            "range": "± 2163552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1131795,
+            "range": "± 56603",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1081292,
+            "range": "± 22810",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1130009,
+            "range": "± 26367",
             "unit": "ns/iter"
           }
         ]
