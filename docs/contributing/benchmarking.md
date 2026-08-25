@@ -120,6 +120,13 @@ and pushes the accumulated series to the `benchmark-data` branch under
 [cedricziel.github.io/signaldb/benchmarks](https://cedricziel.github.io/signaldb/benchmarks/) and regenerates the table above with
 `scripts/render-bench-summary.py`.
 
+The workflow points `CRITERION_HOME` at the runner's temp directory so
+Criterion's own data never lands in the cached `target/`. rust-cache strips
+the files but not the directories from `target/criterion/` before saving, and
+a restored tree of empty `base/` directories makes Criterion attempt a
+baseline comparison, fail, and print the error into the bencher output the
+next step parses.
+
 An `alert-threshold` of 150% flags a benchmark whose mean is 1.5× the
 previous run in the job summary. It does not fail the workflow yet: shared
 runners are noisy, and the threshold needs a few weeks of observed variance
