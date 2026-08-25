@@ -59,6 +59,15 @@ jobs:
           packages: protobuf-compiler mold clang jq
 
       - name: Run every Criterion bench target
+        env:
+          # Keep Criterion's data directory out of target/. rust-cache prunes
+          # every *file* under unknown target/ subdirectories before saving
+          # but keeps the directory tree, so a restored target/criterion holds
+          # empty <bench>/base/ dirs. Criterion treats an existing base/ as a
+          # baseline to compare against, fails to load its sample.json, and
+          # prints that error to stdout in the middle of the bencher-format
+          # line — which the next step then cannot parse.
+          CRITERION_HOME: ${{ runner.temp }}/criterion
         run: scripts/run-benches.sh -- --output-format bencher
 
       - name: Upload raw bencher output
