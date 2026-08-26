@@ -105,11 +105,14 @@ MinIO: Console `localhost:9001`, API `localhost:9000` (minioadmin/minioadmin)
 
 ## Grafana Plugin
 
+JS tooling is pnpm (`packageManager` in `package.json`, root `pnpm-lock.yaml`);
+`npm install` desyncs the lockfile and breaks CI's frozen-lockfile install.
+
 ```bash
-npm install                     # From workspace root
-npm run grafana:dev             # Watch + rebuild frontend
-npm run grafana:build           # Production build
-cd src/grafana-plugin && npm run build:backend   # Rust backend
+pnpm install --frozen-lockfile   # From workspace root
+pnpm run grafana:dev             # Watch + rebuild frontend
+pnpm run grafana:build           # Production build
+pnpm -C src/grafana-plugin run build:backend   # Rust backend
 ```
 
 ## Health Checks
