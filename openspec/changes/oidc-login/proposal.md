@@ -22,10 +22,14 @@ exist; only the credential is missing.
   `password_hash` becomes nullable for SSO-only users.
 - Memberships stay locally managed; optional config rules map an IdP group
   claim to tenant memberships and roles, re-applied at each login without
-  touching locally granted memberships.
+  touching locally granted memberships. `tenant_memberships` is re-keyed by
+  `(user_id, tenant_id, granted_by)` so local and mapped grants are separate
+  rows; the effective role is the higher of the two.
 - Password login remains available and can be disabled by config once OIDC is
   configured; the CLI/config bootstrap path and `admin_api_key` remain as
-  break-glass regardless.
+  break-glass regardless. An unreachable IdP at startup degrades SSO (with
+  background retry) rather than stopping the instance, so break-glass holds
+  across restarts too.
 - The login page advertises and offers SSO when the server has OIDC
   configured; the OIDC endpoints and the login-configuration probe are part of
   the published API contract.
@@ -50,11 +54,13 @@ exist; only the credential is missing.
 ## Impact
 
 - Crates: `common` (config `[auth.oidc]`, catalog columns
-  `users.oidc_issuer`/`oidc_subject` + nullable `password_hash`, authenticator
-  user-resolution), `router` (OIDC start/callback endpoints, login-config
-  probe, OpenAPI additions, startup discovery), `signaldb-sdk` and the UI
-  TypeScript client (regenerated), `signaldb-cli` (unchanged behaviour;
-  `user create` gains nothing), `tests-integration` (IdP testcontainer).
+  `users.oidc_issuer`/`oidc_subject` + nullable `password_hash`,
+  `tenant_memberships.granted_by` + re-keyed primary key with source-aware
+  membership operations, authenticator user-resolution), `router` (OIDC
+  start/callback endpoints, login-config probe, OpenAPI additions, startup
+  discovery with degraded mode), `signaldb-sdk` and the UI TypeScript client
+  (regenerated), `signaldb-cli` (unchanged behaviour; `user create` gains
+  nothing), `tests-integration` (IdP testcontainer).
 - New dependency: the `openidconnect` crate (RP-side flow, JWKS validation).
 - UI: `src/ui` login panel (SSO button, hidden password form when disabled).
 - Config: new `[auth.oidc]` section; BREAKING nothing — purely additive, and

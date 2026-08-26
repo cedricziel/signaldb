@@ -13,10 +13,16 @@ The system SHALL support one OIDC provider per instance, configured under
 `[auth.oidc]` with at least `issuer_url`, `client_id`, and `client_secret`.
 Provider endpoints SHALL be resolved through OIDC discovery
 (`.well-known/openid-configuration`) — never configured endpoint-by-endpoint.
-When `[auth.oidc]` is present and the issuer is unreachable or its metadata is
-invalid at startup, the instance SHALL fail startup with a message naming the
-issuer; when the section is absent, no OIDC surface is exposed and nothing
-else changes.
+An invalid `[auth.oidc]` section (malformed `issuer_url`, missing
+`client_id`/`client_secret`, `disable_password_login` without a provider,
+unparseable mapping rules) SHALL fail startup with a message naming the
+problem. A discovery document that cannot be fetched or fails validation at
+startup SHALL NOT stop the instance: the instance SHALL start with SSO
+unavailable, log an error naming the issuer, retry discovery in the
+background with backoff, and offer SSO as soon as discovery succeeds — so
+password login, API keys, and the bootstrap path stay reachable across an
+IdP outage or restart. When the section is absent, no OIDC surface is
+exposed and nothing else changes.
 
 #### Scenario: Discovery resolves the provider
 
@@ -24,11 +30,27 @@ else changes.
 - **THEN** the authorization, token, and JWKS endpoints are taken from the
   issuer's discovery document and SSO login is offered
 
-#### Scenario: Bad issuer fails hard
+#### Scenario: Invalid configuration fails hard
 
-- **WHEN** the instance starts with `[auth.oidc]` set and the issuer's
+- **WHEN** the instance starts with `[auth.oidc]` present but invalid — for
+  example `disable_password_login = true` with no `issuer_url`
+- **THEN** startup fails with an error naming the offending setting
+
+#### Scenario: Unreachable issuer degrades instead of stopping
+
+- **WHEN** the instance starts with a valid `[auth.oidc]` and the issuer's
   discovery document cannot be fetched or fails validation
-- **THEN** startup fails with an error naming the issuer URL
+- **THEN** the instance starts, the login-configuration probe reports no SSO,
+  the SSO start endpoint answers 503 naming the issuer, an error naming the
+  issuer is logged, and password login, API keys, and `admin_api_key` work
+  as before
+
+#### Scenario: Discovery recovers without a restart
+
+- **WHEN** an instance started with an unreachable issuer and the issuer
+  later becomes reachable
+- **THEN** a subsequent background retry succeeds and SSO is offered without
+  restarting the instance
 
 #### Scenario: Absent config exposes nothing
 
@@ -78,8 +100,11 @@ create the user just-in-time — unless `[auth.oidc]` configures an allowlist
 (email domains or a claim predicate), in which case a non-matching identity
 SHALL be refused without creating a user. A user created or linked via OIDC
 MAY have no password; such a user SHALL NOT be able to log in with a password
-until one is set through an authorised path. Disabled users SHALL be refused
-at SSO login exactly as at password login.
+until one is set through an authorised path — a password login attempt
+against a user with no password SHALL be refused with the same generic
+failure as a wrong password, without invoking the password verifier and
+without creating a session. Disabled users SHALL be refused at SSO login
+exactly as at password login.
 
 #### Scenario: First login creates the user
 
@@ -100,6 +125,13 @@ at SSO login exactly as at password login.
   `mallory@evil.test`
 - **THEN** login is refused, no user row is created, and the refusal does not
   disclose whether the address was known
+
+#### Scenario: SSO-only user cannot use the password form
+
+- **WHEN** password login is enabled and a user whose `password_hash` is null
+  submits the password form with any password
+- **THEN** the response is the same generic "invalid email or password"
+  failure, the verifier is not invoked, and no session is created
 
 #### Scenario: Disabled user cannot enter via SSO
 
@@ -123,6 +155,14 @@ the instance-admin flag.
 - **WHEN** a mapping rule assigns group `observability-admins` to tenant
   `acme` as `admin` and a user's token carries that group
 - **THEN** after login the user holds an `admin` membership in `acme`
+
+#### Scenario: Local and mapped memberships coexist
+
+- **WHEN** an admin has locally granted a user `viewer` in tenant `acme` and a
+  mapping rule grants the same user `admin` in `acme`
+- **THEN** both rows exist with their own source, the user's effective role in
+  `acme` is `admin`, removing the local membership leaves the mapped one, and
+  losing the group leaves the local one
 
 #### Scenario: Lost group revokes only what mapping granted
 
@@ -170,10 +210,15 @@ operators out of break-glass access.
 
 The login-configuration probe (which authentication methods this instance
 offers, and the SSO display name), the SSO start endpoint, and the callback
-endpoint SHALL be declared in the published OpenAPI document, with the probe
-and start endpoint explicitly unauthenticated. The UI SHALL derive the login
-page's offering from the probe via the generated client — it SHALL NOT infer
-SSO availability by probing endpoints or from hardcoded configuration.
+endpoint SHALL be declared in the published OpenAPI document, and all three
+SHALL be explicitly unauthenticated (empty security requirement). The probe
+response SHALL have one schema in every state: `password_enabled` (boolean,
+always present) and `oidc` (nullable object; `null` when OIDC is not
+configured or discovery has not succeeded, otherwise `{name}`). Generated
+clients SHALL be regenerated from the published schema before the UI
+consumes it. The UI SHALL derive the login page's offering from the probe
+via the generated client — it SHALL NOT infer SSO availability by probing
+endpoints or from hardcoded configuration.
 
 #### Scenario: Login page follows the probe
 
@@ -182,8 +227,14 @@ SSO availability by probing endpoints or from hardcoded configuration.
 - **THEN** the login page shows only the SSO entry, sourced from the
   login-configuration probe through the generated client
 
+#### Scenario: Probe without OIDC
+
+- **WHEN** the probe is requested on an instance without `[auth.oidc]`
+- **THEN** the response is `{"password_enabled": true, "oidc": null}` and
+  validates against the published schema
+
 #### Scenario: Contract documents the endpoints
 
 - **WHEN** the OpenAPI document is inspected
 - **THEN** the login-configuration probe, SSO start, and callback endpoints
-  appear with their schemas, marked unauthenticated
+  appear with their schemas, each with an empty security requirement
