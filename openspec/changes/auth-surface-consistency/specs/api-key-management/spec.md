@@ -9,8 +9,11 @@ SDK, the CLI (`signaldb admin api-key create` and
 SHALL let the caller choose the key's scopes from the same vocabulary
 (`metrics:write`, `logs:write`, `traces:write`, `profiles:write`,
 `traces:read`, `logs:read`, `metrics:read`, `profiles:read`, `schema:read`,
-`schema:write`, `tenant:manage`) and an optional dataset restriction. That
-vocabulary SHALL be published once, as an enumeration in the API contract, and
+`schema:write`, `tenant:manage`) and an optional dataset restriction. The
+vocabulary is one set: the read scopes are valid on API keys, not only on
+OAuth grants, and the scopes an OAuth consent may grant are the read subset of
+this same enumeration. That vocabulary SHALL be published once, as an
+enumeration in the API contract, and
 every first-party surface — including the OAuth consent view's list of
 grantable read scopes — SHALL derive its scope list from the generated client
 rather than a hand-maintained copy, so that no surface offers a subset of the
@@ -57,6 +60,13 @@ predate scopes.
   the API-keys page
 - **THEN** both offer all eleven scopes, including `schema:read`,
   `schema:write`, and `tenant:manage`, grouped identically
+
+#### Scenario: A read scope is granted to an API key
+
+- **WHEN** a key is created via the UI, HTTP, CLI, or MCP with scope
+  `traces:read` only
+- **THEN** the key is created carrying it, every listing shows it, and the
+  key may search traces but not ingest them
 
 #### Scenario: Consent view shows what the server will grant
 

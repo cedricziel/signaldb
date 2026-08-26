@@ -19,7 +19,8 @@ by any key). Capturing these in OpenSpec now makes the structural clean-up
     case-insensitively everywhere, identical validators, identical rejection
     semantics;
   - the router's three credential kinds (API key, session cookie, OAuth
-    access token), their precedence and tenant-header rules;
+    access token), their precedence and tenant-header rules; the OAuth
+    token prefix is reserved so no API key can be misclassified;
   - Flight mesh authentication via `internal_service_key`, internal-only
     services, and the unauthenticated-when-unset warning;
   - **BREAKING (operator config)**: the self-monitoring tenant authenticates
@@ -38,7 +39,8 @@ by any key). Capturing these in OpenSpec now makes the structural clean-up
   authorization-server endpoints are part of the published contract.
 - `dataset-table-provisioning`: on-demand provisioning requires tenant
   management authority (`tenant:manage` key, tenant-admin or instance-admin
-  session), not merely any valid API key.
+  session), not merely any valid API key; a dataset-restricted key lists and
+  provisions only its own dataset.
 
 ## Capabilities
 

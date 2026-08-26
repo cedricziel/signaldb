@@ -13,7 +13,12 @@ reporting success. Triggering provisioning SHALL require tenant-management
 authority for the named tenant — an API key carrying `tenant:manage`, a
 session whose membership role is admin, or an instance-admin session; any
 other valid credential SHALL be refused with `403`. Listing tables SHALL be
-available to any credential that may read the tenant. The table listing SHALL
+available to any credential that may read the tenant. A credential restricted
+to one dataset SHALL act only within it: its listing SHALL contain that
+dataset alone, provisioning through it SHALL create tables only for that
+dataset, and a request naming another dataset SHALL be refused with `403`;
+full-tenant listing and provisioning SHALL require an unrestricted credential.
+The table listing SHALL
 report what actually exists in the tenant's catalog — every table in each of
 the tenant's datasets, each entry naming its dataset and its signal type, with
 every known dataset present even when it holds no tables yet — and SHALL NOT
@@ -50,7 +55,21 @@ tables yet lists its datasets with empty table lists, without error.
 
 #### Scenario: Management key can provision
 
-- **WHEN** a key carrying `tenant:manage` calls the provisioning trigger for
-  its own tenant
-- **THEN** the tenant's enabled signal tables are created and the call reports
-  success
+- **WHEN** an unrestricted key carrying `tenant:manage` calls the provisioning
+  trigger for its own tenant
+- **THEN** the tenant's enabled signal tables are created in every dataset and
+  the call reports success
+
+#### Scenario: Dataset-restricted key sees only its dataset
+
+- **WHEN** a tenant has datasets `production` and `staging`, and a key
+  restricted to `staging` lists the tenant's tables
+- **THEN** the listing contains `staging` alone; `production` and its tables
+  are absent
+
+#### Scenario: Dataset-restricted key cannot provision another dataset
+
+- **WHEN** a key carrying `tenant:manage` restricted to `staging` triggers
+  provisioning naming `production`
+- **THEN** the call is refused with `403` and no table is created; triggering
+  it for `staging` (or without naming a dataset) provisions `staging` alone

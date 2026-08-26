@@ -43,7 +43,9 @@ See proposal.md — Why. Current state that shapes the approach:
 - Key expiry, last-used tracking, rotation, login rate limiting, refresh-token
   family revocation, SSO — tracked separately as capability gaps.
 - Changing scope semantics (legacy unscoped keys stay unrestricted for
-  ingest/read/schema; `tenant:manage` stays explicit-only).
+  ingest/read/schema — including `schema:write`, as the `schema-registry`
+  spec already states; `tenant:manage` stays explicit-only). Decision 4
+  tightens only the management predicate.
 - Touching the MCP server's no-local-authorization stance.
 
 ## Decisions
@@ -56,9 +58,13 @@ See proposal.md — Why. Current state that shapes the approach:
    `X-Tenant-ID` is mandatory. Router policy = all three user-facing kinds;
    acceptor policy = `ApiKey` only (keeps the attack surface identical to
    today, addressing the #1322 caveat); Flight policy = `InternalService |
-ApiKey` or `InternalService` only. _Alternative:_ merge the acceptor
-   middleware wholesale into the router's — rejected because it would silently
-   accept cookies/OAuth on ingest.
+ApiKey` or `InternalService` only. Bearer classification stays
+   prefix-based, so the OAuth access-token prefix (`sdb_at_`) is reserved:
+   API-key creation (admin/management API, bootstrap) and `[[auth.tenants]]`
+   config load reject keys that begin with it. The two formats are disjoint
+   and classification is deterministic — no lookup-order fallback needed.
+   _Alternative:_ merge the acceptor middleware wholesale into the router's —
+   rejected because it would silently accept cookies/OAuth on ingest.
 2. **Acceptor keeps its path→signal scope map as a post-auth layer.** The
    shared middleware resolves the principal; a thin acceptor layer maps the
    route to `can_ingest(signal)`. This preserves the existing
@@ -67,24 +73,33 @@ ApiKey` or `InternalService` only. _Alternative:_ merge the acceptor
    Removes the `block_in_place`/`block_on` bridge (same migration the acceptor
    gRPC path already did). Constant-time internal-key compare stays. The
    layer is installed unconditionally; with no `internal_service_key` it
-   passes through and logs the startup warning (today's behaviour, now
-   specced).
+   accepts calls that carry no authorization metadata and logs the startup
+   warning (today's behaviour, now specced). A credential that _is_ supplied
+   still goes through the shared parser — a malformed header is
+   `UNAUTHENTICATED` on every entry point regardless of the mesh setting —
+   but nothing is verified.
 4. **`can_manage_tenant()` stops being true for every key.** Split into
    `is_tenant_admin()` (human admin or instance admin) and keep
    `can_manage_via_key()`; `tables/create` and any other management-grade
    route use `is_tenant_admin() || can_manage_via_key()`, the same predicate
-   `management.rs` already uses. `can_write_schema` follows the same
-   predicate — a legacy unscoped key therefore loses schema writes, which the
-   `schema:write` requirement already implies ("never implicit" was the
-   intent; `mcp-oauth` rejects `schema:write` at authorization for the same
-   reason). This is a tightening; call it out in release notes.
+   `management.rs` already uses. `can_write_schema` is untouched: the
+   `schema-registry` spec grants a legacy unscoped key unrestricted schema
+   access, and re-opening that is out of scope (see Non-Goals). The table
+   routes also honour the key's dataset restriction, which they ignore
+   today: a dataset-restricted key lists and provisions only its own
+   dataset; naming another is `403`. This is a tightening; call it out in
+   release notes.
 5. **Self-monitoring key: `[self_monitoring].api_key`, bootstrap-generated.**
    Config load injects `_system` with that key instead of `admin_api_key`.
-   When absent and the catalog is writable, first-boot bootstrap mints a
-   catalog key `sk-_system-<uuid>` (reusing `bootstrap.rs`'s path) and logs it
-   once; the exporter reads it from the resolved config. `admin_api_key` is no
-   longer added to any tenant. _Alternative:_ keep admin-key-as-_system-key
-   and only document it — rejected: it makes "who can read self-monitoring"
+   When absent, first-boot bootstrap mints a catalog key `sk-_system-<uuid>`
+   (reusing `bootstrap.rs`'s path) and logs it once; the exporter reads it
+   from the resolved config. When absent and the catalog cannot persist one
+   (read-only catalog, catalog error), startup fails with an error naming the
+   missing credential before self-monitoring is enabled — the process never
+   exports telemetry without a durable key; the operator sets
+   `[self_monitoring].api_key` explicitly to run against a read-only catalog.
+   `admin_api_key` is no longer added to any tenant. _Alternative:_ keep
+   admin-key-as-_system-key and only document it — rejected: it makes "who can read self-monitoring"
    equal to "who is instance admin", and vice versa, with no way to hand a
    dashboard a read-only key.
 6. **Frontend key validation at router startup.** The router resolves the
@@ -113,6 +128,9 @@ ApiKey` or `InternalService` only. _Alternative:_ merge the acceptor
 - [Tightening `can_manage_tenant` breaks an operator script that provisions
   tables with an ingest key] → release note + `403` body names the required
   scope; `tenant:manage` keys are one CLI command away.
+- [Reserving `sdb_at_` rejects an operator's existing config key with that
+  prefix] → config load error names the tenant and key name; generated keys
+  are `sk-…`, so a collision is a deliberate choice, not an accident.
 - [Operators relying on `admin_api_key` to read `_system` in Grafana/MCP lose
   access] → BREAKING note; bootstrap prints the generated self-monitoring key
   once; the hive `signaldb-selfmon` MCP registration must be re-keyed.

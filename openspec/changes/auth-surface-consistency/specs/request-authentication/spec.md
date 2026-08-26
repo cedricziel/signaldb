@@ -52,10 +52,13 @@ recognisable by its prefix), and a browser session cookie. A bearer
 credential, when present, SHALL take precedence over a cookie. An API key or
 session MUST be accompanied by `X-Tenant-ID`; an OAuth token carries its own
 tenant and any `X-Tenant-ID` header SHALL be ignored. Requests presenting no
-credential of any kind SHALL be rejected as unauthenticated. The resolved
-principal (tenant, dataset, scopes or role, user identity when a human) SHALL
-be the only input to downstream authorization, regardless of which credential
-kind produced it.
+credential of any kind SHALL be rejected as unauthenticated. The OAuth
+access-token prefix SHALL be reserved: an API key that begins with it SHALL be
+refused when created through any surface and when loaded from configuration,
+so that classifying a bearer value by its prefix is deterministic and never
+misroutes a valid key. The resolved principal (tenant, dataset, scopes or
+role, user identity when a human) SHALL be the only input to downstream
+authorization, regardless of which credential kind produced it.
 
 #### Scenario: Bearer wins over cookie
 
@@ -75,15 +78,26 @@ kind produced it.
 - **THEN** the request is authenticated for tenant A and the header has no
   effect
 
+#### Scenario: API key with the reserved OAuth prefix is refused
+
+- **WHEN** an API key whose secret begins with the OAuth access-token prefix
+  is submitted to key creation on any surface, or appears under
+  `[[auth.tenants]]` in configuration
+- **THEN** creation is rejected with a validation error naming the reserved
+  prefix, and configuration load fails naming the tenant and key
+
 ### Requirement: Flight mesh authentication
 
 When `[auth].internal_service_key` is configured, every Flight service SHALL
 require each call to present either that key or a valid tenant API key as a
 bearer credential; the writer and compactor SHALL accept only the internal key.
 The internal-key comparison SHALL be constant-time. When the key is not
-configured the Flight services SHALL accept unauthenticated calls and every
-service process SHALL log a warning at startup stating that the Flight ports
-are unauthenticated. The presence or absence of Flight authentication SHALL
+configured the Flight services SHALL accept calls that present no
+authorization metadata, and every service process SHALL log a warning at
+startup stating that the Flight ports are unauthenticated. A credential that
+is supplied while the key is not configured SHALL still be parsed by the
+shared contract — a malformed header is rejected with `UNAUTHENTICATED` — but
+SHALL NOT be verified. The presence or absence of Flight authentication SHALL
 NOT change the authentication behaviour of the HTTP or OTLP entry points.
 
 #### Scenario: Tenant key cannot reach an internal-only service
@@ -104,6 +118,13 @@ NOT change the authentication behaviour of the HTTP or OTLP entry points.
 - **THEN** its startup log contains a warning that its Flight port accepts
   unauthenticated calls
 
+#### Scenario: Malformed header is rejected even without a mesh key
+
+- **WHEN** `internal_service_key` is not configured and a caller presents
+  `authorization: Token abc` to a Flight port
+- **THEN** the call is rejected with `UNAUTHENTICATED`, while a call with no
+  authorization metadata is accepted
+
 ### Requirement: Self-monitoring authenticates with a dedicated credential
 
 The self-monitoring tenant (`_system` by default) SHALL authenticate its own
@@ -112,7 +133,10 @@ generated and persisted at first boot when not configured. The instance
 `admin_api_key` SHALL NOT be a valid tenant credential for the self-monitoring
 tenant or for any other tenant; it authorizes only the admin and operations
 APIs. Operators SHALL be able to rotate the self-monitoring key like any other
-tenant key without touching `admin_api_key`.
+tenant key without touching `admin_api_key`. When no key is configured and
+the catalog cannot persist a generated one, startup SHALL fail with an error
+naming the missing credential rather than enable self-monitoring without a
+durable key.
 
 #### Scenario: Admin key is refused on tenant routes
 
@@ -134,6 +158,13 @@ tenant key without touching `admin_api_key`.
   startup log states that it was generated (without printing the secret
   beyond the first boot)
 
+#### Scenario: Key cannot be persisted
+
+- **WHEN** self-monitoring is enabled, no `[self_monitoring].api_key` is set,
+  and the catalog is read-only or the key cannot be written
+- **THEN** the process fails startup with an error naming
+  `[self_monitoring].api_key`, and no telemetry export is started
+
 ### Requirement: The browser-published telemetry key is narrow
 
 When browser telemetry is enabled the router publishes an ingest credential to
@@ -151,6 +182,15 @@ configuration response SHALL be marked non-cacheable.
   `traces:read`
 - **THEN** the router fails startup validation with a message naming the
   offending scope, and no runtime configuration embedding that key is served
+
+#### Scenario: Key bound elsewhere is refused at startup
+
+- **WHEN** `[self_monitoring.frontend].api_key` names a write-only key that
+  belongs to a tenant other than the configured frontend tenant, or is
+  restricted to a dataset other than the configured frontend dataset
+- **THEN** the router fails startup validation with a message naming the
+  mismatched tenant or dataset, and no runtime configuration embedding that
+  key is served
 
 #### Scenario: Conforming key is published
 
