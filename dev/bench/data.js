@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787640895267,
+  "lastUpdate": 1787718076440,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -2325,6 +2325,244 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1203873,
             "range": "± 20504",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6a683e0a3403a6975997fb29415b0a3d28c433f9",
+          "message": "fix(ci): keep Criterion data out of the cached target dir (#1411)\n\nrust-cache prunes every file under unknown target/ subdirectories before\nsaving but keeps the directory tree. On the first cache hit after a save,\ntarget/criterion/<bench>/base/ came back as an empty directory, which\nCriterion treats as a saved baseline: it tried to load base/sample.json,\nfailed, and printed the error to stdout in the middle of each bencher\nline. github-action-benchmark then found no parseable result and the\nnightly run failed (run 32805503550).\n\nPoint CRITERION_HOME at the runner temp directory so Criterion's data\nnever enters the cache, and note the trap in the benchmarking doc.",
+          "timestamp": "2026-08-25T06:14:14Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/6a683e0a3403a6975997fb29415b0a3d28c433f9"
+        },
+        "date": 1787718074534,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1980457,
+            "range": "± 13123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1141121,
+            "range": "± 18087",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 723026,
+            "range": "± 33691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1565364,
+            "range": "± 20981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 770204,
+            "range": "± 4536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1851070,
+            "range": "± 19691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1146481,
+            "range": "± 36843",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1400075,
+            "range": "± 6368",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2686131,
+            "range": "± 126959",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 12131031,
+            "range": "± 120335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 112180285,
+            "range": "± 2231359",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 4025242,
+            "range": "± 27354",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8193643,
+            "range": "± 54730",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 15424777,
+            "range": "± 229677",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 29728953,
+            "range": "± 185949",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 961459,
+            "range": "± 4108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2346356,
+            "range": "± 33488",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3378018,
+            "range": "± 79144",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6345931,
+            "range": "± 126534",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 570558,
+            "range": "± 4660",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 22220798,
+            "range": "± 436992",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 30303565,
+            "range": "± 1269721",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 28594458,
+            "range": "± 733315",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 27941225,
+            "range": "± 520887",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 28183598,
+            "range": "± 587366",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 6670851,
+            "range": "± 123963",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 16066468,
+            "range": "± 351638",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 35178956,
+            "range": "± 589176",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 29289809,
+            "range": "± 1483172",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 6836774,
+            "range": "± 150887",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 74065733,
+            "range": "± 2087718",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 138459683,
+            "range": "± 3436648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 148118634,
+            "range": "± 2169941",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1055521,
+            "range": "± 33039",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1059058,
+            "range": "± 11408",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1120301,
+            "range": "± 19542",
             "unit": "ns/iter"
           }
         ]
