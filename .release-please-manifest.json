@@ -20,5 +20,5 @@
   "src/ui": "0.2.0",
   "src/mcp-server": "0.2.0",
   "src/logql": "0.1.2",
-  "src/traceql": "0.1.0"
+  "src/traceql": "0.2.0"
 }
