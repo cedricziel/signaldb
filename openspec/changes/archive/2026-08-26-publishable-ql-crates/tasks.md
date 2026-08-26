@@ -126,7 +126,7 @@ InvalidInput` and `Unsupported → Unsupported`.
       (`datafusion`, `arrow*`, `parquet`). Prove it by adding `datafusion` to
       `src/traceql/Cargo.toml`, confirming the job fails where the dry-run
       passes, then reverting.
-- [ ] 6.6 Configure the `CARGO_REGISTRY_TOKEN` repository secret.
+- [x] 6.6 Configure the `CARGO_REGISTRY_TOKEN` repository secret.
 - [x] 6.7 `cargo machete --with-metadata`, `cargo fmt`,
       `cargo clippy --workspace --all-targets --all-features`,
       `cargo deny check`.
@@ -161,4 +161,4 @@ InvalidInput` and `Unsupported → Unsupported`.
       PR body. Split into a stack if the diff exceeds ~500 lines — the natural
       seam is §1–3 (extraction, behaviour-preserving) / §4–5 (publishing
       readiness) / §6 (publication).
-- [ ] 8.3 Open the PR; check for CodeRabbit findings and act on them.
+- [x] 8.3 Open the PR; check for CodeRabbit findings and act on them.
