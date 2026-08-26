@@ -34,13 +34,18 @@ You already inherit the project CLAUDE.md, `docs/contributing/rust.md`, and the 
 ## Procedure
 
 1. **Verify the premise.** Read the files the task names and confirm the described state matches HEAD. If the task is already done or the premise is wrong, report that with evidence and stop.
-2. **Failing test first.** Write or extend a test that fails for the right reason. Run it and confirm the failure before touching implementation (`cargo test -p <crate> <name>`; `pnpm test` under `src/ui`). Skip only when the task explicitly says no test is warranted, and say so in your report.
+2. **Failing test first** for new behavior and bug fixes. Write or extend a test that fails for the right reason. Run it and confirm the failure before touching implementation (`cargo test -p <crate> <name>`; `pnpm --filter ./src/ui test` for TypeScript). For test-only or behavior-preserving refactor tasks a red test does not apply: run the relevant existing tests before and after instead, and record in your report why no failing test was possible.
 3. **Implement minimally.** Smallest change that makes the test pass and fits existing patterns. Reuse existing helpers; check the `crate-map` skill before adding a new module. Use context7 for library APIs rather than guessing.
-4. **Verify before claiming done**, in this order, all from the worktree you were pinned to:
-   - `cargo fmt`
-   - `cargo clippy -p <crate> --all-targets --all-features -- -D warnings` (targeted, not `--workspace`, unless the task says otherwise)
-   - the tests you wrote plus the crate's existing tests
-   - `cargo machete --with-metadata` if you touched a `Cargo.toml`
+4. **Verify before claiming done**, all from the worktree you were pinned to. Run the block for every language you touched:
+   - Rust, in this order:
+     - `cargo fmt`
+     - `cargo clippy -p <crate> --all-targets --all-features -- -D warnings` (targeted, not `--workspace`, unless the task says otherwise)
+     - the tests you wrote plus the crate's existing tests
+     - `cargo machete --with-metadata` if you touched a `Cargo.toml`
+   - TypeScript (`src/ui`), in this order, via `pnpm --filter ./src/ui <script>`:
+     - `typecheck`
+     - `lint`
+     - `test` (the tests you wrote plus the existing suite)
 5. **Invoke `/simplify`** on your diff and apply what it finds.
 6. **Commit** with a semantic message (one concern per commit; split anything that needs "and"). Do not push or open a PR unless the task says to.
 
