@@ -163,6 +163,14 @@ pub struct MetricPlan {
     /// (empty = collapse across all series); when `None`, the range
     /// aggregation is grouped directly by `group_labels`.
     pub outer_agg: Option<OuterAgg>,
+    /// Whether this plan came from an explicit `sum(...)` vector
+    /// aggregation (`outer_agg` stays `None` for `sum` — it folds into the
+    /// grouped range aggregate rather than running a second reduction
+    /// pass). Distinguishes that case from a *bare* range aggregation with
+    /// no vector wrapper at all, which also leaves `outer_agg` `None` but
+    /// must keep defaulting its grouping to the stream identity (D7 of
+    /// `ir-single-lowering`) rather than collapse. See #1394.
+    pub outer_sum: bool,
     /// A scalar arithmetic op applied to every value after aggregation and
     /// before any `topk`/`bottomk` ranking.
     pub scalar_op: Option<ScalarOp>,
@@ -253,6 +261,7 @@ pub fn plan_metric_query(query: &MetricQuery) -> Result<MetricPlan, QuerierError
                 MetricQuery::Range(range) => {
                     let mut plan = plan_range(range, group_labels)?;
                     plan.outer_agg = outer_agg;
+                    plan.outer_sum = vector.function == AggregationFunction::Sum;
                     Ok(plan)
                 }
                 other => Err(QuerierError::Unsupported(format!(
@@ -351,6 +360,7 @@ fn plan_range(
         aggregate,
         rate_divisor_seconds,
         outer_agg: None,
+        outer_sum: false,
         scalar_op: None,
         topk: None,
         sort: None,
@@ -561,12 +571,20 @@ mod tests {
 
     #[test]
     fn non_sum_outer_aggregations_reduce_across_series() {
-        // `sum` folds into the grouped range aggregate (no second pass).
+        // `sum` folds into the grouped range aggregate (no second pass), but
+        // is still marked `outer_sum` so `execute_plan` can tell it apart
+        // from a bare range aggregation with no vector wrapper at all
+        // (#1394).
         let s = plan(r#"sum by (level) (rate({a="b"}[5m]))"#);
         assert_eq!(s.outer_agg, None);
+        assert!(s.outer_sum);
         assert_eq!(s.group_labels, vec!["level".to_string()]);
 
-        // The others carry an `OuterAgg` for the cross-series reduction.
+        // A bare range aggregation is not an outer sum.
+        assert!(!plan(r#"rate({a="b"}[5m])"#).outer_sum);
+
+        // The others carry an `OuterAgg` for the cross-series reduction and
+        // are not `outer_sum`.
         for (query, expected) in [
             (r#"avg(rate({a="b"}[5m]))"#, OuterAgg::Avg),
             (r#"min(rate({a="b"}[5m]))"#, OuterAgg::Min),
@@ -580,6 +598,7 @@ mod tests {
         ] {
             let p = plan(query);
             assert_eq!(p.outer_agg, Some(expected), "{query}");
+            assert!(!p.outer_sum, "{query}");
         }
 
         // `by` labels survive onto the plan for the second pass.

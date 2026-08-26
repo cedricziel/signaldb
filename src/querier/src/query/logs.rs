@@ -498,12 +498,17 @@ impl LogsService {
             .collect::<Result<_, _>>()?;
 
         // The range aggregation groups by the output columns directly for a
-        // plain or `sum`-folded query (defaulting to the natural series
-        // identity). A non-`sum` outer aggregation instead groups by the
-        // full series identity so the second pass has per-series values to
-        // reduce across.
+        // plain or `sum`-folded query. A *bare* range aggregation (no
+        // vector wrapper at all) instead defaults to the natural series
+        // identity, per D7 of `ir-single-lowering` — real Loki returns one
+        // series per matching stream when nothing groups it. An explicit,
+        // ungrouped `sum(...)` means the opposite: collapse every matching
+        // series into one row (#1394), so it groups by nothing rather than
+        // falling into that same default. A non-`sum` outer aggregation
+        // instead groups by the full series identity so the second pass has
+        // per-series values to reduce across.
         let range_group_cols: Vec<String> = match plan.outer_agg {
-            None if out_group_cols.is_empty() => {
+            None if out_group_cols.is_empty() && !plan.outer_sum => {
                 SERIES_COLUMNS.iter().map(|c| c.to_string()).collect()
             }
             None => out_group_cols.clone(),
@@ -2309,6 +2314,100 @@ mod tests {
         // api rows differ in severity, so there are three series of 1.
         assert_eq!(out.len(), 3);
         assert!(out.iter().all(|(v, _)| *v == 1.0));
+    }
+
+    /// Executes a metric query through [`LogsService::execute_plan`]
+    /// directly, bypassing `query_metric`'s IR-first routing — the only way
+    /// to exercise the old lowering path for a query `ql_ir` would accept.
+    /// Returns `(value, service_name?, severity_text?)` rows.
+    async fn execute_plan_matrix(
+        service: &LogsService,
+        query: &str,
+        step: i64,
+    ) -> Vec<(f64, Option<String>, Option<String>)> {
+        let LogqlExpr::Metric(metric) = parse(query).expect("parse metric query") else {
+            panic!("{query}: not a metric query");
+        };
+        let plan = plan_metric_query(&metric).expect("plan metric query");
+        let batches = service
+            .execute_plan(&plan, &metric_params(query, step), "t", "d")
+            .await
+            .expect("execute_plan");
+        let mut out = Vec::new();
+        for batch in &batches {
+            let value = batch
+                .column_by_name("value")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            let service_col = string_column(batch, "service_name").ok();
+            let severity_col = string_column(batch, "severity_text").ok();
+            for i in 0..batch.num_rows() {
+                let svc = service_col.and_then(|c| (!c.is_null(i)).then(|| c.value(i).to_string()));
+                let sev =
+                    severity_col.and_then(|c| (!c.is_null(i)).then(|| c.value(i).to_string()));
+                out.push((value.value(i), svc, sev));
+            }
+        }
+        out
+    }
+
+    /// #1394: an explicit, ungrouped `sum(...)` over a range aggregation
+    /// must collapse every matching series into one row, not fall into the
+    /// bare-range-aggregation default of one row per (service_name,
+    /// severity_text) stream. Two `api` rows of differing severity
+    /// (`error`/`info`) in one bucket: real Loki/Prometheus semantics
+    /// return a single row summing both.
+    #[tokio::test]
+    async fn sum_with_no_by_collapses_to_one_series() {
+        let service = service_with_data();
+        let out = execute_plan_matrix(
+            &service,
+            r#"sum(count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(
+            out,
+            vec![(2.0, None, None)],
+            "an ungrouped outer sum must collapse every matching series into one row: {out:?}"
+        );
+    }
+
+    /// Guard: a *bare* range aggregation (no vector wrapper) keeps
+    /// defaulting to one row per (service_name, severity_text) stream (D7
+    /// of `ir-single-lowering`) — #1394's fix must not touch this case.
+    #[tokio::test]
+    async fn bare_range_aggregation_still_defaults_to_series_identity() {
+        let service = service_with_data();
+        let out = execute_plan_matrix(
+            &service,
+            r#"count_over_time({service_name="api"}[1000ns])"#,
+            1000,
+        )
+        .await;
+        assert_eq!(
+            out.len(),
+            2,
+            "one row per (service_name, severity_text) stream: {out:?}"
+        );
+        assert!(out.iter().all(|(v, _, _)| *v == 1.0));
+    }
+
+    /// Guard: an explicitly grouped `sum by (...)` keeps grouping by the
+    /// declared label — #1394's fix only changes the *ungrouped* case.
+    #[tokio::test]
+    async fn sum_by_explicit_label_still_groups_explicitly() {
+        let service = service_with_data();
+        let out = execute_plan_matrix(
+            &service,
+            r#"sum by (level) (count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(out.len(), 2, "sum by (level) keeps two groups: {out:?}");
+        assert!(out.iter().all(|(v, _, _)| *v == 1.0));
     }
 
     #[tokio::test]
