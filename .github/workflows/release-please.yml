@@ -4,6 +4,19 @@ on:
   push:
     branches:
       - main
+  # Re-drive a crates.io publish whose release already exists — e.g. after the
+  # publish job failed on a build-environment problem. release-please itself
+  # does not run on dispatch; only the publish job does, against main's
+  # already-bumped manifests.
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: QL parser crate to publish to crates.io
+        type: choice
+        required: true
+        options:
+          - logql-parser
+          - traceql-parser
 
 permissions:
   contents: write
@@ -16,6 +29,7 @@ env:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' }}
     outputs:
       release_created: ${{ steps.release.outputs['src/signaldb-bin--release_created'] }}
       tag_name: ${{ steps.release.outputs['src/signaldb-bin--tag_name'] }}
@@ -52,21 +66,33 @@ jobs:
     name: Publish QL Parser Crates
     runs-on: ubuntu-latest
     needs: release-please
-    if: ${{ needs.release-please.outputs['logql--release_created'] == 'true' || needs.release-please.outputs['traceql--release_created'] == 'true' }}
+    # `!cancelled()` keeps the job eligible when release-please was skipped
+    # (workflow_dispatch); every other job keys off release-please's outputs,
+    # which are empty on dispatch, so they stay skipped.
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release-please.outputs['logql--release_created'] == 'true' || needs.release-please.outputs['traceql--release_created'] == 'true') }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install system dependencies
+        # `cargo publish` verifies the packaged crate by building it, and
+        # .cargo/config.toml links x86_64-unknown-linux-gnu with clang and
+        # -fuse-ld=mold — without both installed the verify build fails on
+        # the first proc-macro build script.
+        uses: ./.github/actions/apt-install
+        with:
+          packages: mold clang
+
       - name: Publish logql-parser
-        if: ${{ needs.release-please.outputs['logql--release_created'] == 'true' }}
+        if: ${{ inputs.crate == 'logql-parser' || needs.release-please.outputs['logql--release_created'] == 'true' }}
         run: cargo publish -p logql-parser
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Publish traceql-parser
-        if: ${{ needs.release-please.outputs['traceql--release_created'] == 'true' }}
+        if: ${{ inputs.crate == 'traceql-parser' || needs.release-please.outputs['traceql--release_created'] == 'true' }}
         run: cargo publish -p traceql-parser
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

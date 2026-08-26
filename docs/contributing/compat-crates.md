@@ -108,7 +108,13 @@ engineer around with a permissive re-licence.
 **per-package** option — so each gets its own release PR and ships without
 waiting on a product release, while every other package keeps sharing one. The
 `publish-ql-crates` job is gated on each crate's own `--release_created`
-output, so releasing one never republishes the other. The package names carry a `-parser` suffix because a bare
+output, so releasing one never republishes the other. The job installs `mold`
+and `clang` because `cargo publish` verifies the package by building it under
+the repo's `.cargo/config.toml` linker settings. If a publish fails after its
+GitHub release and tag already exist, re-drive it with the workflow's
+`workflow_dispatch` (`gh workflow run release-please.yml -f crate=logql-parser`)
+rather than re-running the failed run — a re-run uses the workflow file as it
+was at the original commit. The package names carry a `-parser` suffix because a bare
 `logql` was taken in 2022; `[lib] name` keeps the import path short, and the
 root manifest's `package` key keeps the dependency name stable:
 
