@@ -433,11 +433,12 @@ async fn database_tenant_log_round_trips_through_matching_namespace() {
 
     use datafusion::arrow::array::Array;
 
-    // The `body` column stores the log body's `AnyValue` as a JSON-encoded
+    // The `body` column *stores* the log body's `AnyValue` as a JSON-encoded
     // string (see conversion_logs.rs) so any value type round-trips through a
-    // single Utf8 column; a plain string body is therefore JSON-quoted.
-    let expected_body_json = serde_json::to_string(LOG_BODY).unwrap();
-
+    // single Utf8 column, but this query goes through the querier's Flight
+    // `query_logs` path (`shape_log_query`), which decodes a string-typed
+    // body on the way out (issue #1410) — the value observed here is the
+    // plain, unquoted text.
     let mut found_body = false;
     let mut found_service = false;
     for batch in &batches {
@@ -446,7 +447,7 @@ async fn database_tenant_log_round_trips_through_matching_namespace() {
                 .as_any()
                 .downcast_ref::<datafusion::arrow::array::StringArray>()
         {
-            found_body |= (0..array.len()).any(|i| array.value(i) == expected_body_json);
+            found_body |= (0..array.len()).any(|i| array.value(i) == LOG_BODY);
         }
         if let Some(service_col) = batch.column_by_name("service_name")
             && let Some(array) = service_col

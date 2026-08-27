@@ -584,7 +584,10 @@ async fn old_logql_log_plan(
     if let Some(filter) = log_query_filter_with_columns(&parsed, &attr_ctx)? {
         df = df.filter(filter)?;
     }
-    df = df.select_columns(fields)?;
+    // Shares `logs::log_query_projection` with production's `shape_log_query`
+    // so this hand-built "old path" plan can't silently drift from how the
+    // real fallback path projects `body` (issue #1410).
+    df = df.select(super::logs::log_query_projection(fields))?;
     Ok(optimized_plan_text(df))
 }
 
@@ -1673,7 +1676,12 @@ async fn old_logql_log_query_df(ctx: &SessionContext, q: &str, fields: &[&str]) 
     if let Some(filter) = log_query_filter_with_columns(&parsed, &attr_ctx).unwrap() {
         df = df.filter(filter).unwrap();
     }
-    df.select_columns(fields).unwrap()
+    // Shares `logs::log_query_projection` with production's `shape_log_query`
+    // (CodeRabbit review on #1432): `select_columns` alone would bypass the
+    // `body` decode and return the JSON-quoted stored value, so this helper
+    // would drift from the real fallback path it exists to approximate.
+    df.select(super::logs::log_query_projection(fields))
+        .unwrap()
 }
 
 // ---------------------------------------------------------------------------

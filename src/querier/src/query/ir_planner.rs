@@ -1393,9 +1393,20 @@ impl Lowering<'_> {
             Parser::Logfmt => "logfmt",
         };
         let udf = ScalarUDF::from(ExtractUdf::new());
+        // `body` is ingest's JSON-encoded form (issue #1410): decode it so
+        // `json`/`logfmt` parse the actual log text, not a JSON string
+        // literal wrapping it. Built once and cloned into each field's
+        // `ir_extract` call as an *unmaterialized* expression rather than a
+        // named hidden column deliberately: `as_fields` is query-document
+        // input, and a document naming a field the same as a hidden column
+        // would silently collide with it (`DataFrame::with_column`
+        // overwrites in place), corrupting every later field in this stage.
+        // Threading the `Expr` instead removes that name from the namespace
+        // entirely, at the cost of redoing the decode once per field.
+        let decoded_body = body_decode_expr("body");
         let mut df = df;
         for f in &extract.as_fields {
-            let raw = udf.call(vec![col("body"), lit(parser), lit(f.name.clone())]);
+            let raw = udf.call(vec![decoded_body.clone(), lit(parser), lit(f.name.clone())]);
             let typed = cast(raw, arrow_type_for(&f.value_type));
             let alias = safe_ident(&f.name);
             df = df
@@ -2133,7 +2144,7 @@ impl Lowering<'_> {
                         ident(self.df_col(f))
                     } else {
                         match self.resolver.resolve("", f) {
-                            Some(Resolved::Column { name, .. }) => ident(name),
+                            Some(Resolved::Column { name, .. }) => body_projection_expr(&name),
                             Some(Resolved::JsonPath { key, .. }) => {
                                 self.attr_expr(&key).alias(safe_ident(f))
                             }
@@ -2162,10 +2173,36 @@ impl Lowering<'_> {
                 .row_defaults
                 .iter()
                 .filter(|c| self.schema_cols.iter().any(|s| s == *c))
-                .map(|c| col(*c))
+                .map(|c| body_projection_expr(c))
                 .collect(),
         };
         df.select(projection).map_err(QuerierError::QueryFailed)
+    }
+}
+
+/// The `body` column (logs only), decoded through [`BodyDecodeUdf`] so a
+/// plain string body comes back as the actual text rather than
+/// JSON-string-quoted (issue #1410); a structured body round-trips as-is
+/// (`BodyDecodeUdf`'s job, not this function's).
+///
+/// `pub(crate)` so `logs.rs`'s `shape_log_query` (the LogQL-compat fallback
+/// path, used when the IR lowering declines) can decode `body` the same way
+/// this file's own IR-path projection does — both querier-side projections
+/// of `body` must decode exactly once; nothing downstream of either (the
+/// Loki serializer included) may decode again.
+pub(crate) fn body_decode_expr(physical: &str) -> Expr {
+    ScalarUDF::from(BodyDecodeUdf::new()).call(vec![col(physical)])
+}
+
+/// The projection expression for a resolved physical column: `body` is
+/// decoded (see [`body_decode_expr`]), everything else projected as-is.
+/// Aliased back to `physical` either way, so the output column name is
+/// unaffected by which branch ran.
+fn body_projection_expr(physical: &str) -> Expr {
+    if physical == "body" {
+        body_decode_expr(physical).alias(physical)
+    } else {
+        ident(physical)
     }
 }
 
@@ -2239,6 +2276,61 @@ impl ScalarUDFImpl for ExtractUdf {
                 _ => None,
             };
             builder.append_option(value.as_deref());
+        }
+        Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+    }
+}
+
+/// A scalar UDF, `ir_body_decode(body) -> Utf8`, that undoes ingest's
+/// JSON-encoding of the log `body` value (issue #1410): a stored value that
+/// is a JSON string scalar decodes to its inner text; a JSON object, array,
+/// number, boolean, `null`, or anything that fails to parse as JSON passes
+/// through unchanged. See [`common::flight::conversion::decode_log_body`],
+/// which does the actual decode — kept in `common` next to the encode it
+/// inverts so the two read sites here (this UDF and, independently, the Loki
+/// line serializer in `router`) share one implementation and cannot drift.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct BodyDecodeUdf {
+    signature: Signature,
+}
+
+impl BodyDecodeUdf {
+    fn new() -> Self {
+        BodyDecodeUdf {
+            signature: Signature::one_of(
+                vec![
+                    TypeSignature::Exact(vec![DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8View]),
+                ],
+                Volatility::Immutable,
+            ),
+        }
+    }
+}
+
+impl ScalarUDFImpl for BodyDecodeUdf {
+    fn name(&self) -> &str {
+        "ir_body_decode"
+    }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+    fn invoke_with_args(
+        &self,
+        args: ScalarFunctionArgs,
+    ) -> datafusion::error::Result<ColumnarValue> {
+        let num_rows = args.number_rows;
+        let body = BodyArg::try_from(&args.args[0])?;
+        let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 16);
+        for i in 0..num_rows {
+            match body.value_at(i) {
+                Some(raw) => builder.append_value(common::flight::conversion::decode_log_body(raw)),
+                None => builder.append_null(),
+            }
         }
         Ok(ColumnarValue::Array(Arc::new(builder.finish())))
     }
@@ -5469,6 +5561,191 @@ mod tests {
             .unwrap()
             .expect("source table is registered");
         let _ = df.collect().await.unwrap();
+    }
+
+    /// A logs table whose `body` holds JSON-string-*encoded* documents — the
+    /// form ingest actually writes (`serde_json::to_string` over the log
+    /// text, issue #1410), unlike `logs_json_ctx`'s bare JSON object text.
+    /// One row's body text is itself a self-contained JSON string literal
+    /// (`"quoted already"` — starts *and* ends with a quote, nothing
+    /// trailing) — the one shape that actually distinguishes "decoded once"
+    /// from "decoded twice": a body with trailing text after an embedded
+    /// quote (e.g. `"foo" bar`) fails to re-parse as JSON on a second decode
+    /// and would pass either way, proving nothing (review finding on
+    /// #1432). This one's second decode would visibly strip the quotes.
+    fn logs_json_encoded_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("body", DataType::Utf8, true),
+            Field::new("service_name", DataType::Utf8, true),
+        ]));
+        let encode = |s: &str| serde_json::to_string(s).unwrap();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20, 30])),
+                Arc::new(StringArray::from(vec![
+                    Some(encode(
+                        r#"{"level":"error","code":500,"__ir_decoded_body":"nope"}"#,
+                    )),
+                    Some(encode("level=info dur=5ms")),
+                    Some(encode(r#""quoted already""#)),
+                ])),
+                Arc::new(StringArray::from(vec!["api", "api", "web"])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    // Issue #1410: `extract_json_derives_usable_field` seeds `body` with
+    // already-unwrapped JSON object text, which `decode_log_body` already
+    // leaves alone — it passes identically with or without the body-decode
+    // fix. This seeds `body` the way ingest actually encodes it
+    // (`serde_json::to_string` over the log text) and proves `json`/`logfmt`
+    // extraction operates on the real text, not the JSON string literal.
+    #[tokio::test]
+    async fn extract_json_parses_ingest_encoded_body_not_the_json_string_literal() {
+        let svc = IrService::new(logs_json_encoded_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["level"],
+            "pipeline": [
+                { "extract": { "parser": "json", "as": [{ "name": "level", "type": "string" }] } },
+                { "where": { "field": "level", "op": "eq", "value": "error" } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1, "only the JSON-object-body row has level=error");
+    }
+
+    #[tokio::test]
+    async fn extract_logfmt_parses_ingest_encoded_body_not_the_json_string_literal() {
+        let svc = IrService::new(logs_json_encoded_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["service.name", "dur"],
+            "pipeline": [
+                { "extract": { "parser": "logfmt", "as": [{ "name": "dur", "type": "string" }] } },
+                { "where": { "field": "dur", "op": "exists" } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1, "only the logfmt-body row has a dur field");
+        let col = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "5ms");
+    }
+
+    // Issue #1410: a body whose text is itself a self-contained JSON string
+    // literal must decode exactly once. A second (accidental) decode pass
+    // would strip that quoting and lose data — this fixture shape is what
+    // makes the test able to tell the difference (see `logs_json_encoded_ctx`).
+    #[tokio::test]
+    async fn body_field_decodes_exactly_once_for_a_message_that_is_itself_quoted() {
+        let svc = IrService::new(logs_json_encoded_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["body"],
+            "pipeline": [
+                { "where": { "field": "service.name", "op": "eq", "value": "web" } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1);
+        let col = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), r#""quoted already""#);
+    }
+
+    // Issue #1410 review fix: `extract.as_fields` is query-document input and
+    // must not be able to collide with any querier-internal name. Before this
+    // fix, `lower_extract` decoded `body` into a *named* hidden column and
+    // re-resolved it per field — an `as_fields` entry that happened to share
+    // that name would silently overwrite it (`DataFrame::with_column`
+    // overwrites in place), corrupting every later field in the stage. The
+    // fix threads the decode as an unmaterialized `Expr` instead, so no such
+    // name exists to collide with; this pins that multiple fields — one
+    // deliberately named after the old hidden column — still each resolve
+    // independently from the real decoded body.
+    #[tokio::test]
+    async fn extract_as_field_named_like_the_old_hidden_column_does_not_corrupt_other_fields() {
+        let svc = IrService::new(logs_json_encoded_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["__ir_decoded_body", "level"],
+            "pipeline": [
+                { "extract": { "parser": "json", "as": [
+                    { "name": "__ir_decoded_body", "type": "string" },
+                    { "name": "level", "type": "string" }
+                ] } },
+                { "where": { "field": "level", "op": "eq", "value": "error" } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1, "only the JSON-object-body row has level=error");
+        let collider = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        // The field literally named `__ir_decoded_body` extracts the JSON
+        // key of the same name from the body (unrelated to the decode
+        // mechanism) and must resolve to that value rather than error or
+        // silently become the raw decoded body.
+        assert_eq!(collider.value(0), "nope");
+        let level = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(level.value(0), "error");
     }
 
     #[test]
