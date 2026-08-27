@@ -552,25 +552,33 @@ fn generate_ts_client(root: &Path, check_only: bool) -> Result<()> {
     Ok(())
 }
 
-/// Checks that `pnpm install` has populated the `node_modules` directories
-/// `pnpm --filter signaldb-ui exec openapi-ts` relies on to find the
+/// Checks that `pnpm install` has populated what
+/// `pnpm --filter signaldb-ui exec openapi-ts` relies on to find and run the
 /// `openapi-ts` binary: the workspace-root `node_modules` (populated for
-/// every package) and `signaldb-ui`'s own `node_modules` (where its
-/// `openapi-ts` devDependency's `.bin` entry actually lives — verified by
+/// every package), `signaldb-ui`'s own `node_modules`, and the `openapi-ts`
+/// binary entry itself (`node_modules/.bin/openapi-ts`) — verified by
 /// installing into a scratch worktree and checking `.bin/openapi-ts` only
-/// appears there, not at the workspace root). A fresh worktree has neither,
-/// and running `openapi-ts` anyway produces pnpm's opaque
+/// appears under `signaldb-ui`'s `node_modules`, not the workspace root. A
+/// fresh worktree has none of these, and a partial or interrupted install can
+/// leave both directories in place without the binary entry; either way,
+/// running `openapi-ts` anyway produces pnpm's opaque
 /// `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`, so this fails fast with a plain,
-/// actionable message instead. Takes the two directories as explicit paths
-/// so it is testable against fixture paths.
-fn check_ts_deps_installed(root_node_modules: &Path, ui_node_modules: &Path) -> Result<()> {
-    if root_node_modules.is_dir() && ui_node_modules.is_dir() {
+/// actionable message instead. Takes the three paths explicitly so it is
+/// testable against fixture paths without touching the filesystem.
+fn check_ts_deps_installed(
+    root_node_modules: &Path,
+    ui_node_modules: &Path,
+    openapi_ts_bin: &Path,
+) -> Result<()> {
+    if root_node_modules.is_dir() && ui_node_modules.is_dir() && openapi_ts_bin.is_file() {
         return Ok(());
     }
     let missing = if !root_node_modules.is_dir() {
         root_node_modules
-    } else {
+    } else if !ui_node_modules.is_dir() {
         ui_node_modules
+    } else {
+        openapi_ts_bin
     };
     anyhow::bail!(
         "the TypeScript client generator (`openapi-ts`) isn't installed: {} is missing.\n\
@@ -583,9 +591,11 @@ fn check_ts_deps_installed(root_node_modules: &Path, ui_node_modules: &Path) -> 
 /// `output` is set it overrides the config's output directory (used for the
 /// check-mode temp comparison).
 fn run_openapi_ts(root: &Path, output: Option<&Path>) -> Result<()> {
+    let ui_node_modules = root.join("src/ui/node_modules");
     if let Err(err) = check_ts_deps_installed(
         &root.join("node_modules"),
-        &root.join("src/ui/node_modules"),
+        &ui_node_modules,
+        &ui_node_modules.join(".bin/openapi-ts"),
     ) {
         // Print a plain, actionable message and exit directly rather than
         // returning the error: bubbling it through `main`'s `Result` return
@@ -707,6 +717,9 @@ fn write_or_check(path: &Path, content: &str, check_only: bool) -> Result<()> {
 mod tests {
     use super::*;
 
+    // Fixture paths drawn from xtask's own tree rather than a tempdir crate:
+    // `src/` and `Cargo.toml` always exist in a checkout, and these literal
+    // paths do not.
     fn existing_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
     }
@@ -715,17 +728,62 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("does-not-exist-node-modules-fixture")
     }
 
+    fn existing_file() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")
+    }
+
+    fn missing_file() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("does-not-exist-openapi-ts-fixture")
+    }
+
     #[test]
-    fn check_ts_deps_installed_ok_when_both_present() {
-        let present = existing_dir();
-        assert!(check_ts_deps_installed(&present, &present).is_ok());
+    fn check_ts_deps_installed_ok_when_everything_present() {
+        let dir = existing_dir();
+        let bin = existing_file();
+        assert!(check_ts_deps_installed(&dir, &dir, &bin).is_ok());
     }
 
     #[test]
     fn check_ts_deps_installed_errors_when_root_missing() {
-        let err = check_ts_deps_installed(&missing_dir(), &existing_dir()).unwrap_err();
+        let missing = missing_dir();
+        let err = check_ts_deps_installed(&missing, &existing_dir(), &existing_file()).unwrap_err();
+        let message = err.to_string();
         assert!(
-            err.to_string().contains("pnpm install --frozen-lockfile"),
+            message.contains(&missing.display().to_string()),
+            "error should name the missing root path: {err}"
+        );
+        assert!(
+            message.contains("pnpm install --frozen-lockfile"),
+            "error should name the fix: {err}"
+        );
+    }
+
+    #[test]
+    fn check_ts_deps_installed_errors_when_ui_missing() {
+        let missing = missing_dir();
+        let err = check_ts_deps_installed(&existing_dir(), &missing, &existing_file()).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(&missing.display().to_string()),
+            "error should name the missing ui path: {err}"
+        );
+        assert!(
+            message.contains("pnpm install --frozen-lockfile"),
+            "error should name the fix: {err}"
+        );
+    }
+
+    #[test]
+    fn check_ts_deps_installed_errors_when_binary_missing() {
+        let missing = missing_file();
+        let err = check_ts_deps_installed(&existing_dir(), &existing_dir(), &missing).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(&missing.display().to_string()),
+            "error should name the missing binary path: {err}"
+        );
+        assert!(
+            message.contains("pnpm install --frozen-lockfile"),
             "error should name the fix: {err}"
         );
     }
