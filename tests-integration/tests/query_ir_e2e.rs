@@ -26,7 +26,7 @@ use common::wal::WalConfig;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
     collector::trace::v1::ExportTraceServiceRequest,
-    common::v1::{AnyValue, KeyValue, any_value::Value},
+    common::v1::{AnyValue, KeyValue, KeyValueList, any_value::Value},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
     resource::v1::Resource,
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
@@ -297,6 +297,36 @@ fn log_record(offset_ns: i64, severity: &str, body: &str) -> LogRecord {
     }
 }
 
+/// A log record whose body is a structured (kvlist) `AnyValue` rather than a
+/// plain string — issue #1410's non-string-body case, which must round-trip
+/// as JSON rather than being unwrapped.
+fn kvlist_log_record(offset_ns: i64, entries: &[(&str, &str)]) -> LogRecord {
+    LogRecord {
+        time_unix_nano: (BASE_NS + offset_ns) as u64,
+        observed_time_unix_nano: (BASE_NS + offset_ns) as u64,
+        severity_number: 9,
+        severity_text: "INFO".to_string(),
+        body: Some(AnyValue {
+            value: Some(Value::KvlistValue(KeyValueList {
+                values: entries
+                    .iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k.to_string(),
+                        value: Some(string_value(v)),
+                        ..Default::default()
+                    })
+                    .collect(),
+            })),
+        }),
+        attributes: vec![],
+        dropped_attributes_count: 0,
+        flags: 0,
+        trace_id: vec![],
+        span_id: vec![],
+        event_name: String::new(),
+    }
+}
+
 fn logs_request(service: &str, records: Vec<LogRecord>) -> ExportLogsServiceRequest {
     ExportLogsServiceRequest {
         resource_logs: vec![ResourceLogs {
@@ -550,6 +580,84 @@ async fn logs_ir_query_end_to_end() {
     assert!(
         body["window"]["end_ns"].as_i64().unwrap() > body["window"]["start_ns"].as_i64().unwrap()
     );
+}
+
+// Issue #1410 — ingest JSON-encodes the `body` value so non-string bodies
+// (kvlist/array/bytes) survive the Utf8 column; a plain string body must come
+// back decoded (no surrounding quotes) while a structured body must still
+// round-trip as JSON.
+#[tokio::test]
+async fn logs_ir_query_body_field_decodes_string_bodies_and_keeps_structured_bodies() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    let plain_body =
+        "Committed 34 rows in 1 data files to Iceberg table homelab.default.logs (attempt 1)";
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request("committer", vec![log_record(0, "INFO", plain_body)]),
+        )
+        .await
+        .expect("ingest plain-string-body log");
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "structured",
+                vec![kvlist_log_record(1_000_000, &[("event", "start")])],
+            ),
+        )
+        .await
+        .expect("ingest kvlist-body log");
+
+    let app = build_router(&services).await;
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "logs",
+            "range": range(),
+            "result": "rows",
+            "fields": ["service.name", "body"],
+            "pipeline": [
+                { "where": { "field": "service.name", "op": "eq", "value": "committer" } }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "plain-body IR query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1, "expected the committer log line: {body}");
+    assert_eq!(
+        rows[0][1], plain_body,
+        "body must be decoded, not JSON-string-quoted: {body}"
+    );
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "logs",
+            "range": range(),
+            "result": "rows",
+            "fields": ["service.name", "body"],
+            "pipeline": [
+                { "where": { "field": "service.name", "op": "eq", "value": "structured" } }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "kvlist-body IR query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1, "expected the structured log line: {body}");
+    let kvlist_body: serde_json::Value =
+        serde_json::from_str(rows[0][1].as_str().expect("body is a string column"))
+            .expect("kvlist body must still round-trip as JSON");
+    assert_eq!(kvlist_body, serde_json::json!({"event": "start"}));
 }
 
 // Task 10.2 — a single-signal traces IR query (filter + topk) returns spans.

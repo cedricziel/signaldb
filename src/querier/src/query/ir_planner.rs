@@ -1393,9 +1393,20 @@ impl Lowering<'_> {
             Parser::Logfmt => "logfmt",
         };
         let udf = ScalarUDF::from(ExtractUdf::new());
-        let mut df = df;
+        // `body` is ingest's JSON-encoded form (issue #1410): decode it once
+        // into a hidden column so `json`/`logfmt` parse the actual log text
+        // (not a JSON string literal wrapping it), and so N `as_fields`
+        // don't each redo the decode via their own `with_column`.
+        const DECODED_BODY_COL: &str = "__ir_decoded_body";
+        let mut df = df
+            .with_column(DECODED_BODY_COL, body_decode_expr("body"))
+            .map_err(QuerierError::QueryFailed)?;
         for f in &extract.as_fields {
-            let raw = udf.call(vec![col("body"), lit(parser), lit(f.name.clone())]);
+            let raw = udf.call(vec![
+                col(DECODED_BODY_COL),
+                lit(parser),
+                lit(f.name.clone()),
+            ]);
             let typed = cast(raw, arrow_type_for(&f.value_type));
             let alias = safe_ident(&f.name);
             df = df
@@ -2133,7 +2144,7 @@ impl Lowering<'_> {
                         ident(self.df_col(f))
                     } else {
                         match self.resolver.resolve("", f) {
-                            Some(Resolved::Column { name, .. }) => ident(name),
+                            Some(Resolved::Column { name, .. }) => body_projection_expr(&name),
                             Some(Resolved::JsonPath { key, .. }) => {
                                 self.attr_expr(&key).alias(safe_ident(f))
                             }
@@ -2162,10 +2173,30 @@ impl Lowering<'_> {
                 .row_defaults
                 .iter()
                 .filter(|c| self.schema_cols.iter().any(|s| s == *c))
-                .map(|c| col(*c))
+                .map(|c| body_projection_expr(c))
                 .collect(),
         };
         df.select(projection).map_err(QuerierError::QueryFailed)
+    }
+}
+
+/// The `body` column (logs only), decoded through [`BodyDecodeUdf`] so a
+/// plain string body comes back as the actual text rather than
+/// JSON-string-quoted (issue #1410); a structured body round-trips as-is
+/// (`BodyDecodeUdf`'s job, not this function's).
+fn body_decode_expr(physical: &str) -> Expr {
+    ScalarUDF::from(BodyDecodeUdf::new()).call(vec![col(physical)])
+}
+
+/// The projection expression for a resolved physical column: `body` is
+/// decoded (see [`body_decode_expr`]), everything else projected as-is.
+/// Aliased back to `physical` either way, so the output column name is
+/// unaffected by which branch ran.
+fn body_projection_expr(physical: &str) -> Expr {
+    if physical == "body" {
+        body_decode_expr(physical).alias(physical)
+    } else {
+        ident(physical)
     }
 }
 
@@ -2239,6 +2270,61 @@ impl ScalarUDFImpl for ExtractUdf {
                 _ => None,
             };
             builder.append_option(value.as_deref());
+        }
+        Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+    }
+}
+
+/// A scalar UDF, `ir_body_decode(body) -> Utf8`, that undoes ingest's
+/// JSON-encoding of the log `body` value (issue #1410): a stored value that
+/// is a JSON string scalar decodes to its inner text; a JSON object, array,
+/// number, boolean, `null`, or anything that fails to parse as JSON passes
+/// through unchanged. See [`common::flight::conversion::decode_log_body`],
+/// which does the actual decode — kept in `common` next to the encode it
+/// inverts so the two read sites here (this UDF and, independently, the Loki
+/// line serializer in `router`) share one implementation and cannot drift.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct BodyDecodeUdf {
+    signature: Signature,
+}
+
+impl BodyDecodeUdf {
+    fn new() -> Self {
+        BodyDecodeUdf {
+            signature: Signature::one_of(
+                vec![
+                    TypeSignature::Exact(vec![DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8View]),
+                ],
+                Volatility::Immutable,
+            ),
+        }
+    }
+}
+
+impl ScalarUDFImpl for BodyDecodeUdf {
+    fn name(&self) -> &str {
+        "ir_body_decode"
+    }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+    fn invoke_with_args(
+        &self,
+        args: ScalarFunctionArgs,
+    ) -> datafusion::error::Result<ColumnarValue> {
+        let num_rows = args.number_rows;
+        let body = BodyArg::try_from(&args.args[0])?;
+        let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 16);
+        for i in 0..num_rows {
+            match body.value_at(i) {
+                Some(raw) => builder.append_value(common::flight::conversion::decode_log_body(raw)),
+                None => builder.append_null(),
+            }
         }
         Ok(ColumnarValue::Array(Arc::new(builder.finish())))
     }

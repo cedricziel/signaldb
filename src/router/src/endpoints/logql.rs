@@ -709,7 +709,12 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
                 } else {
                     timestamps.value(i)
                 },
-                value_at(&body, i).unwrap_or_default(),
+                // `body` is ingest's JSON-encoded form (issue #1410): a
+                // string body must come back decoded, a structured one
+                // round-trips as-is. See `decode_log_body`'s docs.
+                value_at(&body, i)
+                    .map(|raw| common::flight::conversion::decode_log_body(&raw).into_owned())
+                    .unwrap_or_default(),
                 metadata,
             );
             streams

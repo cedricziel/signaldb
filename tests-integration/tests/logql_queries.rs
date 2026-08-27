@@ -23,7 +23,7 @@ use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::WalConfig;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
-    common::v1::{AnyValue, KeyValue, any_value::Value},
+    common::v1::{AnyValue, KeyValue, KeyValueList, any_value::Value},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
     resource::v1::Resource,
 };
@@ -276,6 +276,36 @@ fn log_record(offset_ns: i64, severity: &str, body: &str, attrs: &[(&str, &str)]
     }
 }
 
+/// A log record whose body is a structured (kvlist) `AnyValue` rather than a
+/// plain string — issue #1410's non-string-body case, which must round-trip
+/// as JSON on the Loki line rather than being unwrapped.
+fn kvlist_log_record(offset_ns: i64, entries: &[(&str, &str)]) -> LogRecord {
+    LogRecord {
+        time_unix_nano: (BASE_NS + offset_ns) as u64,
+        observed_time_unix_nano: (BASE_NS + offset_ns) as u64,
+        severity_number: 9,
+        severity_text: "INFO".to_string(),
+        body: Some(AnyValue {
+            value: Some(Value::KvlistValue(KeyValueList {
+                values: entries
+                    .iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k.to_string(),
+                        value: Some(string_value(v)),
+                        ..Default::default()
+                    })
+                    .collect(),
+            })),
+        }),
+        attributes: vec![],
+        dropped_attributes_count: 0,
+        flags: 0,
+        trace_id: vec![],
+        span_id: vec![],
+        event_name: String::new(),
+    }
+}
+
 fn logs_request(service: &str, records: Vec<LogRecord>) -> ExportLogsServiceRequest {
     ExportLogsServiceRequest {
         resource_logs: vec![ResourceLogs {
@@ -488,6 +518,72 @@ async fn logql_line_filter_narrows_to_matching_lines() {
         1,
         "line filter should match one: {body}"
     );
+}
+
+/// Issue #1410 — ingest JSON-encodes the `body` value so non-string bodies
+/// (kvlist/array/bytes) survive the Utf8 column; the Loki line for a plain
+/// string body must come back decoded (no surrounding quotes) while a
+/// structured body must still round-trip as JSON.
+#[tokio::test]
+async fn logql_query_range_decodes_string_bodies_and_keeps_structured_bodies() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    let plain_body = "Committed 34 rows in 1 data files to Iceberg table homelab.default.logs";
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request("committer", vec![log_record(0, "INFO", plain_body, &[])]),
+        )
+        .await
+        .expect("ingest plain-string-body log");
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "structured",
+                vec![kvlist_log_record(1_000_000, &[("event", "start")])],
+            ),
+        )
+        .await
+        .expect("ingest kvlist-body log");
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let app = build_router(&services).await;
+    let w = window();
+
+    let (status, body) = get(
+        &app,
+        &format!("/loki/api/v1/query_range?query=%7Bservice_name%3D%22committer%22%7D&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "plain-body query_range: {body}");
+    let streams = body["data"]["result"].as_array().expect("streams array");
+    let line = streams[0]["values"][0][1]
+        .as_str()
+        .expect("line is a string");
+    assert_eq!(
+        line, plain_body,
+        "Loki line must be decoded, not JSON-string-quoted: {body}"
+    );
+
+    let (status, body) = get(
+        &app,
+        &format!("/loki/api/v1/query_range?query=%7Bservice_name%3D%22structured%22%7D&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "kvlist-body query_range: {body}");
+    let streams = body["data"]["result"].as_array().expect("streams array");
+    let line = streams[0]["values"][0][1]
+        .as_str()
+        .expect("line is a string");
+    let kvlist_body: serde_json::Value =
+        serde_json::from_str(line).expect("kvlist body must still round-trip as JSON");
+    assert_eq!(kvlist_body, serde_json::json!({"event": "start"}));
 }
 
 #[tokio::test]

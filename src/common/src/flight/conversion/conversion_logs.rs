@@ -149,6 +149,29 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> Result<RecordBa
     )
 }
 
+/// The read-side inverse of the body encoding above: `otlp_logs_to_arrow`
+/// always JSON-encodes the body value (`serde_json::to_string`) so non-string
+/// bodies (kvlist/array/bytes/etc.) round-trip through the `Utf8` `body`
+/// column. For a body that was a plain string, that JSON-encoding wraps it in
+/// literal quotes and escapes any embedded quote/backslash/control character
+/// — the persisted value is a JSON *string literal*, not the raw text.
+///
+/// This undoes exactly that: if `raw` parses as a JSON string scalar, return
+/// the decoded inner text. In every other case — a JSON object, array,
+/// number, boolean, `null`, or anything that fails to parse as JSON at all
+/// (a legacy bare value, say) — return `raw` unchanged, so structured bodies
+/// and any pre-existing non-JSON data round-trip untouched.
+///
+/// Kept next to the encode above on purpose: both `body` read sites
+/// (`ir_planner`'s `body` projection/`ir_extract`, and the Loki line
+/// serializer) call this one function, so the two surfaces cannot drift.
+pub fn decode_log_body(raw: &str) -> std::borrow::Cow<'_, str> {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(serde_json::Value::String(s)) => std::borrow::Cow::Owned(s),
+        _ => std::borrow::Cow::Borrowed(raw),
+    }
+}
+
 /// Convert Arrow RecordBatch to OTLP ExportLogsServiceRequest
 pub fn arrow_to_otlp_logs(batch: &RecordBatch) -> ExportLogsServiceRequest {
     use std::collections::HashMap;
@@ -390,6 +413,51 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
     use std::sync::Arc;
+
+    #[test]
+    fn decode_log_body_unwraps_a_plain_string() {
+        let encoded = serde_json::to_string("Committed 34 rows").unwrap();
+        assert_eq!(decode_log_body(&encoded), "Committed 34 rows");
+    }
+
+    #[test]
+    fn decode_log_body_unescapes_quotes_backslashes_newlines_and_non_ascii() {
+        let raw = "he said \"hi\"\n\\ünïcödé";
+        let encoded = serde_json::to_string(raw).unwrap();
+        assert_eq!(decode_log_body(&encoded), raw);
+    }
+
+    #[test]
+    fn decode_log_body_leaves_a_json_object_body_unchanged() {
+        let encoded = serde_json::json!({"k": "v"}).to_string();
+        assert_eq!(decode_log_body(&encoded), encoded);
+    }
+
+    #[test]
+    fn decode_log_body_leaves_a_json_array_body_unchanged() {
+        let encoded = serde_json::json!(["a", "b"]).to_string();
+        assert_eq!(decode_log_body(&encoded), encoded);
+    }
+
+    #[test]
+    fn decode_log_body_leaves_a_number_body_unchanged() {
+        assert_eq!(decode_log_body("42"), "42");
+    }
+
+    #[test]
+    fn decode_log_body_leaves_null_unchanged() {
+        assert_eq!(decode_log_body("null"), "null");
+    }
+
+    #[test]
+    fn decode_log_body_leaves_a_non_json_bare_string_unchanged() {
+        // Not a JSON-encoded value at all (e.g. legacy pre-#1410 data) —
+        // parsing fails, so it must pass through rather than error.
+        assert_eq!(
+            decode_log_body("plain unquoted body"),
+            "plain unquoted body"
+        );
+    }
 
     #[test]
     fn otlp_logs_to_arrow_propagates_conversion_errors_via_result() {
