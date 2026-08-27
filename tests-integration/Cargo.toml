@@ -98,6 +98,10 @@ name = "integration"
 path = "tests/main.rs"
 
 [[test]]
+name = "oidc_e2e"
+path = "tests/oidc_e2e.rs"
+
+[[test]]
 name = "http_response_headers"
 path = "tests/http_response_headers.rs"
 
