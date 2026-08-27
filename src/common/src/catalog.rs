@@ -3382,6 +3382,144 @@ impl Catalog {
         })
     }
 
+    /// Just-in-time provision a user carrying an OIDC identity (change:
+    /// oidc-login), for the "no existing match" branch of the
+    /// identity-resolution order (design decision 3). Always created with no
+    /// password (`password_hash = NULL`) and never as an instance admin —
+    /// mapping the instance-admin flag from a token claim is out of scope.
+    /// Fails (unique-index violation) if `(oidc_issuer, oidc_subject)` is
+    /// already linked to another user, or if the email is already taken.
+    ///
+    /// Runs the user INSERT and the identity-link UPDATE in one transaction
+    /// so a `(oidc_issuer, oidc_subject)` unique-index violation on the
+    /// second statement rolls back the first: without this, a duplicate
+    /// identity would leave an orphaned, passwordless user row that
+    /// permanently claims `email`.
+    pub async fn create_oidc_user(
+        &self,
+        email: &str,
+        display_name: Option<&str>,
+        oidc_issuer: &str,
+        oidc_subject: &str,
+    ) -> Result<UserRecord, sqlx::Error> {
+        let user_id = Uuid::new_v4().to_string();
+        let email = canonicalize_email(email);
+        let now = Utc::now();
+
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now_str = now.to_rfc3339();
+                let mut tx = pool.begin().await?;
+                query(
+                    r#"
+                    INSERT INTO users (id, email, display_name, password_hash, is_instance_admin, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    "#,
+                )
+                .bind(&user_id)
+                .bind(&email)
+                .bind(display_name)
+                .bind(None::<&str>)
+                .bind(false)
+                .bind(&now_str)
+                .bind(&now_str)
+                .execute(&mut *tx)
+                .await?;
+                query(
+                    "UPDATE users SET oidc_issuer = ?, oidc_subject = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(&now_str)
+                .bind(&user_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                query(
+                    r#"
+                    INSERT INTO users (id, email, display_name, password_hash, is_instance_admin, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    "#,
+                )
+                .bind(&user_id)
+                .bind(&email)
+                .bind(display_name)
+                .bind(None::<&str>)
+                .bind(false)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+                query(
+                    "UPDATE users SET oidc_issuer = $1, oidc_subject = $2, updated_at = $3 WHERE id = $4",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(now)
+                .bind(&user_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+            }
+        }
+
+        Ok(UserRecord {
+            id: user_id,
+            email,
+            display_name: display_name.map(str::to_string),
+            password_hash: None,
+            oidc_issuer: Some(oidc_issuer.to_string()),
+            oidc_subject: Some(oidc_subject.to_string()),
+            is_instance_admin: false,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })
+    }
+
+    /// Attach an OIDC identity to an existing user (change: oidc-login), for
+    /// the "verified email link" branch of the identity-resolution order
+    /// (design decision 3): the caller has already checked
+    /// `email_verified: true` and matched an existing user by email. Fails
+    /// (unique-index violation) if `(oidc_issuer, oidc_subject)` is already
+    /// linked to a different user.
+    pub async fn link_oidc_identity(
+        &self,
+        user_id: &str,
+        oidc_issuer: &str,
+        oidc_subject: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now();
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    "UPDATE users SET oidc_issuer = ?, oidc_subject = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(now.to_rfc3339())
+                .bind(user_id)
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "UPDATE users SET oidc_issuer = $1, oidc_subject = $2, updated_at = $3 WHERE id = $4",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(now)
+                .bind(user_id)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Get a user by ID
     pub async fn get_user(&self, user_id: &str) -> Result<Option<UserRecord>, sqlx::Error> {
         match self {
@@ -5781,6 +5919,109 @@ mod user_membership_tests {
             .unwrap()
             .unwrap();
         assert_eq!(found.id, user.id);
+    }
+
+    #[tokio::test]
+    async fn create_oidc_user_carries_identity_email_and_name_with_no_password() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        let created = catalog
+            .create_oidc_user(
+                "sso@example.com",
+                Some("SSO User"),
+                "https://idp.example.com",
+                "subject-1",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(created.email, "sso@example.com");
+        assert_eq!(created.display_name.as_deref(), Some("SSO User"));
+        assert_eq!(
+            created.oidc_issuer.as_deref(),
+            Some("https://idp.example.com")
+        );
+        assert_eq!(created.oidc_subject.as_deref(), Some("subject-1"));
+        assert!(created.password_hash.is_none());
+        assert!(!created.is_instance_admin);
+
+        let found = catalog
+            .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, created.id);
+    }
+
+    #[tokio::test]
+    async fn create_oidc_user_rejects_duplicate_identity() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .create_oidc_user("a@example.com", None, "https://idp.example.com", "dup")
+            .await
+            .unwrap();
+
+        let conflict = catalog
+            .create_oidc_user("b@example.com", None, "https://idp.example.com", "dup")
+            .await;
+        assert!(conflict.is_err());
+
+        // The failed second insert must not leave an orphaned, passwordless
+        // user row permanently claiming "b@example.com" (the create_user +
+        // link_oidc_identity pair runs in one transaction).
+        let orphan = catalog.get_user_by_email("b@example.com").await.unwrap();
+        assert!(
+            orphan.is_none(),
+            "conflicting create_oidc_user must not leave a user row behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn link_oidc_identity_attaches_to_existing_user() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user = catalog
+            .create_user("alice@example.com", Some("Alice"), Some("hash"), false)
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        catalog
+            .link_oidc_identity(&user.id, "https://idp.example.com", "subject-1")
+            .await
+            .unwrap();
+
+        let linked = catalog
+            .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(linked.id, user.id);
+        // The password credential survives linking: both doors still work.
+        assert_eq!(linked.password_hash.as_deref(), Some("hash"));
+    }
+
+    #[tokio::test]
+    async fn link_oidc_identity_rejects_duplicate_identity() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .create_oidc_user("first@example.com", None, "https://idp.example.com", "dup")
+            .await
+            .unwrap();
+        let second = catalog
+            .create_user("second@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+
+        let conflict = catalog
+            .link_oidc_identity(&second.id, "https://idp.example.com", "dup")
+            .await;
+        assert!(conflict.is_err());
     }
 
     #[tokio::test]
