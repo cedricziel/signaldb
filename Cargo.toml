@@ -241,6 +241,17 @@ testcontainers-modules = { version = "0.15", features = ["postgres", "kafka", "m
 tempfile = "3.20.0"
 rand = "0.10"
 
+# OIDC relying-party flow (change: oidc-login): discovery, JWKS, PKCE, ID
+# token validation. `reqwest` selects the crate's async client (its own
+# vendored `reqwest`/`rustls-tls`, independent of the workspace's `reqwest`).
+openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }
+# HMAC-signs the OIDC pending-login cookie (state/nonce/PKCE-verifier,
+# change: oidc-login); pairs with `sha2`.
+hmac = "0.13"
+sha2 = "0.11"
+# HTTP mock server for RP-flow tests against a fake IdP (discovery, JWKS,
+# token endpoint) — change: oidc-login.
+wiremock = "0.6"
 
 # Dev dependencies
 pretty_assertions = "1.4"

@@ -15,6 +15,7 @@ use std::sync::Arc;
 pub mod cli;
 pub mod discovery;
 pub mod endpoints;
+pub mod oidc;
 pub mod openapi;
 pub mod read_scope;
 pub mod ui;
@@ -38,6 +39,13 @@ pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
     fn schema_resolver(&self) -> SchemaResolver {
         SchemaResolver::new(self.catalog().clone())
     }
+    /// The OIDC relying-party runtime (change: oidc-login). `None` when
+    /// `[auth.oidc]` is absent — the endpoints 404 and no background
+    /// discovery task ever runs. Defaulted so the trait stays satisfiable by
+    /// any test state that doesn't care about OIDC.
+    fn oidc(&self) -> Option<&Arc<oidc::OidcRuntime>> {
+        None
+    }
 }
 
 /// Concrete [`RouterState`] holding the router's shared handles.
@@ -48,6 +56,7 @@ pub struct RouterAppState {
     config: Configuration,
     authenticator: Arc<Authenticator>,
     schema_resolver: SchemaResolver,
+    oidc: Option<Arc<oidc::OidcRuntime>>,
 }
 
 impl std::fmt::Debug for RouterAppState {
@@ -57,6 +66,7 @@ impl std::fmt::Debug for RouterAppState {
             .field("service_registry", &self.service_registry)
             .field("config", &"Configuration")
             .field("authenticator", &"Authenticator")
+            .field("oidc", &self.oidc.is_some())
             .finish()
     }
 }
@@ -71,6 +81,7 @@ impl RouterAppState {
             Authenticator::new(config.auth.clone(), Arc::new(catalog.clone()))
                 .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
         );
+        let oidc = spawn_oidc_runtime(&config);
 
         Self {
             schema_resolver: SchemaResolver::new(catalog.clone()),
@@ -78,6 +89,7 @@ impl RouterAppState {
             service_registry,
             config,
             authenticator,
+            oidc,
         }
     }
 
@@ -95,6 +107,7 @@ impl RouterAppState {
             Authenticator::new(config.auth.clone(), Arc::new(catalog.clone()))
                 .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
         );
+        let oidc = spawn_oidc_runtime(&config);
 
         Self {
             schema_resolver: SchemaResolver::new(catalog.clone()),
@@ -102,8 +115,17 @@ impl RouterAppState {
             service_registry,
             config,
             authenticator,
+            oidc,
         }
     }
+}
+
+/// Spawn the OIDC runtime for a configured `[auth.oidc]` section (change:
+/// oidc-login). Discovery runs entirely in the background (design decision
+/// 10), so this never blocks or fails construction — an unreachable issuer
+/// leaves the runtime in its `unavailable` state until a retry succeeds.
+fn spawn_oidc_runtime(config: &Configuration) -> Option<Arc<oidc::OidcRuntime>> {
+    config.auth.oidc.clone().map(oidc::OidcRuntime::spawn)
 }
 
 impl RouterState for RouterAppState {
@@ -125,6 +147,10 @@ impl RouterState for RouterAppState {
 
     fn schema_resolver(&self) -> SchemaResolver {
         self.schema_resolver.clone()
+    }
+
+    fn oidc(&self) -> Option<&Arc<oidc::OidcRuntime>> {
+        self.oidc.as_ref()
     }
 }
 
@@ -310,6 +336,9 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         // UI session login/logout (public; sets/clears the HttpOnly session
         // cookie the auth middleware accepts in place of auth headers)
         .merge(endpoints::session::router())
+        // OIDC SSO login (public; change: oidc-login) — 404s on every route
+        // when `[auth.oidc]` is absent.
+        .merge(endpoints::oidc::router::<S>())
         // OAuth 2.1 authorization-server endpoints (public: discovery + DCR are
         // unauthenticated by spec; empty unless mcp.oauth.enabled)
         .merge(oauth_routes)
