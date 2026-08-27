@@ -9,13 +9,13 @@
 
 ## 2. RP core (router)
 
-- [ ] 2.1 Add `openidconnect` workspace dependency; failing tests against a wiremock discovery endpoint: invalid `[auth.oidc]` fails startup naming the setting; unreachable/invalid discovery starts the instance with OIDC `unavailable` and logs the issuer; background retry with backoff flips it to available without restart
-- [ ] 2.2 Implement startup discovery + the `unavailable`/`available` provider state and retry task
-- [ ] 2.3 Failing tests: `GET /ui/session/oidc/start` 302s to the IdP with state/nonce/PKCE and sets the signed pending-login cookie with `HttpOnly; Secure; SameSite=Lax; Path=/ui/session/oidc; Max-Age=300` (assert `SameSite=Lax`, never `Strict`); 404 when OIDC unconfigured; 503 naming the issuer while discovery is `unavailable`
-- [ ] 2.4 Implement the start endpoint (callback URL from request origin, `redirect_url` override)
-- [ ] 2.5 Failing tests against wiremock IdP: callback reads state/PKCE verifier from the pending-login cookie and exchanges the code, validates ID token, clears the pending cookie; rejects missing pending cookie, bad state, bad nonce, bad signature, expired token, `email_verified: false` on link path — all without session creation and with a generic error
-- [ ] 2.6 Implement the callback: validation → identity resolution ((issuer,subject) → verified-email link → JIT with allowlist) → session issuance via the existing session path; disabled users refused
-- [ ] 2.7 Failing test: JWKS rotation (unknown `kid` triggers refetch and succeeds)
+- [x] 2.1 Add `openidconnect` workspace dependency; failing tests against a wiremock discovery endpoint: invalid `[auth.oidc]` fails startup naming the setting; unreachable/invalid discovery starts the instance with OIDC `unavailable` and logs the issuer; background retry with backoff flips it to available without restart
+- [x] 2.2 Implement startup discovery + the `unavailable`/`available` provider state and retry task
+- [x] 2.3 Failing tests: `GET /ui/session/oidc/start` 302s to the IdP with state/nonce/PKCE and sets the signed pending-login cookie with `HttpOnly; Secure; SameSite=Lax; Path=/ui/session/oidc; Max-Age=300` (assert `SameSite=Lax`, never `Strict`); 404 when OIDC unconfigured; 503 naming the issuer while discovery is `unavailable`
+- [x] 2.4 Implement the start endpoint (callback URL from request origin, `redirect_url` override)
+- [x] 2.5 Failing tests against wiremock IdP: callback reads state/PKCE verifier from the pending-login cookie and exchanges the code, validates ID token, clears the pending cookie; rejects missing pending cookie, bad state, bad nonce, bad signature, expired token, `email_verified: false` on link path — all without session creation and with a generic error
+- [x] 2.6 Implement the callback: validation → identity resolution ((issuer,subject) → verified-email link → JIT with allowlist) → session issuance via the existing session path; disabled users refused
+- [x] 2.7 Failing test: JWKS rotation (unknown `kid` triggers refetch and succeeds)
 
 ## 3. Provisioning, mapping, password switch
 
