@@ -3495,11 +3495,16 @@ pub mod types {
     ///  "type": "object",
     ///  "required": [
     ///    "email",
+    ///    "granted_by",
     ///    "role",
     ///    "user_id"
     ///  ],
     ///  "properties": {
     ///    "email": {
+    ///      "type": "string"
+    ///    },
+    ///    "granted_by": {
+    ///      "description": "`\"local\"` (granted via this API/CLI/MCP) or `\"oidc_mapping\"` (synced\nfrom an OIDC group claim, change: oidc-login). A local and a mapped\nrow can coexist for the same user, yielding two response rows that\ndiffer only by this field — the UI keys on `user_id` + `granted_by`.",
     ///      "type": "string"
     ///    },
     ///    "role": {
@@ -3515,6 +3520,11 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MembershipResponse {
         pub email: ::std::string::String,
+        /**`"local"` (granted via this API/CLI/MCP) or `"oidc_mapping"` (synced
+        from an OIDC group claim, change: oidc-login). A local and a mapped
+        row can coexist for the same user, yielding two response rows that
+        differ only by this field — the UI keys on `user_id` + `granted_by`.*/
+        pub granted_by: ::std::string::String,
         pub role: MembershipRole,
         pub user_id: ::std::string::String,
     }
@@ -5050,6 +5060,76 @@ pub mod types {
     }
     impl SearchResult {
         pub fn builder() -> builder::SearchResult {
+            Default::default()
+        }
+    }
+    /**Response of the unauthenticated login-configuration probe. One schema
+    covers every state: `password_enabled` is always present, `oidc` is
+    `null` whenever SSO isn't something the UI should offer right now.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Response of the unauthenticated login-configuration probe. One schema\ncovers every state: `password_enabled` is always present, `oidc` is\n`null` whenever SSO isn't something the UI should offer right now.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "password_enabled"
+    ///  ],
+    ///  "properties": {
+    ///    "oidc": {
+    ///      "$ref": "#/components/schemas/SessionOidcConfig"
+    ///    },
+    ///    "password_enabled": {
+    ///      "description": "Whether the email/password door is open. `false` only when\n`[auth.oidc].disable_password_login` is set.",
+    ///      "type": "boolean"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SessionConfigResponse {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub oidc: ::std::option::Option<SessionOidcConfig>,
+        /**Whether the email/password door is open. `false` only when
+        `[auth.oidc].disable_password_login` is set.*/
+        pub password_enabled: bool,
+    }
+    impl SessionConfigResponse {
+        pub fn builder() -> builder::SessionConfigResponse {
+            Default::default()
+        }
+    }
+    /**The SSO offering, present only when OIDC is configured and currently
+    usable (change: oidc-login, task 4.1).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The SSO offering, present only when OIDC is configured and currently\nusable (change: oidc-login, task 4.1).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "name"
+    ///  ],
+    ///  "properties": {
+    ///    "name": {
+    ///      "description": "Display label for the SSO button: `[auth.oidc].display_name` if set,\nelse the issuer host.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SessionOidcConfig {
+        /**Display label for the SSO button: `[auth.oidc].display_name` if set,
+        else the issuer host.*/
+        pub name: ::std::string::String,
+    }
+    impl SessionOidcConfig {
+        pub fn builder() -> builder::SessionOidcConfig {
             Default::default()
         }
     }
@@ -11304,6 +11384,7 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct MembershipResponse {
             email: ::std::result::Result<::std::string::String, ::std::string::String>,
+            granted_by: ::std::result::Result<::std::string::String, ::std::string::String>,
             role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
             user_id: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
@@ -11311,6 +11392,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     email: Err("no value supplied for email".to_string()),
+                    granted_by: Err("no value supplied for granted_by".to_string()),
                     role: Err("no value supplied for role".to_string()),
                     user_id: Err("no value supplied for user_id".to_string()),
                 }
@@ -11325,6 +11407,16 @@ pub mod types {
                 self.email = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for email: {e}"));
+                self
+            }
+            pub fn granted_by<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.granted_by = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for granted_by: {e}"));
                 self
             }
             pub fn role<T>(mut self, value: T) -> Self
@@ -11355,6 +11447,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     email: value.email?,
+                    granted_by: value.granted_by?,
                     role: value.role?,
                     user_id: value.user_id?,
                 })
@@ -11364,6 +11457,7 @@ pub mod types {
             fn from(value: super::MembershipResponse) -> Self {
                 Self {
                     email: Ok(value.email),
+                    granted_by: Ok(value.granted_by),
                     role: Ok(value.role),
                     user_id: Ok(value.user_id),
                 }
@@ -13627,6 +13721,101 @@ pub mod types {
                 Self {
                     metrics: Ok(value.metrics),
                     traces: Ok(value.traces),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct SessionConfigResponse {
+            oidc: ::std::result::Result<
+                ::std::option::Option<super::SessionOidcConfig>,
+                ::std::string::String,
+            >,
+            password_enabled: ::std::result::Result<bool, ::std::string::String>,
+        }
+        impl ::std::default::Default for SessionConfigResponse {
+            fn default() -> Self {
+                Self {
+                    oidc: Ok(Default::default()),
+                    password_enabled: Err("no value supplied for password_enabled".to_string()),
+                }
+            }
+        }
+        impl SessionConfigResponse {
+            pub fn oidc<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::SessionOidcConfig>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.oidc = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for oidc: {e}"));
+                self
+            }
+            pub fn password_enabled<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.password_enabled = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for password_enabled: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SessionConfigResponse> for super::SessionConfigResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SessionConfigResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    oidc: value.oidc?,
+                    password_enabled: value.password_enabled?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SessionConfigResponse> for SessionConfigResponse {
+            fn from(value: super::SessionConfigResponse) -> Self {
+                Self {
+                    oidc: Ok(value.oidc),
+                    password_enabled: Ok(value.password_enabled),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct SessionOidcConfig {
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for SessionOidcConfig {
+            fn default() -> Self {
+                Self {
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl SessionOidcConfig {
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SessionOidcConfig> for super::SessionOidcConfig {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SessionOidcConfig,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self { name: value.name? })
+            }
+        }
+        impl ::std::convert::From<super::SessionOidcConfig> for SessionOidcConfig {
+            fn from(value: super::SessionOidcConfig) -> Self {
+                Self {
+                    name: Ok(value.name),
                 }
             }
         }
@@ -16593,6 +16782,67 @@ impl Client {
     ```*/
     pub fn search_tags_v2(&self) -> builder::SearchTagsV2<'_> {
         builder::SearchTagsV2::new(self)
+    }
+    /**GET /ui/session/config
+
+    Unauthenticated probe the login panel calls before rendering, so it can
+    offer the password form, the SSO button, or both without guessing from
+    hardcoded configuration or trial-and-error requests (spec: "The SSO
+    surface is part of the published contract").
+
+    Sends a `GET` request to `/ui/session/config`
+
+    ```ignore
+    let response = client.session_config()
+        .send()
+        .await;
+    ```*/
+    pub fn session_config(&self) -> builder::SessionConfig<'_> {
+        builder::SessionConfig::new(self)
+    }
+    /**GET /ui/session/oidc/callback
+
+    Reads state/nonce/PKCE-verifier from the pending-login cookie, exchanges
+    the code, validates the ID token, resolves the identity, and issues the
+    standard session on success. Every failure — missing/invalid pending
+    cookie, state mismatch, a bad nonce/signature/expiry, an unverified email
+    on the link path, an allowlist refusal, or a disabled user — collapses
+    into the same generic redirect with no session created and no disclosure
+    of which check failed.
+
+    Sends a `GET` request to `/ui/session/oidc/callback`
+
+    Arguments:
+    - `code`: Authorization code returned by the IdP
+    - `error`: Present when the IdP failed the request before ever issuing a code
+    - `state`: Opaque state value echoed back by the IdP
+    ```ignore
+    let response = client.session_oidc_callback()
+        .code(code)
+        .error(error)
+        .state(state)
+        .send()
+        .await;
+    ```*/
+    pub fn session_oidc_callback(&self) -> builder::SessionOidcCallback<'_> {
+        builder::SessionOidcCallback::new(self)
+    }
+    /**GET /ui/session/oidc/start
+
+    302s to the IdP's authorization endpoint with a fresh PKCE challenge,
+    `state`, and `nonce`, and sets the signed pending-login cookie carrying
+    what the callback needs to complete the exchange. 404 when OIDC isn't
+    configured; 503 naming the issuer while discovery hasn't (yet) succeeded.
+
+    Sends a `GET` request to `/ui/session/oidc/start`
+
+    ```ignore
+    let response = client.session_oidc_start()
+        .send()
+        .await;
+    ```*/
+    pub fn session_oidc_start(&self) -> builder::SessionOidcStart<'_> {
+        builder::SessionOidcStart::new(self)
     }
 }
 /// Types for composing operation parameters.
@@ -22614,6 +22864,172 @@ pub mod builder {
             }
         }
     }
+    /**Builder for [`Client::session_config`]
+
+    [`Client::session_config`]: super::Client::session_config*/
+    #[derive(Debug, Clone)]
+    pub struct SessionConfig<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> SessionConfig<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/ui/session/config`
+        pub async fn send(self) -> Result<ResponseValue<types::SessionConfigResponse>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/ui/session/config", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "session_config",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::session_oidc_callback`]
+
+    [`Client::session_oidc_callback`]: super::Client::session_oidc_callback*/
+    #[derive(Debug, Clone)]
+    pub struct SessionOidcCallback<'a> {
+        client: &'a super::Client,
+        code: Result<Option<::std::string::String>, String>,
+        error: Result<Option<::std::string::String>, String>,
+        state: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> SessionOidcCallback<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                code: Ok(None),
+                error: Ok(None),
+                state: Ok(None),
+            }
+        }
+        pub fn code<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.code = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for code failed".to_string()
+            });
+            self
+        }
+        pub fn error<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.error = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for error failed".to_string()
+            });
+            self
+        }
+        pub fn state<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.state = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for state failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/ui/session/oidc/callback`
+        pub async fn send(self) -> Result<ResponseValue<ByteStream>, Error<()>> {
+            let Self {
+                client,
+                code,
+                error,
+                state,
+            } = self;
+            let code = code.map_err(Error::InvalidRequest)?;
+            let error = error.map_err(Error::InvalidRequest)?;
+            let state = state.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/ui/session/oidc/callback", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .query(&progenitor_client::QueryParam::new("code", &code))
+                .query(&progenitor_client::QueryParam::new("error", &error))
+                .query(&progenitor_client::QueryParam::new("state", &state))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "session_oidc_callback",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200..=299 => Ok(ResponseValue::stream(response)),
+                404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::session_oidc_start`]
+
+    [`Client::session_oidc_start`]: super::Client::session_oidc_start*/
+    #[derive(Debug, Clone)]
+    pub struct SessionOidcStart<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> SessionOidcStart<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/ui/session/oidc/start`
+        pub async fn send(self) -> Result<ResponseValue<ByteStream>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/ui/session/oidc/start", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client.client.get(url).headers(header_map).build()?;
+            let info = OperationInfo {
+                operation_id: "session_oidc_start",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200..=299 => Ok(ResponseValue::stream(response)),
+                404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
 }
 /// Items consumers will typically use such as the Client.
 pub mod prelude {
@@ -22691,6 +23107,9 @@ pub const OPERATIONS: &[&str] = &[
     "search_tag_values_v2",
     "search_tags",
     "search_tags_v2",
+    "session_config",
+    "session_oidc_callback",
+    "session_oidc_start",
     "update_api_key",
     "update_tenant",
     "whoami",

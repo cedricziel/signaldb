@@ -4272,6 +4272,105 @@
           }
         ]
       }
+    },
+    "/ui/session/config": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /ui/session/config",
+        "description": "Unauthenticated probe the login panel calls before rendering, so it can\noffer the password form, the SSO button, or both without guessing from\nhardcoded configuration or trial-and-error requests (spec: \"The SSO\nsurface is part of the published contract\").",
+        "operationId": "session_config",
+        "responses": {
+          "200": {
+            "description": "Login surface configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionConfigResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/ui/session/oidc/callback": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /ui/session/oidc/callback",
+        "description": "Reads state/nonce/PKCE-verifier from the pending-login cookie, exchanges\nthe code, validates the ID token, resolves the identity, and issues the\nstandard session on success. Every failure — missing/invalid pending\ncookie, state mismatch, a bad nonce/signature/expiry, an unverified email\non the link path, an allowlist refusal, or a disabled user — collapses\ninto the same generic redirect with no session created and no disclosure\nof which check failed.",
+        "operationId": "session_oidc_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "description": "Authorization code returned by the IdP",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Opaque state value echoed back by the IdP",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "Present when the IdP failed the request before ever issuing a code",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to `/` on success (session cookie set) or `/?sso_error=1` on any failure"
+          },
+          "404": {
+            "description": "OIDC is not configured"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/ui/session/oidc/start": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /ui/session/oidc/start",
+        "description": "302s to the IdP's authorization endpoint with a fresh PKCE challenge,\n`state`, and `nonce`, and sets the signed pending-login cookie carrying\nwhat the callback needs to complete the exchange. 404 when OIDC isn't\nconfigured; 503 naming the issuer while discovery hasn't (yet) succeeded.",
+        "operationId": "session_oidc_start",
+        "responses": {
+          "302": {
+            "description": "Redirect to the IdP's authorization endpoint; sets the signed pending-login cookie"
+          },
+          "404": {
+            "description": "OIDC is not configured"
+          },
+          "503": {
+            "description": "OIDC provider is currently unavailable"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
     }
   },
   "components": {
@@ -5987,11 +6086,16 @@
         "required": [
           "user_id",
           "email",
-          "role"
+          "role",
+          "granted_by"
         ],
         "properties": {
           "email": {
             "type": "string"
+          },
+          "granted_by": {
+            "type": "string",
+            "description": "`\"local\"` (granted via this API/CLI/MCP) or `\"oidc_mapping\"` (synced\nfrom an OIDC group claim, change: oidc-login). A local and a mapped\nrow can coexist for the same user, yielding two response rows that\ndiffer only by this field — the UI keys on `user_id` + `granted_by`."
           },
           "role": {
             "$ref": "#/components/schemas/MembershipRole"
@@ -6736,6 +6840,43 @@
             "items": {
               "$ref": "#/components/schemas/Trace"
             }
+          }
+        }
+      },
+      "SessionConfigResponse": {
+        "type": "object",
+        "description": "Response of the unauthenticated login-configuration probe. One schema\ncovers every state: `password_enabled` is always present, `oidc` is\n`null` whenever SSO isn't something the UI should offer right now.",
+        "required": [
+          "password_enabled"
+        ],
+        "properties": {
+          "oidc": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SessionOidcConfig",
+                "description": "`Some` only when OIDC is configured *and* discovery has (so far)\nsucceeded; `None` both when OIDC is unconfigured and while discovery\nhasn't (yet) succeeded, so the UI never offers a button that 404s or\n503s."
+              }
+            ]
+          },
+          "password_enabled": {
+            "type": "boolean",
+            "description": "Whether the email/password door is open. `false` only when\n`[auth.oidc].disable_password_login` is set."
+          }
+        }
+      },
+      "SessionOidcConfig": {
+        "type": "object",
+        "description": "The SSO offering, present only when OIDC is configured and currently\nusable (change: oidc-login, task 4.1).",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Display label for the SSO button: `[auth.oidc].display_name` if set,\nelse the issuer host."
           }
         }
       },

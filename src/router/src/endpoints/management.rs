@@ -15,7 +15,7 @@ use axum::{
 };
 use common::{
     auth::{Authenticator, TenantContext, TenantContextExtractor, validate_id, validate_scopes},
-    catalog::MembershipRole,
+    catalog::{GrantSource, MembershipRole},
     schema::{
         SCHEMA_DEFINITIONS,
         logical::{AttributeLevel, Filterability, LogicalFieldKind, LogicalSchema, LogicalType},
@@ -734,6 +734,11 @@ pub(crate) struct MembershipResponse {
     user_id: String,
     email: String,
     role: MembershipRole,
+    /// `"local"` (granted via this API/CLI/MCP) or `"oidc_mapping"` (synced
+    /// from an OIDC group claim, change: oidc-login). A local and a mapped
+    /// row can coexist for the same user, yielding two response rows that
+    /// differ only by this field — the UI keys on `user_id` + `granted_by`.
+    granted_by: String,
 }
 
 #[utoipa::path(
@@ -784,6 +789,7 @@ pub(crate) async fn list_memberships<S: RouterState>(
             user_id: user.id,
             email: user.email,
             role: membership.role,
+            granted_by: membership.granted_by.to_string(),
         });
     }
     Json(response).into_response()
@@ -860,6 +866,7 @@ pub(crate) async fn upsert_membership<S: RouterState>(
                 user_id: user.id,
                 email: user.email,
                 role: request.role,
+                granted_by: GrantSource::Local.to_string(),
             })
             .into_response()
         }
@@ -1427,6 +1434,91 @@ mod key_scope_authorization_tests {
             call(&app, MANAGE_KEY, Method::GET, "/api/v1/manage/schema", None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body["logical"].is_array(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn list_memberships_includes_granted_by() {
+        let app = test_app().await;
+        let (status, body) = call(
+            &app,
+            MANAGE_KEY,
+            Method::GET,
+            "/api/v1/manage/tenants/acme/memberships",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rows = body.as_array().unwrap();
+        assert!(!rows.is_empty());
+        assert!(
+            rows.iter().all(|row| row["granted_by"] == "local"),
+            "every membership from `upsert_tenant_membership` must be granted_by=local: {body}"
+        );
+    }
+
+    /// Task 4.3/4.4 (change: oidc-login): a `local` and an `oidc_mapping`
+    /// row can coexist for the same `(user_id, tenant_id)`. The handler must
+    /// not collapse them — it emits one `MembershipResponse` per row, so the
+    /// same `user_id` appears twice, distinguished only by `granted_by`.
+    #[tokio::test]
+    async fn list_memberships_shows_coexisting_local_and_mapped_rows_for_same_user() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", LEGACY_KEY)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        scoped_key(
+            &catalog,
+            "acme",
+            MANAGE_KEY,
+            &["traces:write", TENANT_MANAGE_SCOPE],
+        )
+        .await;
+        let hash = common::auth::hash_password("member password").unwrap();
+        let user = catalog
+            .create_user("dual@example.com", Some("Dual"), Some(&hash), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Member)])
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let (status, body) = call(
+            &app,
+            MANAGE_KEY,
+            Method::GET,
+            "/api/v1/manage/tenants/acme/memberships",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rows: Vec<&Value> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["user_id"] == user.id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "expected one row per (user, granted_by): {body}"
+        );
+        let sources: std::collections::HashSet<&str> = rows
+            .iter()
+            .map(|row| row["granted_by"].as_str().unwrap())
+            .collect();
+        assert!(sources.contains("local"));
+        assert!(sources.contains("oidc_mapping"));
     }
 
     #[tokio::test]

@@ -50,6 +50,18 @@ pub fn router<S: RouterState>() -> Router<S> {
 /// `state`, and `nonce`, and sets the signed pending-login cookie carrying
 /// what the callback needs to complete the exchange. 404 when OIDC isn't
 /// configured; 503 naming the issuer while discovery hasn't (yet) succeeded.
+#[utoipa::path(
+    get,
+    path = "/ui/session/oidc/start",
+    operation_id = "session_oidc_start",
+    tag = "tenants",
+    security(()),
+    responses(
+        (status = 302, description = "Redirect to the IdP's authorization endpoint; sets the signed pending-login cookie"),
+        (status = 404, description = "OIDC is not configured"),
+        (status = 503, description = "OIDC provider is currently unavailable"),
+    )
+)]
 pub async fn start<S: RouterState>(State(state): State<S>, headers: HeaderMap) -> Response {
     let Some(runtime) = state.oidc() else {
         return error_response(StatusCode::NOT_FOUND, "OIDC is not configured");
@@ -152,6 +164,22 @@ pub struct CallbackParams {
 /// on the link path, an allowlist refusal, or a disabled user — collapses
 /// into the same generic redirect with no session created and no disclosure
 /// of which check failed.
+#[utoipa::path(
+    get,
+    path = "/ui/session/oidc/callback",
+    operation_id = "session_oidc_callback",
+    tag = "tenants",
+    security(()),
+    params(
+        ("code" = Option<String>, Query, description = "Authorization code returned by the IdP"),
+        ("state" = Option<String>, Query, description = "Opaque state value echoed back by the IdP"),
+        ("error" = Option<String>, Query, description = "Present when the IdP failed the request before ever issuing a code"),
+    ),
+    responses(
+        (status = 302, description = "Redirect to `/` on success (session cookie set) or `/?sso_error=1` on any failure"),
+        (status = 404, description = "OIDC is not configured"),
+    )
+)]
 pub async fn callback<S: RouterState>(
     State(state): State<S>,
     Query(params): Query<CallbackParams>,
@@ -2048,5 +2076,35 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         );
         assert_eq!(after[0].role, MembershipRole::Viewer);
         assert_eq!(after[0].granted_by, GrantSource::Local);
+    }
+
+    /// Task 4.1 (change: oidc-login): once discovery has succeeded, the
+    /// login-configuration probe reports `oidc: {name}`, defaulting `name`
+    /// to the issuer host when `display_name` is unset.
+    #[tokio::test]
+    async fn session_config_probe_reports_oidc_when_available() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let state = test_state(Some(oidc_config(server.uri(), None))).await;
+        wait_for_ready(&state).await;
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/ui/session/config")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["password_enabled"], true);
+        let expected_name = Url::parse(&server.uri())
+            .unwrap()
+            .host_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(body["oidc"]["name"], expected_name);
     }
 }

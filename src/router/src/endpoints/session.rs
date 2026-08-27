@@ -14,7 +14,7 @@ use axum::{
     extract::State,
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use chrono::{Duration, Utc};
 use common::auth::{
@@ -29,10 +29,12 @@ use serde_json::json;
 /// Routes mounted at the router root (absolute `/ui/session` paths, so the
 /// session endpoint coexists with the `/ui` static-asset service).
 pub fn router<S: RouterState>() -> Router<S> {
-    Router::new().route(
-        "/ui/session",
-        post(create_session::<S>).delete(delete_session::<S>),
-    )
+    Router::new()
+        .route(
+            "/ui/session",
+            post(create_session::<S>).delete(delete_session::<S>),
+        )
+        .route("/ui/session/config", get(session_config::<S>))
 }
 
 #[derive(Debug, Deserialize)]
@@ -337,6 +339,68 @@ fn error_response(status: u16, message: String) -> Response {
         Json(json!({ "error": message })),
     )
         .into_response()
+}
+
+/// The SSO offering, present only when OIDC is configured and currently
+/// usable (change: oidc-login, task 4.1).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SessionOidcConfig {
+    /// Display label for the SSO button: `[auth.oidc].display_name` if set,
+    /// else the issuer host.
+    pub name: String,
+}
+
+/// Response of the unauthenticated login-configuration probe. One schema
+/// covers every state: `password_enabled` is always present, `oidc` is
+/// `null` whenever SSO isn't something the UI should offer right now.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SessionConfigResponse {
+    /// Whether the email/password door is open. `false` only when
+    /// `[auth.oidc].disable_password_login` is set.
+    pub password_enabled: bool,
+    /// `Some` only when OIDC is configured *and* discovery has (so far)
+    /// succeeded; `None` both when OIDC is unconfigured and while discovery
+    /// hasn't (yet) succeeded, so the UI never offers a button that 404s or
+    /// 503s.
+    pub oidc: Option<SessionOidcConfig>,
+}
+
+/// GET /ui/session/config
+///
+/// Unauthenticated probe the login panel calls before rendering, so it can
+/// offer the password form, the SSO button, or both without guessing from
+/// hardcoded configuration or trial-and-error requests (spec: "The SSO
+/// surface is part of the published contract").
+#[utoipa::path(
+    get,
+    path = "/ui/session/config",
+    operation_id = "session_config",
+    tag = "tenants",
+    security(()),
+    responses(
+        (status = 200, description = "Login surface configuration", body = SessionConfigResponse),
+    )
+)]
+pub async fn session_config<S: RouterState>(State(state): State<S>) -> Response {
+    let password_enabled = !state
+        .config()
+        .auth
+        .oidc
+        .as_ref()
+        .is_some_and(|oidc| oidc.disable_password_login);
+
+    let oidc = match state.oidc() {
+        Some(runtime) if runtime.provider().await.is_some() => Some(SessionOidcConfig {
+            name: runtime.display_name.clone(),
+        }),
+        _ => None,
+    };
+
+    Json(SessionConfigResponse {
+        password_enabled,
+        oidc,
+    })
+    .into_response()
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1692,5 +1756,77 @@ mod tests {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn get_session_config(app: &axum::Router) -> Value {
+        let request = Request::builder()
+            .uri("/ui/session/config")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        json_body(response).await
+    }
+
+    /// Spec scenario "Probe without OIDC" (task 4.1): with no `[auth.oidc]`
+    /// at all, the probe is exactly `{"password_enabled": true, "oidc":
+    /// null}` — no OIDC runtime is even spawned.
+    #[tokio::test]
+    async fn session_config_probe_without_oidc_is_password_only() {
+        let app = test_app().await;
+        let body = get_session_config(&app).await;
+        assert_eq!(
+            body,
+            serde_json::json!({ "password_enabled": true, "oidc": null })
+        );
+    }
+
+    /// While `[auth.oidc]` is configured but discovery hasn't (yet)
+    /// succeeded, `oidc` stays `null` — the UI must never offer a button
+    /// that would 503.
+    #[tokio::test]
+    async fn session_config_probe_oidc_null_while_discovery_unavailable() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                // No mock server ever answers this issuer, so discovery can
+                // never succeed within the test's lifetime.
+                oidc: Some(OidcConfig {
+                    issuer_url: "https://idp.invalid.example".to_string(),
+                    client_id: "test-client".to_string(),
+                    client_secret: "test-secret".to_string(),
+                    ..OidcConfig::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let body = get_session_config(&app).await;
+        assert_eq!(body["oidc"], Value::Null);
+        assert_eq!(body["password_enabled"], true);
+    }
+
+    /// `disable_password_login` flips `password_enabled` to `false`,
+    /// independent of whether OIDC discovery has succeeded yet.
+    #[tokio::test]
+    async fn session_config_probe_reports_password_disabled() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                oidc: Some(oidc_with_password_disabled()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let body = get_session_config(&app).await;
+        assert_eq!(body["password_enabled"], false);
     }
 }

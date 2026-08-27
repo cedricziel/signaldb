@@ -93,6 +93,9 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::remove_membership,
         crate::endpoints::management::get_schema,
         crate::endpoints::session::whoami,
+        crate::endpoints::session::session_config,
+        crate::endpoints::oidc::start,
+        crate::endpoints::oidc::callback,
         // Tempo-compatible trace query endpoints
         crate::endpoints::tempo::search,
         crate::endpoints::tempo::query_single_trace,
@@ -188,6 +191,9 @@ impl Modify for SecurityAddon {
         // authenticated identity
         crate::endpoints::session::WhoamiIdentityResponse,
         crate::endpoints::session::WhoamiTenant,
+        // login-configuration probe (change: oidc-login)
+        crate::endpoints::session::SessionConfigResponse,
+        crate::endpoints::session::SessionOidcConfig,
         // shared enums
         common::catalog::MembershipRole,
         // Tempo-compatible trace query DTOs
@@ -306,6 +312,71 @@ mod tests {
                 "OpenAPI document is missing operation for {path}"
             );
         }
+    }
+
+    /// Task 4.1 (change: oidc-login): the login-configuration probe and the
+    /// two OIDC endpoints must be in the published contract, and — being
+    /// public login surface — every one of them must declare an *empty*
+    /// security requirement, overriding the document's global `bearerAuth`
+    /// default. Per the OpenAPI 3.x spec, "an empty security requirement
+    /// (`{}`) can be included in the array" to make security optional for an
+    /// operation — utoipa's `security(())` emits exactly `[{}]` (already the
+    /// pattern used by `oauth::authorize_decision`), not a bare `[]`.
+    #[test]
+    fn oidc_login_surface_is_documented_and_unauthenticated() {
+        let doc = openapi_document();
+        let spec: serde_json::Value = serde_json::from_str(&doc.to_pretty_json().unwrap()).unwrap();
+
+        for (path, method) in [
+            ("/ui/session/config", "get"),
+            ("/ui/session/oidc/start", "get"),
+            ("/ui/session/oidc/callback", "get"),
+        ] {
+            let operation = spec
+                .pointer(&format!("/paths/{}/{method}", path.replace('/', "~1")))
+                .unwrap_or_else(|| panic!("OpenAPI document is missing {method} {path}"));
+            let security = operation
+                .get("security")
+                .unwrap_or_else(|| panic!("{method} {path}: no `security` override present"));
+            assert_eq!(
+                security,
+                &serde_json::json!([{}]),
+                "{method} {path}: expected the empty security requirement [{{}}], got {security}"
+            );
+        }
+
+        let schemas = spec.pointer("/components/schemas").unwrap();
+        let probe = schemas
+            .get("SessionConfigResponse")
+            .expect("SessionConfigResponse schema present");
+        let properties = probe.get("properties").expect("probe has properties");
+        assert!(
+            properties
+                .get("password_enabled")
+                .is_some_and(|p| p.get("type") == Some(&serde_json::json!("boolean"))),
+            "SessionConfigResponse.password_enabled must be a required boolean: {probe}"
+        );
+        let required = probe
+            .get("required")
+            .and_then(|r| r.as_array())
+            .expect("probe declares required fields");
+        assert!(
+            required.contains(&serde_json::json!("password_enabled")),
+            "password_enabled must always be present: {probe}"
+        );
+        assert!(
+            !required.contains(&serde_json::json!("oidc")),
+            "oidc must be nullable/optional, not required: {probe}"
+        );
+        let oidc_schema = schemas
+            .get("SessionOidcConfig")
+            .expect("SessionOidcConfig schema present");
+        assert!(
+            oidc_schema
+                .pointer("/properties/name")
+                .is_some_and(|n| n.get("type") == Some(&serde_json::json!("string"))),
+            "SessionOidcConfig.name must be a string: {oidc_schema}"
+        );
     }
 
     /// Route-vs-OpenAPI drift guard (design D4). axum 0.8 does not expose a

@@ -31,6 +31,18 @@ const EXCLUDED: &[(&str, &str)] = &[
         "manage_create_tenant",
         "human self-serve tenant creation by a signed-in instance administrator (`TenantContext::is_instance_admin`); API-key clients create tenants through the admin API's `create_tenant` (`admin tenant create` / MCP `create_tenant`), so no `tenant`-group surface is owed (management-api-key-scope, design D5)",
     ),
+    (
+        "session_config",
+        "browser login-configuration probe (change: oidc-login) — UI/HTTP-only, no CLI command or MCP tool makes sense",
+    ),
+    (
+        "session_oidc_start",
+        "browser OIDC SSO redirect flow (change: oidc-login) — UI/HTTP-only, no CLI command or MCP tool makes sense",
+    ),
+    (
+        "session_oidc_callback",
+        "browser OIDC SSO redirect flow (change: oidc-login) — UI/HTTP-only, no CLI command or MCP tool makes sense",
+    ),
 ];
 
 /// How an operation is reached through the CLI: either a subcommand path

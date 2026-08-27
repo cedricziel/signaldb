@@ -89,34 +89,6 @@ name = "trace_index_scaling"
 harness = false
 required-features = ["benchmarks"]
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
 ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "mcp-server", "opentelemetry-proto", "querier", "router", "signaldb-cli", "tokio", "tokio-stream", "tonic", "writer"]
@@ -136,3 +108,7 @@ path = "tests/ops_endpoints_tracing.rs"
 [[test]]
 name = "mcp_router_trace_continuity"
 path = "tests/mcp_router_trace_continuity.rs"
+
+[[test]]
+name = "query_parity"
+path = "tests/query_parity.rs"

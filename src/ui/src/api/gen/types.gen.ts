@@ -903,6 +903,13 @@ export type ManageUpdateApiKeyRequest = {
 
 export type MembershipResponse = {
     email: string;
+    /**
+     * `"local"` (granted via this API/CLI/MCP) or `"oidc_mapping"` (synced
+     * from an OIDC group claim, change: oidc-login). A local and a mapped
+     * row can coexist for the same user, yielding two response rows that
+     * differ only by this field — the UI keys on `user_id` + `granted_by`.
+     */
+    granted_by: string;
     role: MembershipRole;
     user_id: string;
 };
@@ -1239,6 +1246,32 @@ export type SearchResult = {
         [key: string]: number;
     };
     traces: Array<Trace>;
+};
+
+/**
+ * Response of the unauthenticated login-configuration probe. One schema
+ * covers every state: `password_enabled` is always present, `oidc` is
+ * `null` whenever SSO isn't something the UI should offer right now.
+ */
+export type SessionConfigResponse = {
+    oidc?: null | SessionOidcConfig;
+    /**
+     * Whether the email/password door is open. `false` only when
+     * `[auth.oidc].disable_password_login` is set.
+     */
+    password_enabled: boolean;
+};
+
+/**
+ * The SSO offering, present only when OIDC is configured and currently
+ * usable (change: oidc-login, task 4.1).
+ */
+export type SessionOidcConfig = {
+    /**
+     * Display label for the SSO button: `[auth.oidc].display_name` if set,
+     * else the issuer host.
+     */
+    name: string;
 };
 
 export type Span = {
@@ -5008,3 +5041,64 @@ export type SearchTagsV2Responses = {
 };
 
 export type SearchTagsV2Response = SearchTagsV2Responses[keyof SearchTagsV2Responses];
+
+export type SessionConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/ui/session/config';
+};
+
+export type SessionConfigResponses = {
+    /**
+     * Login surface configuration
+     */
+    200: SessionConfigResponse;
+};
+
+export type SessionConfigResponse2 = SessionConfigResponses[keyof SessionConfigResponses];
+
+export type SessionOidcCallbackData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Authorization code returned by the IdP
+         */
+        code?: string;
+        /**
+         * Opaque state value echoed back by the IdP
+         */
+        state?: string;
+        /**
+         * Present when the IdP failed the request before ever issuing a code
+         */
+        error?: string;
+    };
+    url: '/ui/session/oidc/callback';
+};
+
+export type SessionOidcCallbackErrors = {
+    /**
+     * OIDC is not configured
+     */
+    404: unknown;
+};
+
+export type SessionOidcStartData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/ui/session/oidc/start';
+};
+
+export type SessionOidcStartErrors = {
+    /**
+     * OIDC is not configured
+     */
+    404: unknown;
+    /**
+     * OIDC provider is currently unavailable
+     */
+    503: unknown;
+};
