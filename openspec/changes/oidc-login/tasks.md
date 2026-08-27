@@ -33,7 +33,7 @@
 - [x] 4.2 Implement `GET /ui/session/config`; add all three to `paths(...)`; regenerate `api/signaldb-api.json`, the Rust SDK, and the UI TypeScript client
 - [x] 4.3 Failing UI tests: login panel renders from the probe via the generated client — both doors, SSO-only, password-only (`oidc: null`); SSO button navigates (no XHR); membership views show `granted_by`
 - [x] 4.4 Implement the login-panel changes
-- [ ] 4.5 tests-integration: full flow against a Dex (or Keycloak) testcontainer — SSO login, whoami, JIT user, mapped membership, MCP OAuth consent over an SSO session (Docker-gated)
+- [x] 4.5 tests-integration: full flow against a Dex (or Keycloak) testcontainer — SSO login, whoami, JIT user, mapped membership, MCP OAuth consent over an SSO session (Docker-gated). Compiled clean (`cargo test -p tests-integration --test oidc_e2e --no-run`); not executed here (no Docker in the sandbox) — first real run against a live Keycloak container is still outstanding.
 
 ## 5. Docs and skills
 
