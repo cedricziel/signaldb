@@ -607,10 +607,10 @@ single `memory_limit_mb` budget.
 **Read the error before choosing a fix — it has two shapes.** The number that
 tells them apart is how much the failing sorter had _already_ allocated:
 
-| In the error                                                             | Cause                                    | Fix                                                       |
-| ------------------------------------------------------------------------ | ---------------------------------------- | --------------------------------------------------------- |
-| several `ExternalSorter[N]`, the failing one holding a substantial amount | fan-out divides the pool                 | lower `target_partitions`, or raise `memory_limit_mb`      |
-| one `ExternalSorter[0]` with **`0.0 B` already allocated**                | a single incoming batch is too wide       | lower `scan_batch_size`                                    |
+| In the error                                                              | Cause                               | Fix                                                   |
+| ------------------------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------- |
+| several `ExternalSorter[N]`, the failing one holding a substantial amount | fan-out divides the pool            | lower `target_partitions`, or raise `memory_limit_mb` |
+| one `ExternalSorter[0]` with **`0.0 B` already allocated**                | a single incoming batch is too wide | lower `scan_batch_size`                               |
 
 The second shape is a batch-size problem, not a pool-size one: the sorter's
 first reservation for a single batch already exceeds the pool, so raising the
@@ -1057,6 +1057,29 @@ WARN compactor::retention::enforcer: Table retention enforcement failed signaldb
 
 2. Retry - operations are idempotent; the next retention cycle will re-evaluate the same partitions.
 
+### Warning: "Table retention enforcement completed with errors"
+
+**Full Message:**
+
+```
+WARN compactor::retention::enforcer: Table retention enforcement completed with errors signaldb.tenant.id=acme signaldb.dataset.id=prod signaldb.table=traces signaldb.job.partitions_dropped=48 error=Failed to expire old snapshots: ...
+```
+
+**Cause:** the partition-drop step committed successfully but the
+follow-up snapshot-expiration step then failed. Unlike "Table retention
+enforcement failed" above (the table's whole retention pass failed before
+any work landed), this table's `signaldb.job.partitions_dropped` /
+`bytes_reclaimed` counts on this event, and the run's totals, reflect real,
+already-committed work — the partition drop is not retried or rolled back.
+
+**Solutions:**
+
+1. Check catalog connectivity (same as "Table retention enforcement
+   failed" above) — the snapshot-expiration commit failed for the same
+   reasons a partition-drop commit would.
+2. Retry - the next retention cycle re-evaluates snapshot expiration for
+   this table on its own; no partition drop is repeated.
+
 ### Error: "Failed to delete orphan file"
 
 **Full Message:**
@@ -1196,6 +1219,7 @@ per tenant and discovery never reads another tenant's rows. If this is ever
 observed, treat it as an isolation defect rather than a discovery bug and report
 it — there is a regression test asserting exactly this
 (`another_tenants_sketch_is_never_suggested`).
+
 ## Additional Resources
 
 - [Operations Guide](operations.md)
