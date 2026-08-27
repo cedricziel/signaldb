@@ -141,10 +141,10 @@ impl IcebergCommitter {
         new_files: Vec<iceberg_rust::spec::manifest::DataFile>,
     ) -> Result<i64> {
         tracing::info!(
-            tenant_id,
-            dataset_id,
-            table_name,
-            new_file_count = new_files.len(),
+            signaldb.tenant.id = tenant_id,
+            signaldb.dataset.id = dataset_id,
+            signaldb.table = table_name,
+            signaldb.job.files_written = new_files.len() as i64,
             "Committing compaction (replace data files)"
         );
 
@@ -197,10 +197,10 @@ impl IcebergCommitter {
         }
 
         tracing::info!(
-            tenant_id,
-            dataset_id,
-            table_name,
-            snapshot_id = verified_snapshot_id,
+            signaldb.tenant.id = tenant_id,
+            signaldb.dataset.id = dataset_id,
+            signaldb.table = table_name,
+            signaldb.job.snapshot_id = verified_snapshot_id,
             "Compaction commit verified"
         );
 

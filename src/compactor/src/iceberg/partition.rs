@@ -36,8 +36,8 @@ pub fn data_file_partition_hours(data_file: &DataFile) -> Option<i64> {
         Some(Some(Value::LongInt(hours))) => return Some(*hours),
         Some(Some(unexpected)) => {
             warn!(
-                file_path = %data_file.file_path(),
-                partition_value = ?unexpected,
+                file.path = %data_file.file_path(),
+                signaldb.job.partition_value = ?unexpected,
                 "Manifest partition value for timestamp_hour has an unexpected type; \
                  falling back to file-path parsing"
             );
@@ -55,7 +55,7 @@ pub fn data_file_partition_hours(data_file: &DataFile) -> Option<i64> {
 
     if recovered.is_some() {
         warn!(
-            file_path = %data_file.file_path(),
+            file.path = %data_file.file_path(),
             "Manifest entry has no usable timestamp_hour partition value; \
              recovered it from the file path (layout-dependent fallback)"
         );
@@ -214,7 +214,7 @@ impl PartitionManager {
                 }
                 None => {
                     warn!(
-                        file_path = %data_file.file_path(),
+                        file.path = %data_file.file_path(),
                         "Data file has no recoverable timestamp_hour partition value; \
                          excluding it from the partition listing"
                     );

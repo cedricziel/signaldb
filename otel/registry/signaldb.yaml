@@ -139,6 +139,25 @@ groups:
         brief: >
           Files an orphan-cleanup pass failed to delete. Non-zero means the
           reclaim is incomplete and will be retried next cycle.
+      - id: signaldb.job.attempt
+        type: int
+        stability: development
+        brief: The 1-based attempt number of a commit being retried after a conflict.
+      - id: signaldb.job.files_written
+        type: int
+        stability: development
+        brief: Data files written by a commit.
+      - id: signaldb.job.snapshot_id
+        type: int
+        stability: development
+        brief: The Iceberg snapshot id a commit produced.
+      - id: signaldb.job.partition_value
+        type: string
+        stability: development
+        brief: >
+          Debug-formatted manifest partition value for a field whose type
+          didn't match what the reader expected (e.g. `timestamp_hour` stored
+          as something other than an int).
 
   - id: registry.signaldb.wal
     type: attribute_group
