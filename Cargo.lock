@@ -16,6 +16,7 @@ dependencies = [
  "datafusion",
  "flate2",
  "futures",
+ "http-body",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-proto",
