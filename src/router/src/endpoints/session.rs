@@ -19,7 +19,8 @@ use axum::{
 use chrono::{Duration, Utc};
 use common::auth::{
     SESSION_COOKIE, TenantContextExtractor, generate_session_token, hash_session_token,
-    session_token_from_headers, validate_dataset_id, validate_tenant_id, verify_password,
+    session_cookie_header, session_token_from_headers, validate_dataset_id, validate_tenant_id,
+    verify_password,
 };
 use common::catalog::MembershipRole;
 use serde::{Deserialize, Serialize};
@@ -157,9 +158,7 @@ pub async fn create_session<S: RouterState>(
         }
     };
 
-    let cookie = format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200"
-    );
+    let cookie = session_cookie_header(&token);
 
     let Some(tenant) = tenant else {
         // Multiple memberships and no explicit choice: hand the list to
