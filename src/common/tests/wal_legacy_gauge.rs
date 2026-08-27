@@ -81,11 +81,19 @@ async fn clear_cache_does_not_decrement_the_gauge_for_the_surviving_legacy_wal()
 
     provider.force_flush().unwrap();
     let before_clear = instances_gauge_value(&exporter);
+    assert_eq!(
+        before_clear, 3,
+        "legacy plus 2 ordinary WALs must be counted"
+    );
 
     manager.clear_cache().await;
 
     provider.force_flush().unwrap();
     let after_clear = instances_gauge_value(&exporter);
+    assert_eq!(
+        after_clear, 1,
+        "the surviving legacy WAL must remain counted"
+    );
 
     assert_eq!(
         before_clear - after_clear,

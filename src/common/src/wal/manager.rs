@@ -188,6 +188,11 @@ impl WalManager {
     /// [`Self::new`] and per-signal directories would need each of them
     /// scanned; no such manager has legacy root segments to adopt.
     ///
+    /// Safe under concurrent invocation: the `legacy_wal` guard is held
+    /// across the whole check-create-set sequence (including the `Wal::new`
+    /// await), so two overlapping calls cannot both create a `Wal` and have
+    /// the second silently replace the first's `Arc` without closing it.
+    ///
     /// Returns whether a legacy root WAL was found and adopted.
     pub async fn adopt_root_segments(&self) -> Result<bool, anyhow::Error> {
         let base_dir = self.traces_config.wal_dir.clone();
@@ -198,7 +203,8 @@ impl WalManager {
             return Ok(false);
         }
 
-        if self.legacy_wal.lock().await.is_some() {
+        let mut legacy_wal = self.legacy_wal.lock().await;
+        if legacy_wal.is_some() {
             return Ok(true);
         }
 
@@ -219,7 +225,7 @@ impl WalManager {
         config.tenant_id = "default".to_string();
         config.dataset_id = "default".to_string();
         let wal = Wal::new(config).await?;
-        *self.legacy_wal.lock().await = Some(Arc::new(wal));
+        *legacy_wal = Some(Arc::new(wal));
         Self::record_instance_opened();
         Ok(true)
     }
@@ -576,7 +582,8 @@ impl WalManager {
         }
     }
 
-    /// Close and drop every cached WAL that has taken no append for
+    /// Close and drop every cached WAL — including the adopted legacy WAL,
+    /// see [`Self::adopt_root_segments`] — that has taken no append for
     /// `idle_after` and holds no unprocessed entries. Returns how many were
     /// evicted.
     ///
@@ -600,6 +607,12 @@ impl WalManager {
     ///   the instance while holding it. Two live `Wal` values over one
     ///   directory keep independent offset state — the desync class #883 fixed
     ///   — so the old instance must be inert before a new one can be created.
+    ///   The legacy WAL has no such guard: `get_wal` rejects
+    ///   [`Self::LEGACY_ROOT_KEY`]'s signal as unknown before it ever touches
+    ///   a key, so nothing can race it there. The only other writer of
+    ///   `legacy_wal` is [`Self::adopt_root_segments`], and the `legacy_wal`
+    ///   mutex itself — held across the take, released before the awaits —
+    ///   is what serializes against it.
     pub async fn evict_idle(&self, idle_after: std::time::Duration) -> usize {
         // Scan under the map lock and clone only the keys that are actually
         // idle — usually none. Cloning every key on every pass would allocate
@@ -611,9 +624,6 @@ impl WalManager {
                 .map(|(key, _)| key.clone())
                 .collect()
         };
-        if candidates.is_empty() {
-            return 0;
-        }
 
         let mut evicted = 0;
         for key in candidates {
@@ -674,6 +684,45 @@ impl WalManager {
             let mut guards = self.init_guards.lock().await;
             if Arc::strong_count(&guard) == 2 {
                 guards.remove(&key);
+            }
+        }
+
+        // The legacy WAL is a candidate too: it is drained by the same
+        // consumers that iterate `all_wals`, and once drained it goes idle
+        // immediately, since nothing ever writes to it again. Take it out of
+        // the option before the async backlog check so a concurrent
+        // `evict_idle` cannot also pick it up; put it back if it turns out
+        // not to be eligible.
+        let took_legacy = {
+            let mut legacy = self.legacy_wal.lock().await;
+            match legacy.as_ref() {
+                Some(wal) if wal.idle_for() >= idle_after => legacy.take(),
+                _ => None,
+            }
+        };
+        if let Some(wal) = took_legacy {
+            match wal.get_unprocessed_entries().await {
+                Ok(entries) if entries.is_empty() => {
+                    if let Err(e) = wal.close().await {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to close the evicted legacy WAL; its descriptors may leak \
+                             until exit"
+                        );
+                    }
+                    Self::record_instances_closed(1);
+                    evicted += 1;
+                }
+                Ok(_) => {
+                    *self.legacy_wal.lock().await = Some(wal);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "Could not check the legacy WAL's backlog before eviction; keeping it"
+                    );
+                    *self.legacy_wal.lock().await = Some(wal);
+                }
             }
         }
 
@@ -1525,6 +1574,128 @@ mod tests {
         assert!(
             err.to_string().contains("closed"),
             "expected a closed-WAL error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_drained_legacy_wal_is_evicted_too() {
+        // #1308: the legacy WAL used to ride `wals` and so was evicted like
+        // any other idle, drained WAL. Moving it to its own field must not
+        // pin it resident for the process lifetime — it goes idle the
+        // instant it is drained, since nothing writes to it again.
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        let legacy = Wal::new(create_test_config(&base_path)).await.unwrap();
+        let id = legacy
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"legacy".to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        legacy.flush().await.unwrap();
+        legacy.mark_processed(id).await.unwrap();
+        drop(legacy);
+
+        let manager = uniform_manager(&base_path);
+        assert!(manager.adopt_root_segments().await.unwrap());
+        assert_eq!(manager.wal_count().await, 1);
+
+        let (_, legacy_wal) = manager.all_wals().await.into_iter().next().unwrap();
+
+        let evicted = manager.evict_idle(Duration::from_secs(0)).await;
+        assert_eq!(evicted, 1, "a drained, idle legacy WAL must be evicted");
+        assert_eq!(manager.wal_count().await, 0, "the cache must drop it");
+        assert!(
+            manager.all_wals().await.is_empty(),
+            "all_wals must no longer report the evicted legacy WAL's key"
+        );
+
+        // The evicted instance is inert, same as an ordinary evicted WAL.
+        let err = match legacy_wal
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"after".to_vec(),
+                None,
+            )
+            .await
+        {
+            Ok(_) => legacy_wal
+                .flush()
+                .await
+                .expect_err("an evicted legacy WAL must not accept further writes as durable"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("closed"),
+            "expected a closed-WAL error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_legacy_wal_with_undrained_entries_is_never_evicted() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        let legacy = Wal::new(create_test_config(&base_path)).await.unwrap();
+        legacy
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"pending".to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        legacy.flush().await.unwrap();
+        drop(legacy);
+
+        let manager = uniform_manager(&base_path);
+        assert!(manager.adopt_root_segments().await.unwrap());
+
+        let evicted = manager.evict_idle(Duration::from_secs(0)).await;
+        assert_eq!(
+            evicted, 0,
+            "a legacy WAL with unprocessed entries must be kept"
+        );
+        assert_eq!(manager.wal_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_adopt_root_segments_adopts_the_legacy_wal_exactly_once() {
+        use tokio::task::JoinSet;
+
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        let legacy = Wal::new(create_test_config(&base_path)).await.unwrap();
+        legacy
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"legacy".to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        legacy.flush().await.unwrap();
+        drop(legacy);
+
+        let manager = Arc::new(uniform_manager(&base_path));
+
+        let mut join_set = JoinSet::new();
+        for _ in 0..10 {
+            let manager = manager.clone();
+            join_set.spawn(async move { manager.adopt_root_segments().await.unwrap() });
+        }
+        while let Some(result) = join_set.join_next().await {
+            assert!(result.unwrap());
+        }
+
+        assert_eq!(
+            manager.wal_count().await,
+            1,
+            "only one legacy WAL must be adopted, however many callers raced to do it"
         );
     }
 
