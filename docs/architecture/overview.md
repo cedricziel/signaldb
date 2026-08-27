@@ -218,6 +218,17 @@ returns the human identity and memberships plus the selected tenant's
 datasets for the UI's tenant selector. API-key authentication remains
 available for machine clients and ingestion.
 
+When `[auth.oidc]` is configured, the router also acts as an OIDC
+**relying party** (`src/router/src/oidc.rs` runtime,
+`src/router/src/endpoints/oidc.rs` handlers): an unauthenticated
+login-configuration probe (`GET /ui/session/config`) tells the UI whether
+to offer SSO, and `GET /ui/session/oidc/{start,callback}` run the
+authorization-code-with-PKCE flow, issuing the same `signaldb_session`
+cookie a password login would. Provider discovery runs in the background,
+so an unreachable issuer never blocks router startup; the endpoints 404
+when OIDC is unconfigured. Operator-facing detail lives in
+[Setting up SSO / OIDC login](../operations/oidc-sso.md).
+
 **Tempo API Endpoints**:
 
 | Endpoint                                         | Status                                                                                   |

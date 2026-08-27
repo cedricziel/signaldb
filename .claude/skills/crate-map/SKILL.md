@@ -106,7 +106,9 @@ This is the shared foundation. Key modules:
 | `endpoints/pyroscope.rs` | `src/router/src/endpoints/pyroscope.rs` | Pyroscope-compatible profile query handlers                                                                                                              |
 | `endpoints/admin.rs`     | `src/router/src/endpoints/admin.rs`     | Admin API for tenant/key/dataset CRUD                                                                                                                    |
 | `endpoints/tenant.rs`    | `src/router/src/endpoints/tenant.rs`    | Tenant self-service API                                                                                                                                  |
-| `endpoints/session.rs`   | `src/router/src/endpoints/session.rs`   | UI session login/logout (`/ui/session`) + `/api/v1/whoami`                                                                                               |
+| `endpoints/session.rs`   | `src/router/src/endpoints/session.rs`   | UI session login/logout (`/ui/session`), `/ui/session/config` login-surface probe, `/api/v1/whoami`                                                      |
+| `endpoints/oidc.rs`      | `src/router/src/endpoints/oidc.rs`      | OIDC SSO login handlers (`/ui/session/oidc/{start,callback}`); 404 when `[auth.oidc]` is unset                                                            |
+| `oidc.rs`                | `src/router/src/oidc.rs`                | OIDC relying-party runtime: background provider discovery, PKCE/state, token exchange, JIT provisioning + group-mapping sync                              |
 | `endpoints/flight.rs`    | `src/router/src/endpoints/flight.rs`    | Router Flight service                                                                                                                                    |
 
 ## The `compactor` Crate

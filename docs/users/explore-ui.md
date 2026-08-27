@@ -524,6 +524,14 @@ directly in it (on its default dataset); accounts spanning several tenants
 pick one from a selector listing each membership by name and role. See
 [the authentication reference](authentication.md).
 
+When your operator has configured SSO, the sign-in form also offers a
+**Continue with &lt;provider&gt;** button — the panel probes
+`GET /ui/session/config` and shows it only while the provider is reachable,
+so you never see a button that fails. Clicking it signs you in through your
+identity provider and lands you in the same tenant/dataset selection as a
+password login; if the operator turned password login off, SSO is the only
+door. See [Signing in with SSO](authentication.md#signing-in-with-sso-oidc).
+
 ![The post-login tenant selector listing each membership with its name and role](../assets/screenshots/login-tenant-selector.png)
 
 Signing in calls `POST /ui/session`, which validates the credentials and

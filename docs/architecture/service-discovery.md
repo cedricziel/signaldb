@@ -77,9 +77,12 @@ match is exhaustive so the compiler forces it.
 The same catalog database also holds the multi-tenancy tables (`tenants`,
 `api_keys` — including each key's explicit `scopes` list and optional
 `dataset_id` restriction, updatable in place via
-`Catalog::update_api_key_scopes` — `datasets`), the user-identity tables (`users`,
-`tenant_memberships`, `user_sessions` — see the users-tenant-membership
-ADR), the `compactor_leases` table, and the advisory
+`Catalog::update_api_key_scopes` — `datasets`), the user-identity tables (`users`
+— whose `password_hash` is now nullable, with `oidc_issuer`/`oidc_subject` for
+SSO-linked identities; `tenant_memberships` — keyed by `(user_id, tenant_id,
+granted_by)` so a `local` grant and an `oidc_mapping` grant coexist as separate
+rows (change: oidc-login, additive migration); `user_sessions` — see the
+users-tenant-membership ADR), the `compactor_leases` table, and the advisory
 `attribute_stats` table (per-attribute-key presence and cardinality written
 by the compactor's analyzer, plus query-demand hit counters flushed
 periodically by the querier, and a `promote_streak` hysteresis column for

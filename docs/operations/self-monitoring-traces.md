@@ -108,6 +108,15 @@ flowchart LR
   target, from service discovery); SERVER spans carry
   `network.peer.address`/`network.peer.port` (the connecting socket, from
   `tonic::Request::remote_addr()`) when available.
+- **Outbound HTTP**: CLIENT spans named `{method} {url}` for a single
+  outbound HTTP request — today the router's OIDC relying party calling its
+  provider's discovery, token, and JWKS endpoints — carrying
+  `http.request.method`, `url.full`, and `http.response.status_code` per the
+  HTTP client semantic conventions. A response `>= 400` sets span status
+  Error with `error.type` the status code; a transport failure with no status
+  records the error directly. The factory (`http_client_span`) requires the
+  `url` to be free of query-string secrets, which the OIDC endpoints it backs
+  never carry.
 - **SQL catalog**: CLIENT spans `{verb} signaldb-catalog` with
   `db.system.name` / `db.operation.name` / `db.namespace` /
   `db.query.text` (literal-sanitized, same `?`-placeholder convention as

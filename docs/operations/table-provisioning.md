@@ -70,7 +70,10 @@ long a _newly created_ dataset waits.
 ## What a pass does
 
 1. Enumerate the tenant registry — config-defined tenants **and** tenants
-   created through the admin API.
+   created through the admin API. Provisioning is driven by the registry and
+   each tenant's enabled signal types alone; it is independent of who (if
+   anyone) holds a membership in the tenant, so a dataset is provisioned
+   whether its users authenticate by password, API key, or SSO.
 2. For each tenant, take its datasets. The registry guarantees a tenant's
    `default_dataset` is among them even when no dataset row names it, so a
    tenant whose default exists only as a column on its tenant row is

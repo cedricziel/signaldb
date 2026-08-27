@@ -377,10 +377,14 @@ Claude.ai and OpenAI/ChatGPT register a remote MCP server through OAuth 2.1 with
 Dynamic Client Registration — no headers, no pre-registration. Add the `/mcp`
 URL under **Settings → Connectors → Add custom connector**; the client
 discovers SignalDB's authorization server, registers itself, and sends you
-through a sign-in + consent screen. On the consent screen you pick **one
-tenant** and approve the read scopes it requested; the token it receives is
-bound to that tenant. To let a connector reach a second tenant, add it a second
-time and grant the other tenant.
+through a sign-in + consent screen. The sign-in step is an ordinary browser
+session, so when the operator has configured SSO you authenticate through your
+identity provider there (or the connector reuses an existing SignalDB session);
+password sign-in works unless the operator disabled it. On the consent screen —
+which proceeds identically either way — you pick **one tenant** and approve the
+read scopes it requested; the token it receives is bound to that tenant. To let
+a connector reach a second tenant, add it a second time and grant the other
+tenant.
 
 The endpoint **must be HTTPS with a valid certificate** — these clients will not
 connect to a raw LAN port, so the TLS reverse proxy is required here.

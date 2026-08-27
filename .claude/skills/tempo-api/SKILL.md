@@ -111,6 +111,7 @@ Requires `admin_api_key` from config:
 | `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE/PATCH   | Revoke / update scopes |
 | `/api/v1/admin/tenants/{id}/datasets`              | GET/POST       | List/create datasets   |
 | `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE         | Delete dataset         |
+| `/api/v1/admin/users`                              | POST           | Create a user (`create_user`; `password_hash` optional — a passwordless user is SSO-only, change: oidc-login) |
 
 Every row above is also in the OpenAPI document, and reachable through
 `signaldb-sdk`, the `signaldb-cli admin` group, and the MCP server's
