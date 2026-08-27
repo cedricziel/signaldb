@@ -31,8 +31,8 @@
 
 - [x] 4.1 Failing test: OpenAPI document lists `/ui/session/config`, `/ui/session/oidc/start`, `/ui/session/oidc/callback` with schemas, all three with an empty security requirement; probe schema has `password_enabled: bool` and nullable `oidc: {name}`; probe returns `{"password_enabled": true, "oidc": null}` without `[auth.oidc]` and `oidc: null` while discovery is `unavailable`
 - [x] 4.2 Implement `GET /ui/session/config`; add all three to `paths(...)`; regenerate `api/signaldb-api.json`, the Rust SDK, and the UI TypeScript client
-- [ ] 4.3 Failing UI tests: login panel renders from the probe via the generated client — both doors, SSO-only, password-only (`oidc: null`); SSO button navigates (no XHR); membership views show `granted_by`
-- [ ] 4.4 Implement the login-panel changes
+- [x] 4.3 Failing UI tests: login panel renders from the probe via the generated client — both doors, SSO-only, password-only (`oidc: null`); SSO button navigates (no XHR); membership views show `granted_by`
+- [x] 4.4 Implement the login-panel changes
 - [ ] 4.5 tests-integration: full flow against a Dex (or Keycloak) testcontainer — SSO login, whoami, JIT user, mapped membership, MCP OAuth consent over an SSO session (Docker-gated)
 
 ## 5. Docs and skills
