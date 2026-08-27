@@ -162,9 +162,15 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> Result<RecordBa
 /// (a legacy bare value, say) — return `raw` unchanged, so structured bodies
 /// and any pre-existing non-JSON data round-trip untouched.
 ///
-/// Kept next to the encode above on purpose: both `body` read sites
-/// (`ir_planner`'s `body` projection/`ir_extract`, and the Loki line
-/// serializer) call this one function, so the two surfaces cannot drift.
+/// Kept next to the encode above on purpose: this must decode exactly once,
+/// on the way *out of DataFusion* — the querier's IR-path `body` projection,
+/// its `ir_extract` json/logfmt parsers, and its LogQL-compat fallback
+/// projection (`logs::shape_log_query`, via the shared
+/// `ir_planner::body_decode_expr`) all call this one function, so those
+/// three cannot drift from each other. Nothing downstream of the querier —
+/// the Loki line serializer included — may call it again: a body whose own
+/// text begins and ends with a quote would lose that quoting on a second
+/// decode pass (issue #1410 review finding on #1432).
 pub fn decode_log_body(raw: &str) -> std::borrow::Cow<'_, str> {
     // Only a JSON string scalar can start with `"` — skip the parse entirely
     // for every other stored form (objects, arrays, numbers, `null`, and any

@@ -612,6 +612,15 @@ async fn logs_ir_query_body_field_decodes_string_bodies_and_keeps_structured_bod
         )
         .await
         .expect("ingest kvlist-body log");
+    let quoted_body = r#""already quoted" said the log"#;
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request("quoted", vec![log_record(2_000_000, "INFO", quoted_body)]),
+        )
+        .await
+        .expect("ingest quoted-message-body log");
 
     let app = build_router(&services).await;
 
@@ -658,6 +667,32 @@ async fn logs_ir_query_body_field_decodes_string_bodies_and_keeps_structured_bod
         serde_json::from_str(rows[0][1].as_str().expect("body is a string column"))
             .expect("kvlist body must still round-trip as JSON");
     assert_eq!(kvlist_body, serde_json::json!({"event": "start"}));
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "logs",
+            "range": range(),
+            "result": "rows",
+            "fields": ["service.name", "body"],
+            "pipeline": [
+                { "where": { "field": "service.name", "op": "eq", "value": "quoted" } }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "quoted-message IR query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected the quoted-message log line: {body}"
+    );
+    assert_eq!(
+        rows[0][1], quoted_body,
+        "a message that is itself quoted must decode exactly once, not twice: {body}"
+    );
 }
 
 // Task 10.2 — a single-signal traces IR query (filter + topk) returns spans.

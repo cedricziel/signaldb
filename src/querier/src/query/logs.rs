@@ -878,6 +878,31 @@ impl LogsService {
     }
 }
 
+/// The projection expression list for a set of log-query columns: `body`
+/// (if present in `columns`) is decoded via
+/// [`super::ir_planner::body_decode_expr`] the same way the IR path's own
+/// `body` projection is (issue #1410 — ingest JSON-encodes `body`, so a
+/// plain string value must come back decoded on every path that projects
+/// it), everything else is projected as-is.
+///
+/// `pub(crate)` and shared with the `differential` test harness
+/// (`old_logql_log_plan`), which pins its hand-built "old path" plan against
+/// this file's IR-routed plan at the optimized-plan-text level — sharing
+/// this function is what keeps that pin from drifting the moment either
+/// side changes how `body` is projected.
+pub(crate) fn log_query_projection(columns: &[&str]) -> Vec<Expr> {
+    columns
+        .iter()
+        .map(|c| {
+            if *c == "body" {
+                super::ir_planner::body_decode_expr("body").alias("body")
+            } else {
+                col(*c)
+            }
+        })
+        .collect()
+}
+
 /// Apply the projection, filter, ordering, and limit of a log-line query
 /// to a base DataFrame. Split out so it can be tested against an
 /// in-memory table.
@@ -893,7 +918,7 @@ pub fn shape_log_query(
     if let Some(filter) = filter {
         df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
     }
-    df.select_columns(LOG_COLUMNS)
+    df.select(log_query_projection(LOG_COLUMNS))
         .map_err(QuerierError::QueryFailed)?
         .sort(vec![col("timestamp").sort(direction.ascending(), true)])
         .map_err(QuerierError::QueryFailed)?

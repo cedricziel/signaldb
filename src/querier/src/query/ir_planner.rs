@@ -2184,7 +2184,13 @@ impl Lowering<'_> {
 /// plain string body comes back as the actual text rather than
 /// JSON-string-quoted (issue #1410); a structured body round-trips as-is
 /// (`BodyDecodeUdf`'s job, not this function's).
-fn body_decode_expr(physical: &str) -> Expr {
+///
+/// `pub(crate)` so `logs.rs`'s `shape_log_query` (the LogQL-compat fallback
+/// path, used when the IR lowering declines) can decode `body` the same way
+/// this file's own IR-path projection does — both querier-side projections
+/// of `body` must decode exactly once; nothing downstream of either (the
+/// Loki serializer included) may decode again.
+pub(crate) fn body_decode_expr(physical: &str) -> Expr {
     ScalarUDF::from(BodyDecodeUdf::new()).call(vec![col(physical)])
 }
 

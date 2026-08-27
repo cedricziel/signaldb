@@ -549,6 +549,23 @@ async fn logql_query_range_decodes_string_bodies_and_keeps_structured_bodies() {
         )
         .await
         .expect("ingest kvlist-body log");
+    // A message whose own text begins and ends with a quote — the value
+    // class where decoding twice (once in the querier's projection, once
+    // more in the Loki serializer) would silently strip that quoting
+    // instead of no-op'ing. Regression case for the double-decode bug
+    // found in review on #1432.
+    let quoted_body = r#""already quoted" said the log"#;
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "quoted",
+                vec![log_record(2_000_000, "INFO", quoted_body, &[])],
+            ),
+        )
+        .await
+        .expect("ingest quoted-message-body log");
     common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
         .await
         .expect("flush writer");
@@ -584,6 +601,21 @@ async fn logql_query_range_decodes_string_bodies_and_keeps_structured_bodies() {
     let kvlist_body: serde_json::Value =
         serde_json::from_str(line).expect("kvlist body must still round-trip as JSON");
     assert_eq!(kvlist_body, serde_json::json!({"event": "start"}));
+
+    let (status, body) = get(
+        &app,
+        &format!("/loki/api/v1/query_range?query=%7Bservice_name%3D%22quoted%22%7D&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "quoted-message query_range: {body}");
+    let streams = body["data"]["result"].as_array().expect("streams array");
+    let line = streams[0]["values"][0][1]
+        .as_str()
+        .expect("line is a string");
+    assert_eq!(
+        line, quoted_body,
+        "a message that is itself quoted must decode exactly once, not twice: {body}"
+    );
 }
 
 #[tokio::test]
