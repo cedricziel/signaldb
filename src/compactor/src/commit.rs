@@ -144,7 +144,7 @@ impl IcebergCommitter {
             signaldb.tenant.id = tenant_id,
             signaldb.dataset.id = dataset_id,
             signaldb.table = table_name,
-            signaldb.job.files_written = new_files.len() as i64,
+            signaldb.job.files_committed = new_files.len() as i64,
             "Committing compaction (replace data files)"
         );
 
@@ -240,12 +240,12 @@ impl IcebergCommitter {
         new_files: Vec<iceberg_rust::spec::manifest::DataFile>,
     ) -> Result<i64> {
         tracing::info!(
-            tenant_id,
-            dataset_id,
-            table_name,
-            partition_hours,
-            input_file_count = input_file_paths.len(),
-            new_file_count = new_files.len(),
+            signaldb.tenant.id = tenant_id,
+            signaldb.dataset.id = dataset_id,
+            signaldb.table = table_name,
+            signaldb.job.partition_hours = partition_hours,
+            signaldb.job.input_file_count = input_file_paths.len() as i64,
+            signaldb.job.files_committed = new_files.len() as i64,
             "Committing compaction (partition-scoped delta)"
         );
 
@@ -315,11 +315,11 @@ impl IcebergCommitter {
         }
 
         tracing::info!(
-            tenant_id,
-            dataset_id,
-            table_name,
-            partition_hours,
-            snapshot_id = verified_snapshot_id,
+            signaldb.tenant.id = tenant_id,
+            signaldb.dataset.id = dataset_id,
+            signaldb.table = table_name,
+            signaldb.job.partition_hours = partition_hours,
+            signaldb.job.snapshot_id = verified_snapshot_id,
             "Compaction delta commit verified"
         );
 

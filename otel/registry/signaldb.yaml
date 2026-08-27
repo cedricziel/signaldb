@@ -143,14 +143,25 @@ groups:
         type: int
         stability: development
         brief: The 1-based attempt number of a commit being retried after a conflict.
-      - id: signaldb.job.files_written
+      - id: signaldb.job.files_committed
         type: int
         stability: development
-        brief: Data files written by a commit.
+        brief: >
+          Data files in a commit's resulting file set. Not all of them were
+          necessarily written by this commit — a partition-drop replace
+          commits the still-live files it kept alongside any it added.
       - id: signaldb.job.snapshot_id
         type: int
         stability: development
         brief: The Iceberg snapshot id a commit produced.
+      - id: signaldb.job.partition_hours
+        type: int
+        stability: development
+        brief: The partition (integer hours since epoch) a delta commit targets.
+      - id: signaldb.job.input_file_count
+        type: int
+        stability: development
+        brief: Input files a delta commit re-validates as still live before committing.
       - id: signaldb.job.partition_value
         type: string
         stability: development

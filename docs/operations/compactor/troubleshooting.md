@@ -1061,7 +1061,7 @@ WARN compactor::retention::enforcer: Table retention enforcement failed signaldb
 
 **Full Message:**
 
-```
+```text
 WARN compactor::retention::enforcer: Table retention enforcement completed with errors signaldb.tenant.id=acme signaldb.dataset.id=prod signaldb.table=traces signaldb.job.partitions_dropped=48 error=Failed to expire old snapshots: ...
 ```
 

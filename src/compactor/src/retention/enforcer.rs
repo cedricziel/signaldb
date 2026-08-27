@@ -197,6 +197,7 @@ impl RetentionEnforcer {
                                 signaldb.dataset.id = %dataset_id,
                                 signaldb.table = %table_name,
                                 signaldb.job.partitions_dropped = result.partitions_dropped as i64,
+                                signaldb.job.bytes_reclaimed = result.bytes_reclaimed as i64,
                                 error = %table_error,
                                 "Table retention enforcement completed with errors"
                             );
@@ -1556,7 +1557,7 @@ mod tests {
             "signaldb.job.bytes_reclaimed",
             "signaldb.job.duration_ms",
             "signaldb.job.files_deleted",
-            "signaldb.job.files_written",
+            "signaldb.job.files_committed",
             "signaldb.job.snapshot_id",
         ]
         .into_iter()
