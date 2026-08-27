@@ -5,11 +5,16 @@
 // cookie (after cancelling fetches that started without it, whose late
 // 401s would otherwise re-open the gate).
 
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { isAuthError, setTenantContext, toErrorMessage } from "../../api/http";
 import type { SessionMembership } from "../../api/session";
-import { createSession, whoami } from "../../api/session";
+import {
+  OIDC_START_PATH,
+  createSession,
+  fetchSessionConfig,
+  whoami,
+} from "../../api/session";
 import "./LoginPanel.css";
 
 export interface LoginResult {
@@ -77,6 +82,19 @@ export function LoginPanel({ onSuccess }: PanelProps) {
   const [busy, setBusy] = useState(false);
   const [choices, setChoices] = useState<SessionMembership[] | null>(null);
 
+  // Probe which doors to offer. A probe failure (network error, older
+  // server without the endpoint) must never block password login, so it
+  // defaults to the historical password-only behavior — both while the
+  // probe is still in flight and if it errors out.
+  const configQuery = useQuery({
+    queryKey: ["session-config"],
+    queryFn: fetchSessionConfig,
+    retry: false,
+    staleTime: Infinity,
+  });
+  const passwordEnabled = configQuery.data?.password_enabled ?? true;
+  const oidc = configQuery.data?.oidc ?? null;
+
   const finishWithTenant = (tenant: string) => {
     setBusy(true);
     setError(null);
@@ -125,71 +143,96 @@ export function LoginPanel({ onSuccess }: PanelProps) {
     );
   }
 
+  const noDoorsAvailable = !passwordEnabled && !oidc;
+
   return (
     <div className="login-backdrop" role="dialog" aria-label="Sign in">
-      <form
-        className="login-panel"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const data = new FormData(e.currentTarget);
-          const creds = {
-            email: String(data.get("email") ?? "").trim(),
-            password: String(data.get("password") ?? ""),
-          };
-          setBusy(true);
-          setError(null);
-          createSession(creds)
-            .then((result) => {
-              if (result.tenant) {
-                onSuccess({
-                  tenant: result.tenant,
-                  dataset: result.dataset ?? "",
-                });
-              } else {
-                setChoices(result.memberships);
-              }
-            })
-            .catch((err: unknown) => {
-              setError(toErrorMessage(err));
-            })
-            .finally(() => setBusy(false));
-        }}
-      >
+      <div className="login-panel">
         <h2>Sign in to SignalDB</h2>
-        <p className="login-hint">
-          Queries were rejected as unauthenticated. Sign in with your user
-          account.
-        </p>
-        <label>
-          Email
-          <input
-            name="email"
-            type="email"
-            aria-label="Email"
-            autoComplete="username"
-            required
-            autoFocus
-          />
-        </label>
-        <label>
-          Password
-          <input
-            name="password"
-            type="password"
-            aria-label="Password"
-            autoComplete="current-password"
-            required
-          />
-        </label>
-        {error && (
-          <p className="login-error" role="alert">
-            {error}
+        {passwordEnabled && (
+          <p className="login-hint">
+            Queries were rejected as unauthenticated. Sign in with your user
+            account.
           </p>
         )}
-        <button type="submit" disabled={busy}>
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
-      </form>
+        {noDoorsAvailable && (
+          <p className="login-error" role="alert">
+            No login methods are currently available. Single sign-on is
+            temporarily unavailable; contact your administrator.
+          </p>
+        )}
+        {passwordEnabled && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const data = new FormData(e.currentTarget);
+              const creds = {
+                email: String(data.get("email") ?? "").trim(),
+                password: String(data.get("password") ?? ""),
+              };
+              setBusy(true);
+              setError(null);
+              createSession(creds)
+                .then((result) => {
+                  if (result.tenant) {
+                    onSuccess({
+                      tenant: result.tenant,
+                      dataset: result.dataset ?? "",
+                    });
+                  } else {
+                    setChoices(result.memberships);
+                  }
+                })
+                .catch((err: unknown) => {
+                  setError(toErrorMessage(err));
+                })
+                .finally(() => setBusy(false));
+            }}
+          >
+            <label>
+              Email
+              <input
+                name="email"
+                type="email"
+                aria-label="Email"
+                autoComplete="username"
+                required
+                autoFocus
+              />
+            </label>
+            <label>
+              Password
+              <input
+                name="password"
+                type="password"
+                aria-label="Password"
+                autoComplete="current-password"
+                required
+              />
+            </label>
+            {error && (
+              <p className="login-error" role="alert">
+                {error}
+              </p>
+            )}
+            <button type="submit" disabled={busy}>
+              {busy ? "Signing in…" : "Sign in"}
+            </button>
+          </form>
+        )}
+        {oidc && (
+          <button
+            type="button"
+            className="login-sso-button"
+            disabled={busy}
+            onClick={() => {
+              window.location.href = OIDC_START_PATH;
+            }}
+          >
+            Continue with {oidc.name}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

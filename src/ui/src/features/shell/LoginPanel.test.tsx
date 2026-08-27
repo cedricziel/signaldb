@@ -126,6 +126,116 @@ describe("LoginPanel", () => {
     );
     expect(onSuccess).not.toHaveBeenCalled();
   });
+
+  it("offers both the password form and an SSO button when the probe reports both doors", async () => {
+    stubFetchRoutes([
+      {
+        match: "/ui/session/config",
+        body: { password_enabled: true, oidc: { name: "Okta" } },
+      },
+    ]);
+    renderWithClient(<LoginPanel onSuccess={vi.fn()} />);
+
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /Okta/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows only the SSO button when the probe disables password login", async () => {
+    stubFetchRoutes([
+      {
+        match: "/ui/session/config",
+        body: { password_enabled: false, oidc: { name: "Okta" } },
+      },
+    ]);
+    renderWithClient(<LoginPanel onSuccess={vi.fn()} />);
+
+    expect(
+      await screen.findByRole("button", { name: /Okta/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+  });
+
+  it("shows only the password form when the probe reports no SSO configured", async () => {
+    stubFetchRoutes([
+      {
+        match: "/ui/session/config",
+        body: { password_enabled: true, oidc: null },
+      },
+    ]);
+    renderWithClient(<LoginPanel onSuccess={vi.fn()} />);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Email")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("button", { name: /Okta|Continue with/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a no-login-methods message when the probe reports neither door", async () => {
+    stubFetchRoutes([
+      {
+        match: "/ui/session/config",
+        body: { password_enabled: false, oidc: null },
+      },
+    ]);
+    renderWithClient(<LoginPanel onSuccess={vi.fn()} />);
+
+    expect(
+      await screen.findByText(/No login methods are currently available/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/contact your administrator/),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Okta|Continue with/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("falls back to the password form when the config probe fails", async () => {
+    stubFetchRoutes([
+      { match: "/ui/session/config", body: { error: "boom" }, status: 500 },
+    ]);
+    renderWithClient(<LoginPanel onSuccess={vi.fn()} />);
+
+    // A probe failure must never block password login.
+    await waitFor(() =>
+      expect(screen.getByLabelText("Email")).toBeInTheDocument(),
+    );
+  });
+
+  it("the SSO button performs a full-page redirect, never a fetch", async () => {
+    const fetchFn = stubFetchRoutes([
+      {
+        match: "/ui/session/config",
+        body: { password_enabled: true, oidc: { name: "Okta" } },
+      },
+    ]);
+    const hrefs: string[] = [];
+    vi.stubGlobal("location", {
+      ...window.location,
+      set href(url: string) {
+        hrefs.push(url);
+      },
+      get href() {
+        return hrefs.at(-1) ?? "";
+      },
+    });
+
+    renderWithClient(<LoginPanel onSuccess={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: /Okta/ }));
+
+    expect(hrefs).toEqual(["/ui/session/oidc/start"]);
+    expect(
+      fetchFn.mock.calls.some((call) => {
+        const req = call[0];
+        return req instanceof Request && req.url.includes("/oidc/start");
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("LoginGate", () => {

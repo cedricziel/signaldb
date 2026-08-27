@@ -119,3 +119,24 @@
   font-size: 11px;
   color: var(--dim);
 }
+
+.login-sso-button {
+  margin-top: 4px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.login-sso-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.login-sso-button:disabled {
+  opacity: 0.6;
+}

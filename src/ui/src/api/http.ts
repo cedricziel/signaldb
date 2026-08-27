@@ -319,6 +319,31 @@ export function isAuthError(err: unknown): boolean {
   return err instanceof ApiError && err.status === 401;
 }
 
+/** Result envelope produced by the generated SDK (`RequestResult` with the
+ * default `fields` response style). */
+export interface SdkResult<T> {
+  data?: T;
+  error?: unknown;
+  response?: Response;
+}
+
+/** Unwrap a generated SDK result, preserving the error contract callers rely
+ * on. The SDK does not throw by default: it returns `error` set (and
+ * `response` unset on a network/URL error) instead. Re-throw as `ApiError`
+ * with the HTTP status so `isAuthError(401)` keeps working. `label` names
+ * the request family in the generic fallback message (e.g. "Management"). */
+export function unwrapSdkResult<T>(result: SdkResult<T>, label: string): T {
+  const { error, response } = result;
+  if (error !== undefined || !response?.ok) {
+    const status = response?.status ?? 0;
+    const message =
+      (error as { error?: string } | undefined)?.error ??
+      `${label} request failed (${status})`;
+    throw new ApiError(message, status, retryAfterMsFrom(response));
+  }
+  return result.data as T;
+}
+
 /** Render a caught value as a display string, whether or not it's an Error. */
 export function toErrorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);

@@ -2,11 +2,14 @@
 // tenant-scoped whoami endpoint (/api/v1/whoami). The session cookie is
 // HttpOnly — browser code never reads it; it only creates and clears it.
 
+import "./client";
+import { sessionConfig as sessionConfigOp } from "./gen";
 import {
   ApiError,
   retryAfterMsFrom,
   retryingFetch,
   tenantHeaders,
+  unwrapSdkResult,
 } from "./http";
 
 export interface SessionCredentials {
@@ -111,4 +114,30 @@ export async function whoami(tenant?: string): Promise<WhoamiResponse> {
     );
   }
   return (await res.json()) as WhoamiResponse;
+}
+
+/** The SSO offering, when OIDC is configured and currently usable. */
+export interface SessionOidcOffering {
+  /** Display label for the SSO button. */
+  name: string;
+}
+
+/** Login surface reported by the unauthenticated `GET /ui/session/config`
+ * probe: which doors the login panel should offer. */
+export interface SessionConfig {
+  /** Whether the email/password form should be shown. */
+  password_enabled: boolean;
+  /** The SSO button to offer, or `null` when OIDC isn't configured/usable. */
+  oidc: SessionOidcOffering | null;
+}
+
+/** Path the SSO button navigates to (full-page redirect, never fetched). */
+export const OIDC_START_PATH = "/ui/session/oidc/start";
+
+/** Probe the login surface via the generated client. Throws on any
+ * non-2xx/network failure so callers can fall back to the password form
+ * (a probe failure must never block password login). */
+export async function fetchSessionConfig(): Promise<SessionConfig> {
+  const data = unwrapSdkResult(await sessionConfigOp(), "Session config");
+  return { password_enabled: data.password_enabled, oidc: data.oidc ?? null };
 }
