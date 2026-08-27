@@ -8,8 +8,9 @@
 //! factory tests can share this binary.
 
 use common::self_monitoring::spans::{
-    self, FLIGHT_DO_GET, FLIGHT_DO_PUT, RpcBoundary, db_client_span, job_span, mcp_tool_span,
-    record_network_peer_from_addr, record_span_error, rpc_client_span, rpc_server_span,
+    self, FLIGHT_DO_GET, FLIGHT_DO_PUT, RpcBoundary, db_client_span, http_client_span, job_span,
+    mcp_tool_span, record_http_client_result, record_network_peer_from_addr, record_span_error,
+    rpc_client_span, rpc_server_span,
 };
 use opentelemetry::trace::{SpanKind, Status, TracerProvider as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
@@ -249,6 +250,62 @@ fn mcp_tool_span_without_dataset_leaves_the_attribute_unrecorded() {
         let _guard = span.enter();
     });
     assert_eq!(attr(&spans[0], "signaldb.dataset.id"), None);
+}
+
+#[test]
+fn http_client_span_follows_http_semconv() {
+    let spans = capture_spans(|| {
+        let span = http_client_span(
+            "GET",
+            "https://idp.example.com/.well-known/openid-configuration",
+        );
+        let _guard = span.enter();
+        record_http_client_result(&span, 200);
+    });
+    let span = &spans[0];
+
+    assert_eq!(
+        span.name,
+        "GET https://idp.example.com/.well-known/openid-configuration"
+    );
+    assert_eq!(span.span_kind, SpanKind::Client);
+    assert_eq!(attr(span, "http.request.method").as_deref(), Some("GET"));
+    assert_eq!(
+        attr(span, "url.full").as_deref(),
+        Some("https://idp.example.com/.well-known/openid-configuration")
+    );
+    assert_eq!(
+        attr(span, "http.response.status_code").as_deref(),
+        Some("200")
+    );
+    assert_eq!(span.status, Status::Unset);
+    assert_eq!(attr(span, "error.type"), None);
+}
+
+#[test]
+fn http_client_span_error_status_fails_the_span() {
+    let spans = capture_spans(|| {
+        let span = http_client_span("POST", "https://idp.example.com/token");
+        let _guard = span.enter();
+        record_http_client_result(&span, 500);
+    });
+    let span = &spans[0];
+    assert!(matches!(span.status, Status::Error { .. }));
+    assert_eq!(attr(span, "error.type").as_deref(), Some("500"));
+}
+
+#[test]
+fn http_client_span_transport_failure_uses_shared_error_recorder() {
+    let spans = capture_spans(|| {
+        let span = http_client_span("GET", "https://idp.example.com/jwks");
+        let _guard = span.enter();
+        record_span_error(&span, "connect_error");
+    });
+    let span = &spans[0];
+    assert!(matches!(span.status, Status::Error { .. }));
+    assert_eq!(attr(span, "error.type").as_deref(), Some("connect_error"));
+    // No status code at all: the request never got a response.
+    assert_eq!(attr(span, "http.response.status_code"), None);
 }
 
 #[test]
