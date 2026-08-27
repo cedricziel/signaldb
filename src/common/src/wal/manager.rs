@@ -35,6 +35,15 @@ pub struct CleanupStats {
 pub struct WalManager {
     /// Cache of WAL instances keyed by (tenant_id, dataset_id, signal_type)
     wals: Arc<Mutex<HashMap<WalKey, Arc<Wal>>>>,
+    /// The legacy drain-only WAL [`Self::adopt_root_segments`] found, if any.
+    ///
+    /// This used to ride `wals` under a sentinel key
+    /// ([`Self::LEGACY_ROOT_KEY`]), indistinguishable from a real tenant
+    /// entry to any consumer except by comparing against that constant, and
+    /// silently dropped with no re-adoption path by [`Self::clear_cache`].
+    /// Modeling it as its own field makes the special case visible in the
+    /// type and lets `clear_cache` leave it alone (#1308).
+    legacy_wal: Arc<Mutex<Option<Arc<Wal>>>>,
     /// Per-key initialization guards to prevent duplicate WAL creation
     init_guards: Arc<Mutex<HashMap<WalKey, Arc<Mutex<()>>>>>,
     /// When [`Self::cleanup_all_if_due`] last let a sweep through; `None`
@@ -73,6 +82,7 @@ impl WalManager {
     ) -> Self {
         Self {
             wals: Arc::new(Mutex::new(HashMap::new())),
+            legacy_wal: Arc::new(Mutex::new(None)),
             init_guards: Arc::new(Mutex::new(HashMap::new())),
             last_cleanup: Arc::new(Mutex::new(None)),
             idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
@@ -106,23 +116,24 @@ impl WalManager {
         self
     }
 
-    /// Cache key under which [`Self::adopt_root_segments`] registers a
-    /// legacy single-directory WAL. It uses a signal name no `get_wal`
-    /// caller can produce, so it never collides with a real
-    /// tenant/dataset/signal WAL.
-    pub const LEGACY_ROOT_KEY: (&'static str, &'static str, &'static str) =
+    /// The key under which [`Self::all_wals`] reports the legacy
+    /// drain-only WAL, matching what a pre-#932 writer's entries carry no
+    /// routing metadata for. It uses a signal name no `get_wal` caller can
+    /// produce, so it never collides with a real tenant/dataset/signal WAL.
+    const LEGACY_ROOT_KEY: (&'static str, &'static str, &'static str) =
         ("_legacy", "_legacy", "_root");
 
     /// Register an already-open WAL under `key`, returning the instance it
-    /// displaced, if any. Used to adopt WALs the manager did not create
-    /// itself (see [`Self::adopt_root_segments`]) and by tests that build a
-    /// WAL by hand.
+    /// displaced, if any. Used by tests that build a WAL by hand and feed it
+    /// to a manager, including the writer's (a different crate, hence the
+    /// feature gate rather than `cfg(test)`).
     ///
     /// The displaced instance is handed back deliberately: two live `Wal`
     /// values over the same directory keep independent write handles and
     /// offset state, which is the desync class that #883 fixed. A caller that
     /// drops the returned `Arc` without any other clone alive is safe; one
     /// that keeps writing through it is not.
+    #[cfg(any(test, feature = "testing"))]
     #[must_use = "the displaced WAL must not keep writing to the same directory"]
     pub async fn register(&self, key: WalKey, wal: Arc<Wal>) -> Option<Arc<Wal>> {
         let displaced = self.wals.lock().await.insert(key, wal);
@@ -157,13 +168,14 @@ impl WalManager {
     /// Adopt segments left directly in the base directory by a pre-#932
     /// writer, which kept one global WAL there instead of a per-tenant tree.
     ///
-    /// The segments are opened as a single drain-only WAL registered under
-    /// [`Self::LEGACY_ROOT_KEY`] so a consumer iterating [`Self::all_wals`]
-    /// still processes their pending entries: an entry that carries routing
-    /// metadata is routed by it, and one that does not falls back to the
-    /// WAL's configured tenant/dataset, which is why the config below stays
-    /// `default`/`default` even though the cache key does not. New writes
-    /// never go there: `get_wal` always resolves to the per-tenant tree.
+    /// The segments are opened as a single drain-only WAL held in
+    /// [`Self::legacy_wal`] and reported under [`Self::LEGACY_ROOT_KEY`] by
+    /// [`Self::all_wals`], so a consumer iterating it still processes their
+    /// pending entries: an entry that carries routing metadata is routed by
+    /// it, and one that does not falls back to the WAL's configured
+    /// tenant/dataset, which is why the config below stays `default`/`default`
+    /// even though the reported key does not. New writes never go there:
+    /// `get_wal` always resolves to the per-tenant tree.
     ///
     /// Once every adopted entry is drained the segments are reclaimed by the
     /// regular [`Self::cleanup_all_if_due`] sweep, so the adoption (and its
@@ -186,9 +198,7 @@ impl WalManager {
             return Ok(false);
         }
 
-        let (tenant, dataset, signal) = Self::LEGACY_ROOT_KEY;
-        let key: WalKey = (tenant.to_string(), dataset.to_string(), signal.to_string());
-        if self.wals.lock().await.contains_key(&key) {
+        if self.legacy_wal.lock().await.is_some() {
             return Ok(true);
         }
 
@@ -197,18 +207,20 @@ impl WalManager {
             "Adopting legacy single-directory WAL segments for draining; new writes use \
              the per-tenant/dataset/signal tree"
         );
-        // The cache KEY is `_legacy/_legacy/_root` so it can never collide
-        // with a real WAL, but the CONFIG keeps `default`/`default`: an entry
-        // that carries no metadata is stamped with, and routed by, its WAL's
-        // configured tenant/dataset (`WalEntry::tenant_id`), and a pre-#932
-        // writer wrote exactly such entries into a `default`/`default` WAL.
-        // Naming the config `_legacy` would silently re-namespace that
-        // upgrade-time data into an Iceberg namespace nobody asked for.
+        // The reported KEY is `_legacy/_legacy/_root` so it can never
+        // collide with a real WAL, but the CONFIG keeps `default`/`default`:
+        // an entry that carries no metadata is stamped with, and routed by,
+        // its WAL's configured tenant/dataset (`WalEntry::tenant_id`), and a
+        // pre-#932 writer wrote exactly such entries into a
+        // `default`/`default` WAL. Naming the config `_legacy` would
+        // silently re-namespace that upgrade-time data into an Iceberg
+        // namespace nobody asked for.
         let mut config = self.traces_config.clone();
         config.tenant_id = "default".to_string();
         config.dataset_id = "default".to_string();
         let wal = Wal::new(config).await?;
-        let _ = self.register(key, Arc::new(wal)).await;
+        *self.legacy_wal.lock().await = Some(Arc::new(wal));
+        Self::record_instance_opened();
         Ok(true)
     }
 
@@ -689,24 +701,38 @@ impl WalManager {
     /// a large tenant count cannot swamp the runtime's blocking pool.
     const CLEANUP_ALL_CONCURRENCY: usize = 32;
 
-    /// Get the number of cached WAL instances
+    /// Get the number of cached WAL instances, including the adopted legacy
+    /// WAL if any.
     ///
     /// Useful for monitoring and debugging.
     pub async fn wal_count(&self) -> usize {
-        self.wals.lock().await.len()
+        let ordinary = self.wals.lock().await.len();
+        let legacy = usize::from(self.legacy_wal.lock().await.is_some());
+        ordinary + legacy
     }
 
-    /// Snapshot of all cached WAL instances with their keys
+    /// Snapshot of all cached WAL instances with their keys, including the
+    /// adopted legacy WAL (see [`Self::adopt_root_segments`]) under
+    /// [`Self::LEGACY_ROOT_KEY`] if one was found.
     ///
     /// Used by the WAL retry consumer to scan every tenant/dataset/signal
     /// WAL for unprocessed entries.
     pub async fn all_wals(&self) -> Vec<(WalKey, Arc<Wal>)> {
-        self.wals
+        let mut all: Vec<(WalKey, Arc<Wal>)> = self
+            .wals
             .lock()
             .await
             .iter()
             .map(|(key, wal)| (key.clone(), wal.clone()))
-            .collect()
+            .collect();
+        if let Some(wal) = self.legacy_wal.lock().await.clone() {
+            let (tenant, dataset, signal) = Self::LEGACY_ROOT_KEY;
+            all.push((
+                (tenant.to_string(), dataset.to_string(), signal.to_string()),
+                wal,
+            ));
+        }
+        all
     }
 
     /// Discover WAL directories left on disk by previous runs and open them
@@ -819,13 +845,18 @@ impl WalManager {
         Ok(found)
     }
 
-    /// Close and drop all cached WAL instances. They are recreated on next
-    /// access; the files on disk are untouched.
+    /// Close and drop all cached per-tenant WAL instances. They are
+    /// recreated on next access; the files on disk are untouched.
     ///
     /// Each instance is closed rather than merely dropped: its flush task
     /// holds clones of the WAL's internals, so dropping the `Arc` alone leaves
     /// the timer running and the segments' descriptors open — the leak #1305
     /// is about.
+    ///
+    /// The adopted legacy WAL (see [`Self::adopt_root_segments`]) is left in
+    /// place: it carries no tenant/dataset routing metadata, so once dropped
+    /// it could only be found again by a process restart. `wal_count` and
+    /// `all_wals` still report it after this call.
     pub async fn clear_cache(&self) {
         let drained: Vec<(WalKey, Arc<Wal>)> = self.wals.lock().await.drain().collect();
         for (key, wal) in &drained {
@@ -1085,6 +1116,101 @@ mod tests {
         let manager = WalManager::uniform(create_test_config(temp_dir.path()));
         assert!(!manager.adopt_root_segments().await.unwrap());
         assert_eq!(manager.wal_count().await, 0);
+    }
+
+    /// Sets up a base dir with one legacy segment and a manager that has
+    /// adopted it plus two ordinary per-tenant WALs.
+    async fn manager_with_legacy_and_ordinary_wals(base_path: &Path) -> WalManager {
+        let legacy = Wal::new(create_test_config(base_path)).await.unwrap();
+        legacy
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"legacy".to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        legacy.flush().await.unwrap();
+        drop(legacy);
+
+        let manager = WalManager::uniform(create_test_config(base_path));
+        assert!(manager.adopt_root_segments().await.unwrap());
+        manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        manager.get_wal("acme", "production", "logs").await.unwrap();
+        manager
+    }
+
+    #[tokio::test]
+    async fn clear_cache_keeps_the_legacy_wal_but_drops_ordinary_ones() {
+        // #1308: the legacy WAL used to ride the same map as ordinary
+        // per-tenant WALs, so `clear_cache` dropped it with no re-adoption
+        // path short of a process restart. It must now survive.
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+        let manager = manager_with_legacy_and_ordinary_wals(&base_path).await;
+        assert_eq!(manager.wal_count().await, 3, "legacy + 2 ordinary WALs");
+
+        let (_, legacy_before) = manager
+            .all_wals()
+            .await
+            .into_iter()
+            .find(|(key, _)| {
+                (key.0.as_str(), key.1.as_str(), key.2.as_str()) == WalManager::LEGACY_ROOT_KEY
+            })
+            .expect("legacy WAL present before clear_cache");
+
+        manager.clear_cache().await;
+
+        assert_eq!(
+            manager.wals.lock().await.len(),
+            0,
+            "ordinary per-tenant WALs must be cleared"
+        );
+
+        let all = manager.all_wals().await;
+        assert_eq!(all.len(), 1, "only the legacy WAL should remain");
+        let (key, legacy_after) = &all[0];
+        assert_eq!(
+            (key.0.as_str(), key.1.as_str(), key.2.as_str()),
+            WalManager::LEGACY_ROOT_KEY
+        );
+        assert!(
+            Arc::ptr_eq(&legacy_before, legacy_after),
+            "clear_cache must not close and silently reopen the legacy WAL"
+        );
+
+        // Usable: an operation against it does not hit a "closed" error.
+        legacy_after.get_unprocessed_entries().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn all_wals_yields_legacy_and_ordinary_wals_together() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+        let manager = manager_with_legacy_and_ordinary_wals(&base_path).await;
+
+        let keys: std::collections::HashSet<WalKey> = manager
+            .all_wals()
+            .await
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(keys.len(), 3, "legacy plus two ordinary WALs");
+        let (tenant, dataset, signal) = WalManager::LEGACY_ROOT_KEY;
+        assert!(keys.contains(&(tenant.to_string(), dataset.to_string(), signal.to_string())));
+        assert!(keys.contains(&(
+            "acme".to_string(),
+            "production".to_string(),
+            "traces".to_string()
+        )));
+        assert!(keys.contains(&(
+            "acme".to_string(),
+            "production".to_string(),
+            "logs".to_string()
+        )));
     }
 
     #[tokio::test]
