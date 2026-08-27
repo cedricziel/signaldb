@@ -11,6 +11,8 @@ sources:
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/session.rs
   - src/router/src/endpoints/oauth.rs
+  - src/router/src/endpoints/oidc.rs
+  - src/router/src/oidc.rs
   - src/router/src/read_scope.rs
   - src/signaldb-cli/src/commands/tenant_self.rs
   - src/mcp-server/src/server.rs
@@ -67,6 +69,43 @@ from `X-Tenant-ID`, which is ignored for this credential (an OAuth session
 cannot be pointed at a tenant it wasn't granted). Tokens are audience-bound to
 the configured `mcp.oauth.resource_url` (a token for another resource is
 rejected). Tenant is fixed at consent time; one connector per tenant.
+
+### OIDC / SSO login (human sessions, change: oidc-login)
+
+An **alternative credential on the same `users` row**, not a new session
+mechanism. When `[auth.oidc]` is configured, the router runs an OIDC
+relying-party flow (`GET /ui/session/oidc/{start,callback}`,
+`src/router/src/endpoints/oidc.rs` + `src/router/src/oidc.rs`): a successful
+callback resolves or creates a user and issues the **same** `signaldb_session`
+cookie `POST /ui/session` does — so everything downstream (memberships, MCP
+OAuth consent riding the session) is unchanged. Identity resolution order:
+`(oidc_issuer, oidc_subject)` → verified-email link (`email_verified: true`
+required) → JIT create (allowlist permitting). JIT users have
+`password_hash = NULL`; the password endpoint short-circuits them with the
+generic 401 without calling the verifier. `disable_password_login` (honoured
+only with a configured provider) refuses the password door for every user; the
+`GET /ui/session/config` probe reports `password_enabled` + nullable
+`oidc: {name}` so the UI renders the right doors. Full behaviour:
+`docs/operations/oidc-sso.md`, `docs/users/authentication.md`.
+
+**Source-keyed memberships (`granted_by`).** `tenant_memberships` is keyed
+`(user_id, tenant_id, granted_by)` where `granted_by ∈ {'local',
+'oidc_mapping'}` (`GrantSource` in `src/common/src/catalog.rs`). Admin/CLI/MCP
+operations (`upsert_tenant_membership`/`remove_tenant_membership`) are pinned to
+`local` rows; the login-time `sync_oidc_memberships(user_id, desired)` only
+touches `oidc_mapping` rows. A local and a mapped row for the same user/tenant
+coexist; `get_tenant_membership` returns the **higher** role and reports its
+source; list operations expose `granted_by` so surfaces can show that a
+membership is mapping-managed. A lost group removes only the mapped row;
+mapping never writes `is_instance_admin`. (Before rolling back to a binary that
+keys on `(user_id, tenant_id)`, delete `granted_by = 'oidc_mapping'` rows —
+`docs/operations/oidc-sso.md#rollback`.)
+
+**Break-glass.** SSO and `disable_password_login` never touch the machine and
+bootstrap planes: API keys, `admin_api_key`, and the CLI/config
+`user create --instance-admin` bootstrap authenticate regardless of IdP
+availability. An unreachable issuer degrades SSO (background retry) rather than
+stopping the instance, so break-glass holds across restarts too.
 
 **Read scopes.** OAuth scopes populate `TenantContext.api_key_scopes` and are
 enforced like API-key write scopes. `can_read(<signal>)` requires the matching

@@ -8,6 +8,8 @@ sources:
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/session.rs
   - src/router/src/endpoints/management.rs
+  - src/router/src/endpoints/oidc.rs
+  - src/router/src/oidc.rs
   - src/common/src/auth/session.rs
   - src/common/src/auth/mod.rs
   - src/common/src/bootstrap.rs
@@ -68,6 +70,57 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
 - `GET /api/v1/whoami` returns the human identity, all memberships, and the
   selected tenant's datasets. API-key requests remain supported and omit
   the human identity.
+
+## Signing in with SSO (OIDC)
+
+When your operator has configured an OIDC identity provider (Authentik,
+Keycloak, and the like), the login page shows a **Sign in with &lt;provider&gt;**
+button next to (or instead of) the email/password form. Clicking it signs you
+in with your organisation's identity instead of a SignalDB-specific password.
+
+**What happens when you click it.** SignalDB uses the standard OIDC
+authorization-code flow with PKCE:
+
+1. The button sends you to your identity provider, where you log in (and
+   approve access the first time).
+2. The provider sends you back to SignalDB, which verifies the response and
+   issues the **same** `signaldb_session` cookie a password login would — same
+   12-hour lifetime, same tenant/dataset selection, same `whoami`. Nothing
+   about the session downstream is SSO-specific.
+
+If anything about the return trip fails to verify, you land back on the login
+page with a generic error and no session — SignalDB never says which check
+failed.
+
+**First login creates your account (JIT provisioning).** The first time you
+sign in via SSO, SignalDB provisions a user for you from the identity your
+provider asserts (email and display name). That account has **no password** —
+it exists only as an SSO identity. Your operator may restrict which email
+domains are allowed to self-provision this way.
+
+**Linking to an existing account.** If you already have a SignalDB account with
+a password and your provider asserts the **same, verified** email, your first
+SSO login links the two: afterward either door (password or SSO) reaches the
+same account and the same memberships. SignalDB only links on a
+provider-asserted `email_verified: true`; an unverified email is treated as no
+match, so it can never take over an existing account.
+
+**SSO-only accounts and the password form.** An account created via SSO has no
+password, so the email/password form will not log it in — submitting any
+password returns the same generic "invalid email or password" failure. Ask an
+admin to set a password if you need password login for that account. Your
+operator can also **turn the password form off entirely** once SSO is
+configured, in which case the login page offers only the SSO button.
+
+**Break-glass access still works.** Turning off password login never disables
+the machine and bootstrap credentials. API keys, the `admin_api_key`, and the
+operator's [CLI/config bootstrap path](#getting-an-api-key) for minting an
+instance admin all keep working — even during an identity-provider outage — so
+operators are never locked out.
+
+Operators: see [Setting up SSO / OIDC login](../operations/oidc-sso.md) for
+provider configuration, the reverse-proxy redirect-URL caveat, email-domain
+allowlists, and group-to-role mapping.
 
 ## Error codes
 

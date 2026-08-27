@@ -149,6 +149,52 @@ max_ingest_requests_per_sec = 500
 max_query_requests_per_sec = 500
 ```
 
+#### SSO / OIDC login (`[auth.oidc]`, change: oidc-login)
+
+Optional single-provider OIDC relying-party config. Absent by default (no SSO
+surface, password login only). Endpoints are resolved from the issuer's
+`.well-known/openid-configuration`; never configured by hand. Full guide:
+`docs/operations/oidc-sso.md`.
+
+```toml
+[auth.oidc]
+issuer_url = "https://idp.example.com/application/o/signaldb/"  # required; discovery base
+client_id = "signaldb"                                          # required
+client_secret = "sk-oidc-secret"                                # required; confidential client
+redirect_url = "https://signaldb.example.com/ui/session/oidc/callback" # optional; see caveat
+display_name = "Example SSO"          # optional; login-button label, default = issuer host
+allowed_email_domains = ["example.com"] # optional; JIT-creation allowlist (NOT linking)
+group_claim = "groups"                # optional; claim carrying IdP groups (required for mappings)
+disable_password_login = false        # optional; only honoured with a valid provider
+
+[[auth.oidc.group_mappings]]          # optional, repeatable
+group = "observability-admins"
+tenant = "acme"
+role = "admin"                        # admin | member | viewer
+```
+
+Env: `SIGNALDB__AUTH__OIDC__*` (double-underscore), e.g.
+`SIGNALDB__AUTH__OIDC__ISSUER_URL`, `SIGNALDB__AUTH__OIDC__CLIENT_SECRET`.
+
+Field/behaviour notes:
+
+- `redirect_url` overrides the callback URL SignalDB otherwise derives from the
+  request origin (`X-Forwarded-Host`/`-Proto`, else `Host`). That derivation
+  trusts a client-controlled header — set `redirect_url` explicitly for anything
+  internet-facing.
+- `allowed_email_domains` gates **JIT creation only**; a pre-existing user
+  outside the list can still link via verified email.
+- `group_mappings` need `group_claim`. Mapped memberships (`granted_by =
+  'oidc_mapping'`) coexist with locally-granted ones (effective role = higher);
+  a lost group revokes only the mapped row; mapping never grants instance-admin;
+  a rule naming a nonexistent tenant is skipped with a warning.
+- Startup: invalid `[auth.oidc]` (bad `issuer_url`, missing `client_id`/
+  `client_secret`, `disable_password_login` without a provider, `group_mappings`
+  without `group_claim`) fails hard naming the setting. An unreachable/invalid
+  issuer does **not** stop startup — SSO shows unavailable, the probe reports
+  `oidc: null`, the start endpoint 503s, and a background retry (backoff cap 5m)
+  recovers without a restart.
+
 ### Compactor
 
 ```toml

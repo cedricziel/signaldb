@@ -28,6 +28,52 @@ dsn = "sqlite://.data/signaldb.db"
 # All SignalDB services must share the same value.
 # internal_service_key = "sk-internal-your-secret-key-here"
 
+# --- SSO / OIDC login (optional) --------------------------------------------
+# Let humans sign in to the Explore UI with an external OIDC identity provider
+# (Authentik, Keycloak, Dex, Pocket ID, a hosted IdP) instead of a SignalDB
+# password. Absent by default: no SSO surface is exposed and password login is
+# the only door. Endpoints are resolved from the issuer's
+# .well-known/openid-configuration; you never configure them by hand.
+# Full setup guide: docs/operations/oidc-sso.md
+# Env overrides use the double-underscore form, e.g.
+# SIGNALDB__AUTH__OIDC__CLIENT_SECRET (keep the secret out of this file in prod).
+# [auth.oidc]
+# issuer_url = "https://idp.example.com/application/o/signaldb/"  # required; discovery base
+# client_id = "signaldb"                                          # required; OAuth client ID
+# client_secret = "sk-oidc-client-secret"                         # required; confidential client secret
+#
+# The callback is https://<host>/ui/session/oidc/callback. SignalDB derives it
+# from the request origin (X-Forwarded-Host/-Proto, else Host), which trusts a
+# client-controlled header — set redirect_url explicitly for anything
+# internet-facing so the callback is pinned and not steerable by a spoofed Host.
+# redirect_url = "https://signaldb.example.com/ui/session/oidc/callback"
+#
+# display_name = "Example SSO"        # label on the login button; defaults to the issuer host
+#
+# Just-in-time provisioning allowlist: a verified email whose domain is not
+# listed is refused rather than creating a user. NOTE: this gates NEW-account
+# creation only — an already-existing user whose email is outside the list can
+# still link and sign in via verified email. Unset = any verified identity may
+# self-provision.
+# allowed_email_domains = ["example.com"]
+#
+# Map IdP groups to tenant memberships, re-applied at every login. group_claim
+# names the ID-token/userinfo claim carrying the user's groups and is REQUIRED
+# for group_mappings to have any effect. Mapped memberships coexist with
+# locally-granted ones (effective role = higher); a lost group revokes only the
+# mapped row; mapping never grants instance-admin; a rule naming a nonexistent
+# tenant is skipped with a warning rather than blocking login.
+# group_claim = "groups"
+# [[auth.oidc.group_mappings]]
+# group = "observability-admins"
+# tenant = "acme"
+# role = "admin"                      # one of: admin | member | viewer
+#
+# Make SSO the only door. Only honoured when a provider is configured above
+# (setting it without one is a startup error, so you can't lock everyone out by
+# typo). Does NOT disable API keys, admin_api_key, or the CLI bootstrap path.
+# disable_password_login = false
+
 # Default per-tenant rate limits and quotas, applied to every tenant without
 # an explicit [auth.tenants.limits] override. Unset fields mean unlimited.
 # Exceeding a rate limit returns HTTP 429 / gRPC RESOURCE_EXHAUSTED
