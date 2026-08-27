@@ -127,10 +127,10 @@ UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date
 groups, sharing one `write_or_check` contract — generate to a scratch
 location, then either write the file or fail with a diff:
 
-| Artifact | From |
-| --- | --- |
-| Rust SDK (`signaldb-sdk`) | `api/signaldb-api.json` |
-| TypeScript client (`src/ui/src/api/gen`) | `api/signaldb-api.json` |
+| Artifact                                                           | From                                                                    |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Rust SDK (`signaldb-sdk`)                                          | `api/signaldb-api.json`                                                 |
+| TypeScript client (`src/ui/src/api/gen`)                           | `api/signaldb-api.json`                                                 |
 | `tempo-api` protobuf bindings (`src/tempo-api/src/generated/*.rs`) | `src/tempo-api/proto/tempo.proto` + the `opentelemetry-proto` submodule |
 
 The protobuf half lives here rather than in a build script because a build
@@ -200,7 +200,12 @@ router root as their base URL.
    handler; register new paths/schemas in `router::openapi::ApiDoc`.
 2. `UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date` to refresh
    `api/signaldb-api.json`.
-3. `cargo xtask generate` to regenerate the Rust and TypeScript clients.
+3. `cargo xtask generate` to regenerate the Rust and TypeScript clients. The
+   TypeScript half shells out to `@hey-api/openapi-ts` through pnpm, so a
+   fresh worktree needs `pnpm install --frozen-lockfile` run once at the
+   repository root before this step works (otherwise `run_openapi_ts` fails
+   fast with a message naming the missing `node_modules` directory and the
+   fix, rather than pnpm's opaque `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`).
 4. Consume the endpoint through the generated clients — the UI must not issue
    raw HTTP against the API (see the DoD in `openspec/config.yaml`).
 5. Commit the code, the spec, and the regenerated clients together.

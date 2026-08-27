@@ -552,10 +552,50 @@ fn generate_ts_client(root: &Path, check_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// Checks that `pnpm install` has populated the `node_modules` directories
+/// `pnpm --filter signaldb-ui exec openapi-ts` relies on to find the
+/// `openapi-ts` binary: the workspace-root `node_modules` (populated for
+/// every package) and `signaldb-ui`'s own `node_modules` (where its
+/// `openapi-ts` devDependency's `.bin` entry actually lives — verified by
+/// installing into a scratch worktree and checking `.bin/openapi-ts` only
+/// appears there, not at the workspace root). A fresh worktree has neither,
+/// and running `openapi-ts` anyway produces pnpm's opaque
+/// `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`, so this fails fast with a plain,
+/// actionable message instead. Takes the two directories as explicit paths
+/// so it is testable against fixture paths.
+fn check_ts_deps_installed(root_node_modules: &Path, ui_node_modules: &Path) -> Result<()> {
+    if root_node_modules.is_dir() && ui_node_modules.is_dir() {
+        return Ok(());
+    }
+    let missing = if !root_node_modules.is_dir() {
+        root_node_modules
+    } else {
+        ui_node_modules
+    };
+    anyhow::bail!(
+        "the TypeScript client generator (`openapi-ts`) isn't installed: {} is missing.\n\
+         Run `pnpm install --frozen-lockfile` at the repository root, then retry `cargo xtask generate`.",
+        missing.display()
+    );
+}
+
 /// Invoke `@hey-api/openapi-ts` via pnpm in the signaldb-ui package. When
 /// `output` is set it overrides the config's output directory (used for the
 /// check-mode temp comparison).
 fn run_openapi_ts(root: &Path, output: Option<&Path>) -> Result<()> {
+    if let Err(err) = check_ts_deps_installed(
+        &root.join("node_modules"),
+        &root.join("src/ui/node_modules"),
+    ) {
+        // Print a plain, actionable message and exit directly rather than
+        // returning the error: bubbling it through `main`'s `Result` return
+        // would print a Rust backtrace (RUST_BACKTRACE=1 by default via
+        // `.cargo/config.toml`) for what is a user-fixable setup problem,
+        // not an internal error.
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }
+
     let mut cmd = std::process::Command::new("pnpm");
     cmd.current_dir(root)
         .args(["--filter", "signaldb-ui", "exec", "openapi-ts"]);
@@ -661,4 +701,32 @@ fn write_or_check(path: &Path, content: &str, check_only: bool) -> Result<()> {
         eprintln!("  GEN {rel}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn existing_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
+    }
+
+    fn missing_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("does-not-exist-node-modules-fixture")
+    }
+
+    #[test]
+    fn check_ts_deps_installed_ok_when_both_present() {
+        let present = existing_dir();
+        assert!(check_ts_deps_installed(&present, &present).is_ok());
+    }
+
+    #[test]
+    fn check_ts_deps_installed_errors_when_root_missing() {
+        let err = check_ts_deps_installed(&missing_dir(), &existing_dir()).unwrap_err();
+        assert!(
+            err.to_string().contains("pnpm install --frozen-lockfile"),
+            "error should name the fix: {err}"
+        );
+    }
 }
