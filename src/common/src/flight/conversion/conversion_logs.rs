@@ -166,6 +166,13 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> Result<RecordBa
 /// (`ir_planner`'s `body` projection/`ir_extract`, and the Loki line
 /// serializer) call this one function, so the two surfaces cannot drift.
 pub fn decode_log_body(raw: &str) -> std::borrow::Cow<'_, str> {
+    // Only a JSON string scalar can start with `"` — skip the parse entirely
+    // for every other stored form (objects, arrays, numbers, `null`, and any
+    // non-JSON legacy value), which is the common case for structured bodies
+    // on this hot path (every row of every logs query).
+    if !raw.starts_with('"') {
+        return std::borrow::Cow::Borrowed(raw);
+    }
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(serde_json::Value::String(s)) => std::borrow::Cow::Owned(s),
         _ => std::borrow::Cow::Borrowed(raw),
@@ -457,6 +464,18 @@ mod tests {
             decode_log_body("plain unquoted body"),
             "plain unquoted body"
         );
+    }
+
+    #[test]
+    fn decode_log_body_short_circuits_before_parsing_a_non_quoted_value() {
+        // Only a JSON string scalar can start with `"`; anything else must
+        // never even reach `serde_json::from_str` (the cheap-guard fast
+        // path). Pinned separately from the "leaves unchanged" tests above
+        // because it asserts the *mechanism*, not just the outcome: a
+        // pathological non-JSON value that would be expensive or ambiguous
+        // to parse still returns instantly, unparsed.
+        assert_eq!(decode_log_body("not json at all"), "not json at all");
+        assert_eq!(decode_log_body("{not valid json"), "{not valid json");
     }
 
     #[test]
