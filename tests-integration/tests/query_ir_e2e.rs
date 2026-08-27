@@ -612,7 +612,10 @@ async fn logs_ir_query_body_field_decodes_string_bodies_and_keeps_structured_bod
         )
         .await
         .expect("ingest kvlist-body log");
-    let quoted_body = r#""already quoted" said the log"#;
+    // A message whose text is itself a self-contained JSON string literal —
+    // the one value class that distinguishes "decoded once" from "decoded
+    // twice" (see the matching comment in logql_queries.rs for why).
+    let quoted_body = r#""already quoted""#;
     services
         .log_handler
         .handle_grpc_otlp_logs(

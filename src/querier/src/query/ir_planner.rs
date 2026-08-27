@@ -5566,9 +5566,13 @@ mod tests {
     /// A logs table whose `body` holds JSON-string-*encoded* documents — the
     /// form ingest actually writes (`serde_json::to_string` over the log
     /// text, issue #1410), unlike `logs_json_ctx`'s bare JSON object text.
-    /// One row's body text is itself a string that begins and ends with a
-    /// quote (`"quoted already" said the log`), the value class where an
-    /// accidental *second* decode would corrupt rather than merely no-op.
+    /// One row's body text is itself a self-contained JSON string literal
+    /// (`"quoted already"` — starts *and* ends with a quote, nothing
+    /// trailing) — the one shape that actually distinguishes "decoded once"
+    /// from "decoded twice": a body with trailing text after an embedded
+    /// quote (e.g. `"foo" bar`) fails to re-parse as JSON on a second decode
+    /// and would pass either way, proving nothing (review finding on
+    /// #1432). This one's second decode would visibly strip the quotes.
     fn logs_json_encoded_ctx() -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
@@ -5589,7 +5593,7 @@ mod tests {
                         r#"{"level":"error","code":500,"__ir_decoded_body":"nope"}"#,
                     )),
                     Some(encode("level=info dur=5ms")),
-                    Some(encode(r#""quoted already" said the log"#)),
+                    Some(encode(r#""quoted already""#)),
                 ])),
                 Arc::new(StringArray::from(vec!["api", "api", "web"])),
             ],
@@ -5662,9 +5666,10 @@ mod tests {
         assert_eq!(col.value(0), "5ms");
     }
 
-    // Issue #1410: the body whose actual text begins and ends with a quote
-    // must decode exactly once. A second (accidental) decode pass would strip
-    // that embedded quoting and lose data.
+    // Issue #1410: a body whose text is itself a self-contained JSON string
+    // literal must decode exactly once. A second (accidental) decode pass
+    // would strip that quoting and lose data — this fixture shape is what
+    // makes the test able to tell the difference (see `logs_json_encoded_ctx`).
     #[tokio::test]
     async fn body_field_decodes_exactly_once_for_a_message_that_is_itself_quoted() {
         let svc = IrService::new(logs_json_encoded_ctx());
@@ -5689,7 +5694,7 @@ mod tests {
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
-        assert_eq!(col.value(0), r#""quoted already" said the log"#);
+        assert_eq!(col.value(0), r#""quoted already""#);
     }
 
     // Issue #1410 review fix: `extract.as_fields` is query-document input and

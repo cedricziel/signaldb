@@ -549,12 +549,17 @@ async fn logql_query_range_decodes_string_bodies_and_keeps_structured_bodies() {
         )
         .await
         .expect("ingest kvlist-body log");
-    // A message whose own text begins and ends with a quote — the value
-    // class where decoding twice (once in the querier's projection, once
-    // more in the Loki serializer) would silently strip that quoting
-    // instead of no-op'ing. Regression case for the double-decode bug
-    // found in review on #1432.
-    let quoted_body = r#""already quoted" said the log"#;
+    // A message whose text is itself a self-contained JSON string literal
+    // (starts and ends with a quote, nothing after the closing quote) — the
+    // one value class that actually distinguishes "decoded once" from
+    // "decoded twice": a body with trailing text after an embedded quote
+    // (e.g. `"foo" bar`) fails to re-parse as JSON on a second decode and
+    // would pass this assertion either way, silently proving nothing
+    // (review finding on #1432). Decoded once: `"already quoted"`
+    // (unchanged, correct). Decoded twice: the second pass would see a
+    // complete JSON string literal and strip the quotes to `already
+    // quoted`, which is exactly the data loss this pins against.
+    let quoted_body = r#""already quoted""#;
     services
         .log_handler
         .handle_grpc_otlp_logs(
