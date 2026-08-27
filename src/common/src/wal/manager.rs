@@ -611,8 +611,8 @@ impl WalManager {
     ///   [`Self::LEGACY_ROOT_KEY`]'s signal as unknown before it ever touches
     ///   a key, so nothing can race it there. The only other writer of
     ///   `legacy_wal` is [`Self::adopt_root_segments`], and the `legacy_wal`
-    ///   mutex itself — held across the take, released before the awaits —
-    ///   is what serializes against it.
+    ///   mutex itself — held across the whole check-backlog-close sequence,
+    ///   including the awaits — is what serializes against it.
     pub async fn evict_idle(&self, idle_after: std::time::Duration) -> usize {
         // Scan under the map lock and clone only the keys that are actually
         // idle — usually none. Cloning every key on every pass would allocate
@@ -689,20 +689,35 @@ impl WalManager {
 
         // The legacy WAL is a candidate too: it is drained by the same
         // consumers that iterate `all_wals`, and once drained it goes idle
-        // immediately, since nothing ever writes to it again. Take it out of
-        // the option before the async backlog check so a concurrent
-        // `evict_idle` cannot also pick it up; put it back if it turns out
-        // not to be eligible.
-        let took_legacy = {
-            let mut legacy = self.legacy_wal.lock().await;
-            match legacy.as_ref() {
-                Some(wal) if wal.idle_for() >= idle_after => legacy.take(),
-                _ => None,
-            }
-        };
-        if let Some(wal) = took_legacy {
+        // immediately, since nothing ever writes to it again.
+        //
+        // The `legacy_wal` guard is held for the whole check-backlog-close
+        // sequence, including both awaits. `Wal::get_unprocessed_entries`
+        // and `Wal::close` only touch the WAL's own internals (segments,
+        // flush handle) and never call back into `WalManager` — grep finds
+        // `WalManager` in `wal/mod.rs` only in doc comments — so this nests
+        // no other lock and cannot deadlock against `all_wals`, `wal_count`,
+        // `flush_all`, `clear_cache`, or `adopt_root_segments`.
+        //
+        // An earlier version dropped the guard between the eligibility
+        // check and the close so those two awaits ran unguarded. But
+        // `legacy_wal` was then briefly `None` mid-eviction, and a
+        // concurrent `adopt_root_segments` reads exactly that field to
+        // decide whether to open a fresh `Wal` — it would see nothing
+        // adopted and open a *second* live `Wal` over the same directory,
+        // two independent instances with independent segment state. That is
+        // worse than blocking `all_wals`/`wal_count` for the duration of
+        // one dormant, already-drained WAL's eviction. Do not narrow this
+        // lock scope again.
+        let mut legacy = self.legacy_wal.lock().await;
+        let eligible_legacy = legacy
+            .as_ref()
+            .filter(|wal| wal.idle_for() >= idle_after)
+            .cloned();
+        if let Some(wal) = eligible_legacy {
             match wal.get_unprocessed_entries().await {
                 Ok(entries) if entries.is_empty() => {
+                    *legacy = None;
                     if let Err(e) = wal.close().await {
                         tracing::warn!(
                             error = %e,
@@ -713,18 +728,16 @@ impl WalManager {
                     Self::record_instances_closed(1);
                     evicted += 1;
                 }
-                Ok(_) => {
-                    *self.legacy_wal.lock().await = Some(wal);
-                }
+                Ok(_) => {}
                 Err(e) => {
                     tracing::debug!(
                         error = %e,
                         "Could not check the legacy WAL's backlog before eviction; keeping it"
                     );
-                    *self.legacy_wal.lock().await = Some(wal);
                 }
             }
         }
+        drop(legacy);
 
         if evicted > 0 {
             tracing::info!(evicted, "Evicted idle WALs");
