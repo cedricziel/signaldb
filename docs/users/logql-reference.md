@@ -89,8 +89,11 @@ back to the JSON substring match for that label. Because the promoted value
 is also kept in the attribute JSON, label discovery (`/labels`,
 `/label/{name}/values`) is unchanged.
 
-Series identity (in `/series` results and un-grouped metric queries) is
-the `service_name` and `level` labels.
+Series identity (in `/series` results and bare range aggregations such as
+`count_over_time(...)` with no vector wrapper) is the `service_name` and
+`level` labels. A vector aggregation with no `by` clause —
+`sum(count_over_time(...))` — collapses every matching series into one, as in
+Loki; add `by (...)` to keep a grouping.
 
 ### Structured metadata
 
