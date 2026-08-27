@@ -69,6 +69,24 @@ pub async fn create_session<S: RouterState>(
     State(state): State<S>,
     Json(body): Json<CreateSessionRequest>,
 ) -> Response {
+    // The password door can be switched off entirely when `[auth.oidc]`
+    // configures it (design decision 7, task 3.7): refuse every user with a
+    // reason distinct from "wrong credentials" before touching the catalog.
+    // API-key auth, `admin_api_key`, and the CLI/config bootstrap path don't
+    // go through this endpoint at all, so they're unaffected by construction.
+    if state
+        .config()
+        .auth
+        .oidc
+        .as_ref()
+        .is_some_and(|oidc| oidc.disable_password_login)
+    {
+        return error_response(
+            403,
+            "Password login is disabled for this instance".to_string(),
+        );
+    }
+
     let requested_tenant = match body.tenant.as_deref().map(str::trim) {
         Some("") | None => None,
         Some(t) => match validate_tenant_id(t) {
@@ -552,7 +570,9 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use common::catalog::{Catalog, MembershipRole};
-    use common::config::{ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, TenantConfig};
+    use common::config::{
+        ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, OidcConfig, TenantConfig,
+    };
     use serde_json::Value;
     use tower::ServiceExt;
 
@@ -1517,11 +1537,33 @@ mod tests {
 
     /// An SSO-only user (`password_hash = NULL`, change: oidc-login) must
     /// never reach `verify_password`: the generic 401 fires on the
-    /// null-password short-circuit alone, with no session cookie set (task
-    /// 3.4).
+    /// null-password short-circuit alone, with no session cookie set and no
+    /// session row persisted (task 3.4). The handler returns from the
+    /// `let Some(password_hash) = ... else { ... }` guard before
+    /// `verify_password` or `create_user_session` are ever called, so the
+    /// zero-sessions assertion below is the closest structural proxy
+    /// available for "the verifier was never invoked" without a mock seam
+    /// on `common::auth::verify_password`.
     #[tokio::test]
     async fn null_password_user_gets_generic_401_and_no_cookie() {
-        let app = test_app().await;
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let sso_user = catalog
+            .create_user("sso@example.com", Some("SSO User"), None, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&sso_user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog.clone(), config));
 
         let res = create_session(
             &app,
@@ -1537,5 +1579,118 @@ mod tests {
         assert!(res.headers().get(header::SET_COOKIE).is_none());
         let body = json_body(res).await;
         assert_eq!(body["error"], "Invalid email or password");
+        assert_eq!(
+            catalog.count_sessions_for_user(&sso_user.id).await.unwrap(),
+            0,
+            "a refused null-password login must not persist a session row"
+        );
+    }
+
+    fn oidc_with_password_disabled() -> OidcConfig {
+        OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "test-client".to_string(),
+            client_secret: "test-secret".to_string(),
+            disable_password_login: true,
+            ..OidcConfig::default()
+        }
+    }
+
+    /// Task 3.6: with `[auth.oidc].disable_password_login`, every password
+    /// login is refused with a reason distinct from "invalid email or
+    /// password" (a config switch, not a credentials failure), and no
+    /// session row is created even for otherwise-correct credentials.
+    #[tokio::test]
+    async fn password_login_refused_for_every_user_when_disabled_via_oidc_config() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                oidc: Some(oidc_with_password_disabled()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let password_hash = common::auth::hash_password("correct horse battery staple").unwrap();
+        let user = catalog
+            .create_user(
+                "alice@example.com",
+                Some("Alice"),
+                Some(&password_hash),
+                true,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Admin)
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog.clone(), config));
+
+        let res = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(res.headers().get(header::SET_COOKIE).is_none());
+        let body = json_body(res).await;
+        let message = body["error"].as_str().unwrap();
+        assert!(
+            message
+                .to_lowercase()
+                .contains("password login is disabled"),
+            "expected a named reason distinct from the generic credentials failure, got {message:?}"
+        );
+        assert_ne!(message, "Invalid email or password");
+        assert_eq!(
+            catalog.count_sessions_for_user(&user.id).await.unwrap(),
+            0,
+            "no session should be created while password login is disabled"
+        );
+    }
+
+    /// Companion to the above (task 3.6): disabling password login must not
+    /// touch API-key auth or the `admin_api_key` break-glass path — an IdP
+    /// outage combined with the switch must never lock out operators.
+    #[tokio::test]
+    async fn disabling_password_login_does_not_affect_api_keys_or_admin_api_key() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                oidc: Some(oidc_with_password_disabled()),
+                admin_api_key: Some("admin-secret".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        // Tenant-scoped API key still authenticates ordinary query routes.
+        let request = Request::builder()
+            .uri("/tempo/api/echo")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The admin_api_key break-glass path still authenticates too.
+        let request = Request::builder()
+            .uri("/api/v1/admin/tenants")
+            .header("authorization", "Bearer admin-secret")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

@@ -4,7 +4,7 @@ use crate::flight::transport::ServiceCapability;
 use crate::service_bootstrap::ServiceType;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{PgPool, Row, SqlitePool, query};
+use sqlx::{PgPool, Row, SqlitePool, query, query_scalar};
 use std::str::FromStr;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -3977,6 +3977,27 @@ impl Catalog {
             expires_at,
             revoked_at: None,
         })
+    }
+
+    /// Count every session row (revoked or not, expired or not) belonging to
+    /// a user. Used to assert that a refused login created nothing (change:
+    /// oidc-login task 3.4) rather than just that no cookie was returned.
+    pub async fn count_sessions_for_user(&self, user_id: &str) -> Result<i64, sqlx::Error> {
+        let count: i64 = match self {
+            Catalog::Sqlite(pool) => {
+                query_scalar("SELECT COUNT(*) FROM user_sessions WHERE user_id = ?")
+                    .bind(user_id)
+                    .fetch_one(pool)
+                    .await?
+            }
+            Catalog::Postgres(pool) => {
+                query_scalar("SELECT COUNT(*) FROM user_sessions WHERE user_id = $1")
+                    .bind(user_id)
+                    .fetch_one(pool)
+                    .await?
+            }
+        };
+        Ok(count)
     }
 
     /// Look up a session by token hash, returning it only if it is neither
