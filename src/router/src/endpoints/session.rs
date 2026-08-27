@@ -92,7 +92,12 @@ pub async fn create_session<S: RouterState>(
         }
     };
     let password = body.password;
-    let password_hash = user.password_hash.clone();
+    // SSO-only users (change: oidc-login) have no password hash to check
+    // against; refuse with the same generic failure as a wrong password,
+    // without invoking the verifier.
+    let Some(password_hash) = user.password_hash.clone() else {
+        return error_response(401, "Invalid email or password".to_string());
+    };
     let password_matches = match tokio::task::spawn_blocking(move || {
         verify_password(&password, &password_hash)
     })
@@ -601,7 +606,12 @@ mod tests {
         catalog.sync_config_tenants(&config.auth).await.unwrap();
         let password_hash = common::auth::hash_password("correct horse battery staple").unwrap();
         let user = catalog
-            .create_user("alice@example.com", Some("Alice"), &password_hash, true)
+            .create_user(
+                "alice@example.com",
+                Some("Alice"),
+                Some(&password_hash),
+                true,
+            )
             .await
             .unwrap();
         catalog
@@ -610,7 +620,12 @@ mod tests {
             .unwrap();
         let viewer_hash = common::auth::hash_password("viewer password").unwrap();
         let viewer = catalog
-            .create_user("viewer@example.com", Some("Viewer"), &viewer_hash, false)
+            .create_user(
+                "viewer@example.com",
+                Some("Viewer"),
+                Some(&viewer_hash),
+                false,
+            )
             .await
             .unwrap();
         catalog
@@ -619,7 +634,12 @@ mod tests {
             .unwrap();
         let member_hash = common::auth::hash_password("member password").unwrap();
         let member = catalog
-            .create_user("member@example.com", Some("Member"), &member_hash, false)
+            .create_user(
+                "member@example.com",
+                Some("Member"),
+                Some(&member_hash),
+                false,
+            )
             .await
             .unwrap();
         catalog
@@ -628,7 +648,18 @@ mod tests {
             .unwrap();
         let orphan_hash = common::auth::hash_password("orphan password").unwrap();
         catalog
-            .create_user("orphan@example.com", Some("Orphan"), &orphan_hash, false)
+            .create_user(
+                "orphan@example.com",
+                Some("Orphan"),
+                Some(&orphan_hash),
+                false,
+            )
+            .await
+            .unwrap();
+        // SSO-only user (change: oidc-login): no password hash to verify
+        // against, exercising the null-password short-circuit.
+        catalog
+            .create_user("sso@example.com", Some("SSO User"), None, false)
             .await
             .unwrap();
         create_router(RouterAppState::new(catalog, config))
@@ -1483,5 +1514,29 @@ mod tests {
         let memberships = body["memberships"].as_array().unwrap();
         assert_eq!(memberships.len(), 1);
         assert_eq!(memberships[0]["role"], "viewer");
+    }
+
+    /// An SSO-only user (`password_hash = NULL`, change: oidc-login) must
+    /// never reach `verify_password`: the generic 401 fires on the
+    /// null-password short-circuit alone, with no session cookie set (task
+    /// 3.4).
+    #[tokio::test]
+    async fn null_password_user_gets_generic_401_and_no_cookie() {
+        let app = test_app().await;
+
+        let res = create_session(
+            &app,
+            serde_json::json!({
+                "email": "sso@example.com",
+                "password": "any password at all",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert!(res.headers().get(header::SET_COOKIE).is_none());
+        let body = json_body(res).await;
+        assert_eq!(body["error"], "Invalid email or password");
     }
 }

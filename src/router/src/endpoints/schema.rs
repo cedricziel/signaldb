@@ -755,7 +755,7 @@ mod tests {
         }
         let hash = common::auth::hash_password("pw").unwrap();
         let alice = catalog
-            .create_user("alice@example.com", Some("Alice"), &hash, false)
+            .create_user("alice@example.com", Some("Alice"), Some(&hash), false)
             .await
             .unwrap();
         catalog
@@ -763,7 +763,7 @@ mod tests {
             .await
             .unwrap();
         let vera = catalog
-            .create_user("vera@example.com", Some("Vera"), &hash, false)
+            .create_user("vera@example.com", Some("Vera"), Some(&hash), false)
             .await
             .unwrap();
         catalog

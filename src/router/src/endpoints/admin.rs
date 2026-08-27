@@ -1219,7 +1219,7 @@ pub async fn create_user<S: RouterState>(
         .create_user(
             &request.email,
             request.display_name.as_deref(),
-            &password_hash,
+            Some(&password_hash),
             request.instance_admin,
         )
         .await

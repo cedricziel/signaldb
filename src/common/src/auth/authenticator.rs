@@ -494,7 +494,7 @@ mod tests {
             .unwrap();
         catalog.create_dataset("acme", "production").await.unwrap();
         let user = catalog
-            .create_user("agent@example.com", None, "phc", false)
+            .create_user("agent@example.com", None, Some("phc"), false)
             .await
             .unwrap();
         catalog

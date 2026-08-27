@@ -985,7 +985,7 @@ mod tests {
     async fn seed_authorization_code(catalog: &Catalog, code: &str) -> String {
         use common::auth::oauth::hash_oauth_token;
         let user = catalog
-            .create_user("agent@example.com", None, "phc", false)
+            .create_user("agent@example.com", None, Some("phc"), false)
             .await
             .unwrap();
         catalog
@@ -1242,7 +1242,7 @@ mod tests {
             .await
             .unwrap();
         let user = catalog
-            .create_user("human@example.com", None, "phc", false)
+            .create_user("human@example.com", None, Some("phc"), false)
             .await
             .unwrap();
         catalog

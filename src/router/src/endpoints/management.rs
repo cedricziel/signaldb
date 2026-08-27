@@ -1239,7 +1239,7 @@ mod key_scope_authorization_tests {
         scoped_key(&catalog, "acme", INGEST_KEY, &["traces:write"]).await;
         let hash = common::auth::hash_password("member password").unwrap();
         let user = catalog
-            .create_user("member@example.com", Some("Member"), &hash, false)
+            .create_user("member@example.com", Some("Member"), Some(&hash), false)
             .await
             .unwrap();
         catalog
@@ -1247,7 +1247,7 @@ mod key_scope_authorization_tests {
             .await
             .unwrap();
         let admin = catalog
-            .create_user("admin@example.com", Some("Admin"), &hash, false)
+            .create_user("admin@example.com", Some("Admin"), Some(&hash), false)
             .await
             .unwrap();
         catalog
