@@ -21,14 +21,18 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, KeyInit, Mac};
 use openidconnect::core::{
-    CoreAuthenticationFlow, CoreClient, CoreIdToken, CoreIdTokenClaims, CoreIdTokenVerifier,
-    CoreJsonWebKeySet, CoreProviderMetadata,
+    CoreAuthDisplay, CoreAuthPrompt, CoreAuthenticationFlow, CoreErrorResponseType,
+    CoreGenderClaim, CoreIdTokenVerifier, CoreJsonWebKey, CoreJsonWebKeySet,
+    CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm, CoreProviderMetadata,
+    CoreRevocableToken, CoreRevocationErrorResponse, CoreTokenIntrospectionResponse, CoreTokenType,
 };
 use openidconnect::{
-    AsyncHttpClient, AuthorizationCode, ClaimsVerificationError, ClientId, ClientSecret, CsrfToken,
-    EndpointMaybeSet, EndpointNotSet, EndpointSet, HttpRequest, HttpResponse, IdTokenVerifier,
+    AdditionalClaims, AsyncHttpClient, AuthorizationCode, ClaimsVerificationError, Client,
+    ClientId, ClientSecret, CsrfToken, EmptyExtraTokenFields, EndpointMaybeSet, EndpointNotSet,
+    EndpointSet, HttpRequest, HttpResponse, IdToken, IdTokenClaims, IdTokenFields, IdTokenVerifier,
     IssuerUrl, JsonWebKeySet, JsonWebKeySetUrl, Nonce, PkceCodeChallenge, PkceCodeVerifier,
-    RedirectUrl, Scope, SignatureVerificationError, TokenResponse,
+    RedirectUrl, Scope, SignatureVerificationError, StandardErrorResponse, StandardTokenResponse,
+    TokenResponse,
 };
 use sha2::Sha256;
 use tokio::sync::RwLock;
@@ -41,11 +45,73 @@ use common::self_monitoring::spans::{
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Concrete client type produced by [`CoreClient::from_provider_metadata`]:
+/// ID-token claims beyond the fixed OIDC standard set, captured as a
+/// flexible map rather than a fixed struct (tasks 3.2/3.3): the group-claim
+/// name is dynamic (`OidcConfig.group_claim`), so it must be looked up by
+/// key at runtime instead of being declared as a typed field.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct GroupAwareClaims(pub(crate) std::collections::HashMap<String, serde_json::Value>);
+
+impl AdditionalClaims for GroupAwareClaims {}
+
+/// The `openidconnect` "Core" type stack, re-derived with
+/// [`GroupAwareClaims`] in place of `EmptyAdditionalClaims` everywhere the
+/// ID token's additional claims flow through: `IdTokenFields` ->
+/// `StandardTokenResponse` -> `Client`. Every other generic parameter is
+/// the same `Core*` type `openidconnect::core` uses.
+type GroupsIdTokenFields = IdTokenFields<
+    GroupAwareClaims,
+    EmptyExtraTokenFields,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJwsSigningAlgorithm,
+>;
+type GroupsTokenResponse = StandardTokenResponse<GroupsIdTokenFields, CoreTokenType>;
+/// `pub(crate)`: the callback's wiremock tests (task 3.2) need to mint ID
+/// tokens carrying a `groups` claim, which requires building on the same
+/// `GroupAwareClaims`-parameterized type this module verifies against.
+pub(crate) type GroupsIdToken = IdToken<
+    GroupAwareClaims,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJwsSigningAlgorithm,
+>;
+pub(crate) type GroupsIdTokenClaims = IdTokenClaims<GroupAwareClaims, CoreGenderClaim>;
+
+#[allow(clippy::type_complexity)]
+type GroupsClient<
+    HasAuthUrl = EndpointNotSet,
+    HasDeviceAuthUrl = EndpointNotSet,
+    HasIntrospectionUrl = EndpointNotSet,
+    HasRevocationUrl = EndpointNotSet,
+    HasTokenUrl = EndpointNotSet,
+    HasUserInfoUrl = EndpointNotSet,
+> = Client<
+    GroupAwareClaims,
+    CoreAuthDisplay,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJsonWebKey,
+    CoreAuthPrompt,
+    StandardErrorResponse<CoreErrorResponseType>,
+    GroupsTokenResponse,
+    CoreTokenIntrospectionResponse,
+    CoreRevocableToken,
+    CoreRevocationErrorResponse,
+    HasAuthUrl,
+    HasDeviceAuthUrl,
+    HasIntrospectionUrl,
+    HasRevocationUrl,
+    HasTokenUrl,
+    HasUserInfoUrl,
+>;
+
+/// Concrete client type produced by [`GroupsClient::from_provider_metadata`]:
 /// discovery always resolves the authorization endpoint, and resolves the
 /// token endpoint "maybe" — the type only promises what discovery
 /// guarantees, though the OIDC spec requires it in practice.
-type DiscoveredClient = CoreClient<
+type DiscoveredClient = GroupsClient<
     EndpointSet,
     EndpointNotSet,
     EndpointNotSet,
@@ -220,6 +286,11 @@ pub struct VerifiedIdentity {
     pub email: Option<String>,
     pub email_verified: bool,
     pub name: Option<String>,
+    /// The IdP groups asserted by the configured `group_claim`, if any
+    /// (tasks 3.2/3.3). Empty when `group_claim` is unset, the claim is
+    /// absent from the token, or it carries neither a string nor an array
+    /// of strings.
+    pub groups: Vec<String>,
 }
 
 /// The parts of a fresh authorization request the start endpoint needs:
@@ -261,7 +332,7 @@ impl DiscoveredProvider {
         let jwks = metadata.jwks().clone();
         let client_id = ClientId::new(config.client_id.clone());
         let client_secret = ClientSecret::new(config.client_secret.clone());
-        let client = CoreClient::from_provider_metadata(
+        let client = GroupsClient::from_provider_metadata(
             metadata,
             client_id.clone(),
             Some(client_secret.clone()),
@@ -310,7 +381,9 @@ impl DiscoveredProvider {
     /// (task 2.5/2.6): signature against the cached JWKS (refetching once on
     /// an unknown `kid`, task 2.7), issuer, audience, expiry, and nonce —
     /// `openidconnect` enforces all of these; the default ~5 minute clock
-    /// leeway is accepted as-is (design Risks section).
+    /// leeway is accepted as-is (design Risks section). `group_claim` names
+    /// the additional claim (task 3.2) to read the IdP's groups from, if
+    /// `[auth.oidc]` configures one.
     pub async fn exchange_and_verify(
         &self,
         code: String,
@@ -318,6 +391,7 @@ impl DiscoveredProvider {
         pkce_verifier: PkceCodeVerifier,
         nonce: &Nonce,
         http_client: &TracedHttpClient,
+        group_claim: Option<&str>,
     ) -> Result<VerifiedIdentity, ExchangeError> {
         let redirect_url = RedirectUrl::new(redirect_uri.to_string())
             .map_err(|_| ExchangeError::InvalidRedirectUri)?;
@@ -331,18 +405,19 @@ impl DiscoveredProvider {
             .await
             .map_err(|e| ExchangeError::TokenRequest(e.to_string()))?;
         let id_token = token_response.id_token().ok_or(ExchangeError::NoIdToken)?;
-        self.verify(id_token, nonce, http_client).await
+        self.verify(id_token, nonce, http_client, group_claim).await
     }
 
     async fn verify(
         &self,
-        id_token: &CoreIdToken,
+        id_token: &GroupsIdToken,
         nonce: &Nonce,
         http_client: &TracedHttpClient,
+        group_claim: Option<&str>,
     ) -> Result<VerifiedIdentity, ExchangeError> {
         let verifier = self.build_verifier().await;
         match id_token.claims(&verifier, nonce) {
-            Ok(claims) => return Ok(extract_identity(claims)),
+            Ok(claims) => return Ok(extract_identity(claims, group_claim)),
             Err(ClaimsVerificationError::SignatureVerification(
                 SignatureVerificationError::NoMatchingKey,
             )) => {
@@ -359,7 +434,7 @@ impl DiscoveredProvider {
         let verifier = self.build_verifier().await;
         id_token
             .claims(&verifier, nonce)
-            .map(extract_identity)
+            .map(|claims| extract_identity(claims, group_claim))
             .map_err(|e| ExchangeError::Claims(e.to_string()))
     }
 
@@ -374,7 +449,26 @@ impl DiscoveredProvider {
     }
 }
 
-fn extract_identity(claims: &CoreIdTokenClaims) -> VerifiedIdentity {
+/// Read the configured group claim out of the token's additional claims
+/// (task 3.2): tolerates the claim being absent (empty groups), a single
+/// string, or an array of strings; any other JSON shape also yields no
+/// groups rather than an error, since a malformed claim should degrade to
+/// "no mapping applies" rather than fail the whole login.
+fn extract_groups(additional_claims: &GroupAwareClaims, group_claim: Option<&str>) -> Vec<String> {
+    let Some(claim_name) = group_claim else {
+        return Vec::new();
+    };
+    match additional_claims.0.get(claim_name) {
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        Some(serde_json::Value::String(s)) => vec![s.clone()],
+        _ => Vec::new(),
+    }
+}
+
+fn extract_identity(claims: &GroupsIdTokenClaims, group_claim: Option<&str>) -> VerifiedIdentity {
     VerifiedIdentity {
         subject: claims.subject().as_str().to_string(),
         email: claims.email().map(|e| e.as_str().to_string()),
@@ -383,6 +477,7 @@ fn extract_identity(claims: &CoreIdTokenClaims) -> VerifiedIdentity {
             .name()
             .and_then(|n| n.get(None))
             .map(|n| n.as_str().to_string()),
+        groups: extract_groups(claims.additional_claims(), group_claim),
     }
 }
 

@@ -11,9 +11,11 @@
 //! cookie with the same attributes/lifetime) — no separate session
 //! mechanism.
 //!
-//! Group-claim → membership mapping (`sync_oidc_memberships`) is Group 3's
-//! job; the seam is marked below, right after identity resolution succeeds
-//! and before session issuance.
+//! Group-claim → membership mapping (`sync_oidc_memberships`, tasks 3.2/3.3)
+//! runs in the callback right after identity resolution succeeds and before
+//! session issuance: computed once per login from the token's groups ×
+//! `[auth.oidc].group_mappings`, and skipped entirely (no catalog write at
+//! all) when no `group_claim`/`group_mappings` are configured.
 
 use axum::{
     Router,
@@ -25,7 +27,7 @@ use axum::{
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use common::auth::{generate_session_token, hash_session_token, session_cookie_header};
-use common::catalog::UserRecord;
+use common::catalog::{MembershipRole, UserRecord};
 use common::config::OidcConfig;
 use serde::Deserialize;
 use serde_json::json;
@@ -198,6 +200,7 @@ pub async fn callback<S: RouterState>(
             pending.pkce_verifier,
             &pending.nonce,
             http_client,
+            runtime.config.group_claim.as_deref(),
         )
         .await
     {
@@ -225,9 +228,59 @@ pub async fn callback<S: RouterState>(
         return reject(&clear_pending_cookie, "disabled_user");
     }
 
-    // Seam for Group 3 (tasks 3.1-3.3): per-login group-claim -> membership
-    // mapping (`Catalog::sync_oidc_memberships`) hooks in here, after
-    // identity resolution succeeds and before session issuance.
+    // Group-claim -> membership mapping (tasks 3.2/3.3, design decision 6):
+    // only touches `granted_by = 'oidc_mapping'` rows, and only when mapping
+    // is actually configured — "no mapping, no membership changes" (spec).
+    // Never grants or revokes `is_instance_admin`.
+    if runtime.config.group_claim.is_some() && !runtime.config.group_mappings.is_empty() {
+        let mut desired: Vec<(String, MembershipRole)> = runtime
+            .config
+            .group_mappings
+            .iter()
+            .filter(|mapping| identity.groups.iter().any(|g| g == &mapping.group))
+            .map(|mapping| (mapping.tenant.clone(), mapping.role))
+            .collect();
+
+        // A mapping rule can name a tenant that doesn't exist yet (not
+        // provisioned, or a typo): syncing it would trip a foreign-key
+        // violation and reject the whole login. One bad rule must not block
+        // an otherwise-valid identity, so unknown tenants are dropped here
+        // (with a warning naming each one) before the sync runs; a real
+        // sync failure below (e.g. the database being down) still rejects
+        // the login.
+        if !desired.is_empty() {
+            match state.catalog().list_tenants().await {
+                Ok(tenants) => {
+                    let known: std::collections::HashSet<&str> =
+                        tenants.iter().map(|t| t.id.as_str()).collect();
+                    desired.retain(|(tenant_id, _)| {
+                        let exists = known.contains(tenant_id.as_str());
+                        if !exists {
+                            tracing::warn!(
+                                user_id = %user.id,
+                                tenant_id = %tenant_id,
+                                "OIDC group mapping names a tenant that does not exist; skipping"
+                            );
+                        }
+                        exists
+                    });
+                }
+                Err(error) => {
+                    tracing::error!(user_id = %user.id, error = %error, "OIDC group-mapping tenant lookup failed");
+                    return reject(&clear_pending_cookie, "membership_sync_error");
+                }
+            }
+        }
+
+        if let Err(error) = state
+            .catalog()
+            .sync_oidc_memberships(&user.id, &desired)
+            .await
+        {
+            tracing::error!(user_id = %user.id, error = %error, "OIDC group-mapping membership sync failed");
+            return reject(&clear_pending_cookie, "membership_sync_error");
+        }
+    }
 
     let token = generate_session_token();
     let token_hash = hash_session_token(&token);
@@ -400,8 +453,7 @@ mod tests {
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
     use axum::http::{Request, header};
-    use common::catalog::Catalog;
-    use common::catalog::MembershipRole;
+    use common::catalog::{Catalog, GrantSource};
     use common::config::{ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, TenantConfig};
     use openidconnect::core::{
         CoreIdToken, CoreIdTokenClaims, CoreJwsSigningAlgorithm, CoreRsaPrivateSigningKey,
@@ -556,6 +608,52 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             claims = claims.set_name(Some(localized));
         }
         CoreIdToken::new(
+            claims,
+            &key,
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
+            None,
+            None,
+        )
+        .expect("ID token signs")
+        .to_string()
+    }
+
+    /// Like [`sign_id_token`] but also sets an additional claim named
+    /// `group_claim_name` carrying `groups` as a JSON string array — the
+    /// shape task 3.2's mapping tests need to drive the callback's
+    /// group-claim extraction (`crate::oidc::extract_groups`).
+    #[allow(clippy::too_many_arguments)]
+    fn sign_id_token_with_groups(
+        pem: &str,
+        kid: &str,
+        issuer: &str,
+        audience: &str,
+        subject: &str,
+        nonce: &str,
+        email: &str,
+        group_claim_name: &str,
+        groups: &[&str],
+    ) -> String {
+        use crate::oidc::{GroupAwareClaims, GroupsIdToken, GroupsIdTokenClaims};
+
+        let key = signing_key(pem, kid);
+        let mut additional = std::collections::HashMap::new();
+        additional.insert(
+            group_claim_name.to_string(),
+            json!(groups.iter().collect::<Vec<_>>()),
+        );
+        let claims = GroupsIdTokenClaims::new(
+            IssuerUrl::new(issuer.to_string()).expect("issuer parses"),
+            vec![Audience::new(audience.to_string())],
+            Utc::now() + chrono::Duration::minutes(5),
+            Utc::now(),
+            StandardClaims::new(SubjectIdentifier::new(subject.to_string())),
+            GroupAwareClaims(additional),
+        )
+        .set_nonce(Some(OidcNonce::new(nonce.to_string())))
+        .set_email(Some(EndUserEmail::new(email.to_string())))
+        .set_email_verified(Some(true));
+        GroupsIdToken::new(
             claims,
             &key,
             CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
@@ -1591,5 +1689,364 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
 
         let error = Configuration::load_from_path(&path).unwrap_err();
         assert!(error.to_string().contains("issuer_url"));
+    }
+
+    // --- Group-claim -> membership mapping (tasks 3.2/3.3) ---
+
+    /// Like [`test_state`] but with two tenants (`acme`, `globex`) and an
+    /// `OidcConfig` that also carries `group_claim`/`group_mappings`, the
+    /// shape every mapping test below needs.
+    async fn test_state_with_mapping(mut config: OidcConfig) -> RouterAppState {
+        config.group_claim = Some("groups".to_string());
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let full_config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key"), tenant("globex", "globex-key")],
+                oidc: Some(config),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog
+            .sync_config_tenants(&full_config.auth)
+            .await
+            .unwrap();
+        RouterAppState::new(catalog, full_config)
+    }
+
+    fn group_mapping(
+        group: &str,
+        tenant: &str,
+        role: MembershipRole,
+    ) -> common::config::GroupMapping {
+        common::config::GroupMapping {
+            group: group.to_string(),
+            tenant: tenant.to_string(),
+            role,
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_grants_mapped_membership_when_token_carries_group() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let mut config = oidc_config(server.uri(), Some(REDIRECT_URL.to_string()));
+        config.group_mappings = vec![group_mapping(
+            "observability-admins",
+            "acme",
+            MembershipRole::Admin,
+        )];
+        let state = test_state_with_mapping(config).await;
+        wait_for_ready(&state).await;
+        let catalog = state.catalog().clone();
+        let app = create_router(state);
+
+        let login = drive_start(&app).await;
+        let id_token = sign_id_token_with_groups(
+            KEY_1_PEM,
+            "kid1",
+            &server.uri(),
+            "test-client",
+            "idp-subject-mapped",
+            &login.nonce,
+            "mapped@example.com",
+            "groups",
+            &["observability-admins"],
+        );
+        mount_token_response(&server, &id_token).await;
+
+        let response = drive_callback(
+            &app,
+            Some("code"),
+            Some(&login.state),
+            Some(&login.pending_cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert!(
+            response
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .any(|v| v.to_str().unwrap().starts_with("signaldb_session=")),
+        );
+
+        let user = catalog
+            .find_user_by_oidc_identity(&server.uri(), "idp-subject-mapped")
+            .await
+            .unwrap()
+            .expect("JIT-created user exists");
+        let membership = catalog
+            .get_tenant_membership(&user.id, "acme")
+            .await
+            .unwrap()
+            .expect("mapped membership exists");
+        assert_eq!(membership.role, MembershipRole::Admin);
+        assert_eq!(membership.granted_by, GrantSource::OidcMapping);
+        // Mapping SHALL NOT grant the instance-admin flag (spec).
+        assert!(!user.is_instance_admin);
+    }
+
+    #[tokio::test]
+    async fn callback_grants_highest_role_when_two_groups_map_to_the_same_tenant() {
+        // Two rules both target `acme` at different roles; a token carrying
+        // both groups must not crash the login on the `(user_id, tenant_id,
+        // granted_by)` primary key. The user ends up with the higher role.
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let mut config = oidc_config(server.uri(), Some(REDIRECT_URL.to_string()));
+        config.group_mappings = vec![
+            group_mapping("org-viewers", "acme", MembershipRole::Viewer),
+            group_mapping("org-admins", "acme", MembershipRole::Admin),
+        ];
+        let state = test_state_with_mapping(config).await;
+        wait_for_ready(&state).await;
+        let catalog = state.catalog().clone();
+        let app = create_router(state);
+
+        let login = drive_start(&app).await;
+        let id_token = sign_id_token_with_groups(
+            KEY_1_PEM,
+            "kid1",
+            &server.uri(),
+            "test-client",
+            "idp-subject-double-mapped",
+            &login.nonce,
+            "double-mapped@example.com",
+            "groups",
+            &["org-viewers", "org-admins"],
+        );
+        mount_token_response(&server, &id_token).await;
+
+        let response = drive_callback(
+            &app,
+            Some("code"),
+            Some(&login.state),
+            Some(&login.pending_cookie),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FOUND,
+            "login must succeed despite two mappings targeting the same tenant"
+        );
+
+        let user = catalog
+            .find_user_by_oidc_identity(&server.uri(), "idp-subject-double-mapped")
+            .await
+            .unwrap()
+            .expect("JIT-created user exists");
+        let membership = catalog
+            .get_tenant_membership(&user.id, "acme")
+            .await
+            .unwrap()
+            .expect("mapped membership exists");
+        assert_eq!(membership.role, MembershipRole::Admin);
+    }
+
+    #[tokio::test]
+    async fn callback_skips_mapping_to_a_nonexistent_tenant_and_still_succeeds() {
+        // One rule maps to a tenant that was never created (typo or not yet
+        // provisioned), another maps to a real tenant. The token carries
+        // both groups: login must succeed, the valid mapping must apply,
+        // and the unknown-tenant mapping must be silently skipped rather
+        // than failing the whole sync (an FK violation would otherwise
+        // reject the login for every user in that group).
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let mut config = oidc_config(server.uri(), Some(REDIRECT_URL.to_string()));
+        config.group_mappings = vec![
+            group_mapping("ghost-team", "no-such-tenant", MembershipRole::Admin),
+            group_mapping("observability-admins", "acme", MembershipRole::Viewer),
+        ];
+        let state = test_state_with_mapping(config).await;
+        wait_for_ready(&state).await;
+        let catalog = state.catalog().clone();
+        let app = create_router(state);
+
+        let login = drive_start(&app).await;
+        let id_token = sign_id_token_with_groups(
+            KEY_1_PEM,
+            "kid1",
+            &server.uri(),
+            "test-client",
+            "idp-subject-unknown-tenant",
+            &login.nonce,
+            "unknown-tenant@example.com",
+            "groups",
+            &["ghost-team", "observability-admins"],
+        );
+        mount_token_response(&server, &id_token).await;
+
+        let response = drive_callback(
+            &app,
+            Some("code"),
+            Some(&login.state),
+            Some(&login.pending_cookie),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FOUND,
+            "a mapping to an unknown tenant must not reject the login"
+        );
+
+        let user = catalog
+            .find_user_by_oidc_identity(&server.uri(), "idp-subject-unknown-tenant")
+            .await
+            .unwrap()
+            .expect("JIT-created user exists");
+        let acme_membership = catalog
+            .get_tenant_membership(&user.id, "acme")
+            .await
+            .unwrap()
+            .expect("the valid mapping was still applied");
+        assert_eq!(acme_membership.role, MembershipRole::Viewer);
+        assert!(
+            catalog
+                .get_tenant_membership(&user.id, "no-such-tenant")
+                .await
+                .unwrap()
+                .is_none(),
+            "the unknown-tenant mapping must not produce a membership row"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_lost_group_removes_only_mapped_row_and_leaves_local_membership() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let mut config = oidc_config(server.uri(), Some(REDIRECT_URL.to_string()));
+        config.group_mappings = vec![group_mapping(
+            "observability-admins",
+            "globex",
+            MembershipRole::Admin,
+        )];
+        let state = test_state_with_mapping(config).await;
+        wait_for_ready(&state).await;
+        let catalog = state.catalog().clone();
+
+        // A prior login already granted the mapped membership in `globex`,
+        // and an admin has separately, locally granted this user `viewer`
+        // in `acme`.
+        let user = catalog
+            .create_oidc_user(
+                "loses-group@example.com",
+                Some("Loses Group"),
+                &server.uri(),
+                "idp-subject-loses-group",
+            )
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("globex".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+
+        let app = create_router(state);
+        let login = drive_start(&app).await;
+        // This login's token no longer carries `observability-admins`.
+        let id_token = sign_id_token_with_groups(
+            KEY_1_PEM,
+            "kid1",
+            &server.uri(),
+            "test-client",
+            "idp-subject-loses-group",
+            &login.nonce,
+            "loses-group@example.com",
+            "groups",
+            &[],
+        );
+        mount_token_response(&server, &id_token).await;
+
+        let response = drive_callback(
+            &app,
+            Some("code"),
+            Some(&login.state),
+            Some(&login.pending_cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        assert!(
+            catalog
+                .get_tenant_membership(&user.id, "globex")
+                .await
+                .unwrap()
+                .is_none(),
+            "the mapped membership must be removed once the group disappears"
+        );
+        let local = catalog
+            .get_tenant_membership(&user.id, "acme")
+            .await
+            .unwrap()
+            .expect("the locally granted membership must survive");
+        assert_eq!(local.role, MembershipRole::Viewer);
+        assert_eq!(local.granted_by, GrantSource::Local);
+    }
+
+    #[tokio::test]
+    async fn callback_without_mapping_config_makes_no_membership_writes() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        // No `group_mappings` configured at all: `group_claim` alone must
+        // not be enough to trigger a sync (spec: "no mapping, no membership
+        // changes").
+        let config = oidc_config(server.uri(), Some(REDIRECT_URL.to_string()));
+        let state = test_state_with_mapping(config).await;
+        wait_for_ready(&state).await;
+        let catalog = state.catalog().clone();
+
+        let user = catalog
+            .create_oidc_user(
+                "no-mapping@example.com",
+                Some("No Mapping"),
+                &server.uri(),
+                "idp-subject-no-mapping",
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let before = catalog.list_memberships_for_user(&user.id).await.unwrap();
+
+        let app = create_router(state);
+        let login = drive_start(&app).await;
+        let id_token = sign_id_token_with_groups(
+            KEY_1_PEM,
+            "kid1",
+            &server.uri(),
+            "test-client",
+            "idp-subject-no-mapping",
+            &login.nonce,
+            "no-mapping@example.com",
+            "groups",
+            &["observability-admins"],
+        );
+        mount_token_response(&server, &id_token).await;
+
+        let response = drive_callback(
+            &app,
+            Some("code"),
+            Some(&login.state),
+            Some(&login.pending_cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        let after = catalog.list_memberships_for_user(&user.id).await.unwrap();
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "memberships after login must be exactly the memberships before"
+        );
+        assert_eq!(after[0].role, MembershipRole::Viewer);
+        assert_eq!(after[0].granted_by, GrantSource::Local);
     }
 }

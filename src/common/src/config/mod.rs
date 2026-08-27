@@ -1030,6 +1030,13 @@ impl OidcConfig {
             url::Url::parse(redirect_url)
                 .map_err(|e| format!("[auth.oidc].redirect_url is not a valid URL: {e}"))?;
         }
+        if !self.group_mappings.is_empty() && self.group_claim.is_none() {
+            return Err(
+                "[auth.oidc].group_mappings is set but group_claim is empty: group mapping \
+                 requires group_claim to name the ID-token/userinfo claim carrying groups"
+                    .to_string(),
+            );
+        }
         Ok(())
     }
 }
@@ -2848,6 +2855,26 @@ mod tests {
         assert!(
             err.contains("disable_password_login"),
             "error should name the offending setting: {err}"
+        );
+    }
+
+    #[test]
+    fn oidc_group_mappings_without_group_claim_is_a_config_error() {
+        let config = OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "signaldb".to_string(),
+            client_secret: "s3cret".to_string(),
+            group_mappings: vec![GroupMapping {
+                group: "observability-admins".to_string(),
+                tenant: "acme".to_string(),
+                role: crate::catalog::MembershipRole::Admin,
+            }],
+            ..OidcConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("group_claim") && err.contains("group_mappings"),
+            "error should name both offending settings: {err}"
         );
     }
 

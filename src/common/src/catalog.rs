@@ -3748,11 +3748,35 @@ impl Catalog {
     /// longer produce are removed, and the rest are (re)written at their
     /// mapped role. `granted_by = 'local'` rows are never read or written,
     /// so admin-granted memberships coexist untouched.
+    ///
+    /// `desired` may name the same `tenant_id` more than once — e.g. two
+    /// `group_mappings` rules both target `acme` and the user's token
+    /// carries both groups. That's collapsed to a single row per tenant at
+    /// the highest-ranked role before writing, so callers don't need to
+    /// de-duplicate and a duplicate never trips the `(user_id, tenant_id,
+    /// granted_by)` primary key.
     pub async fn sync_oidc_memberships(
         &self,
         user_id: &str,
         desired: &[(String, MembershipRole)],
     ) -> Result<(), sqlx::Error> {
+        let mut by_tenant: std::collections::HashMap<&str, MembershipRole> =
+            std::collections::HashMap::new();
+        for (tenant_id, role) in desired {
+            by_tenant
+                .entry(tenant_id.as_str())
+                .and_modify(|existing| {
+                    if role.rank() > existing.rank() {
+                        *existing = *role;
+                    }
+                })
+                .or_insert(*role);
+        }
+        let desired: Vec<(String, MembershipRole)> = by_tenant
+            .into_iter()
+            .map(|(tenant_id, role)| (tenant_id.to_string(), role))
+            .collect();
+        let desired = desired.as_slice();
         match self {
             Catalog::Sqlite(pool) => {
                 let mut tx = pool.begin().await?;
@@ -6199,6 +6223,51 @@ mod user_membership_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].granted_by, GrantSource::Local);
         assert_eq!(rows[0].tenant_id, "globex");
+    }
+
+    /// Two `group_mappings` rules can both target the same tenant (e.g.
+    /// `org-viewers -> acme:viewer` and `org-admins -> acme:admin`), so a
+    /// user whose token carries both groups produces a `desired` slice with
+    /// two entries for the same tenant. The `(user_id, tenant_id,
+    /// granted_by)` primary key means a naive insert-per-entry would violate
+    /// the PK on the second row; `sync_oidc_memberships` must instead
+    /// collapse duplicate tenants to the single highest-ranked role before
+    /// writing, so the sync always succeeds.
+    #[tokio::test]
+    async fn sync_oidc_memberships_collapses_duplicate_tenant_entries_to_highest_role() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("duplicate@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .sync_oidc_memberships(
+                &user.id,
+                &[
+                    ("acme".to_string(), MembershipRole::Viewer),
+                    ("acme".to_string(), MembershipRole::Admin),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let rows = catalog.list_memberships_for_user(&user.id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "duplicate tenant entries must collapse to one row"
+        );
+        assert_eq!(rows[0].tenant_id, "acme");
+        assert_eq!(
+            rows[0].role,
+            MembershipRole::Admin,
+            "the higher-ranked role must win"
+        );
     }
 
     #[tokio::test]
