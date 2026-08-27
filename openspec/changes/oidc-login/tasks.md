@@ -19,13 +19,13 @@
 
 ## 3. Provisioning, mapping, password switch
 
-- [ ] 3.1 Failing tests: JIT create carries subject/email/name and no password; allowlist refusal creates no row and leaks nothing; email link attaches identity to the existing user
-- [ ] 3.2 Failing tests for mapping sync: mapped membership created at the mapped role; lost group removes only `granted_by='oidc_mapping'` rows; local rows never touched; no-mapping config = no membership writes; instance-admin flag never written
-- [ ] 3.3 Implement per-login mapping sync on top of `sync_oidc_memberships`; `TenantContext` resolution uses the effective (higher) role when local and mapped rows coexist
-- [ ] 3.4 Failing test in `router::endpoints::session`: a user with `password_hash = NULL` and `disable_password_login = false` gets the generic 401, `verify_password` is not invoked, no session row is created
-- [ ] 3.5 Implement the null-password short-circuit in the password session endpoint
-- [ ] 3.6 Failing tests: with `disable_password_login`, the password session endpoint refuses for every user with a named reason; API keys, `admin_api_key`, and CLI bootstrap unaffected
-- [ ] 3.7 Implement the switch
+- [x] 3.1 Failing tests: JIT create carries subject/email/name and no password; allowlist refusal creates no row and leaks nothing; email link attaches identity to the existing user
+- [x] 3.2 Failing tests for mapping sync: mapped membership created at the mapped role; lost group removes only `granted_by='oidc_mapping'` rows; local rows never touched; no-mapping config = no membership writes; instance-admin flag never written
+- [x] 3.3 Implement per-login mapping sync on top of `sync_oidc_memberships`; `TenantContext` resolution uses the effective (higher) role when local and mapped rows coexist
+- [x] 3.4 Failing test in `router::endpoints::session`: a user with `password_hash = NULL` and `disable_password_login = false` gets the generic 401, `verify_password` is not invoked, no session row is created
+- [x] 3.5 Implement the null-password short-circuit in the password session endpoint
+- [x] 3.6 Failing tests: with `disable_password_login`, the password session endpoint refuses for every user with a named reason; API keys, `admin_api_key`, and CLI bootstrap unaffected
+- [x] 3.7 Implement the switch
 
 ## 4. Contract, clients, UI
 
