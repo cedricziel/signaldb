@@ -51,6 +51,11 @@ function tablesByDataset(
   }));
 }
 
+/** Human-friendly label for a membership's `granted_by` source. */
+function grantSourceLabel(grantedBy: string): string {
+  return grantedBy === "oidc_mapping" ? "SSO group" : "Local";
+}
+
 const scopes: IngestScope[] = [
   "metrics:write",
   "logs:write",
@@ -245,25 +250,37 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
         <section className="memberships">
           <h3>Members</h3>
           <ul className="compact-list">
-            {(memberships.data ?? []).map((membership) => (
-              <li key={membership.user_id}>
-                <div>
-                  <strong>{membership.email}</strong>
-                  <span>{membership.role}</span>
-                </div>
-                {membership.user_id !== who.user?.id && (
-                  <button
-                    onClick={() =>
-                      removeMembership(tenant, membership.user_id)
-                        .then(refresh)
-                        .catch((value) => setError(toErrorMessage(value)))
-                    }
-                  >
-                    Remove
-                  </button>
-                )}
-              </li>
-            ))}
+            {(memberships.data ?? []).map((membership) => {
+              const isLocal = membership.granted_by === "local";
+              return (
+                <li key={`${membership.user_id}:${membership.granted_by}`}>
+                  <div>
+                    <strong>{membership.email}</strong>
+                    <span>{membership.role}</span>
+                    <span>{grantSourceLabel(membership.granted_by)}</span>
+                  </div>
+                  {membership.user_id !== who.user?.id &&
+                    (isLocal ? (
+                      <button
+                        onClick={() =>
+                          removeMembership(tenant, membership.user_id)
+                            .then(refresh)
+                            .catch((value) => setError(toErrorMessage(value)))
+                        }
+                      >
+                        Remove
+                      </button>
+                    ) : (
+                      <span
+                        className="grant-badge"
+                        title="Managed by the IdP's group mapping; remove it there instead."
+                      >
+                        Managed by {grantSourceLabel(membership.granted_by)}
+                      </span>
+                    ))}
+                </li>
+              );
+            })}
           </ul>
           <form
             className="membership-form"

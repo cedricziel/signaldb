@@ -196,6 +196,83 @@ describe("ManagementPanel tables section", () => {
     );
   });
 
+  it("displays each membership's grant source, human-friendly", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
+      {
+        match: "/api/v1/manage/tenants/acme/memberships",
+        body: [
+          {
+            user_id: "user-2",
+            email: "bob@example.com",
+            role: "member",
+            granted_by: "local",
+          },
+          {
+            user_id: "user-2",
+            email: "bob@example.com",
+            role: "viewer",
+            granted_by: "oidc_mapping",
+          },
+        ],
+        method: "GET",
+      },
+      { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
+    ]);
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText("Local")).toBeInTheDocument();
+      expect(screen.getByText("SSO group")).toBeInTheDocument();
+    });
+  });
+
+  it("renders both a local and a mapped row for the same user without a React key warning, and only the local row is removable", async () => {
+    const warnSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetchRoutes([
+      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
+      {
+        match: "/api/v1/manage/tenants/acme/memberships",
+        body: [
+          {
+            user_id: "user-2",
+            email: "bob@example.com",
+            role: "member",
+            granted_by: "local",
+          },
+          {
+            user_id: "user-2",
+            email: "bob@example.com",
+            role: "viewer",
+            granted_by: "oidc_mapping",
+          },
+        ],
+        method: "GET",
+      },
+      { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
+    ]);
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("bob@example.com")).toHaveLength(2);
+    });
+
+    const removeButtons = screen.getAllByRole("button", { name: "Remove" });
+    expect(removeButtons).toHaveLength(1);
+    expect(screen.getByText("Managed by SSO group")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Managed by SSO group" }),
+    ).not.toBeInTheDocument();
+
+    const keyWarning = warnSpy.mock.calls.some((call) =>
+      String(call[0]).includes("unique \"key\""),
+    );
+    expect(keyWarning).toBe(false);
+    warnSpy.mockRestore();
+  });
+
   it("provisioning tables calls createTenantTables and refreshes the list", async () => {
     const fetchMock = stubFetchRoutes([
       { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },

@@ -29,7 +29,7 @@ import {
   type ManageSchemaResponse,
   type MembershipResponse,
 } from "./gen";
-import { ApiError, retryAfterMsFrom } from "./http";
+import { type SdkResult, unwrapSdkResult } from "./http";
 
 /** Ingestion scopes an API key may be granted. */
 export type IngestScope =
@@ -96,34 +96,20 @@ export const ALL_SCOPES: ReadonlyArray<ApiKeyScope> = SCOPE_GROUPS.flatMap(
  * wire type (scopes surface as `string[]`). */
 export type ManagedApiKey = ManageApiKeyResponse;
 
-/** Tenant membership as returned by the management API. */
+/** Tenant membership as returned by the management API. `granted_by` is
+ * `"local"` (granted via this API/CLI/MCP) or `"oidc_mapping"` (synced from
+ * an OIDC group claim) — a local and a mapped row can coexist for the same
+ * user, so callers must key lists on `user_id` + `granted_by`, not
+ * `user_id` alone, and only offer removal for `"local"` rows (mapped rows
+ * are managed by the IdP). */
 export type ManagedMembership = MembershipResponse;
 
 /** Logical + physical schema, as returned by the management API. */
 export type ManagedSchema = ManageSchemaResponse;
 
-/** Result envelope produced by the generated SDK (`RequestResult` with the
- * default `fields` response style). */
-interface SdkResult<T> {
-  data?: T;
-  error?: unknown;
-  response?: Response;
-}
-
-/** Unwrap a generated SDK result, preserving the error contract callers rely
- * on. The SDK does not throw by default: it returns `error` set (and
- * `response` unset on a network/URL error) instead. Re-throw as `ApiError`
- * with the HTTP status so `isAuthError(401)` keeps working. */
+/** Unwrap a generated SDK result with the "Management" label. */
 function unwrap<T>(result: SdkResult<T>): T {
-  const { error, response } = result;
-  if (error !== undefined || !response?.ok) {
-    const status = response?.status ?? 0;
-    const message =
-      (error as { error?: string } | undefined)?.error ??
-      `Management request failed (${status})`;
-    throw new ApiError(message, status, retryAfterMsFrom(response));
-  }
-  return result.data as T;
+  return unwrapSdkResult(result, "Management");
 }
 
 export const listApiKeys = async (tenant: string): Promise<ManagedApiKey[]> =>

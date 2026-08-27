@@ -147,6 +147,15 @@
   margin-top: 28px;
 }
 
+.grant-badge {
+  padding: 3px 8px;
+  color: var(--dim);
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: help;
+}
+
 .membership-form {
   grid-template-columns: 1.8fr 1fr auto;
 }
