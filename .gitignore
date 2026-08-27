@@ -68,3 +68,6 @@ src/ui/playwright-report/
 src/ui/e2e/.auth/
 .env.local
 site/
+
+# Claude Code agent memory (backlog-sweeper etc.)
+.claude/agent-memory/
