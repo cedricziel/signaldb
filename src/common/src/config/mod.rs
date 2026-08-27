@@ -896,6 +896,11 @@ pub struct AuthConfig {
     /// network.
     #[serde(default)]
     pub internal_service_key: Option<String>,
+    /// Single-provider OIDC relying-party configuration (change:
+    /// oidc-login). Absent by default: no OIDC surface is exposed and
+    /// password login is the only door.
+    #[serde(default)]
+    pub oidc: Option<OidcConfig>,
 }
 
 fn default_storage_usage_refresh_interval() -> Duration {
@@ -910,7 +915,122 @@ impl Default for AuthConfig {
             tenants: Vec::new(),
             admin_api_key: None,
             internal_service_key: None,
+            oidc: None,
         }
+    }
+}
+
+/// One IdP-group-to-membership mapping rule (change: oidc-login).
+///
+/// Applied at every SSO login (design decision 6): a user whose token
+/// carries `group` is granted `role` in `tenant` via
+/// `Catalog::sync_oidc_memberships`, as a `granted_by = 'oidc_mapping'`
+/// row that never overwrites a locally-granted membership for the same
+/// tenant.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupMapping {
+    /// The IdP group name as it appears in the configured `group_claim`.
+    pub group: String,
+    /// The tenant the mapped membership is granted in.
+    pub tenant: String,
+    /// The role granted. An unknown role name fails config loading with a
+    /// serde error naming the value.
+    pub role: crate::catalog::MembershipRole,
+}
+
+/// Single-provider OIDC relying-party configuration, parsed from
+/// `[auth.oidc]` (change: oidc-login).
+///
+/// `issuer_url`/`client_id`/`client_secret` are plain (not `Option`)
+/// strings that default to empty so a section that sets only
+/// `disable_password_login` still parses — [`OidcConfig::validate`] turns
+/// the resulting empty provider fields into a startup error naming the
+/// setting, rather than a generic missing-field error.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OidcConfig {
+    /// The OIDC issuer URL; provider endpoints are resolved from its
+    /// `.well-known/openid-configuration` document, never configured
+    /// endpoint-by-endpoint.
+    pub issuer_url: String,
+    /// OAuth client ID registered with the IdP.
+    pub client_id: String,
+    /// OAuth client secret registered with the IdP.
+    pub client_secret: String,
+    /// Overrides the callback URL the start endpoint derives from the
+    /// request's origin. Needed when SignalDB sits behind a reverse proxy
+    /// that changes the externally-visible scheme/host.
+    pub redirect_url: Option<String>,
+    /// Label shown on the login page's SSO button. Defaults to the issuer
+    /// host when unset (cosmetic, resolved at the RP layer).
+    pub display_name: Option<String>,
+    /// Just-in-time provisioning allowlist: a verified email whose domain
+    /// is not in this list is refused rather than creating a user. Unset
+    /// means every verified identity may be provisioned.
+    pub allowed_email_domains: Option<Vec<String>>,
+    /// Name of the ID-token/userinfo claim carrying the user's IdP groups.
+    /// Required for `group_mappings` to have any effect.
+    pub group_claim: Option<String>,
+    /// IdP-group-to-tenant-role mapping rules, applied at every login.
+    #[serde(default)]
+    pub group_mappings: Vec<GroupMapping>,
+    /// Disables password login for every user when `true`. Only honoured
+    /// when this section also configures a valid provider (design decision
+    /// 7) — see [`OidcConfig::validate`].
+    #[serde(default)]
+    pub disable_password_login: bool,
+}
+
+/// Manual `Debug`: redacts `client_secret` so it can never leak via `{:?}`
+/// logging (e.g. a config dump at startup); every other field is plain
+/// config, not a secret.
+impl std::fmt::Debug for OidcConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcConfig")
+            .field("issuer_url", &self.issuer_url)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[redacted]")
+            .field("redirect_url", &self.redirect_url)
+            .field("display_name", &self.display_name)
+            .field("allowed_email_domains", &self.allowed_email_domains)
+            .field("group_claim", &self.group_claim)
+            .field("group_mappings", &self.group_mappings)
+            .field("disable_password_login", &self.disable_password_login)
+            .finish()
+    }
+}
+
+impl OidcConfig {
+    /// Validate a configured `[auth.oidc]` section.
+    ///
+    /// Called whenever the section is present; an absent section (`auth.oidc
+    /// = None`) needs no validation since it exposes no OIDC surface at all.
+    /// Returns a message naming the offending setting on failure, per the
+    /// "Invalid configuration fails hard" scenario.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.issuer_url.trim().is_empty() {
+            if self.disable_password_login {
+                return Err(
+                    "[auth.oidc].disable_password_login is set but issuer_url is empty: \
+                     disabling password login requires a configured OIDC provider"
+                        .to_string(),
+                );
+            }
+            return Err("[auth.oidc].issuer_url must not be empty".to_string());
+        }
+        url::Url::parse(&self.issuer_url)
+            .map_err(|e| format!("[auth.oidc].issuer_url is not a valid URL: {e}"))?;
+        if self.client_id.trim().is_empty() {
+            return Err("[auth.oidc].client_id must not be empty".to_string());
+        }
+        if self.client_secret.trim().is_empty() {
+            return Err("[auth.oidc].client_secret must not be empty".to_string());
+        }
+        if let Some(redirect_url) = &self.redirect_url {
+            url::Url::parse(redirect_url)
+                .map_err(|e| format!("[auth.oidc].redirect_url is not a valid URL: {e}"))?;
+        }
+        Ok(())
     }
 }
 
@@ -1591,7 +1711,21 @@ impl Configuration {
                 .map_err(Box::new)?;
 
         config.ensure_self_monitoring_tenant();
+        config
+            .validate()
+            .map_err(|e| Box::new(figment::Error::from(e)))?;
         Ok(config)
+    }
+
+    /// Configuration-wide invariants that must hold before a service starts,
+    /// beyond what serde's field-level deserialization already checks.
+    /// Currently just `[auth.oidc]` (change: oidc-login); see
+    /// [`OidcConfig::validate`].
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(oidc) = &self.auth.oidc {
+            oidc.validate()?;
+        }
+        Ok(())
     }
 
     /// Validate this configuration for a standalone (distributed) service.
@@ -2614,5 +2748,232 @@ mod tests {
 
         config.ensure_self_monitoring_tenant();
         assert!(config.auth.tenants.is_empty());
+    }
+
+    #[test]
+    fn oidc_config_absent_by_default() {
+        let config = Configuration::default();
+        assert!(config.auth.oidc.is_none());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn oidc_config_parses_from_toml() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [auth.oidc]
+                issuer_url = "https://idp.example.com"
+                client_id = "signaldb"
+                client_secret = "s3cret"
+                redirect_url = "https://signaldb.example.com/ui/session/oidc/callback"
+                display_name = "Acme SSO"
+                allowed_email_domains = ["example.com"]
+                group_claim = "groups"
+                disable_password_login = true
+
+                [[auth.oidc.group_mappings]]
+                group = "observability-admins"
+                tenant = "acme"
+                role = "admin"
+                "#,
+            )?;
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract()?;
+
+            let oidc = config.auth.oidc.expect("[auth.oidc] parsed");
+            assert_eq!(oidc.issuer_url, "https://idp.example.com");
+            assert_eq!(oidc.client_id, "signaldb");
+            assert_eq!(oidc.client_secret, "s3cret");
+            assert_eq!(
+                oidc.redirect_url.as_deref(),
+                Some("https://signaldb.example.com/ui/session/oidc/callback")
+            );
+            assert_eq!(oidc.display_name.as_deref(), Some("Acme SSO"));
+            assert_eq!(
+                oidc.allowed_email_domains,
+                Some(vec!["example.com".to_string()])
+            );
+            assert_eq!(oidc.group_claim.as_deref(), Some("groups"));
+            assert!(oidc.disable_password_login);
+            assert_eq!(oidc.group_mappings.len(), 1);
+            assert_eq!(oidc.group_mappings[0].group, "observability-admins");
+            assert_eq!(oidc.group_mappings[0].tenant, "acme");
+            assert_eq!(
+                oidc.group_mappings[0].role,
+                crate::catalog::MembershipRole::Admin
+            );
+            assert!(oidc.validate().is_ok());
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn oidc_config_env_var_overrides() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "SIGNALDB__AUTH__OIDC__ISSUER_URL",
+                "https://idp.example.com",
+            );
+            jail.set_env("SIGNALDB__AUTH__OIDC__CLIENT_ID", "signaldb");
+            jail.set_env("SIGNALDB__AUTH__OIDC__CLIENT_SECRET", "s3cret");
+
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract::<Configuration>()
+                .unwrap();
+
+            let oidc = config.auth.oidc.expect("[auth.oidc] set via env vars");
+            assert_eq!(oidc.issuer_url, "https://idp.example.com");
+            assert_eq!(oidc.client_id, "signaldb");
+            assert_eq!(oidc.client_secret, "s3cret");
+            assert!(oidc.validate().is_ok());
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn oidc_disable_password_login_without_provider_is_a_config_error() {
+        let config = OidcConfig {
+            disable_password_login: true,
+            ..OidcConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("disable_password_login"),
+            "error should name the offending setting: {err}"
+        );
+    }
+
+    #[test]
+    fn oidc_missing_client_id_or_secret_is_a_config_error() {
+        let missing_client_id = OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_secret: "s3cret".to_string(),
+            ..OidcConfig::default()
+        };
+        assert!(
+            missing_client_id
+                .validate()
+                .unwrap_err()
+                .contains("client_id")
+        );
+
+        let missing_secret = OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "signaldb".to_string(),
+            ..OidcConfig::default()
+        };
+        assert!(
+            missing_secret
+                .validate()
+                .unwrap_err()
+                .contains("client_secret")
+        );
+    }
+
+    #[test]
+    fn oidc_malformed_redirect_url_is_a_config_error() {
+        let config = OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "signaldb".to_string(),
+            client_secret: "s3cret".to_string(),
+            redirect_url: Some("not a url".to_string()),
+            ..OidcConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("redirect_url"), "{err}");
+    }
+
+    #[test]
+    fn oidc_config_debug_redacts_client_secret() {
+        let config = OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "signaldb".to_string(),
+            client_secret: "super-secret-value".to_string(),
+            ..OidcConfig::default()
+        };
+        let debug = format!("{config:?}");
+        assert!(
+            !debug.contains("super-secret-value"),
+            "Debug output leaked the client secret: {debug}"
+        );
+        assert!(debug.contains("[redacted]"));
+        // Non-secret fields stay visible for debugging.
+        assert!(debug.contains("https://idp.example.com"));
+        assert!(debug.contains("signaldb"));
+    }
+
+    #[test]
+    fn oidc_malformed_issuer_url_is_a_config_error() {
+        let config = OidcConfig {
+            issuer_url: "not a url".to_string(),
+            client_id: "signaldb".to_string(),
+            client_secret: "s3cret".to_string(),
+            ..OidcConfig::default()
+        };
+        assert!(config.validate().unwrap_err().contains("issuer_url"));
+    }
+
+    #[test]
+    fn oidc_unknown_role_in_group_mapping_fails_to_load() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [auth.oidc]
+                issuer_url = "https://idp.example.com"
+                client_id = "signaldb"
+                client_secret = "s3cret"
+
+                [[auth.oidc.group_mappings]]
+                group = "owners"
+                tenant = "acme"
+                role = "owner"
+                "#,
+            )?;
+            let result: Result<Configuration, _> = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract();
+            assert!(result.is_err(), "an unknown role must fail to parse");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn load_from_path_fails_hard_when_password_login_disabled_without_provider() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [auth.oidc]
+                disable_password_login = true
+                "#,
+            )?;
+            let result = Configuration::load_from_path(std::path::Path::new("signaldb.toml"));
+            let err = result.expect_err("a flag without a provider must fail startup");
+            assert!(err.to_string().contains("disable_password_login"));
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn configuration_validate_surfaces_invalid_oidc_section() {
+        let mut config = Configuration::default();
+        config.auth.oidc = Some(OidcConfig {
+            disable_password_login: true,
+            ..OidcConfig::default()
+        });
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("disable_password_login"));
     }
 }
