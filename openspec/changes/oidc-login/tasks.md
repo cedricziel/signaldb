@@ -1,11 +1,11 @@
 ## 1. Catalog and config foundations
 
-- [ ] 1.1 Failing tests in `common::catalog`: users carry nullable `(oidc_issuer, oidc_subject)` with a unique pair constraint; `password_hash` nullable (SQLite + Postgres)
-- [ ] 1.2 Additive `users` migration + record types (`password_hash: Option<String>`); lookup `find_user_by_oidc_identity`
-- [ ] 1.3 Failing tests in `common::catalog` for source-keyed memberships: pre-existing rows migrate as `granted_by = 'local'`; a `local` and an `oidc_mapping` row coexist for one `(user_id, tenant_id)`; `upsert_tenant_membership`/`remove_tenant_membership` touch only `local` rows; `sync_oidc_memberships` upserts/deletes only `oidc_mapping` rows in one transaction; `get_tenant_membership` returns the higher role and its source; list operations expose `granted_by` (SQLite + Postgres)
-- [ ] 1.4 Implement the `tenant_memberships` migration (Postgres: add column + swap PK; SQLite: idempotent table rebuild in a transaction) and the source-aware catalog operations
-- [ ] 1.5 Failing tests in `common::config`: `[auth.oidc]` parses (issuer_url, client_id, client_secret, redirect_url?, display_name?, allowed_email_domains?, group_claim?, group_mappings[], disable_password_login); flag without provider = config error
-- [ ] 1.6 Implement `OidcConfig` with env-var overrides (`SIGNALDB__AUTH__OIDC__*`)
+- [x] 1.1 Failing tests in `common::catalog`: users carry nullable `(oidc_issuer, oidc_subject)` with a unique pair constraint; `password_hash` nullable (SQLite + Postgres)
+- [x] 1.2 Additive `users` migration + record types (`password_hash: Option<String>`); lookup `find_user_by_oidc_identity`
+- [x] 1.3 Failing tests in `common::catalog` for source-keyed memberships: pre-existing rows migrate as `granted_by = 'local'`; a `local` and an `oidc_mapping` row coexist for one `(user_id, tenant_id)`; `upsert_tenant_membership`/`remove_tenant_membership` touch only `local` rows; `sync_oidc_memberships` upserts/deletes only `oidc_mapping` rows in one transaction; `get_tenant_membership` returns the higher role and its source; list operations expose `granted_by` (SQLite + Postgres)
+- [x] 1.4 Implement the `tenant_memberships` migration (Postgres: add column + swap PK; SQLite: idempotent table rebuild in a transaction) and the source-aware catalog operations
+- [x] 1.5 Failing tests in `common::config`: `[auth.oidc]` parses (issuer_url, client_id, client_secret, redirect_url?, display_name?, allowed_email_domains?, group_claim?, group_mappings[], disable_password_login); flag without provider = config error
+- [x] 1.6 Implement `OidcConfig` with env-var overrides (`SIGNALDB__AUTH__OIDC__*`)
 
 ## 2. RP core (router)
 
