@@ -37,7 +37,7 @@
 
 ## 5. Docs and skills
 
-- [ ] 5.1 `docs/users/authentication.md`: SSO login section (flow, JIT, linking, password switch, break-glass)
-- [ ] 5.2 `docs/operations/`: IdP setup guide (redirect URL/reverse proxy first, Authentik + Keycloak examples, allowlist, group mapping, degraded-startup behaviour, rollback including the clear-mapped-rows step before a binary rollback); update `signaldb.dist.toml`
-- [ ] 5.3 Update `multi-tenancy` and `configuration` skills; run the docs-freshness gate after committing
-- [ ] 5.4 Verify Definition of Done: probe/endpoints in OpenAPI with both clients regenerated and consumed; surface parity reviewed (SSO is inherently UI+HTTP; CLI/MCP scoped out — MCP benefits via OAuth consent, CLI has no browser)
+- [x] 5.1 `docs/users/authentication.md`: SSO login section (flow, JIT, linking, password switch, break-glass)
+- [x] 5.2 `docs/operations/oidc-sso.md`: IdP setup guide (redirect URL/reverse proxy first, Authentik + Keycloak examples, allowlist, group mapping, degraded-startup behaviour, rollback including the clear-mapped-rows step before a binary rollback); `signaldb.dist.toml` gains a commented `[auth.oidc]` block
+- [x] 5.3 Update `multi-tenancy` and `configuration` skills; run the docs-freshness gate after committing
+- [x] 5.4 Definition of Done verified. **Contract:** the login-config probe (`GET /ui/session/config`) plus `GET /ui/session/oidc/{start,callback}` are in the OpenAPI document, each with an empty security requirement (tasks 4.1–4.2); the Rust SDK and UI TypeScript client were regenerated from it, and the UI login panel renders from the probe through the generated client (tasks 4.3–4.4, all `[x]`). **Surface parity:** SSO is inherently a UI + HTTP (browser-redirect) surface; CLI and MCP are scoped out by design — MCP benefits for free because its OAuth consent rides the browser session (a SSO login upgrades it), and the CLI has no browser to run an authorization-code redirect, so it stays on API-key/bootstrap credentials. (The Docker-gated end-to-end test, task 4.5, remains open and is not part of this DoD, which covers the contract + clients + surface-parity review.)
