@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787810481383,
+  "lastUpdate": 1787900147276,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -2801,6 +2801,244 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1079520,
             "range": "± 26586",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "efe84a70a3fd6365e4345c1f838efad4e777c926",
+          "message": "fix(acceptor): capture trailer-carried grpc-status for streaming calls (#1435)\n\n* fix(acceptor): capture trailer-carried grpc-status for streaming gRPC calls\n\nGrpcTraceLayer only read the outcome from the response's grpc-status\nheader, which tonic sets on immediately-failed unary calls. A response\nwhose status instead arrives in HTTP/2 trailers (the streaming path)\nwas mis-recorded as OK.\n\nWrap the response body in TrailerStatusBody, which inspects each frame\nas it is drained: a trailers frame carrying grpc-status is recorded on\nthe SERVER span (taking precedence), otherwise the pre-parsed header\nstatus is recorded once the body is exhausted, defaulting to OK. This\nalso keeps the span open across the whole response stream instead of\nclosing it as soon as headers are sent.\n\nCloses #915\n\n* fix(acceptor): record grpc-status via Drop when a response body is never polled\n\nhyper's HTTP/2 server skips poll_frame entirely for a body whose\nis_end_stream() is true, which is exactly the shape of tonic's\nimmediately-failed unary responses (tonic::body::Body::empty()). That\nleft TrailerStatusBody's poll_frame-only recording unreachable on the\nhigher-volume error path (auth rejections, failed OTLP exports) that\nthe header-only implementation used to capture correctly, trading one\nbug for a worse one.\n\nAdd a Drop impl as the general backstop: it records the pre-parsed\nheader status if there is one, else Cancelled (a dropped, never-polled\nbody has no way to know it finished successfully, so the previous OK\ndefault would misreport a cut-off call). record_and_close's existing\nspan.take() guard keeps this idempotent with the trailers and\nend-of-stream paths, so nothing double-records.\n\nFour new tests: the Trailers-Only dispatch shape that reproduces the\nregression (proved red before this fix), a dropped-without-draining\ncase, a body-error-frame case, and a header+trailer precedence case.",
+          "timestamp": "2026-08-27T23:03:27Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/efe84a70a3fd6365e4345c1f838efad4e777c926"
+        },
+        "date": 1787900146390,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1948151,
+            "range": "± 20056",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1138596,
+            "range": "± 14880",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 691140,
+            "range": "± 5357",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1613936,
+            "range": "± 58302",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 765392,
+            "range": "± 6640",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1897517,
+            "range": "± 15074",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1161521,
+            "range": "± 10282",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1442338,
+            "range": "± 6113",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2711630,
+            "range": "± 192736",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 12894564,
+            "range": "± 112531",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 120896385,
+            "range": "± 2969946",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 4235319,
+            "range": "± 14193",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8680299,
+            "range": "± 33546",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 16106456,
+            "range": "± 118223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 31402087,
+            "range": "± 245709",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 902956,
+            "range": "± 133513",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2373903,
+            "range": "± 45843",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3441156,
+            "range": "± 80583",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6576949,
+            "range": "± 112358",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 599731,
+            "range": "± 4739",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 20770147,
+            "range": "± 244849",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 30150762,
+            "range": "± 1572183",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 28429781,
+            "range": "± 457278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 28503880,
+            "range": "± 723813",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 28258691,
+            "range": "± 173170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 6734229,
+            "range": "± 48915",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 16634406,
+            "range": "± 236937",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 35489558,
+            "range": "± 591965",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 30117589,
+            "range": "± 1591237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 6765658,
+            "range": "± 75531",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 74101581,
+            "range": "± 1923861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 131004404,
+            "range": "± 3387162",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 142717110,
+            "range": "± 2783716",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1017812,
+            "range": "± 28607",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1037738,
+            "range": "± 15557",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1097143,
+            "range": "± 11168",
             "unit": "ns/iter"
           }
         ]
