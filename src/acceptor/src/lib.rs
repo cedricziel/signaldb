@@ -85,6 +85,7 @@ pub async fn init_acceptor_resources(
     // Extract catalog and auth config BEFORE moving service_bootstrap into InMemoryFlightTransport
     let catalog = Arc::new(service_bootstrap.catalog().clone());
     let auth_config = service_bootstrap.config().auth.clone();
+    let wal_settings = service_bootstrap.config().wal.clone();
 
     // Initialize Flight transport with catalog-aware discovery
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
@@ -107,16 +108,19 @@ pub async fn init_acceptor_resources(
         config
     }
 
-    let wal_manager = Arc::new(WalManager::new(
-        // traces - baseline configuration
-        wal_config(&wal_dir, 64, 1000, 30),
-        // logs - higher volume, more frequent flushes
-        wal_config(&wal_dir, 64, 2000, 15),
-        // metrics - highest volume, most aggressive flushing
-        wal_config(&wal_dir, 128, 5000, 10),
-        // profiles - large payloads, lower entry count
-        wal_config(&wal_dir, 256, 500, 60),
-    ));
+    let wal_manager = Arc::new(
+        WalManager::new(
+            // traces - baseline configuration
+            wal_config(&wal_dir, 64, 1000, 30),
+            // logs - higher volume, more frequent flushes
+            wal_config(&wal_dir, 64, 2000, 15),
+            // metrics - highest volume, most aggressive flushing
+            wal_config(&wal_dir, 128, 5000, 10),
+            // profiles - large payloads, lower entry count
+            wal_config(&wal_dir, 256, 500, 60),
+        )
+        .with_max_instances(wal_settings.max_instances),
+    );
 
     tracing::info!(
         wal_dir = %wal_dir.display(),
@@ -134,6 +138,7 @@ pub async fn init_acceptor_resources(
             tracing::warn!(error = %e, "Failed to discover existing WALs");
         }
     }
+    wal_manager.warn_if_fd_headroom_thin("acceptor").await;
 
     // Background retry consumer: re-forwards unprocessed WAL entries whose
     // inline forward to the writer failed, and marks them processed so
