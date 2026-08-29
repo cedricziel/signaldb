@@ -351,6 +351,25 @@ pub struct WalConfig {
     pub flush_interval: Duration,
     /// Maximum size in bytes to buffer before flushing to object store
     pub max_buffer_size_bytes: usize,
+    /// Soft cap on WAL instances the [`crate::wal::manager::WalManager`]
+    /// cache holds at once, per service. On a cache miss the manager tries
+    /// to evict its least-recently-appended, fully drained, unreferenced WAL
+    /// to make room; if nothing qualifies the write proceeds over the cap
+    /// rather than failing. `0` disables the cap (unbounded).
+    ///
+    /// Sized against descriptor cost: each open WAL holds 3 file
+    /// descriptors, so the default of 256 implies 256 × 3 + 128 (reserved
+    /// for listeners, the object store, the catalog, Flight connections) =
+    /// 896, comfortably under the common 1024 `RLIMIT_NOFILE` soft limit. On
+    /// a raised limit, a reasonable cap is `(soft_limit − 128) / 3`.
+    ///
+    /// Environment: `SIGNALDB__WAL__MAX_INSTANCES`.
+    #[serde(default = "default_wal_max_instances")]
+    pub max_instances: usize,
+}
+
+fn default_wal_max_instances() -> usize {
+    crate::wal::manager::WalManager::DEFAULT_MAX_INSTANCES
 }
 
 impl WalConfig {
@@ -380,6 +399,7 @@ impl Default for WalConfig {
             max_buffer_entries: 1000,
             flush_interval: Duration::from_secs(30),
             max_buffer_size_bytes: 128 * 1024 * 1024, // 128MB
+            max_instances: default_wal_max_instances(),
         }
     }
 }
@@ -1968,6 +1988,27 @@ mod tests {
             );
             Ok(())
         });
+    }
+
+    #[test]
+    fn wal_config_toml_without_max_instances_uses_the_default() {
+        // `WalConfig` has no struct-level `#[serde(default)]` (see the
+        // comment above `max_instances`'s field-level one), so this proves
+        // that annotation, not Figment's defaults-first merge, is what keeps
+        // a `[wal]` block written before this field existed parseable.
+        let toml = r#"
+            wal_dir = ".data/wal"
+            max_segment_size = 67108864
+            max_buffer_entries = 1000
+            flush_interval = "30s"
+            max_buffer_size_bytes = 134217728
+        "#;
+        let wal: WalConfig =
+            toml::from_str(toml).expect("a [wal] block without max_instances must still parse");
+        assert_eq!(
+            wal.max_instances,
+            crate::wal::manager::WalManager::DEFAULT_MAX_INSTANCES
+        );
     }
 
     #[test]
