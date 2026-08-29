@@ -878,18 +878,16 @@ impl WalManager {
             return;
         }
 
-        let count = self.wals.lock().await.len();
-        if count < self.max_instances {
-            return;
-        }
-
-        let mut candidates: Vec<(WalKey, u64)> = self
-            .wals
-            .lock()
-            .await
-            .iter()
-            .map(|(key, wal)| (key.clone(), wal.last_append_secs()))
-            .collect();
+        let mut candidates: Vec<(WalKey, u64)> = {
+            let wals = self.wals.lock().await;
+            if wals.len() < self.max_instances {
+                return;
+            }
+            wals.iter()
+                .map(|(key, wal)| (key.clone(), wal.last_append_secs()))
+                .collect()
+        };
+        let count = candidates.len();
         candidates.sort_by_key(|(_, last_append_secs)| *last_append_secs);
 
         for (key, _) in candidates {
@@ -948,10 +946,11 @@ impl WalManager {
     /// configured cap and its currently-open WAL count, so the check reflects
     /// what startup discovery actually opened rather than just the cap.
     pub async fn warn_if_fd_headroom_thin(&self, service: &str) {
+        let open = self.wal_count().await as u64;
         let expected = if self.max_instances == 0 {
-            self.wal_count().await as u64
+            open
         } else {
-            (self.max_instances as u64).max(self.wal_count().await as u64)
+            (self.max_instances as u64).max(open)
         };
         rlimit::warn_on_thin_fd_headroom(service, expected, self.max_instances);
     }
