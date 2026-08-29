@@ -109,6 +109,8 @@ through membership roles.
 | **DataFusion**        | Per-tenant catalog in SessionContext                |
 | **Storage Backend**   | Per-dataset storage override                        |
 
+Per-tenant WAL instances are cached and reopened on demand, but the cache is soft-capped (`[wal].max_instances`, default 256); see `docs/operations/wal-persistence.md#instance-cap`.
+
 ## Slug-Based Naming
 
 All storage paths and Iceberg identifiers use **slugs** (URL-friendly), not raw IDs.
@@ -273,16 +275,16 @@ OAuth-consent cases). `get_schema` uses the same rule (it used to require
 `is_instance_admin`). `create_tenant` stays `is_instance_admin`-only; keys
 create tenants through the admin API.
 
-| Endpoint                                        | Methods       | Description                                     | SDK operation                                         |
-| ----------------------------------------------- | ------------- | ----------------------------------------------- | ----------------------------------------------------- |
-| `/api/v1/manage/tenants`                        | POST          | Create a tenant (instance-admin session only)   | `manage_create_tenant`                                |
-| `/api/v1/manage/tenants/{id}/datasets`          | GET, POST     | List/create datasets                            | `manage_list_datasets`, `manage_create_dataset`       |
-| `/api/v1/manage/tenants/{id}/datasets/{name}`   | DELETE        | Delete a dataset by name                        | `manage_delete_dataset`                               |
-| `/api/v1/manage/tenants/{id}/api-keys`          | GET, POST     | List/create API keys                            | `manage_list_api_keys`, `manage_create_api_key`       |
-| `/api/v1/manage/tenants/{id}/api-keys/{key_id}` | DELETE, PATCH | Revoke / update an API key                      | `manage_revoke_api_key`, `manage_update_api_key`      |
-| `/api/v1/manage/tenants/{id}/memberships`       | GET, PUT      | List / upsert a member's role                   | `manage_list_memberships`, `manage_upsert_membership` |
-| `/api/v1/manage/tenants/{id}/memberships/{uid}` | DELETE        | Remove a member                                 | `manage_remove_membership`                            |
-| `/api/v1/manage/schema`                         | GET           | Logical + physical schema                       | `manage_get_schema`                                   |
+| Endpoint                                        | Methods       | Description                                   | SDK operation                                         |
+| ----------------------------------------------- | ------------- | --------------------------------------------- | ----------------------------------------------------- |
+| `/api/v1/manage/tenants`                        | POST          | Create a tenant (instance-admin session only) | `manage_create_tenant`                                |
+| `/api/v1/manage/tenants/{id}/datasets`          | GET, POST     | List/create datasets                          | `manage_list_datasets`, `manage_create_dataset`       |
+| `/api/v1/manage/tenants/{id}/datasets/{name}`   | DELETE        | Delete a dataset by name                      | `manage_delete_dataset`                               |
+| `/api/v1/manage/tenants/{id}/api-keys`          | GET, POST     | List/create API keys                          | `manage_list_api_keys`, `manage_create_api_key`       |
+| `/api/v1/manage/tenants/{id}/api-keys/{key_id}` | DELETE, PATCH | Revoke / update an API key                    | `manage_revoke_api_key`, `manage_update_api_key`      |
+| `/api/v1/manage/tenants/{id}/memberships`       | GET, PUT      | List / upsert a member's role                 | `manage_list_memberships`, `manage_upsert_membership` |
+| `/api/v1/manage/tenants/{id}/memberships/{uid}` | DELETE        | Remove a member                               | `manage_remove_membership`                            |
+| `/api/v1/manage/schema`                         | GET           | Logical + physical schema                     | `manage_get_schema`                                   |
 
 CLI (`signaldb_cli::commands::tenant_self`, API key with `tenant:manage`):
 `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`,
@@ -339,20 +341,20 @@ API keys keep the existing fast SHA-256 path — the split is entropy-based.
 
 ## Key Implementation Files
 
-| File                                           | Purpose                                                           |
-| ---------------------------------------------- | ----------------------------------------------------------------- |
-| `src/common/src/config/mod.rs`                 | Tenant/dataset config structs                                     |
-| `src/common/src/auth/`                         | Authenticator, TenantContext, middleware, validation              |
-| `src/common/src/auth/password.rs`              | Argon2id password hashing + opaque session tokens                 |
-| `src/common/src/catalog_manager.rs`            | Slug resolution                                                   |
-| `src/router/src/endpoints/admin.rs`            | Admin API endpoints (incl. quota checks)                          |
+| File                                           | Purpose                                                                            |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `src/common/src/config/mod.rs`                 | Tenant/dataset config structs                                                      |
+| `src/common/src/auth/`                         | Authenticator, TenantContext, middleware, validation                               |
+| `src/common/src/auth/password.rs`              | Argon2id password hashing + opaque session tokens                                  |
+| `src/common/src/catalog_manager.rs`            | Slug resolution                                                                    |
+| `src/router/src/endpoints/admin.rs`            | Admin API endpoints (incl. quota checks)                                           |
 | `src/router/src/endpoints/management.rs`       | Management API endpoints (tenant admin or `tenant:manage` key; `authorize_tenant`) |
-| `src/router/src/endpoints/tenant.rs`           | Tenant self-service API endpoints (API-key-friendly)              |
-| `src/router/src/endpoints/session.rs`          | UI session login/logout + whoami endpoints                        |
-| `src/common/src/auth/session.rs`               | Session cookie codec (`signaldb_session`)                         |
-| `src/common/src/ratelimit.rs`                  | Per-tenant token-bucket rate limiter                              |
-| `src/signaldb-cli/`                            | CLI for tenant management                                         |
-| `src/signaldb-cli/src/commands/tenant_self.rs` | `tenant table` group (only the API-key-friendly surface)          |
-| `src/mcp-server/src/server.rs`                 | MCP tools, incl. platform-admin and `tenant_*` families           |
+| `src/router/src/endpoints/tenant.rs`           | Tenant self-service API endpoints (API-key-friendly)                               |
+| `src/router/src/endpoints/session.rs`          | UI session login/logout + whoami endpoints                                         |
+| `src/common/src/auth/session.rs`               | Session cookie codec (`signaldb_session`)                                          |
+| `src/common/src/ratelimit.rs`                  | Per-tenant token-bucket rate limiter                                               |
+| `src/signaldb-cli/`                            | CLI for tenant management                                                          |
+| `src/signaldb-cli/src/commands/tenant_self.rs` | `tenant table` group (only the API-key-friendly surface)                           |
+| `src/mcp-server/src/server.rs`                 | MCP tools, incl. platform-admin and `tenant_*` families                            |
 
 Under `[compactor.attr_promotion]` (auto-promotion decision pass), a tenant's resolved materialized-label allowlist is the _pinned_ set: those keys are never demotion candidates.

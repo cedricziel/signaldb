@@ -237,8 +237,11 @@ async fn main() -> Result<()> {
 
     // One WAL per tenant/dataset/signal (#932); WALs left by a previous run
     // are opened now so their pending entries drain.
-    let writer_wal_manager = Arc::new(WalManager::uniform(writer_wal_config));
+    let writer_wal_manager = Arc::new(
+        WalManager::uniform(writer_wal_config).with_max_instances(config.wal.max_instances),
+    );
     writer::cli::open_existing_writer_wals(&writer_wal_manager).await;
+    writer_wal_manager.warn_if_fd_headroom_thin("writer").await;
 
     // Create Iceberg-based Flight ingestion service with CatalogManager
     let writer_flight_service = IcebergWriterFlightService::new(

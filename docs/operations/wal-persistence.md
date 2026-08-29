@@ -50,11 +50,12 @@ The WAL base directory is set in the `[wal]` TOML section and applies to both se
 
 ### Environment Variables
 
-| Variable                 | Default              | Description                                                 |
-| ------------------------ | -------------------- | ----------------------------------------------------------- |
-| `ACCEPTOR_WAL_DIR`       | `{wal_dir}/acceptor` | Full WAL directory for acceptor service (override)          |
-| `WRITER_WAL_DIR`         | `{wal_dir}/writer`   | Full WAL directory for writer service (override)            |
-| `SIGNALDB__WAL__WAL_DIR` | `.data/wal`          | Base WAL directory (figment; equivalent to `[wal].wal_dir`) |
+| Variable                       | Default              | Description                                                                                 |
+| ------------------------------ | -------------------- | ------------------------------------------------------------------------------------------- |
+| `ACCEPTOR_WAL_DIR`             | `{wal_dir}/acceptor` | Full WAL directory for acceptor service (override)                                          |
+| `WRITER_WAL_DIR`               | `{wal_dir}/writer`   | Full WAL directory for writer service (override)                                            |
+| `SIGNALDB__WAL__WAL_DIR`       | `.data/wal`          | Base WAL directory (figment; equivalent to `[wal].wal_dir`)                                 |
+| `SIGNALDB__WAL__MAX_INSTANCES` | `256`                | Soft cap on cached WAL instances per service (figment; equivalent to `[wal].max_instances`) |
 
 There are no `[wal.acceptor]`/`[wal.writer]` TOML subsections; the per-service overrides are env/CLI only.
 
@@ -69,9 +70,10 @@ max_segment_size = 67108864     # 64MB segments
 max_buffer_entries = 1000       # Buffer 1000 entries
 flush_interval = "30s"          # Flush every 30 seconds
 max_buffer_size_bytes = 134217728  # 128MB
+max_instances = 256             # Soft cap on cached WAL instances; 0 = unbounded
 ```
 
-Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — of the `[wal]` settings, only `wal_dir` changes runtime behavior today.
+Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — of the `[wal]` settings, `wal_dir` and `max_instances` change runtime behavior today.
 
 `max_segment_size` caps **both** the entry-log file and the payload data file. Because payloads dominate size (the log holds only fixed-size per-entry metadata), rotation is driven in practice by the data file crossing the cap; a segment is sealed and a new one started before either file exceeds it. This keeps individual segments small, bounds recovery cost, and keeps data-file offsets well clear of the 4 GB (2³²) range.
 
@@ -292,6 +294,37 @@ traffic arrived.
 
 `signaldb.wal.instances` is the gauge to watch; it now goes down as well as up.
 A count that keeps climbing with no traffic growth means WALs are not draining.
+
+### Instance cap
+
+Idle eviction only reclaims WALs that have gone _quiet_. It does nothing for a
+deployment whose concurrently-**active** `(tenant, dataset, signal)`
+cardinality alone is large enough to exhaust `RLIMIT_NOFILE`: a WAL touched by
+every idle window (that is what "actively written" means) never crosses the
+threshold, so idleness alone does not bound how many instances a busy fleet
+holds open at once.
+
+`[wal].max_instances` (default 256, `0` = unbounded) adds a second, soft
+bound on top of idle eviction. On a cache miss, `WalManager` tries to evict
+the least-recently-appended WAL that is **provably drained and
+unreferenced** — no buffered or unprocessed entries, and no caller still
+holding a clone of it — with a 5-second minimum idleness to damp thrashing
+under normal traffic. The cap only ever bounds this drained, unreferenced
+tail: a WAL with entries outstanding, or one a writer currently holds, is
+never a candidate, so a backlogged startup discovery pass (or a fleet that
+writes every key more often than 5 seconds) can legitimately sit — and the
+`signaldb.wal.instances` gauge legitimately read — above the configured cap.
+The cap is a soft target, not a hard ceiling: **a write is never failed to
+honour it.** When nothing qualifies for eviction, the write proceeds over the
+cap and `signaldb.wal.instance_cap_hits{outcome="over_cap"}` counts it,
+alongside a warning logged at most once a minute.
+
+At startup, after WAL discovery, each service also compares its
+`RLIMIT_NOFILE` soft limit against the descriptor demand implied by
+`max(max_instances, currently-open WAL count) × 3 fds + a fixed reserve` and
+logs a warning — never a hard failure — when that headroom looks thin. Raise
+`RLIMIT_NOFILE` (`ulimit -n`), or lower `[wal].max_instances`, whichever the
+deployment can do.
 
 ### Data Flow with WAL
 
@@ -547,7 +580,8 @@ Tuning WAL throughput today means tuning the storage underneath it (see Storage 
 - **WAL Flush Latency**: Monitor write performance (`signaldb.wal.flush.duration`)
 - **WAL Errors**: Alert on WAL operation failures
 - **Unprocessed Entries**: Monitor processing lag (`signaldb.wal.entries_pending`)
-- **Open WAL instances** (`signaldb.wal.instances`): one per tenant/dataset/signal, opened on first write and never closed. Each holds three file descriptors and a flush timer, so this gauge is the early warning for file-descriptor pressure in a deployment that keeps adding tenants
+- **Open WAL instances** (`signaldb.wal.instances`): one per tenant/dataset/signal, opened on first write, closed by idle eviction or the `[wal].max_instances` cap. Each holds three file descriptors and a flush timer, so this gauge is the early warning for file-descriptor pressure in a deployment that keeps adding tenants
+- **Instance cap hits** (`signaldb.wal.instance_cap_hits`): a `get_wal` miss that found the cache at or over `[wal].max_instances`, labelled `outcome="evicted"` or `outcome="over_cap"`. A sustained `over_cap` rate means the cap is too low for how often this deployment's WALs are actually written
 - **Skipped WALs** (`signaldb.wal.list_failures`): a WAL whose entries could not be listed is skipped for that processing cycle; a non-zero rate means some tenant's backlog is not draining
 
 ### Health Check Endpoints

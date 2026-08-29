@@ -23,7 +23,8 @@ changed if you had dashboards on the old names.
 This page covers spans only. Counter/histogram/gauge instruments (e.g.
 `signaldb.wal.entries_written`, `signaldb.wal.corrupt_entries` with its
 `record=log|data` attribute, `signaldb.wal.instances`,
-`signaldb.wal.list_failures`) are defined
+`signaldb.wal.instance_cap_hits` with its `outcome=evicted|over_cap`
+attribute, `signaldb.wal.list_failures`) are defined
 in `src/common/src/self_monitoring/app_metrics.rs`; WAL-specific ones are
 documented alongside their recovery behavior in
 [WAL Persistence](wal-persistence.md#monitoring-and-alerting).

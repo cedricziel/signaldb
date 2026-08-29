@@ -220,6 +220,13 @@ max_segment_size = 67108864           # 64MB
 max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728     # 128MB
+# Soft cap on cached WAL instances per service (one per active
+# tenant/dataset/signal). A write is never failed to honour it: on a cache
+# miss over the cap, the least-recently-appended drained, unreferenced WAL is
+# evicted to make room, or the write proceeds over the cap if nothing
+# qualifies. 0 = unbounded. Sizing: 3 fds/WAL, so 256*3+128 fits a 1024
+# RLIMIT_NOFILE soft limit; on a raised limit use (soft_limit - 128) / 3.
+max_instances = 256
 
 [querier]
 # Querier resource limits — bound what a single query (or tenant) can do
