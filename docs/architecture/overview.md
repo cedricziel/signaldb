@@ -39,6 +39,7 @@ Write-Ahead Logging ensures data persistence and crash recovery:
 - **Per-tenant/dataset isolation on the append path**: Both the acceptor and the writer hold a separate WAL instance — own segments, own flush mutex, own dead-letter directory — per tenant, dataset, and signal type, so one tenant's corrupted segment or slow fsync cannot block another tenant's `append`/`flush`. The writer's _drain_ is still one sequential loop over those WALs, so a tenant with slow Iceberg commits delays the others' commit latency within a cycle; failure is isolated, latency is not
 - **Record integrity**: Every WAL record is length-framed and CRC-32 checked, so corruption is attributed to one entry and skipped rather than poisoning a segment
 - **Segment management**: Automatic rotation, compaction, and cleanup of processed segments
+- **Bounded instance cache**: Idle eviction alone cannot bound a fleet whose _active_ tenant/dataset/signal cardinality exhausts `RLIMIT_NOFILE`, so `WalManager`'s cache also carries a soft `[wal].max_instances` cap, evicting the least-recently-appended drained, unreferenced WAL rather than ever failing a write
 
 ### 3. Dual Catalog System
 
@@ -91,8 +92,8 @@ Parquet storage with DataFusion query processing:
 | **prometheus-api**    | `src/prometheus-api/`        | Library    | Prometheus HTTP API response types (PromQL query surface)                                                                                                                                |
 | **logql**             | `src/logql/`                 | Library    | LogQL lexer, AST, and parser — syntax only, no product dependency; published as `logql-parser`                                                                                           |
 | **traceql**           | `src/traceql/`               | Library    | TraceQL parser for the supported equality subset — syntax only, no product dependency; published as `traceql-parser`                                                                     |
-| **query-ir**          | `src/query-ir/`              | Library    | Signal-agnostic query IR: document model, validation, field resolution — leaf crate, not published; re-exported as `common::query_ir`                                                     |
-| **ql-ir**             | `src/ql-ir/`                 | Library    | Lowers parsed LogQL/TraceQL onto the query IR — no FDAP dependency, so query text can become an executable document without the engine; not published                                     |
+| **query-ir**          | `src/query-ir/`              | Library    | Signal-agnostic query IR: document model, validation, field resolution — leaf crate, not published; re-exported as `common::query_ir`                                                    |
+| **ql-ir**             | `src/ql-ir/`                 | Library    | Lowers parsed LogQL/TraceQL onto the query IR — no FDAP dependency, so query text can become an executable document without the engine; not published                                    |
 | **schema-model**      | `src/schema-model/`          | Library    | OTel Weaver semantic-convention model: parser, resolver (flat attribute/entity/metric definitions), and the validator applied to custom schema registries                                |
 | **signaldb-bin**      | `src/signaldb-bin/`          | Binary     | The `signaldb` executable: monolith by default, or one service via a subcommand (`signaldb router`, …); every service crate exposes `cli::Args` + `cli::run`                             |
 | **signaldb-api**      | `src/signaldb-api/`          | Library    | Hand-written admin API DTOs (utoipa `ToSchema`); OpenAPI schema source — see [OpenAPI codegen](openapi-codegen.md)                                                                       |
@@ -197,10 +198,10 @@ flowchart LR
 
 **Purpose**: HTTP API gateway and query routing
 
-| Property       | Value                                                                                                                                                             |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Ports**      | HTTP: 3000, Flight: 50053                                                                                                                                         |
-| **Capability** | `Routing`                                                                                                                                                         |
+| Property       | Value                                                                                                                                                     |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**      | HTTP: 3000, Flight: 50053                                                                                                                                 |
+| **Capability** | `Routing`                                                                                                                                                 |
 | **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible, native Query IR (`POST /api/v1/query`), schema registry (`/api/v1/schema/*`), Admin API, OpenAPI |
 
 The router also serves the explore UI (a static SPA built from `src/ui`)

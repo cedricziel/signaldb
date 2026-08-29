@@ -65,9 +65,10 @@ max_segment_size = 67108864          # 64 MB
 max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728    # 128 MB
+max_instances = 256                  # soft cap on cached WAL instances; 0 = unbounded
 ```
 
-`wal_dir` is the base directory: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer` (default `.data/wal/acceptor` / `.data/wal/writer`). The service-specific env overrides `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (read directly by the binaries, not via figment; also available as `--wal-dir`) point at the full service directory and win over `[wal].wal_dir`. Sizing knobs use the double-underscore form: `SIGNALDB__WAL__MAX_SEGMENT_SIZE`, `SIGNALDB__WAL__MAX_BUFFER_ENTRIES`, `SIGNALDB__WAL__FLUSH_INTERVAL` (as does `SIGNALDB__WAL__WAL_DIR`).
+`wal_dir` is the base directory: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer` (default `.data/wal/acceptor` / `.data/wal/writer`). The service-specific env overrides `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (read directly by the binaries, not via figment; also available as `--wal-dir`) point at the full service directory and win over `[wal].wal_dir`. Sizing knobs use the double-underscore form: `SIGNALDB__WAL__MAX_SEGMENT_SIZE`, `SIGNALDB__WAL__MAX_BUFFER_ENTRIES`, `SIGNALDB__WAL__FLUSH_INTERVAL`, `SIGNALDB__WAL__MAX_INSTANCES` (as does `SIGNALDB__WAL__WAL_DIR`).
 
 ### Iceberg Schema Catalog
 

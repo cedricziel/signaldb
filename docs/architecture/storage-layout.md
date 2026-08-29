@@ -819,6 +819,16 @@ independent offset state, the desync class #883 fixed. For the same reason a
 closed segment _refuses_ appends instead of skipping the write while advancing
 offsets.
 
+Idleness alone does not bound a fleet whose concurrently-**active**
+tenant/dataset/signal cardinality exhausts `RLIMIT_NOFILE` — an actively
+written WAL is touched inside every idle window, so it is never an eviction
+candidate. `WalManager`'s cache is additionally bounded by a soft
+`[wal].max_instances` cap: on a cache miss, the least-recently-appended WAL
+that is drained (no buffered or unprocessed entries) and unreferenced (no
+caller holds a clone) is evicted to make room, using the same per-key init
+guard and map-lock removal as idle eviction so only one live `Wal` ever owns
+a directory (#883). A write is never failed to honour the cap.
+
 ### Segment Files
 
 Each WAL segment consists of three files:

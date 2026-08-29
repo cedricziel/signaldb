@@ -100,7 +100,10 @@ signaldb-cli query --sql "SELECT trace_id, span_name, service_name FROM traces L
 ```
 
 The acceptor writes to its WAL before acknowledging an export, so a
-successful export response means the data is durable.
+successful export response means the data is durable. Its per-tenant WAL
+cache is soft-capped (`[wal].max_instances`) and warns at startup when
+`RLIMIT_NOFILE` looks thin for the expected tenant count — see
+[WAL Persistence](../operations/wal-persistence.md#instance-cap).
 
 ## Per-signal support
 
