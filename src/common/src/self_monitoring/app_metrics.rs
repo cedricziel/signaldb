@@ -38,6 +38,10 @@ pub struct AppMetrics {
     pub wal_corrupt_entries: Counter<u64>,
     pub wal_list_failures: Counter<u64>,
     pub wal_instances: UpDownCounter<i64>,
+    // WAL instance cap (#1342): incremented once per `get_wal` miss that
+    // found the cache at or over `[wal].max_instances`, labelled by
+    // `outcome` (`evicted` | `over_cap`).
+    pub wal_instance_cap_hits: Counter<u64>,
 
     // Flight metrics
     pub flight_request_duration: Histogram<f64>,
@@ -234,6 +238,13 @@ impl AppMetrics {
                     "Open WAL instances held by this service, one per tenant/dataset/signal",
                 )
                 .with_unit("{wal}")
+                .build(),
+            wal_instance_cap_hits: meter
+                .u64_counter("signaldb.wal.instance_cap_hits")
+                .with_description(
+                    "WAL creations that found the instance cache at the configured cap",
+                )
+                .with_unit("{creation}")
                 .build(),
             flight_request_duration: meter
                 .f64_histogram("signaldb.flight.request.duration")
