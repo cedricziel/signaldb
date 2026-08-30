@@ -93,6 +93,22 @@ return key material.
 - **THEN** the create response contains the key exactly once and the list
   response contains no key material
 
+#### Scenario: Dataset discovery is available as a tool
+
+- **WHEN** a session calls `discover_datasets`
+- **THEN** the tool returns a Markdown list nesting the authenticated
+  tenant's datasets under it, marking the session's current default dataset
+  and each dataset's provisioned signal-table count
+
+#### Scenario: A mismatched tenant confirmation argument is rejected
+
+- **WHEN** a session passes a `tenant` argument to a query or lookup tool
+  that does not match its authenticated tenant
+- **THEN** the tool rejects the call with an error naming both tenants,
+  before any request reaches the router — a session's credential is bound to
+  exactly one tenant and this argument only confirms that binding, it never
+  switches tenants
+
 ### Requirement: MCP query results match the SDK's native shape
 
 A query invoked through an MCP tool SHALL return the same result the SDK

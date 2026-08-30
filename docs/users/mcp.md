@@ -31,6 +31,7 @@ these:
 | Tool                       | Purpose                                                                                                                                                                                                              |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `server_info`              | Confirm connectivity and which tenant your credential resolves to.                                                                                                                                                   |
+| `discover_datasets`        | The tenant and datasets your credential can access, as a nested Markdown list, marking the session's current default dataset. Call before passing an explicit `dataset` or `tenant` argument elsewhere.             |
 | `search_traces`            | TraceQL search over your tenant's traces.                                                                                                                                                                            |
 | `get_trace`                | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                                                                     |
 | `get_profile`              | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                                                                        |
@@ -62,6 +63,12 @@ session's default dataset; pass one to target another dataset your tenant may
 access (the router validates access and rejects the rest). Large results are
 capped and returned with a `truncated: true` flag telling the agent to narrow
 the query.
+
+Most of these tools also accept an optional `tenant` argument: a confirmation
+check, not a way to switch tenants. It must equal the tenant your credential
+already resolves to (`server_info`, `discover_datasets`) — one credential is
+always bound to exactly one tenant — and a mismatch fails the call with an
+error naming both tenants, before any request reaches the router.
 
 ### Operational control
 
