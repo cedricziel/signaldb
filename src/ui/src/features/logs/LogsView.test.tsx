@@ -136,6 +136,23 @@ describe("LogsView", () => {
     );
   });
 
+  it("opens and closes the mobile filters drawer", async () => {
+    routes();
+    renderView();
+    const toggleBtn = screen.getByRole("button", { name: "Filters" });
+    expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
+
+    await userEvent.click(toggleBtn);
+    expect(toggleBtn).toHaveAttribute("aria-expanded", "true");
+    const closeBtn = screen.getByRole("button", { name: /close/i });
+
+    await userEvent.click(closeBtn);
+    expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("button", { name: /close/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("pivots to the trace view from a log row", async () => {
     stubFetchRoutes([
       {

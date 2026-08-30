@@ -9,6 +9,11 @@ import {
   fetchErrorOccurrences,
   type ErrorGroup,
 } from "../../api/errors";
+import {
+  MobileFiltersToggle,
+  MobileSidebarDrawer,
+} from "../../components/MobileSidebarDrawer";
+import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import { ErrorFacets } from "./ErrorFacets";
 import { ErrorSparkline } from "./ErrorSparkline";
 import {
@@ -59,6 +64,7 @@ export function ErrorsView({ state, update }: Props) {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [filters, setFilters] = useState<ErrorFilter[]>([]);
   const [sort, toggle] = useSort("count", "desc");
+  const mobileSidebar = useMobileSidebar();
 
   const groupsQuery = useQuery({
     queryKey: ["error-groups", rangeKey],
@@ -136,13 +142,23 @@ export function ErrorsView({ state, update }: Props) {
         )}
       </div>
 
+      <MobileFiltersToggle
+        open={mobileSidebar.open}
+        onToggle={mobileSidebar.toggle}
+      />
+
       <div className="errors-body">
-        <ErrorFacets
-          groups={allGroups}
-          filters={filters}
-          onAddFilter={addFilter}
-          onRemoveFilter={removeFilter}
-        />
+        <MobileSidebarDrawer
+          open={mobileSidebar.open}
+          onClose={mobileSidebar.close}
+        >
+          <ErrorFacets
+            groups={allGroups}
+            filters={filters}
+            onAddFilter={addFilter}
+            onRemoveFilter={removeFilter}
+          />
+        </MobileSidebarDrawer>
         <div className="errors-main catalog-main">
           {groupsQuery.isError && (
             <div className="query-error" role="alert">
