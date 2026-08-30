@@ -36,7 +36,12 @@ import {
   EntitySparkline,
   type SparklinePoint,
 } from "./EntitySparkline";
+import {
+  MobileFiltersToggle,
+  MobileSidebarDrawer,
+} from "../../components/MobileSidebarDrawer";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 import "./catalog.css";
 
@@ -79,6 +84,7 @@ export function CatalogView({ state, update }: Props) {
     range,
     rangeKey,
   );
+  const mobileSidebar = useMobileSidebar();
   const resolved = resolveEntityType(state.catalogEntity, types);
 
   if (state.catalogPrimary !== "") {
@@ -109,28 +115,42 @@ export function CatalogView({ state, update }: Props) {
   const selected = resolved ?? types[0] ?? entityType(DEFAULT_ENTITY_TYPE)!;
 
   return (
-    <div className="catalog">
-      <CatalogNav
-        types={types}
-        selectedId={selected.id}
-        range={range}
-        rangeKey={rangeKey}
-        analyzed={analyzed}
-        asOf={asOf}
-        onSelect={(id) => update({ catalogEntity: id })}
+    <>
+      <MobileFiltersToggle
+        open={mobileSidebar.open}
+        onToggle={mobileSidebar.toggle}
       />
-      <EntityTable
-        key={selected.id}
-        entity={selected}
-        range={range}
-        rangeKey={rangeKey}
-        rangeSeconds={catalogRangeSeconds(range)}
-        sparkline
-        onRowClick={(values) =>
-          update({ catalogPrimary: compositeKey(values) }, { push: true })
-        }
-      />
-    </div>
+      <div className="catalog">
+        <MobileSidebarDrawer
+          open={mobileSidebar.open}
+          onClose={mobileSidebar.close}
+        >
+          <CatalogNav
+            types={types}
+            selectedId={selected.id}
+            range={range}
+            rangeKey={rangeKey}
+            analyzed={analyzed}
+            asOf={asOf}
+            onSelect={(id) => {
+              update({ catalogEntity: id });
+              mobileSidebar.close();
+            }}
+          />
+        </MobileSidebarDrawer>
+        <EntityTable
+          key={selected.id}
+          entity={selected}
+          range={range}
+          rangeKey={rangeKey}
+          rangeSeconds={catalogRangeSeconds(range)}
+          sparkline
+          onRowClick={(values) =>
+            update({ catalogPrimary: compositeKey(values) }, { push: true })
+          }
+        />
+      </div>
+    </>
   );
 }
 

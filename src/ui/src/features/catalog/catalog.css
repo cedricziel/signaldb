@@ -1,7 +1,18 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
 .catalog {
   display: flex;
   flex: 1;
   min-height: 0;
+}
+
+/* Below the tablet breakpoint the entity-type sidebar and the RED table
+   fight over ~375px of width and both lose — hide the sidebar behind the
+   MobileFiltersToggle/MobileSidebarDrawer instead (see CatalogView.tsx),
+   same mechanism Logs/Traces/Errors use for their facet sidebars. */
+@media (max-width: 900px) {
+  .catalog .sidebar {
+    display: none;
+  }
 }
 
 .catalog-main {
