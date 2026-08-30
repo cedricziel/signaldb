@@ -8,11 +8,13 @@
 //! SDK, it is always a separate service (a sidecar), never an in-process route on
 //! the router.
 //!
-//! It validates each caller credential with the router, pins each MCP session to
-//! that identity, and forwards the original request headers to the router on
-//! every downstream call. The router is the sole authority on whether the
-//! credential is valid and what it may access; rejected credentials become an
-//! HTTP `401` so MCP clients can refresh them.
+//! It validates each caller credential with the router on every request and
+//! forwards the original request headers to the router on every downstream
+//! call. A session may accumulate several distinct, independently
+//! router-authenticated identities (different tenants and/or credentials
+//! across calls), bounded by a per-session cap. The router is the sole
+//! authority on whether the credential is valid and what it may access;
+//! rejected credentials become an HTTP `401` so MCP clients can refresh them.
 //!
 //! MCP is served over Streamable HTTP at `/mcp` on this service's own port.
 
@@ -105,14 +107,20 @@ impl OAuthResource {
     }
 }
 
-/// The stable identity a session is pinned to. API keys remain tied to their
-/// exact credential, while OAuth access-token refreshes preserve the router-
-/// resolved user and tenant.
-#[derive(Clone, PartialEq, Eq)]
+/// One identity resolved for a request on a session. API keys are keyed by
+/// their exact credential, while OAuth access-token refreshes collapse onto
+/// the same entry via the router-resolved user and tenant.
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum SessionBinding {
     ApiKey { tenant_id: String, token_hash: u64 },
     OAuth { user_id: String, tenant_id: String },
 }
+
+/// Bounds how many distinct tenant/credential identities one `mcp-session-id`
+/// may accumulate. This is a light safety net against unbounded per-session
+/// growth, not a real security control — every identity still has to
+/// independently pass router auth before it is added.
+const MAX_IDENTITIES_PER_MCP_SESSION: usize = 16;
 
 /// Shared state for the MCP HTTP surface. Holds no credential of its own —
 /// only the router URL it forwards to and the per-session identity bindings.
@@ -122,10 +130,12 @@ pub struct McpAppState {
     pub router_base_url: String,
     /// Overall timeout for each downstream request to the router.
     pub router_timeout: Duration,
-    /// Pins each MCP session (keyed by `mcp-session-id`) to the identity seen
-    /// on its first request, so a session cannot be reused under a different
-    /// tenant or credential mid-stream.
-    session_bindings: Arc<DashMap<String, SessionBinding>>,
+    /// The set of distinct identities seen so far on each MCP session (keyed
+    /// by `mcp-session-id`). A session may accumulate several independently
+    /// router-authenticated identities (different tenants and/or
+    /// credentials) up to [`MAX_IDENTITIES_PER_MCP_SESSION`]; this is
+    /// bookkeeping for that cap, not a tenant-pinning mechanism.
+    session_bindings: Arc<DashMap<String, std::collections::HashSet<SessionBinding>>>,
     /// OAuth resource metadata to advertise, when the deployment enables OAuth.
     oauth: Option<OAuthResource>,
     /// Per-session bound on tool calls in flight (`[mcp].max_concurrent_tool_calls`).
@@ -297,9 +307,11 @@ fn unauthorized_challenge(state: &McpAppState, message: &'static str) -> Respons
 }
 
 /// Require a router-validated bearer token before the request reaches the MCP
-/// transport, then pin the session to the presented identity. A router-rejected
-/// credential becomes an HTTP `401` with a discovery challenge, allowing MCP
-/// clients to refresh it before a JSON-RPC response is produced.
+/// transport, then record the presented identity against the session (up to
+/// [`MAX_IDENTITIES_PER_MCP_SESSION`] distinct identities per session). A
+/// router-rejected credential becomes an HTTP `401` with a discovery
+/// challenge, allowing MCP clients to refresh it before a JSON-RPC response
+/// is produced.
 ///
 /// An OAuth access token (recognized by its prefix) carries its own tenant, so
 /// `X-Tenant-ID` is not required for it. An API key still requires the tenant
@@ -368,9 +380,10 @@ async fn mcp_auth_middleware(
         .extensions
         .insert(audit::CallerTenant(identity.tenant.id.clone()));
 
-    // Pin the session to this identity. A request that carries an established
-    // `mcp-session-id` but resolves to a different tenant or credential is a
-    // session-reuse attempt and is refused.
+    // Record this identity against the session. A session may accumulate
+    // several distinct, independently router-authenticated identities
+    // (different tenants and/or credentials) up to the per-session cap;
+    // beyond that the request is refused.
     if let Some(session_id) = parts
         .headers
         .get("mcp-session-id")
@@ -393,17 +406,31 @@ async fn mcp_auth_middleware(
                 token_hash: token_hash(&token),
             }
         };
-        if let Some(existing) = state.session_bindings.get(&session_id) {
-            if *existing != binding {
-                tracing::warn!(%session_id, "MCP session identity mismatch — refusing reuse");
-                return (
-                    StatusCode::FORBIDDEN,
-                    "session is bound to a different identity",
-                )
-                    .into_response();
+        // Fast path: a read lock and no allocation for the overwhelmingly
+        // common case of an identity already recorded on this session. Only
+        // the cold path (a new session, or a new identity for it — at most
+        // `MAX_IDENTITIES_PER_MCP_SESSION` times per session) takes the
+        // per-shard write lock.
+        let already_known = state
+            .session_bindings
+            .get(&session_id)
+            .is_some_and(|identities| identities.contains(&binding));
+        if !already_known {
+            let mut identities = state
+                .session_bindings
+                .entry(session_id.clone())
+                .or_default();
+            if !identities.contains(&binding) {
+                if identities.len() >= MAX_IDENTITIES_PER_MCP_SESSION {
+                    tracing::warn!(%session_id, "MCP session identity limit reached — refusing new identity");
+                    return (
+                        StatusCode::FORBIDDEN,
+                        "session has reached its distinct-identity limit",
+                    )
+                        .into_response();
+                }
+                identities.insert(binding);
             }
-        } else {
-            state.session_bindings.insert(session_id, binding);
         }
     }
 
@@ -516,7 +543,7 @@ mod tests {
     }
 
     async fn spawn_oauth_identity_router(
-        identities: Vec<(&'static str, &'static str, &'static str)>,
+        identities: Vec<(String, String, String)>,
     ) -> (String, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
@@ -708,12 +735,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_session_allows_token_rotation_only_for_the_same_resolved_identity() {
+    async fn oauth_session_allows_multiple_resolved_identities() {
+        // A session may accumulate several distinct, independently
+        // router-authenticated identities: token rotation for the same
+        // identity, a different user, and a different tenant are all
+        // accepted on the same `mcp-session-id`.
         let (router_url, router) = spawn_oauth_identity_router(vec![
-            ("sdb_at_original", "user-a", "acme"),
-            ("sdb_at_refreshed", "user-a", "acme"),
-            ("sdb_at_other_user", "user-b", "acme"),
-            ("sdb_at_other_tenant", "user-a", "globex"),
+            (
+                "sdb_at_original".to_string(),
+                "user-a".to_string(),
+                "acme".to_string(),
+            ),
+            (
+                "sdb_at_refreshed".to_string(),
+                "user-a".to_string(),
+                "acme".to_string(),
+            ),
+            (
+                "sdb_at_other_user".to_string(),
+                "user-b".to_string(),
+                "acme".to_string(),
+            ),
+            (
+                "sdb_at_other_tenant".to_string(),
+                "user-a".to_string(),
+                "globex".to_string(),
+            ),
         ])
         .await;
         let app = mcp_http_router(McpAppState::new(router_url), &[]);
@@ -746,13 +793,65 @@ mod tests {
             .oneshot(request("sdb_at_other_user"))
             .await
             .expect("MCP response");
-        assert_eq!(other_user.status(), StatusCode::FORBIDDEN);
+        assert_ne!(other_user.status(), StatusCode::FORBIDDEN);
 
         let other_tenant = app
             .oneshot(request("sdb_at_other_tenant"))
             .await
             .expect("MCP response");
-        assert_eq!(other_tenant.status(), StatusCode::FORBIDDEN);
+        assert_ne!(other_tenant.status(), StatusCode::FORBIDDEN);
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn session_identity_cap_rejects_beyond_the_limit() {
+        // Drive MAX_IDENTITIES_PER_MCP_SESSION distinct identities through the
+        // same session id — all accepted — then one more, which must be
+        // rejected once the cap is reached.
+        let identities: Vec<(String, String, String)> = (0..MAX_IDENTITIES_PER_MCP_SESSION + 1)
+            .map(|i| {
+                (
+                    format!("sdb_at_user{i}"),
+                    format!("user-{i}"),
+                    format!("tenant-{i}"),
+                )
+            })
+            .collect();
+        let (router_url, router) = spawn_oauth_identity_router(identities.clone()).await;
+        let app = mcp_http_router(McpAppState::new(router_url), &[]);
+        let request = |token: &str| {
+            RequestBuilder::new()
+                .method("POST")
+                .uri("/mcp")
+                .header("authorization", format!("Bearer {token}"))
+                .header("mcp-session-id", "capped-session")
+                .body(Body::empty())
+                .expect("build request")
+        };
+
+        for (token, _, _) in identities.iter().take(MAX_IDENTITIES_PER_MCP_SESSION) {
+            let response = app
+                .clone()
+                .oneshot(request(token))
+                .await
+                .expect("MCP response");
+            assert_ne!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "identity {token} should be within the cap"
+            );
+        }
+
+        let (last_token, _, _) = &identities[MAX_IDENTITIES_PER_MCP_SESSION];
+        let over_cap = app
+            .oneshot(request(last_token))
+            .await
+            .expect("MCP response");
+        assert_eq!(
+            over_cap.status(),
+            StatusCode::FORBIDDEN,
+            "identity beyond the cap must be refused"
+        );
         router.await.expect("mock router task panicked");
     }
 
@@ -865,9 +964,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_bound_to_first_identity() {
-        // A session pinned to tenant `acme` cannot be reused by a different
-        // identity (tenant `other`, different token) on the same session id.
+    async fn session_allows_a_second_api_key_identity() {
+        // A session that has already seen one API key identity (tenant
+        // `acme`) may be reused by a different, independently
+        // router-authenticated identity (tenant `other`, different token) on
+        // the same session id — each is validated by the router on its own.
         let (router_url, router) = spawn_whoami_router("200 OK", 2).await;
         let app = mcp_http_router(McpAppState::new(router_url), &[]);
 
@@ -900,7 +1001,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(reused.status(), StatusCode::FORBIDDEN);
+        assert_ne!(reused.status(), StatusCode::FORBIDDEN);
         router.await.expect("mock router task panicked");
     }
 
