@@ -92,6 +92,13 @@ export const ALL_SCOPES: ReadonlyArray<ApiKeyScope> = SCOPE_GROUPS.flatMap(
   (group) => group.scopes.map((entry) => entry.scope),
 );
 
+/** The Ingestion group's scopes: a key without at least one of these can't
+ * ingest any OTLP signal, so the create form pre-checks all of them. */
+export const INGEST_SCOPES: ReadonlyArray<ApiKeyScope> =
+  SCOPE_GROUPS.find((group) => group.name === "Ingestion")?.scopes.map(
+    (entry) => entry.scope,
+  ) ?? [];
+
 /** API key as returned by the management API. Structurally the generated
  * wire type (scopes surface as `string[]`). */
 export type ManagedApiKey = ManageApiKeyResponse;

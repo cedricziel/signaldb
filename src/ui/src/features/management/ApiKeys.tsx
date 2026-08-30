@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Navigate } from "react-router";
 import {
   ALL_SCOPES,
+  INGEST_SCOPES,
   SCOPE_GROUPS,
   createApiKey,
   listApiKeys,
@@ -185,7 +186,7 @@ export function ApiKeys() {
           </select>
           <ScopePicker
             idPrefix="create"
-            checked={(scope) => scope === "metrics:write"}
+            checked={(scope) => INGEST_SCOPES.includes(scope)}
           />
           <button type="submit" disabled={createMutation.isPending}>
             Create API key

@@ -30,6 +30,31 @@ afterEach(() => {
 
 const TABLES_PATH = "/api/v1/tenants/acme/tables";
 
+describe("ManagementPanel API key creation form", () => {
+  it("pre-checks all four ingestion scopes by default", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
+    ]);
+
+    renderPanel();
+
+    for (const scope of [
+      "metrics:write",
+      "logs:write",
+      "traces:write",
+      "profiles:write",
+    ]) {
+      await waitFor(() =>
+        expect(
+          document.querySelector<HTMLInputElement>(`input[name="${scope}"]`),
+        ).toBeChecked(),
+      );
+    }
+  });
+});
+
 describe("ManagementPanel tables section", () => {
   it("lists the tenant's provisioned signal tables", async () => {
     stubFetchRoutes([

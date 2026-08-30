@@ -228,11 +228,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                 <legend>Ingestion scopes</legend>
                 {scopes.map((scope) => (
                   <label key={scope}>
-                    <input
-                      type="checkbox"
-                      name={scope}
-                      defaultChecked={scope === "metrics:write"}
-                    />
+                    <input type="checkbox" name={scope} defaultChecked />
                     {scope}
                   </label>
                 ))}
