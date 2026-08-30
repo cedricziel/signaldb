@@ -1,7 +1,15 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
+
 .api-keys-page {
   padding: 24px;
   max-width: 800px;
   margin: 0 auto;
+}
+
+@media (max-width: 600px) {
+  .api-keys-page {
+    padding: 12px;
+  }
 }
 
 .api-keys-title {
@@ -98,6 +106,7 @@
 .api-key-editor-actions,
 .api-key-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -119,6 +128,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
 }
@@ -190,6 +200,7 @@
 
 .secret-modal-footer {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   justify-content: flex-end;
   margin-top: 16px;
@@ -199,4 +210,15 @@
   padding: 7px 11px;
   border: 1px solid var(--border);
   border-radius: 5px;
+}
+
+@media (max-width: 600px) {
+  .api-key-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .api-key-actions {
+    justify-content: flex-end;
+  }
 }
