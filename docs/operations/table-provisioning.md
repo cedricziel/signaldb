@@ -9,6 +9,8 @@ sources:
   - src/common/src/schema/mod.rs
   - src/common/src/tenant_api.rs
   - src/router/src/endpoints/tenant.rs
+  - src/router/src/endpoints/management.rs
+  - src/router/src/endpoints/admin.rs
 ---
 
 # Signal Table Provisioning
@@ -17,14 +19,23 @@ Every tenant/dataset SignalDB knows about converges on an Iceberg table for
 each signal type enabled for it, so a dataset becomes complete without waiting
 for telemetry to arrive for each signal.
 
-Convergence is eventual, not instantaneous: a dataset created while the writer
-is running is provisioned by the next reconcile pass (within
-`table_reconcile_interval`), by an on-demand request, or by its first write,
-whichever comes first. Queries do not wait for any of that — a signal with no
-table yet reads as an empty result, never an error.
+Creating a dataset — through the management API, the admin API, or the MCP
+tools that proxy them — provisions its tables synchronously, best-effort,
+before the creation call returns: the new dataset is queryable immediately in
+the common case. That provisioning attempt never blocks or fails the dataset's
+creation itself; a partial or total provisioning failure is logged as a
+warning and leaves the dataset row committed regardless.
 
-The writer runs this continuously; nothing needs to be run by hand. This page
-describes the knob, what a pass does, and how to tell whether it is working.
+For everything that provisioning attempt doesn't catch — the writer was down
+when the dataset was created, the attempt itself failed, or the dataset
+predates this behavior — convergence is eventual: the next reconcile pass
+(within `table_reconcile_interval`), an on-demand request, or the dataset's
+first write, whichever comes first. Queries do not wait for any of that — a
+signal with no table yet reads as an empty result, never an error.
+
+The writer runs the reconciler continuously as the backstop; nothing needs to
+be run by hand. This page describes the knob, what a pass does, and how to
+tell whether it is working.
 
 ## What gets provisioned
 
@@ -106,6 +117,27 @@ dataset's failure does not abort the rest of the pass.
 Because the ingest path independently creates any table it needs, a
 persistently failing reconciler degrades to create-on-first-write — the prior
 behavior — rather than to data loss.
+
+## Provisioning at dataset creation
+
+`POST /api/v1/manage/tenants/{tenant_id}/datasets` (management API) and
+`POST /api/v1/admin/tenants/{tenant_id}/datasets` (admin API) — and the MCP
+`create_dataset`/`tenant_create_dataset` tools, which proxy them — provision
+the new dataset's enabled tables right after the dataset row commits, using
+the same [`CatalogManager::ensure_dataset_tables`](#what-gets-provisioned)
+path a reconcile pass uses per dataset. The response still reflects the
+dataset's creation, not the provisioning outcome:
+
+- The dataset is created (`201`) whether or not provisioning succeeds.
+- A provisioning failure — any table, or building the catalog manager itself
+  — is logged at `warn` with the tenant, dataset, and reason, and never
+  surfaces in the HTTP response.
+- The periodic reconciler still runs over every tenant and dataset
+  regardless, so a provisioning failure here converges on the next pass
+  rather than staying broken.
+
+This makes the reconcile interval matter only for datasets this synchronous
+step didn't cover — not the common "just created a dataset" case.
 
 ## Provisioning a tenant on demand
 
