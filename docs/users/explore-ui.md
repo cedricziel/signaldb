@@ -367,6 +367,12 @@ Both the facet sidebar and the traces' span-detail panel are resizable: drag
 the handle on the sidebar's trailing edge. The facet/field sidebar's width is
 shared between the logs and traces tabs and persists across sessions.
 
+Below a 900px-wide viewport the facet/field sidebar (Logs, Traces, and
+Errors alike) is hidden by default rather than shown at a squeezed width; a
+**Filters** button reveals it as a dismissible drawer (close button,
+backdrop click, or Escape). The signal tabs at the top also switch to a
+horizontally scrollable strip at that width instead of compressing.
+
 ### The group table
 
 Traces are presented grouped, one row per distinct value of the grouping
