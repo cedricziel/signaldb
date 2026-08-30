@@ -295,6 +295,13 @@ pub(crate) async fn create_dataset<S: RouterState>(
     match state.catalog().create_dataset(&tenant_id, &name).await {
         Ok(id) => {
             tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, dataset = name, "dataset created via UX");
+            crate::endpoints::provision_dataset_tables(
+                state.config(),
+                state.catalog(),
+                &tenant_id,
+                &name,
+            )
+            .await;
             (StatusCode::CREATED, Json(DatasetResponse { id, name })).into_response()
         }
         Err(catalog_error) => {
@@ -1507,5 +1514,93 @@ mod key_scope_authorization_tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+    }
+}
+
+#[cfg(test)]
+mod dataset_provisioning_tests {
+    //! Creating a dataset through the management API must provision its
+    //! enabled signal tables synchronously, so it is usable before the
+    //! writer's periodic reconciler ever ticks and without anyone calling the
+    //! manual `POST .../tables/create` trigger.
+
+    use crate::{RouterAppState, create_router};
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use common::CatalogManager;
+    use common::auth::{Authenticator, TENANT_MANAGE_SCOPE};
+    use common::catalog::Catalog;
+    use common::config::{ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, TenantConfig};
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    const MANAGE_KEY: &str = "sdbk_acme_manage";
+
+    #[tokio::test]
+    async fn creating_a_dataset_provisions_its_tables_immediately() {
+        // A file-backed Iceberg catalog: the handler and this test's
+        // assertion each build their own `CatalogManager`/connection pool,
+        // and a named in-memory database only lives while a connection to it
+        // is open (see `common::testing::TempCatalog`).
+        let temp_catalog = common::testing::TempCatalog::new();
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![TenantConfig {
+                    id: "acme".to_string(),
+                    slug: "acme".to_string(),
+                    name: "Acme".to_string(),
+                    default_dataset: Some("production".to_string()),
+                    datasets: vec![DatasetConfig {
+                        id: "production".to_string(),
+                        slug: "production".to_string(),
+                        is_default: true,
+                        storage: None,
+                    }],
+                    api_keys: vec![ApiKeyConfig {
+                        key: "legacy".to_string(),
+                        name: Some("legacy".to_string()),
+                    }],
+                    schema_config: None,
+                    limits: None,
+                }],
+                ..Default::default()
+            },
+            ..Configuration::default()
+        };
+        config.schema.catalog_uri = temp_catalog.uri().to_string();
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &Authenticator::hash_api_key(MANAGE_KEY),
+                Some(MANAGE_KEY),
+                None,
+                Some(&[TENANT_MANAGE_SCOPE.to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let app = create_router(RouterAppState::new(catalog, config.clone()));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/manage/tenants/acme/datasets")
+            .header("authorization", format!("Bearer {MANAGE_KEY}"))
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "name": "staging" }).to_string()))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        // Without ever running the reconciler or the manual `tables/create`
+        // trigger, the new dataset's tables must already exist.
+        let manager = CatalogManager::new(config).await.unwrap();
+        let tables = crate::endpoints::tabular_names_in(&manager, "acme", "staging").await;
+        assert!(
+            !tables.is_empty(),
+            "expected the new dataset's signal tables to be provisioned immediately, found none"
+        );
     }
 }

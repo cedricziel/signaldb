@@ -1027,6 +1027,13 @@ pub async fn create_dataset<S: RouterState>(
         .await
     {
         Ok(dataset_id) => {
+            crate::endpoints::provision_dataset_tables(
+                state.config(),
+                state.catalog(),
+                &tenant_id,
+                &request.name,
+            )
+            .await;
             let response = DatasetResponse {
                 id: dataset_id,
                 name: request.name,
@@ -2000,6 +2007,47 @@ mod tests {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    /// Creating a dataset through the admin API must provision its enabled
+    /// signal tables synchronously, so it is usable before the writer's
+    /// periodic reconciler ever ticks and without the manual
+    /// `tables/create` trigger.
+    #[tokio::test]
+    async fn creating_a_dataset_provisions_its_tables_immediately() {
+        // A file-backed Iceberg catalog: the handler and this test's
+        // assertion each build their own `CatalogManager`/connection pool,
+        // and a named in-memory database only lives while a connection to it
+        // is open (see `common::testing::TempCatalog`).
+        let temp_catalog = common::testing::TempCatalog::new();
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = Configuration::default();
+        config.schema.catalog_uri = temp_catalog.uri().to_string();
+        let state = RouterAppState::new(catalog, config.clone());
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/tenants/acme/datasets")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name": "staging"}"#))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        // Without ever running the reconciler or the manual `tables/create`
+        // trigger, the new dataset's tables must already exist.
+        let manager = common::CatalogManager::new(config).await.unwrap();
+        let tables = crate::endpoints::tabular_names_in(&manager, "acme", "staging").await;
+        assert!(
+            !tables.is_empty(),
+            "expected the new dataset's signal tables to be provisioned immediately, found none"
+        );
     }
 
     #[tokio::test]
