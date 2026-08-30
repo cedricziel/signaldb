@@ -259,9 +259,11 @@ possession as sufficient trust for this endpoint (unlike the management API
 above, which needs `tenant:manage`) — and returns `500` if any table could not
 be created.
 
-You rarely need it: SignalDB provisions those tables on its own, shortly after
-a tenant or dataset is created, and a query against a dataset with no tables
-yet returns an empty result rather than an error. Use the endpoint (or
+You rarely need it: SignalDB provisions a dataset's tables synchronously,
+best-effort, as part of creating it, and the periodic table reconciler is the
+backstop for whatever that misses. A query against a dataset with no tables
+yet returns an empty result rather than an error either way. Use the endpoint
+(or
 `signaldb-cli tenant table provision` / the `tenant_create_tables` MCP tool,
 or the web UI's management area) when you want the tables to exist _now_ —
 see [Signal table provisioning](../operations/table-provisioning.md).
