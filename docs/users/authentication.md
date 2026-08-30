@@ -158,6 +158,11 @@ querier resolves a tenant's catalog on demand from the tenant registry, so
 the first query after creation succeeds. (Config-file tenants remain the
 bootstrap seed and are equally first-class.)
 
+This holds for a dataset created at runtime on a config-file tenant too: a
+`signaldb.toml` API key can select it via `X-Dataset-ID` even though it has
+no matching `[[auth.tenants.datasets]]` entry, because dataset resolution
+falls back to the tenant registry when the config doesn't know the id.
+
 Creating a tenant with a `default_dataset` creates that dataset too, so no
 separate dataset call is needed to start sending data. Changing a tenant's
 `default_dataset` likewise creates the new one; the previous default is

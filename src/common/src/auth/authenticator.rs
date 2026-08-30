@@ -98,8 +98,11 @@ impl Authenticator {
                 .get(tenant_id)
                 .ok_or_else(|| AuthError::unauthorized("Tenant configuration not found"))?;
 
-            // Resolve dataset
-            let resolved_dataset = self.resolve_dataset(tenant_config, dataset_id)?;
+            // Resolve dataset, falling back to a runtime (catalog-only)
+            // dataset when it isn't in tenant_config.datasets.
+            let resolved_dataset = self
+                .resolve_config_dataset(tenant_id, tenant_config, dataset_id)
+                .await?;
 
             // Resolve slugs from config
             let tenant_slug = tenant_config.slug.clone();
@@ -283,26 +286,9 @@ impl Authenticator {
         session_id: Option<String>,
     ) -> Result<TenantContext, AuthError> {
         if let Some(tenant_config) = self.config_tenants.get(tenant_id) {
-            let resolved_dataset = match self.resolve_dataset(tenant_config, dataset_id) {
-                Ok(dataset) => dataset,
-                Err(error) if dataset_id.is_some() => {
-                    let requested = dataset_id.expect("guarded by is_some");
-                    let catalog_datasets = self
-                        .catalog
-                        .get_datasets(tenant_id)
-                        .await
-                        .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
-                    if catalog_datasets
-                        .iter()
-                        .any(|dataset| dataset.name == requested)
-                    {
-                        requested.to_string()
-                    } else {
-                        return Err(error);
-                    }
-                }
-                Err(error) => return Err(error),
-            };
+            let resolved_dataset = self
+                .resolve_config_dataset(tenant_id, tenant_config, dataset_id)
+                .await?;
             let dataset_slug = tenant_config
                 .datasets
                 .iter()
@@ -427,6 +413,40 @@ impl Authenticator {
             TenantSource::Database,
         )
         .with_api_key_restrictions(api_key.scopes, api_key.dataset_id))
+    }
+
+    /// Resolve a dataset for a config-defined tenant, falling back to the
+    /// catalog's `datasets` rows when the requested id isn't in
+    /// `tenant_config.datasets`. A dataset created at runtime (UI/management
+    /// API) exists only as a catalog row, so `resolve_dataset` alone would
+    /// reject it even though it's real; the fallback keeps the config's
+    /// rejection message for datasets that are genuinely absent everywhere.
+    async fn resolve_config_dataset(
+        &self,
+        tenant_id: &str,
+        tenant_config: &TenantConfig,
+        dataset_id: Option<&str>,
+    ) -> Result<String, AuthError> {
+        match self.resolve_dataset(tenant_config, dataset_id) {
+            Ok(dataset) => Ok(dataset),
+            Err(error) if dataset_id.is_some() => {
+                let requested = dataset_id.expect("guarded by is_some");
+                let catalog_datasets = self
+                    .catalog
+                    .get_datasets(tenant_id)
+                    .await
+                    .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
+                if catalog_datasets
+                    .iter()
+                    .any(|dataset| dataset.name == requested)
+                {
+                    Ok(requested.to_string())
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Resolve dataset from config-based tenant
@@ -796,6 +816,121 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.status_code, 400);
         assert!(err.message.contains("X-Dataset-ID header required"));
+    }
+
+    /// A dataset created at runtime (UI/management API) on a config-defined
+    /// tenant exists only as a catalog `datasets` row, never in
+    /// `tenant_config.datasets`. A config-minted API key must still be able
+    /// to select it via `X-Dataset-ID`, mirroring what `resolve_user_tenant`
+    /// (the session/OAuth path) already does.
+    #[tokio::test]
+    async fn config_api_key_resolves_runtime_catalog_dataset() {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme Corp", Some("production"), "config")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "apps").await.unwrap();
+
+        let auth_config = AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "acme".to_string(),
+                slug: "acme".to_string(),
+                name: "Acme Corp".to_string(),
+                default_dataset: Some("production".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "production".to_string(),
+                    slug: "production".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![ApiKeyConfig {
+                    key: "test-key-123".to_string(),
+                    name: None,
+                }],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        };
+        let authenticator = Authenticator::new(auth_config, catalog);
+
+        let result = authenticator
+            .authenticate("test-key-123", "acme", Some("apps"))
+            .await;
+        assert!(
+            result.is_ok(),
+            "expected runtime catalog dataset to authenticate: {:?}",
+            result.err()
+        );
+        let ctx = result.unwrap();
+        assert_eq!(ctx.dataset_id, "apps");
+        // Not in tenant_config.datasets, so the slug falls back to the name.
+        assert_eq!(ctx.dataset_slug, "apps");
+        assert_eq!(ctx.source, TenantSource::Config);
+    }
+
+    /// A database-minted key (e.g. one created for a UI-provisioned dataset)
+    /// bound to that catalog dataset must still authenticate against a
+    /// config-defined tenant, with or without an explicit `X-Dataset-ID`.
+    #[tokio::test]
+    async fn database_key_on_config_tenant_resolves_catalog_dataset() {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme Corp", Some("production"), "config")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "apps").await.unwrap();
+        let raw_key = "sdbk_runtime_dataset";
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &Authenticator::hash_api_key(raw_key),
+                None,
+                Some("apps"),
+                None,
+                Some("user-1"),
+            )
+            .await
+            .unwrap();
+
+        let auth_config = AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "acme".to_string(),
+                slug: "acme".to_string(),
+                name: "Acme Corp".to_string(),
+                default_dataset: Some("production".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "production".to_string(),
+                    slug: "production".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        };
+        let authenticator = Authenticator::new(auth_config, Arc::clone(&catalog));
+
+        let with_header = authenticator
+            .authenticate(raw_key, "acme", Some("apps"))
+            .await;
+        assert!(
+            with_header.is_ok(),
+            "expected DB key with explicit dataset header to authenticate: {:?}",
+            with_header.err()
+        );
+        assert_eq!(with_header.unwrap().dataset_id, "apps");
+
+        let without_header = authenticator.authenticate(raw_key, "acme", None).await;
+        assert!(
+            without_header.is_ok(),
+            "expected DB key bound to a dataset to authenticate without a header: {:?}",
+            without_header.err()
+        );
+        assert_eq!(without_header.unwrap().dataset_id, "apps");
     }
 
     #[tokio::test]
