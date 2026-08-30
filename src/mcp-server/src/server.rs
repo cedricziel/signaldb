@@ -6,6 +6,9 @@
 //!
 //! Tools (every authenticated tenant session, no role gating):
 //! - `server_info` — connectivity + resolved tenant
+//! - `discover_datasets` — the tenant and datasets your credential can
+//!   access, as a nested Markdown list, marking the session's current
+//!   default dataset
 //! - `search_traces` — TraceQL search
 //! - `get_trace` — single trace by ID
 //! - `get_profile` — single profile's flamegraph by ID (wraps the native
@@ -1579,6 +1582,78 @@ impl McpServer {
     }
 
     #[tool(
+        description = "Discover the tenant and datasets your credential can access, as a nested Markdown list: the authenticated tenant, then its datasets (marking the session's current default) with each dataset's provisioned signal-table count. Call this before passing an explicit `dataset` argument to another tool, or a `tenant` argument to confirm your assumption.",
+        annotations(read_only_hint = true)
+    )]
+    async fn discover_datasets(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        // The tenant id is already known from the auth middleware's own
+        // `whoami()` call (stashed as `audit::CallerTenant`), so this
+        // handler's `whoami()` — needed only for display fields
+        // (`tenant.name`, the current default dataset) — can run alongside
+        // `list_tenant_tables()` instead of gating it.
+        let (identity, tables) = match parts.extensions.get::<audit::CallerTenant>() {
+            Some(caller_tenant) => {
+                let tenant_id = caller_tenant.0.clone();
+                let (whoami, tables) = tokio::join!(
+                    client.whoami().send(),
+                    client.list_tenant_tables().tenant_id(&tenant_id).send()
+                );
+                (
+                    whoami
+                        .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                        .into_inner(),
+                    tables
+                        .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                        .into_inner(),
+                )
+            }
+            None => {
+                let identity = client
+                    .whoami()
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                    .into_inner();
+                let tables = client
+                    .list_tenant_tables()
+                    .tenant_id(&identity.tenant.id)
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                    .into_inner();
+                (identity, tables)
+            }
+        };
+
+        let mut markdown = format!(
+            "- Tenant: **{}** (`{}`)\n",
+            identity.tenant.name, identity.tenant.id
+        );
+        if tables.datasets.is_empty() {
+            markdown.push_str("  - (no datasets provisioned yet)\n");
+        } else {
+            for dataset in &tables.datasets {
+                let current = if dataset.dataset == identity.dataset {
+                    " (current)"
+                } else {
+                    ""
+                };
+                let count = dataset.tables.len();
+                markdown.push_str(&format!(
+                    "  - Dataset: `{}`{current} — {count} table{}\n",
+                    dataset.dataset,
+                    if count == 1 { "" } else { "s" },
+                ));
+            }
+        }
+        Ok(capped_text_result(markdown))
+    }
+
+    #[tool(
         description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant."
     )]
     async fn query_ir(
@@ -2795,6 +2870,26 @@ impl ServerHandler for McpServer {
 /// context window, so an oversized downstream result is not streamed verbatim.
 const MAX_TOOL_PAYLOAD_BYTES: usize = 256 * 1024;
 
+/// Bound a text tool result at [`MAX_TOOL_PAYLOAD_BYTES`]. When `text`
+/// exceeds the budget, the tool returns valid JSON marked `truncated` with a
+/// narrowing hint instead of the oversized payload, so clients detect the cap
+/// from the flag. Shared by every tool that returns a text block, whether
+/// JSON ([`json_result_for_app`]) or plain Markdown (`discover_datasets`).
+fn capped_text_result(text: String) -> CallToolResult {
+    if text.len() > MAX_TOOL_PAYLOAD_BYTES {
+        let notice = serde_json::json!({
+            "truncated": true,
+            "bytes": text.len(),
+            "limit_bytes": MAX_TOOL_PAYLOAD_BYTES,
+            "hint": "Result exceeded the size cap; narrow the time range or lower `limit`, then retry.",
+        });
+        return audit::mark_truncated(CallToolResult::success(vec![ContentBlock::text(
+            notice.to_string(),
+        )]));
+    }
+    CallToolResult::success(vec![ContentBlock::text(text)])
+}
+
 /// Serialize a value into a single-text-block tool result, bounded at
 /// [`MAX_TOOL_PAYLOAD_BYTES`]. When the serialized result exceeds the budget,
 /// the tool returns valid JSON marked `truncated` with a narrowing hint instead
@@ -2817,19 +2912,9 @@ fn json_result_for_app<T: serde::Serialize>(
     let json = serde_json::to_value(value)
         .map_err(|e| ErrorData::internal_error(format!("failed to serialize result: {e}"), None))?;
     let text = json.to_string();
-    if text.len() > MAX_TOOL_PAYLOAD_BYTES {
-        let notice = serde_json::json!({
-            "truncated": true,
-            "bytes": text.len(),
-            "limit_bytes": MAX_TOOL_PAYLOAD_BYTES,
-            "hint": "Result exceeded the size cap; narrow the time range or lower `limit`, then retry.",
-        });
-        return Ok(audit::mark_truncated(CallToolResult::success(vec![
-            ContentBlock::text(notice.to_string()),
-        ])));
-    }
-    let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
-    if with_structured {
+    let truncated = text.len() > MAX_TOOL_PAYLOAD_BYTES;
+    let mut result = capped_text_result(text);
+    if with_structured && !truncated {
         result.structured_content = Some(json);
     }
     Ok(result)
@@ -3469,6 +3554,101 @@ mod tests {
             serde_json::from_str(&text.text).expect("server_info returns JSON");
         assert_eq!(identity["tenant"], "acme");
         assert_eq!(identity["dataset"], "production");
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn discover_datasets_lists_the_tenant_and_its_datasets_as_markdown() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            // First request: whoami.
+            let (mut socket, _) = listener.accept().await.expect("accept whoami request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(
+                std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .starts_with("GET /api/v1/whoami "),
+                "discover_datasets must call whoami first"
+            );
+            let body = br#"{"user_id":"user-a","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production"}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write whoami response headers");
+            socket.write_all(body).await.expect("write whoami body");
+            drop(socket);
+
+            // Second request: list_tenant_tables, on its own connection.
+            let (mut socket, _) = listener.accept().await.expect("accept tables request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(
+                std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .starts_with("GET /api/v1/tenants/acme/tables"),
+                "discover_datasets must call list_tenant_tables for the resolved tenant"
+            );
+            let body = br#"{"tenant_id":"acme","tables":[],"datasets":[{"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d"}]},{"dataset":"staging","tables":[]}]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write tables response headers");
+            socket.write_all(body).await.expect("write tables body");
+        });
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_datasets(Extension(valid_parts()))
+            .await
+            .expect("discover_datasets succeeds");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("discover_datasets returns a text result");
+        };
+        assert!(
+            text.text.contains("Acme Corp") && text.text.contains("acme"),
+            "missing tenant line: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`production` (current)"),
+            "missing current-dataset marker: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`staging`") && !text.text.contains("`staging` (current)"),
+            "staging must not be marked current: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`production` (current) — 1 table"),
+            "wrong production table count: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`staging` — 0 tables"),
+            "wrong staging table count: {}",
+            text.text
+        );
         router.await.expect("mock router task panicked");
     }
 
