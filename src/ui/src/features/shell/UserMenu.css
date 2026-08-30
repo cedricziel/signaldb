@@ -64,12 +64,15 @@
   z-index: 40;
 }
 
+/* breakpoints: tablet <=900px, mobile <=600px (see explore.css) */
 .user-menu-popover {
   position: absolute;
   top: 44px;
   right: 0;
   z-index: 41;
-  width: 252px;
+  /* A fixed 252px could run off the left edge of a narrow (~360px) viewport;
+     cap it to the viewport instead. */
+  width: min(252px, calc(100vw - 24px));
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;

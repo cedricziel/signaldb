@@ -1,6 +1,8 @@
+/* breakpoints: tablet <=900px, mobile <=600px (see explore.css) */
 .topbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 9px 14px;
   border-bottom: 1px solid var(--border);
@@ -67,6 +69,7 @@
 
 .tenant-form {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
 }
@@ -78,7 +81,10 @@
   border-radius: 5px;
   padding: 3px 8px;
   font-size: 12px;
-  width: 130px;
+  /* Fixed width overflowed at mobile widths (~360px); shrink-and-grow with a
+     floor keeps it usable instead of clipped or forcing a scrollbar. */
+  flex: 1 1 90px;
+  min-width: 70px;
   color: var(--text);
 }
 
