@@ -162,6 +162,29 @@ describe("ApiKeys page", () => {
     });
   });
 
+  it("pre-checks all four ingestion scopes by default, leaving other scopes unchecked", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+    for (const scope of [
+      "metrics:write",
+      "logs:write",
+      "traces:write",
+      "profiles:write",
+    ]) {
+      expect(screen.getByLabelText(scope)).toBeChecked();
+    }
+    expect(screen.getByLabelText("schema:read")).not.toBeChecked();
+    expect(screen.getByLabelText("schema:write")).not.toBeChecked();
+    expect(screen.getByLabelText("tenant:manage")).not.toBeChecked();
+  });
+
   it("groups the scope picker into Ingestion and Schema with descriptions", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
@@ -201,9 +224,7 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("Create API key")).toBeInTheDocument(),
     );
     const management = screen.getByRole("group", { name: "Management" });
-    expect(management).toContainElement(
-      screen.getByLabelText("tenant:manage"),
-    );
+    expect(management).toContainElement(screen.getByLabelText("tenant:manage"));
     expect(management).toHaveTextContent(/datasets, keys, and members/i);
   });
 
@@ -218,7 +239,15 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("Create API key")).toBeInTheDocument(),
     );
 
-    await userEvent.click(screen.getByLabelText("metrics:write"));
+    // Deselect the default ingestion scopes, pick only tenant:manage.
+    for (const scope of [
+      "metrics:write",
+      "logs:write",
+      "traces:write",
+      "profiles:write",
+    ]) {
+      await userEvent.click(screen.getByLabelText(scope));
+    }
     await userEvent.click(screen.getByLabelText("tenant:manage"));
     await userEvent.click(screen.getByText("Create API key"));
 
@@ -240,8 +269,15 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("Create API key")).toBeInTheDocument(),
     );
 
-    // Deselect the default ingestion scope, pick both schema scopes.
-    await userEvent.click(screen.getByLabelText("metrics:write"));
+    // Deselect the default ingestion scopes, pick both schema scopes.
+    for (const scope of [
+      "metrics:write",
+      "logs:write",
+      "traces:write",
+      "profiles:write",
+    ]) {
+      await userEvent.click(screen.getByLabelText(scope));
+    }
     await userEvent.click(screen.getByLabelText("schema:read"));
     await userEvent.click(screen.getByLabelText("schema:write"));
     await userEvent.click(screen.getByText("Create API key"));
@@ -329,7 +365,7 @@ describe("ApiKeys page", () => {
     // Select dataset option
     const select = screen.getByRole("combobox");
     await userEvent.selectOptions(select, "production");
-    // metrics:write already checked by default, uncheck logs:write
+    // All four ingestion scopes are checked by default; uncheck logs:write
     await userEvent.click(screen.getByLabelText("logs:write"));
     await userEvent.click(screen.getByText("Create API key"));
 
