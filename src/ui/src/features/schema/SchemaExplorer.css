@@ -1,7 +1,15 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
+
 .schema-explorer-page {
   padding: 24px;
   max-width: 1100px;
   margin: 0 auto;
+}
+
+@media (max-width: 600px) {
+  .schema-explorer-page {
+    padding: 12px;
+  }
 }
 
 .schema-explorer-title {

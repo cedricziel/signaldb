@@ -88,46 +88,52 @@ export function SchemaExplorer() {
                     {fields.length} field{fields.length === 1 ? "" : "s"}
                   </span>
                 </summary>
-                <table className="schema-table">
-                  <thead>
-                    <tr>
-                      <th>Field</th>
-                      <th>Level</th>
-                      <th>Type</th>
-                      <th>Kind</th>
-                      <th>Filterable</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...fields]
-                      .sort((a, b) =>
-                        qualifiedName(a).localeCompare(qualifiedName(b)),
-                      )
-                      .map((field) => (
-                        <tr key={`${field.level ?? ""}.${field.name}`}>
-                          <td>
-                            <code>{qualifiedName(field)}</code>
-                            {field.non_native && (
-                              <span
-                                className="schema-badge"
-                                title="Not addressable via the raw OTel name — a SignalDB-defined field"
-                              >
-                                signaldb
-                              </span>
-                            )}
-                          </td>
-                          <td className="schema-dim">{field.level ?? "—"}</td>
-                          <td className="schema-dim">{field.value_type}</td>
-                          <td className="schema-dim">{field.kind}</td>
-                          <td className="schema-dim">
-                            {field.filterability === "filterable"
-                              ? "yes"
-                              : "retrieval only"}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+                <div className="schema-table-scroll">
+                  <table className="schema-table">
+                    <thead>
+                      <tr>
+                        <th>Field</th>
+                        <th>Level</th>
+                        <th>Type</th>
+                        <th>Kind</th>
+                        <th>Filterable</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...fields]
+                        .sort((a, b) =>
+                          qualifiedName(a).localeCompare(qualifiedName(b)),
+                        )
+                        .map((field) => (
+                          <tr key={`${field.level ?? ""}.${field.name}`}>
+                            <td>
+                              <code>{qualifiedName(field)}</code>
+                              {field.non_native && (
+                                <span
+                                  className="schema-badge"
+                                  title="Not addressable via the raw OTel name — a SignalDB-defined field"
+                                >
+                                  signaldb
+                                </span>
+                              )}
+                            </td>
+                            <td className="schema-dim">
+                              {field.level ?? "—"}
+                            </td>
+                            <td className="schema-dim">
+                              {field.value_type}
+                            </td>
+                            <td className="schema-dim">{field.kind}</td>
+                            <td className="schema-dim">
+                              {field.filterability === "filterable"
+                                ? "yes"
+                                : "retrieval only"}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
               </details>
             ))}
           </section>
@@ -175,32 +181,36 @@ function PhysicalVersion({ schema }: { schema: PhysicalSchema }) {
           Partitioned by <code>{schema.partition_by.join(", ")}</code>
         </p>
       )}
-      <table className="schema-table">
-        <thead>
-          <tr>
-            <th>Column</th>
-            <th>Type</th>
-            <th>Required</th>
-            <th>Computed</th>
-            <th>Physical only</th>
-          </tr>
-        </thead>
-        <tbody>
-          {schema.fields.map((field) => (
-            <tr key={field.name}>
-              <td>
-                <code>{field.name}</code>
-              </td>
-              <td className="schema-dim">{field.field_type}</td>
-              <td className="schema-dim">{field.required ? "yes" : "no"}</td>
-              <td className="schema-dim">{field.computed ?? "—"}</td>
-              <td className="schema-dim">
-                {field.physical_only ? "yes" : "no"}
-              </td>
+      <div className="schema-table-scroll">
+        <table className="schema-table">
+          <thead>
+            <tr>
+              <th>Column</th>
+              <th>Type</th>
+              <th>Required</th>
+              <th>Computed</th>
+              <th>Physical only</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {schema.fields.map((field) => (
+              <tr key={field.name}>
+                <td>
+                  <code>{field.name}</code>
+                </td>
+                <td className="schema-dim">{field.field_type}</td>
+                <td className="schema-dim">
+                  {field.required ? "yes" : "no"}
+                </td>
+                <td className="schema-dim">{field.computed ?? "—"}</td>
+                <td className="schema-dim">
+                  {field.physical_only ? "yes" : "no"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </details>
   );
 }
