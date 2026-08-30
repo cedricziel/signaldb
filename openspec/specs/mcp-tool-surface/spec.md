@@ -102,12 +102,28 @@ return key material.
 
 #### Scenario: A mismatched tenant confirmation argument is rejected
 
-- **WHEN** a session passes a `tenant` argument to a query or lookup tool
-  that does not match its authenticated tenant
+- **WHEN** a session passes a `tenant` argument to a query, discovery, or
+  schema-lookup tool that does not match the tenant this call's own
+  credential resolved to
 - **THEN** the tool rejects the call with an error naming both tenants,
-  before any request reaches the router — a session's credential is bound to
-  exactly one tenant and this argument only confirms that binding, it never
-  switches tenants
+  before any request reaches the router — `tenant` (and `dataset`) are
+  required arguments on every such tool, since one MCP session may hold
+  credentials for several tenants and datasets across calls and there is no
+  longer an implicit session-wide default to omit them in favor of; the
+  argument only confirms the caller's assumption against what this specific
+  call authenticated as, it never selects which credential/tenant a call
+  authenticates as
+
+#### Scenario: A session spans multiple tenants
+
+- **WHEN** a session (one `mcp-session-id`) issues calls that present
+  different, independently valid credentials — for example separate API keys
+  for two tenants — each with its matching `X-Tenant-ID`
+- **THEN** each call is authenticated by the router on its own terms and
+  succeeds against its own tenant; the session is not permanently pinned to
+  the first tenant seen, though it may accumulate only up to a bounded number
+  of distinct identities before further new identities on that session are
+  refused
 
 ### Requirement: MCP query results match the SDK's native shape
 
@@ -127,7 +143,9 @@ equivalent query issued via the CLI yield equivalent data.
 The MCP server SHALL carry the caller's authentication and tenant context into
 the SDK call for each tool invocation, and SHALL surface SDK errors to the MCP
 client as tool errors rather than crashing or leaking internal transport
-details.
+details. Identity is resolved independently per call from that call's own
+forwarded credential, not cached against the session, so one session MAY span
+several tenants across its calls (see "A session spans multiple tenants").
 
 #### Scenario: Unauthorized tool call
 
