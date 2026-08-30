@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787976748597,
+  "lastUpdate": 1788064119477,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -3277,6 +3277,244 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1193110,
             "range": "± 23150",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2c14e7e203c114572bd786a835802512ac7e1067",
+          "message": "fix(wal): cap concurrently active WAL instances against RLIMIT_NOFILE (#1437)\n\n* feat(wal): bound WalManager's instance cache with a soft eviction cap\n\nIdle eviction alone reclaims only WALs that have gone quiet, so it never\nbounds a fleet whose concurrently-active tenant/dataset/signal cardinality\nexhausts RLIMIT_NOFILE: every one of those WALs is touched inside each\nidle window and is therefore never a candidate.\n\nAdd a soft, configurable instance cap enforced on get_wal's miss path:\nthe least-recently-appended WAL that is provably drained (no buffered or\nunprocessed entries) and unreferenced (no caller holds a clone) is\nevicted to make room, sharing the safety machinery evict_idle already\nuses (per-key init guard, map-lock removal). A write is never failed to\nhonour the cap — when nothing qualifies, the write proceeds over the cap\nwith a metric and a rate-limited warning. A companion warning-only\nRLIMIT_NOFILE check runs at startup so an operator finds out about a\nthin descriptor limit from a log line rather than from Wal::new failing\ninside a write path.\n\n* feat(config): add [wal].max_instances for the WAL instance cap\n\nSized so its implied descriptor demand fits inside the common 1024\nRLIMIT_NOFILE soft limit: 256 WALs * 3 fds + 128 reserved = 896. A\nfield-level serde default keeps a [wal] block written before this\noption existed parseable, since WalConfig has no struct-level default.\n\n* feat(wal): wire the instance cap and fd headroom warning into services\n\nApply [wal].max_instances to every WalManager the acceptor, writer, and\nmonolith construct, and run the RLIMIT_NOFILE headroom check after\nstartup WAL discovery so it sees what discovery actually opened.\n\n* test(wal): cover the active-cardinality ceiling idle eviction can't bound\n\nReproduces #1342: 50 actively-written, fully-drained WALs survive an\nevict_idle sweep untouched (idleness alone never bounds an active fleet),\nwhile the same fleet against an explicit [wal].max_instances settles at\nthe configured cap.\n\n* docs(wal): document the instance cap and RLIMIT_NOFILE startup warning\n\nCover the new [wal].max_instances cap, its LRU-by-last-append eviction\nand soft-cap semantics, the signaldb.wal.instance_cap_hits metric, and\nthe RLIMIT_NOFILE headroom warning in wal-persistence.md, plus one-line\ntouches to the architecture/multi-tenancy/storage-layout skills and the\ndocs the freshness gate ties to the touched source files.\n\n* docs(compactor): scope the configuration reference to compactor sections\n\nSatisfies the doc-freshness gate's coarse per-file tracking: it flags\nthis doc whenever config/mod.rs changes, even for unrelated additions\nlike the WAL instance cap, because its sources glob covers that whole\nfile. Note the scope explicitly and point to where the WAL setting is\nactually documented.\n\n* refactor(wal): collapse redundant lock and call in the cap path\n\nenforce_instance_cap took the wals mutex twice in a row to compute a\ncount and then the eviction candidates; take it once and derive the\ncount from the collected candidates instead. warn_if_fd_headroom_thin\nlikewise called wal_count() once per branch of the same if/else;\nhoist it to a single call above the branch.",
+          "timestamp": "2026-08-29T16:18:22Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/2c14e7e203c114572bd786a835802512ac7e1067"
+        },
+        "date": 1788064118186,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1944162,
+            "range": "± 20168",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1156536,
+            "range": "± 15314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 697210,
+            "range": "± 3981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1597693,
+            "range": "± 13733",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 769370,
+            "range": "± 2724",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1857206,
+            "range": "± 12641",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1142257,
+            "range": "± 17714",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1424033,
+            "range": "± 5549",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2637069,
+            "range": "± 127425",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 13221539,
+            "range": "± 476324",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 112498512,
+            "range": "± 4701687",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 4116866,
+            "range": "± 7934",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8417218,
+            "range": "± 40130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 15469244,
+            "range": "± 97013",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 29804862,
+            "range": "± 268076",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 906835,
+            "range": "± 7979",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2394626,
+            "range": "± 47040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3452312,
+            "range": "± 76299",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6514508,
+            "range": "± 173909",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 621852,
+            "range": "± 7140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 21347365,
+            "range": "± 853539",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 29555038,
+            "range": "± 478305",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 28470585,
+            "range": "± 539444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 28481987,
+            "range": "± 115063",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 28255769,
+            "range": "± 87467",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 6766256,
+            "range": "± 89960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 16575894,
+            "range": "± 213965",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 35650679,
+            "range": "± 1239798",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 30460294,
+            "range": "± 1549294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 6727992,
+            "range": "± 77543",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 72815050,
+            "range": "± 1812580",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 127758678,
+            "range": "± 1453378",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 138541469,
+            "range": "± 2160048",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1005562,
+            "range": "± 23992",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1017909,
+            "range": "± 12383",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1073141,
+            "range": "± 8648",
             "unit": "ns/iter"
           }
         ]
