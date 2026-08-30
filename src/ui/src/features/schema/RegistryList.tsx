@@ -63,62 +63,66 @@ export function RegistryList() {
           <p className="schema-precedence">
             Precedence: {registries.data.map((r) => r.namespace).join(" → ")}
           </p>
-          <table className="schema-table">
-            <thead>
-              <tr>
-                <th>Namespace</th>
-                <th>Version</th>
-                <th>Source</th>
-                <th className="num">Attributes</th>
-                <th className="num">Entities</th>
-                <th className="num">Metrics</th>
-                <th>Updated</th>
-                {isTenantAdmin && <th />}
-              </tr>
-            </thead>
-            <tbody>
-              {registries.data.map((r) => (
-                <tr key={`${r.namespace}@${r.version}`}>
-                  <td>
-                    <Link to={registryPath(r.namespace, r.version)}>
-                      {r.namespace}
-                    </Link>
-                    {r.read_only && (
-                      <span
-                        className="schema-readonly"
-                        role="img"
-                        aria-label="read-only"
-                        title="Read-only (bundled)"
-                      >
-                        🔒
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    <code>{r.version}</code>
-                  </td>
-                  <td>
-                    <span className={`schema-source schema-source-${r.source}`}>
-                      {r.source}
-                    </span>
-                  </td>
-                  <td className="num">{r.attribute_count}</td>
-                  <td className="num">{r.entity_count}</td>
-                  <td className="num">{r.metric_count}</td>
-                  <td>{formatUpdated(r.updated_at)}</td>
-                  {isTenantAdmin && (
-                    <td className="schema-row-actions">
-                      {!r.read_only && (
-                        <Link to={editorPath(r.namespace, r.version)}>
-                          Edit
-                        </Link>
+          <div className="schema-table-scroll">
+            <table className="schema-table">
+              <thead>
+                <tr>
+                  <th>Namespace</th>
+                  <th>Version</th>
+                  <th>Source</th>
+                  <th className="num">Attributes</th>
+                  <th className="num">Entities</th>
+                  <th className="num">Metrics</th>
+                  <th>Updated</th>
+                  {isTenantAdmin && <th />}
+                </tr>
+              </thead>
+              <tbody>
+                {registries.data.map((r) => (
+                  <tr key={`${r.namespace}@${r.version}`}>
+                    <td>
+                      <Link to={registryPath(r.namespace, r.version)}>
+                        {r.namespace}
+                      </Link>
+                      {r.read_only && (
+                        <span
+                          className="schema-readonly"
+                          role="img"
+                          aria-label="read-only"
+                          title="Read-only (bundled)"
+                        >
+                          🔒
+                        </span>
                       )}
                     </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <td>
+                      <code>{r.version}</code>
+                    </td>
+                    <td>
+                      <span
+                        className={`schema-source schema-source-${r.source}`}
+                      >
+                        {r.source}
+                      </span>
+                    </td>
+                    <td className="num">{r.attribute_count}</td>
+                    <td className="num">{r.entity_count}</td>
+                    <td className="num">{r.metric_count}</td>
+                    <td>{formatUpdated(r.updated_at)}</td>
+                    {isTenantAdmin && (
+                      <td className="schema-row-actions">
+                        {!r.read_only && (
+                          <Link to={editorPath(r.namespace, r.version)}>
+                            Edit
+                          </Link>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </div>

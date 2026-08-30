@@ -16,6 +16,7 @@ import type { PromSeries } from "../../api/prom";
 import { seriesColorVar } from "../../lib/promSeries";
 import { MetricsChart } from "../metrics/MetricsChart";
 import "../metrics/metrics.css";
+import "./query.css";
 import { FilterChips } from "../logs/FilterChips";
 import type { LabelFilter } from "../../lib/filters";
 import { msToNanos, type TimeRange } from "../../lib/time";

@@ -1,9 +1,16 @@
 /* Schema hub: tabs, conventions list, lookup, registry browser, editor. */
+/* breakpoints: tablet <=900px, mobile <=600px */
 
 .schema-hub {
   max-width: 1100px;
   margin: 0 auto;
   padding: 16px 24px 24px;
+}
+
+@media (max-width: 600px) {
+  .schema-hub {
+    padding: 12px 12px 16px;
+  }
 }
 
 .schema-hub-tabs {
@@ -44,6 +51,13 @@
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
+  flex-wrap: wrap;
+}
+
+/* A table wider than the viewport scrolls on its own axis instead of
+   blowing out the page — these tables don't reasonably reflow. */
+.schema-table-scroll {
+  overflow-x: auto;
 }
 
 .schema-title {
@@ -293,7 +307,7 @@
   align-items: start;
 }
 
-@media (max-width: 800px) {
+@media (max-width: 900px) {
   .schema-browser {
     grid-template-columns: 1fr;
   }

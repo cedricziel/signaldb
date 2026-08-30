@@ -25,6 +25,10 @@ import {
 } from "../../api/traceVolume";
 import { SignalHistogram } from "../explore/SignalHistogram";
 import { AttributeValue } from "../../components/AttributeValue";
+import {
+  MobileFiltersToggle,
+  MobileSidebarDrawer,
+} from "../../components/MobileSidebarDrawer";
 import { SemanticKey } from "../../components/SemanticKey";
 import {
   useVizPointer,
@@ -32,6 +36,7 @@ import {
   type VizTooltipRow,
 } from "../../components/VizTooltip";
 import { useAttributeSearch, useSemantics } from "../../hooks/useSemantics";
+import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import { mergeLabelSuggestions } from "../../lib/labelSuggestions";
 import { groupBySemanticTitle } from "../../lib/semantics";
 import { TraceFacets } from "./TraceFacets";
@@ -155,6 +160,7 @@ function TraceSearch({ state, update }: Props) {
   const [volumeView, setVolumeView] = useState<
     "histogram" | "area" | "heatmap"
   >("histogram");
+  const mobileSidebar = useMobileSidebar();
   const rangeKey = rangeScopeKey(state);
   // The state may carry no kind filter (a fresh URL, a link from another
   // view): the default kinds apply on read, and every update writes the
@@ -281,14 +287,24 @@ function TraceSearch({ state, update }: Props) {
           ))}
         </div>
       )}
+      <MobileFiltersToggle
+        open={mobileSidebar.open}
+        onToggle={mobileSidebar.toggle}
+      />
+
       <div className="traces-body">
-        <TraceFacets
-          range={resolvedForStep}
-          rangeKey={rangeKey}
-          filters={filters}
-          onAddFilter={addFilter}
-          onRemoveFilter={removeFilter}
-        />
+        <MobileSidebarDrawer
+          open={mobileSidebar.open}
+          onClose={mobileSidebar.close}
+        >
+          <TraceFacets
+            range={resolvedForStep}
+            rangeKey={rangeKey}
+            filters={filters}
+            onAddFilter={addFilter}
+            onRemoveFilter={removeFilter}
+          />
+        </MobileSidebarDrawer>
         <div className="traces-main">
           <div className="traces-toolbar">
             <form

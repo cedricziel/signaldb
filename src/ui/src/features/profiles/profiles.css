@@ -1,3 +1,4 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
 .profilesview {
   display: flex;
   flex-direction: column;
@@ -69,6 +70,24 @@
   border-right: none;
 }
 
+/* Side by side panes each squeeze their own toolbar (view toggle, collapse
+   selector, search box) into unreadable, overlapping slivers well before the
+   page itself runs out of width — stack baseline above comparison instead. */
+@media (max-width: 900px) {
+  .profiles-compare {
+    grid-template-columns: 1fr;
+  }
+
+  .profiles-compare-pane {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .profiles-compare-pane:last-child {
+    border-bottom: none;
+  }
+}
+
 .profiles-compare-pane .flame-title {
   padding: 8px 16px 0;
 }
@@ -93,6 +112,7 @@
 .flame-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   min-height: 24px;
 }

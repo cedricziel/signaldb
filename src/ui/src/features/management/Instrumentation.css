@@ -1,3 +1,5 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
+
 .instrumentation-page {
   padding: 24px;
   display: flex;
@@ -104,8 +106,10 @@
 
 .code-header {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 10px;
 }
 
@@ -181,7 +185,11 @@
   color: var(--dim);
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
+  .instrumentation-page {
+    padding: 16px;
+  }
+
   .instrumentation-grid {
     flex-direction: column;
     gap: 16px;
@@ -194,5 +202,15 @@
   .source-button {
     flex: 1;
     text-align: center;
+  }
+}
+
+@media (max-width: 600px) {
+  .instrumentation-page {
+    padding: 12px;
+  }
+
+  .content-panel {
+    padding: 16px;
   }
 }

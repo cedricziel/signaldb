@@ -13,19 +13,34 @@
   gap: 10px;
 }
 
+/* breakpoints: tablet <=900px, mobile <=600px */
 .signal-tabs {
   display: flex;
   gap: 2px;
   flex: 1;
+  min-width: 0;
+  /* Seven tabs don't fit at mobile widths; scroll the strip horizontally
+     instead of squeezing each tab unreadable. Native touch/drag/wheel
+     scrolling stays fully functional — only the scrollbar chrome is hidden. */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.signal-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .sigtab {
+  flex: none;
   padding: 9px 13px 7px;
   font-size: 12.5px;
   font-weight: 550;
   color: var(--dim);
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
+  white-space: nowrap;
   /* It's a <Link> now (a real route change, not a click handler) — undo the
      browser's default anchor styling so it still reads as a tab. */
   text-decoration: none;
@@ -350,8 +365,97 @@
     grid-template-columns: 1fr;
   }
 
-  .sidebar {
+  /* Scoped to the body wrappers (not bare `.sidebar`) so this reliably beats
+     the base `.sidebar { display: flex }` rule below regardless of which
+     comes later in the file — equal specificity would otherwise let source
+     order decide, and it's easy to reorder this file without noticing. */
+  .logs-body .sidebar,
+  .traces-body .sidebar,
+  .errors-body .sidebar {
     display: none;
+  }
+}
+
+/* ---------- mobile sidebar drawer ----------
+   Below the tablet breakpoint the sidebar above is plain `display:none` —
+   these back the "Filters" toggle (useMobileSidebar) that reveals it again
+   as a dismissible overlay instead. See components/MobileSidebarDrawer.tsx. */
+
+.mobile-filters-toggle {
+  display: none;
+}
+
+/* Transparent at every width where the drawer isn't open, so the sidebar
+   inside stays the actual grid item .logs-body/.traces-body/.errors-body
+   expect — this wrapper never occupies a grid cell of its own. */
+.mobile-sidebar-drawer {
+  display: contents;
+}
+
+.mobile-sidebar-backdrop {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .mobile-filters-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 10px 14px 0;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--dim);
+  }
+
+  .mobile-filters-toggle[aria-expanded="true"] {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .mobile-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 49;
+    background: rgba(0, 0, 0, 0.4);
+  }
+
+  .mobile-sidebar-drawer.open {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(320px, 85vw);
+    z-index: 50;
+    background: var(--surface);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+  }
+
+  .mobile-sidebar-drawer.open .sidebar {
+    display: flex;
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* Dragging to resize makes no sense once the width is drawer-fixed. */
+  .mobile-sidebar-drawer.open .sidebar-resizer {
+    display: none;
+  }
+
+  .mobile-sidebar-close {
+    flex: none;
+    margin: 8px 10px 0 auto;
+    font-size: 12px;
+    color: var(--dim);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 10px;
   }
 }
 

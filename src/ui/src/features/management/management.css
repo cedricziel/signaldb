@@ -1,3 +1,5 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
+
 .manage-backdrop {
   position: fixed;
   inset: 0;
@@ -151,7 +153,7 @@
   grid-template-columns: 1.8fr 1fr auto;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 900px) {
   .manage-grid {
     grid-template-columns: 1fr;
   }
@@ -161,6 +163,20 @@
   }
 
   .membership-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .manage-backdrop {
+    padding: 8px;
+  }
+
+  .manage-panel {
+    padding: 16px;
+  }
+
+  .manage-panel fieldset {
     grid-template-columns: 1fr;
   }
 }
