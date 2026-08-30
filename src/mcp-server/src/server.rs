@@ -6,6 +6,9 @@
 //!
 //! Tools (every authenticated tenant session, no role gating):
 //! - `server_info` — connectivity + resolved tenant
+//! - `discover_datasets` — the tenant and datasets your credential can
+//!   access, as a nested Markdown list, marking the session's current
+//!   default dataset
 //! - `search_traces` — TraceQL search
 //! - `get_trace` — single trace by ID
 //! - `get_profile` — single profile's flamegraph by ID (wraps the native
@@ -29,6 +32,14 @@
 //! - `create_schema_registry` / `replace_schema_registry` /
 //!   `delete_schema_registry` / `validate_schema_registry` — custom-registry
 //!   management (`schema:write`)
+//!
+//! Read/discovery tools also take an optional `tenant` argument (alongside
+//! the existing optional `dataset` where applicable): a confirmation check
+//! against the tenant the auth middleware already resolved for the request,
+//! not a way to target a different tenant — one MCP session, and the
+//! credential behind it, is permanently bound to exactly one tenant (see
+//! `mcp_auth_middleware` in `lib.rs`). A mismatch fails the call before any
+//! request reaches the router; call `discover_datasets` first if unsure.
 //!
 //! Management tools come in two families that differ only in which
 //! credential the router expects (design D1); neither is hidden from
@@ -163,6 +174,12 @@ struct SearchTracesParams {
     /// Spans-per-spanset cap on returned spans.
     #[serde(default)]
     spss: Option<i32>,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset. The router
     /// validates access; an inaccessible dataset returns an access-denied error.
     #[serde(default)]
@@ -181,6 +198,12 @@ struct GetTraceParams {
     /// Optional end-of-range hint, unix seconds, to prune the scan.
     #[serde(default)]
     end: Option<i64>,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -245,6 +268,12 @@ struct GetProfileParams {
     /// Defaults to now.
     #[serde(default)]
     end: Option<i64>,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -277,6 +306,12 @@ struct DiscoverProfileTypesParams {
     /// Range end, same forms as `from`.
     #[serde(default)]
     until: Option<String>,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -295,6 +330,12 @@ struct SearchProfilesParams {
     /// Range end, same forms as `from`.
     #[serde(default)]
     until: Option<String>,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -318,6 +359,12 @@ struct CompareProfilesParams {
     /// Comparison range end.
     #[serde(default)]
     right_until: Option<String>,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -329,6 +376,12 @@ struct CompareProfilesParams {
 struct ProfilesForTraceParams {
     /// Trace ID to fetch correlated profiles for.
     trace_id: String,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -351,6 +404,12 @@ struct DiscoverAttributesParams {
     /// instead of v1. Only valid with `signal: "traces"`.
     #[serde(default)]
     scope: Option<TraceTagScope>,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -392,6 +451,12 @@ impl TraceTagScope {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DiscoverMetricsParams {
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -418,6 +483,12 @@ struct QueryMetricsParams {
     /// `start`/`end`.
     #[serde(default)]
     step: Option<String>,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -446,6 +517,12 @@ struct SearchLogsParams {
     /// `start`/`end`.
     #[serde(default)]
     step: Option<String>,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -459,6 +536,12 @@ struct QueryIrParams {
     #[schemars(schema_with = "query_ir_document_schema")]
     #[serde(deserialize_with = "deserialize_query_ir_document")]
     query: serde_json::Value,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -506,6 +589,12 @@ struct DiscoverFieldsParams {
     /// Maximum fields to return.
     #[serde(default)]
     limit: Option<u64>,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -535,6 +624,12 @@ struct DiscoverFieldValuesParams {
     /// it instead of paying for a scan.
     #[serde(default)]
     sample: bool,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -544,6 +639,12 @@ struct DiscoverFieldValuesParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DiscoverSourcesParams {
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Dataset to query. Omit to use the session's default dataset.
     #[serde(default)]
     dataset: Option<String>,
@@ -582,6 +683,12 @@ fn describe_document(
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct ResolveAttributeParams {
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Attribute wire key, e.g. `k8s.pod.uid` or `service.name`.
     key: String,
 }
@@ -590,6 +697,12 @@ struct ResolveAttributeParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct ResolveEntityParams {
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Entity type name, e.g. `k8s.pod` or `service`.
     name: String,
 }
@@ -598,6 +711,12 @@ struct ResolveEntityParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct ResolveMetricParams {
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// Metric name, e.g. `k8s.pod.cpu.time`.
     name: String,
 }
@@ -619,6 +738,12 @@ enum SchemaKind {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct SearchSchemaParams {
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
     /// What to search: `attribute`, `entity`, or `metric`.
     kind: SchemaKind,
     /// Name prefix, e.g. `k8s.pod.`. Omit or leave empty to list from the top.
@@ -708,6 +833,30 @@ fn require_confirm(confirm: &str, expected: &str, what: &str) -> Result<(), Erro
         ));
     }
     Ok(())
+}
+
+/// Confirms an explicit `tenant` tool argument matches the tenant the auth
+/// middleware already resolved for this request (`audit::CallerTenant`). No
+/// tool can actually target a different tenant than the one its credential
+/// is bound to — one MCP session is pinned to one tenant for its lifetime
+/// (see `mcp_auth_middleware` in `lib.rs`) — so this exists purely to fail an
+/// agent's wrong assumption loudly (e.g. after `discover_datasets`) instead
+/// of silently running the call against the real authenticated tenant.
+fn check_tenant_scope(parts: &Parts, expected: Option<&str>) -> Result<(), ErrorData> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    match parts.extensions.get::<audit::CallerTenant>() {
+        Some(actual) if actual.0 == expected => Ok(()),
+        Some(actual) => Err(ErrorData::invalid_params(
+            format!(
+                "`tenant` (\"{expected}\") does not match the authenticated tenant (\"{}\")",
+                actual.0
+            ),
+            None,
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Reject an empty `scopes` list on API-key creation (platform-admin and
@@ -968,6 +1117,12 @@ struct GetSchemaRegistryParams {
     namespace: String,
     /// Registry version (e.g. `1.43.0`).
     version: String,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
 }
 
 /// Parameters for `validate_schema_registry`.
@@ -979,6 +1134,18 @@ struct ValidateSchemaRegistryParams {
     #[schemars(schema_with = "json_object_schema")]
     #[serde(deserialize_with = "deserialize_json_object_or_string")]
     document: serde_json::Value,
+}
+
+/// Parameters for `list_schema_registries`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListSchemaRegistriesParams {
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
 }
 
 #[tool_router]
@@ -1106,6 +1273,7 @@ impl McpServer {
         Parameters(p): Parameters<SearchTracesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         let mut req = client.search();
         if let Some(v) = p.query {
@@ -1148,6 +1316,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         let mut req = client.query_single_trace().trace_id(p.trace_id);
         if let Some(v) = p.start {
@@ -1173,6 +1342,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         // The native Query IR's `flamegraph` envelope (profiles source only)
         // does the actual retrieval — this tool is a thin, single-ID wrapper
@@ -1201,6 +1371,7 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverProfileTypesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         let mut req = client.pyroscope_profile_types();
         if let Some(v) = p.from {
@@ -1225,6 +1396,7 @@ impl McpServer {
         Parameters(p): Parameters<SearchProfilesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         let mut req = client.pyroscope_render().query(p.query);
         if let Some(v) = p.from {
@@ -1249,6 +1421,7 @@ impl McpServer {
         Parameters(p): Parameters<CompareProfilesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         let mut req = client.pyroscope_render_diff().query(p.query);
         if let Some(v) = p.left_from {
@@ -1279,6 +1452,7 @@ impl McpServer {
         Parameters(p): Parameters<ProfilesForTraceParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         let resp = client
             .profiles_by_trace()
@@ -1297,6 +1471,7 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverAttributesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         if p.scope.is_some() && !matches!(p.signal, Signal::Traces) {
             return Err(ErrorData::invalid_params(
                 "discover_attributes: `scope` is only valid with signal: \"traces\"".to_string(),
@@ -1402,6 +1577,7 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverMetricsParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         let resp = client
             .promql_label_values()
@@ -1421,6 +1597,7 @@ impl McpServer {
         Parameters(p): Parameters<QueryMetricsParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         if p.start.is_some() || p.end.is_some() {
             let mut req = client.promql_query_range().query(p.query);
@@ -1460,6 +1637,7 @@ impl McpServer {
         Parameters(p): Parameters<SearchLogsParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         if p.start.is_some() || p.end.is_some() {
             let mut req = client.logql_query_range().query(p.query);
@@ -1508,6 +1686,7 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverFieldsParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let mut stage = serde_json::json!({ "target": "fields" });
         if let Some(limit) = p.limit {
             stage["limit"] = serde_json::json!(limit);
@@ -1534,6 +1713,7 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverFieldValuesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         if p.field.trim().is_empty() {
             return Err(ErrorData::invalid_params(
                 "discover_field_values: `field` must name a logical field".to_string(),
@@ -1569,6 +1749,7 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverSourcesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
         let resp = client
             .query_sources()
@@ -1579,6 +1760,78 @@ impl McpServer {
     }
 
     #[tool(
+        description = "Discover the tenant and datasets your credential can access, as a nested Markdown list: the authenticated tenant, then its datasets (marking the session's current default) with each dataset's provisioned signal-table count. Call this before passing an explicit `dataset` argument to another tool, or a `tenant` argument to confirm your assumption.",
+        annotations(read_only_hint = true)
+    )]
+    async fn discover_datasets(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        // The tenant id is already known from the auth middleware's own
+        // `whoami()` call (stashed as `audit::CallerTenant`), so this
+        // handler's `whoami()` — needed only for display fields
+        // (`tenant.name`, the current default dataset) — can run alongside
+        // `list_tenant_tables()` instead of gating it.
+        let (identity, tables) = match parts.extensions.get::<audit::CallerTenant>() {
+            Some(caller_tenant) => {
+                let tenant_id = caller_tenant.0.clone();
+                let (whoami, tables) = tokio::join!(
+                    client.whoami().send(),
+                    client.list_tenant_tables().tenant_id(&tenant_id).send()
+                );
+                (
+                    whoami
+                        .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                        .into_inner(),
+                    tables
+                        .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                        .into_inner(),
+                )
+            }
+            None => {
+                let identity = client
+                    .whoami()
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                    .into_inner();
+                let tables = client
+                    .list_tenant_tables()
+                    .tenant_id(&identity.tenant.id)
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                    .into_inner();
+                (identity, tables)
+            }
+        };
+
+        let mut markdown = format!(
+            "- Tenant: **{}** (`{}`)\n",
+            identity.tenant.name, identity.tenant.id
+        );
+        if tables.datasets.is_empty() {
+            markdown.push_str("  - (no datasets provisioned yet)\n");
+        } else {
+            for dataset in &tables.datasets {
+                let current = if dataset.dataset == identity.dataset {
+                    " (current)"
+                } else {
+                    ""
+                };
+                let count = dataset.tables.len();
+                markdown.push_str(&format!(
+                    "  - Dataset: `{}`{current} — {count} table{}\n",
+                    dataset.dataset,
+                    if count == 1 { "" } else { "s" },
+                ));
+            }
+        }
+        Ok(capped_text_result(markdown))
+    }
+
+    #[tool(
         description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant."
     )]
     async fn query_ir(
@@ -1586,6 +1839,7 @@ impl McpServer {
         Parameters(p): Parameters<QueryIrParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(p.query)
             .map_err(|e| ErrorData::invalid_params(format!("invalid IR document: {e}"), None))?;
         let client = self.router_client(&parts, p.dataset.as_deref())?;
@@ -2269,8 +2523,10 @@ impl McpServer {
     )]
     async fn list_schema_registries(
         &self,
+        Parameters(p): Parameters<ListSchemaRegistriesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_list_registries()
@@ -2288,6 +2544,7 @@ impl McpServer {
         Parameters(p): Parameters<ResolveAttributeParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_resolve_attribute()
@@ -2306,6 +2563,7 @@ impl McpServer {
         Parameters(p): Parameters<ResolveEntityParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_resolve_entity()
@@ -2324,6 +2582,7 @@ impl McpServer {
         Parameters(p): Parameters<ResolveMetricParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_resolve_metric()
@@ -2342,6 +2601,7 @@ impl McpServer {
         Parameters(p): Parameters<SearchSchemaParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, None)?;
         let prefix = p.prefix.unwrap_or_default();
         // Each kind has its own generated response type, so each arm sends and
@@ -2455,6 +2715,7 @@ impl McpServer {
         Parameters(p): Parameters<GetSchemaRegistryParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_get_registry()
@@ -2795,6 +3056,26 @@ impl ServerHandler for McpServer {
 /// context window, so an oversized downstream result is not streamed verbatim.
 const MAX_TOOL_PAYLOAD_BYTES: usize = 256 * 1024;
 
+/// Bound a text tool result at [`MAX_TOOL_PAYLOAD_BYTES`]. When `text`
+/// exceeds the budget, the tool returns valid JSON marked `truncated` with a
+/// narrowing hint instead of the oversized payload, so clients detect the cap
+/// from the flag. Shared by every tool that returns a text block, whether
+/// JSON ([`json_result_for_app`]) or plain Markdown (`discover_datasets`).
+fn capped_text_result(text: String) -> CallToolResult {
+    if text.len() > MAX_TOOL_PAYLOAD_BYTES {
+        let notice = serde_json::json!({
+            "truncated": true,
+            "bytes": text.len(),
+            "limit_bytes": MAX_TOOL_PAYLOAD_BYTES,
+            "hint": "Result exceeded the size cap; narrow the time range or lower `limit`, then retry.",
+        });
+        return audit::mark_truncated(CallToolResult::success(vec![ContentBlock::text(
+            notice.to_string(),
+        )]));
+    }
+    CallToolResult::success(vec![ContentBlock::text(text)])
+}
+
 /// Serialize a value into a single-text-block tool result, bounded at
 /// [`MAX_TOOL_PAYLOAD_BYTES`]. When the serialized result exceeds the budget,
 /// the tool returns valid JSON marked `truncated` with a narrowing hint instead
@@ -2817,19 +3098,9 @@ fn json_result_for_app<T: serde::Serialize>(
     let json = serde_json::to_value(value)
         .map_err(|e| ErrorData::internal_error(format!("failed to serialize result: {e}"), None))?;
     let text = json.to_string();
-    if text.len() > MAX_TOOL_PAYLOAD_BYTES {
-        let notice = serde_json::json!({
-            "truncated": true,
-            "bytes": text.len(),
-            "limit_bytes": MAX_TOOL_PAYLOAD_BYTES,
-            "hint": "Result exceeded the size cap; narrow the time range or lower `limit`, then retry.",
-        });
-        return Ok(audit::mark_truncated(CallToolResult::success(vec![
-            ContentBlock::text(notice.to_string()),
-        ])));
-    }
-    let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
-    if with_structured {
+    let truncated = text.len() > MAX_TOOL_PAYLOAD_BYTES;
+    let mut result = capped_text_result(text);
+    if with_structured && !truncated {
         result.structured_content = Some(json);
     }
     Ok(result)
@@ -3178,6 +3449,7 @@ mod tests {
                     query: "cpu".to_string(),
                     from: Some("now-1h".to_string()),
                     until: None,
+                    tenant: None,
                     dataset: None,
                 }),
                 Extension(valid_parts()),
@@ -3207,6 +3479,7 @@ mod tests {
                     left_until: Some("now-1h".to_string()),
                     right_from: Some("now-1h".to_string()),
                     right_until: Some("now".to_string()),
+                    tenant: None,
                     dataset: None,
                 }),
                 Extension(valid_parts()),
@@ -3233,6 +3506,7 @@ mod tests {
             .profiles_for_trace(
                 Parameters(ProfilesForTraceParams {
                     trace_id: "abc123".to_string(),
+                    tenant: None,
                     dataset: None,
                 }),
                 Extension(valid_parts()),
@@ -3260,6 +3534,7 @@ mod tests {
                     signal: Signal::Profiles,
                     tag: None,
                     scope: None,
+                    tenant: None,
                     dataset: None,
                 }),
                 Extension(valid_parts()),
@@ -3284,6 +3559,7 @@ mod tests {
                     signal: Signal::Profiles,
                     tag: Some("service_name".to_string()),
                     scope: None,
+                    tenant: None,
                     dataset: None,
                 }),
                 Extension(valid_parts()),
@@ -3311,6 +3587,7 @@ mod tests {
                     signal: Signal::Traces,
                     tag: None,
                     scope: Some(TraceTagScope::Resource),
+                    tenant: None,
                     dataset: None,
                 }),
                 Extension(valid_parts()),
@@ -3339,6 +3616,7 @@ mod tests {
                     signal: Signal::Traces,
                     tag: Some("service.name".to_string()),
                     scope: Some(TraceTagScope::Resource),
+                    tenant: None,
                     dataset: None,
                 }),
                 Extension(valid_parts()),
@@ -3366,6 +3644,7 @@ mod tests {
                     signal: Signal::Logs,
                     tag: None,
                     scope: Some(TraceTagScope::Resource),
+                    tenant: None,
                     dataset: None,
                 }),
                 Extension(valid_parts()),
@@ -3469,6 +3748,188 @@ mod tests {
             serde_json::from_str(&text.text).expect("server_info returns JSON");
         assert_eq!(identity["tenant"], "acme");
         assert_eq!(identity["dataset"], "production");
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn discover_datasets_lists_the_tenant_and_its_datasets_as_markdown() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            // First request: whoami.
+            let (mut socket, _) = listener.accept().await.expect("accept whoami request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(
+                std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .starts_with("GET /api/v1/whoami "),
+                "discover_datasets must call whoami first"
+            );
+            let body = br#"{"user_id":"user-a","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production"}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write whoami response headers");
+            socket.write_all(body).await.expect("write whoami body");
+            drop(socket);
+
+            // Second request: list_tenant_tables, on its own connection.
+            let (mut socket, _) = listener.accept().await.expect("accept tables request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(
+                std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .starts_with("GET /api/v1/tenants/acme/tables"),
+                "discover_datasets must call list_tenant_tables for the resolved tenant"
+            );
+            let body = br#"{"tenant_id":"acme","tables":[],"datasets":[{"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d"}]},{"dataset":"staging","tables":[]}]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write tables response headers");
+            socket.write_all(body).await.expect("write tables body");
+        });
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_datasets(Extension(valid_parts()))
+            .await
+            .expect("discover_datasets succeeds");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("discover_datasets returns a text result");
+        };
+        assert!(
+            text.text.contains("Acme Corp") && text.text.contains("acme"),
+            "missing tenant line: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`production` (current)"),
+            "missing current-dataset marker: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`staging`") && !text.text.contains("`staging` (current)"),
+            "staging must not be marked current: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`production` (current) — 1 table"),
+            "wrong production table count: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`staging` — 0 tables"),
+            "wrong staging table count: {}",
+            text.text
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn check_tenant_scope_rejects_a_tenant_argument_that_does_not_match_the_credential() {
+        // No mock router needed: the mismatch must be caught before any
+        // request is sent.
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        let mut parts = valid_parts();
+        parts
+            .extensions
+            .insert(audit::CallerTenant("acme".to_string()));
+
+        let err = server
+            .discover_sources(
+                Parameters(DiscoverSourcesParams {
+                    tenant: Some("other".to_string()),
+                    dataset: None,
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect_err("a `tenant` argument mismatching the credential must be rejected");
+
+        assert!(err.message.contains("acme"), "got {}", err.message);
+        assert!(err.message.contains("other"), "got {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn get_schema_registry_rejects_a_tenant_argument_that_does_not_match_the_credential() {
+        // Every schema-lookup tool takes the same optional `tenant`
+        // confirmation; `get_schema_registry` must not be the one exception
+        // that silently ignores it.
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        let mut parts = valid_parts();
+        parts
+            .extensions
+            .insert(audit::CallerTenant("acme".to_string()));
+
+        let err = server
+            .get_schema_registry(
+                Parameters(GetSchemaRegistryParams {
+                    namespace: "otel".to_string(),
+                    version: "1.43.0".to_string(),
+                    tenant: Some("other".to_string()),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect_err("a `tenant` argument mismatching the credential must be rejected");
+
+        assert!(err.message.contains("acme"), "got {}", err.message);
+        assert!(err.message.contains("other"), "got {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn check_tenant_scope_allows_a_tenant_argument_that_matches_the_credential() {
+        let (base_url, router) = mock_json_router(
+            "GET /api/v1/query/sources",
+            r#"{"result":"rows","window":{"start_ns":0,"end_ns":1},"rows":[["logs"]]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+        let mut parts = valid_parts();
+        parts
+            .extensions
+            .insert(audit::CallerTenant("acme".to_string()));
+
+        let result = server
+            .discover_sources(
+                Parameters(DiscoverSourcesParams {
+                    tenant: Some("acme".to_string()),
+                    dataset: None,
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect("a `tenant` argument matching the credential passes through");
+
+        let sources = text_json(&result);
+        assert_eq!(sources["rows"][0][0], "logs");
         router.await.expect("mock router task panicked");
     }
 
