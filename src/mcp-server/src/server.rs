@@ -1117,6 +1117,12 @@ struct GetSchemaRegistryParams {
     namespace: String,
     /// Registry version (e.g. `1.43.0`).
     version: String,
+    /// Tenant to confirm against your credential's authenticated tenant (see
+    /// `discover_datasets`). Optional; a mismatch fails the call instead of
+    /// silently running it. This does not select a different tenant — one
+    /// credential is always bound to exactly one.
+    #[serde(default)]
+    tenant: Option<String>,
 }
 
 /// Parameters for `validate_schema_registry`.
@@ -2709,6 +2715,7 @@ impl McpServer {
         Parameters(p): Parameters<GetSchemaRegistryParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, p.tenant.as_deref())?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_get_registry()
@@ -3857,6 +3864,36 @@ mod tests {
                 Parameters(DiscoverSourcesParams {
                     tenant: Some("other".to_string()),
                     dataset: None,
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect_err("a `tenant` argument mismatching the credential must be rejected");
+
+        assert!(err.message.contains("acme"), "got {}", err.message);
+        assert!(err.message.contains("other"), "got {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn get_schema_registry_rejects_a_tenant_argument_that_does_not_match_the_credential() {
+        // Every schema-lookup tool takes the same optional `tenant`
+        // confirmation; `get_schema_registry` must not be the one exception
+        // that silently ignores it.
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        let mut parts = valid_parts();
+        parts
+            .extensions
+            .insert(audit::CallerTenant("acme".to_string()));
+
+        let err = server
+            .get_schema_registry(
+                Parameters(GetSchemaRegistryParams {
+                    namespace: "otel".to_string(),
+                    version: "1.43.0".to_string(),
+                    tenant: Some("other".to_string()),
                 }),
                 Extension(parts),
             )
