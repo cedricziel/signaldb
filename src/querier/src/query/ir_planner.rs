@@ -879,14 +879,22 @@ impl SchemaResolver {
         }
     }
 
-    /// Resolve a declared logical field to its current physical realization.
-    fn column_for(&self, field: &str, value_type: ValueType) -> Option<(String, ValueType)> {
+    /// Resolve a declared logical field to its current physical realization:
+    /// a physical column addressed directly or via a declared alias (e.g.
+    /// `trace_id`, always fully populated, no backfill concern) resolves to
+    /// [`Resolved::Column`]; a promoted attribute column (`label_<key>`, may
+    /// still be NULL in files the compactor hasn't backfilled since
+    /// promotion, #816) resolves to [`Resolved::PromotedColumn`].
+    fn column_for(&self, field: &str, value_type: ValueType) -> Option<Resolved> {
         // An alias may target a column with no scalar value type (an
         // attribute-container Map), so check the scanned names, not `columns`.
         if let Some((_, physical)) = self.aliases.iter().find(|(logical, _)| *logical == field)
             && self.physical_names.contains(*physical)
         {
-            return Some((physical.to_string(), value_type));
+            return Some(Resolved::Column {
+                name: physical.to_string(),
+                value_type,
+            });
         }
         // A promoted attribute column is materialized from the *bare*
         // attribute key (`attr_promotion::materialized_keys_of` keys off the
@@ -898,11 +906,21 @@ impl SchemaResolver {
         let bare = strip_scope_qualifier(self.attr_prefixes, field).map_or(field, |(_, bare)| bare);
         let materialized = common::schema::materialized_column_name(bare);
         if let Some(vt) = self.columns.get(&materialized) {
-            return Some((materialized, vt.clone()));
+            // Matched via the materialized-label lookup, not a direct
+            // physical alias — #816: this column may still be NULL in files
+            // the compactor hasn't backfilled since promotion, so the caller
+            // must keep the JSON fallback alive rather than trusting it
+            // exclusively.
+            return Some(Resolved::PromotedColumn {
+                name: materialized,
+                value_type: vt.clone(),
+                key: field.to_string(),
+            });
         }
-        self.columns
-            .contains_key(field)
-            .then(|| (field.to_string(), value_type))
+        self.columns.contains_key(field).then(|| Resolved::Column {
+            name: field.to_string(),
+            value_type,
+        })
     }
 }
 
@@ -943,7 +961,7 @@ impl FieldResolver for SchemaResolver {
         if let Some(logical) = self.logical_schema.resolve(&self.source, field) {
             let value_type = logical_to_value_type(logical.value_type);
             return match self.column_for(field, value_type.clone()) {
-                Some((name, value_type)) => Some(Resolved::Column { name, value_type }),
+                Some(resolved) => Some(resolved),
                 None => Some(Resolved::JsonPath {
                     container: self.container.clone(),
                     key: field.to_string(),
@@ -955,7 +973,7 @@ impl FieldResolver for SchemaResolver {
             return None;
         }
         match self.column_for(field, ValueType::String) {
-            Some((name, value_type)) => Some(Resolved::Column { name, value_type }),
+            Some(resolved) => Some(resolved),
             // An unpromoted attribute: a String extraction from the container.
             None => Some(Resolved::JsonPath {
                 container: self.container.clone(),
@@ -1421,11 +1439,25 @@ impl Lowering<'_> {
     }
 
     /// The current DataFrame column name for a logical reference.
+    ///
+    /// Exhaustive over `Resolved` on purpose, with no wildcard arm: a
+    /// promoted-attribute variant silently falling through to
+    /// `safe_ident(logical)` (a name that doesn't exist in the scanned
+    /// schema) is exactly the regression a wildcard here produced once
+    /// already, when `Resolved::PromotedColumn` was added and every other
+    /// match site over `Resolved` in this file caught the gap at compile
+    /// time except this one. Adding a future variant must force a decision
+    /// here too.
     fn df_col(&self, logical: &str) -> String {
         self.col_of.get(logical).cloned().unwrap_or_else(|| {
             match self.resolver.resolve("", logical) {
-                Some(Resolved::Column { name, .. }) => name,
-                _ => safe_ident(logical),
+                Some(Resolved::Column { name, .. } | Resolved::PromotedColumn { name, .. }) => name,
+                Some(
+                    Resolved::JsonPath { .. }
+                    | Resolved::EventAttribute { .. }
+                    | Resolved::SpanEvents { .. },
+                )
+                | None => safe_ident(logical),
             }
         })
     }
@@ -1894,6 +1926,9 @@ impl Lowering<'_> {
                 ..
             }) => Ok(self.event_attr_expr(&events_column, &event_name, &key)),
             Some(Resolved::SpanEvents { events_column }) => Ok(span_events_expr(&events_column)),
+            Some(Resolved::PromotedColumn { name, key, .. }) => {
+                Ok(self.promoted_column_expr(&name, &key))
+            }
             None => Err(QuerierError::InvalidInput(format!(
                 "field '{logical}' has no canonical type"
             ))),
@@ -1925,6 +1960,14 @@ impl Lowering<'_> {
             1 => parts.remove(0),
             _ => coalesce(parts),
         }
+    }
+
+    /// Read a [`Resolved::PromotedColumn`]: `name` may still be NULL in a
+    /// file the compactor hasn't backfilled since promotion (#816), so
+    /// coalesce it with the plain JSON-path extraction of `key` rather than
+    /// trusting the column alone.
+    fn promoted_column_expr(&self, name: &str, key: &str) -> Expr {
+        coalesce(vec![ident(name), self.attr_expr(key)])
     }
 
     /// Extract one attribute from a named span event (see
@@ -1985,10 +2028,7 @@ impl Lowering<'_> {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
                 QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
             })?;
-            let is_json = matches!(
-                resolved,
-                Resolved::JsonPath { .. } | Resolved::EventAttribute { .. }
-            );
+            let is_json = resolved.is_advisory_type();
             let ty = resolved.value_type().clone();
             let expr = match &resolved {
                 Resolved::Column { name, .. } => ident(name.clone()),
@@ -2000,6 +2040,7 @@ impl Lowering<'_> {
                     ..
                 } => self.event_attr_expr(events_column, event_name, key),
                 Resolved::SpanEvents { events_column } => span_events_expr(events_column),
+                Resolved::PromotedColumn { name, key, .. } => self.promoted_column_expr(name, key),
             };
             (is_json, ty, expr)
         };
@@ -2158,6 +2199,11 @@ impl Lowering<'_> {
                                 .alias(safe_ident(f)),
                             Some(Resolved::SpanEvents { events_column }) => {
                                 span_events_expr(&events_column).alias(safe_ident(f))
+                            }
+                            // #816: same treatment as `JsonPath` — the
+                            // column alone isn't trustworthy until backfilled.
+                            Some(Resolved::PromotedColumn { name, key, .. }) => {
+                                self.promoted_column_expr(&name, &key).alias(safe_ident(f))
                             }
                             None => ident(safe_ident(f)),
                         }
@@ -4884,9 +4930,13 @@ mod tests {
             plan.contains("label_http_method"),
             "expected the promoted column to be referenced:\n{plan}"
         );
+        // #816: the promoted column alone isn't trustworthy until the
+        // compactor backfills every file — the plan must keep the
+        // `get_field` JSON fallback alive (coalesced with the column), not
+        // drop it once a promoted column exists.
         assert!(
-            !plan.contains("get_field"),
-            "unexpected json-path extraction once a promoted column exists:\n{plan}"
+            plan.contains("get_field"),
+            "expected the json-path fallback to stay coalesced with the promoted column (#816):\n{plan}"
         );
         let batches = df.collect().await.unwrap();
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
@@ -6599,8 +6649,9 @@ mod tests {
     }
 
     /// A promoted column alongside a legacy JSON container: `env` resolves
-    /// to `label_env` directly and never touches `log_attributes` at all —
-    /// the coercion must not change promoted-column priority.
+    /// to `label_env`, coalesced with the (legacy-JSON-coerced)
+    /// `log_attributes` fallback (#816) — the legacy-container coercion must
+    /// not change that.
     #[tokio::test]
     async fn legacy_json_container_promoted_column_still_takes_priority() {
         let ctx = legacy_json_logs_ctx();
@@ -6680,5 +6731,174 @@ mod tests {
             last, 21,
             "last (latest, ts=40) should be row 4's severity_number, not row 1's again"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // #816 — a promoted attribute column may still be NULL in files the
+    // compactor hasn't rewritten since promotion (Iceberg schema evolution
+    // null-fills new columns in pre-existing files); the querier must keep
+    // coalescing with the JSON fallback, never trust the column alone.
+    // -----------------------------------------------------------------
+
+    /// Three rows over `log_attributes`' `x` key: row 1 has `x=v`, row 2 has
+    /// `x=other`, row 3 has no `x` key at all (genuinely absent, not merely
+    /// empty — for the Kleene absent-key case).
+    ///
+    /// `promoted == false` models the table before `x` is ever promoted (no
+    /// `label_x` column at all — resolves through the plain `JsonPath`
+    /// path). `promoted == true` models the table immediately after
+    /// promotion, before the compactor has rewritten a single file: schema
+    /// evolution (`common::iceberg::evolution::add_label_columns`) adds
+    /// `label_x` to the *schema*, but every existing file null-fills it on
+    /// read — so `label_x` is NULL for every row here, exactly like a real
+    /// unrewritten file would read back.
+    fn logs_attr_x_ctx(promoted: bool) -> SessionContext {
+        let mut fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, true),
+            map_field(),
+        ];
+        if promoted {
+            fields.push(Field::new("label_x", DataType::Utf8, true));
+        }
+        let schema = Arc::new(Schema::new(fields));
+
+        let ts = TimestampNanosecondArray::from(vec![10_i64, 20, 30]);
+        let service = StringArray::from(vec![Some("svc1"), Some("svc2"), Some("svc3")]);
+        let log_attrs = build_map(&[&[("x", "v")], &[("x", "other")], &[]]);
+
+        let mut columns: Vec<ArrayRef> = vec![Arc::new(ts), Arc::new(service), log_attrs];
+        if promoted {
+            // Every row null-filled — no file has been rewritten yet.
+            columns.push(Arc::new(StringArray::from(
+                vec![None, None, None] as Vec<Option<&str>>
+            )));
+        }
+
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    /// `service_name` of rows matching `pred` against `logs_attr_x_ctx`,
+    /// sorted for a deterministic comparison.
+    async fn matching_services(ctx: &SessionContext, pred: serde_json::Value) -> Vec<String> {
+        let svc = IrService::new(ctx.clone());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["service.name"],
+            "pipeline": [{ "where": pred }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap_or_else(|e| panic!("plan failed: {e}"))
+            .expect("table is registered");
+        let batches = df
+            .collect()
+            .await
+            .unwrap_or_else(|e| panic!("execute failed: {e}"));
+        let mut out = Vec::new();
+        for b in &batches {
+            let col = b
+                .column_by_name("service_name")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for i in 0..b.num_rows() {
+                out.push(col.value(i).to_string());
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// The issue's own acceptance scenario: query results for `{x="v"}`
+    /// must be identical before promotion (plain `JsonPath`) and right
+    /// after promotion with zero files backfilled (`label_x` all-NULL,
+    /// `PromotedColumn` coalescing with the JSON fallback).
+    #[tokio::test]
+    async fn promoted_column_matches_baseline_before_backfill() {
+        let pred = serde_json::json!({ "field": "x", "op": "eq", "value": "v" });
+        let baseline = matching_services(&logs_attr_x_ctx(false), pred.clone()).await;
+        let promoted = matching_services(&logs_attr_x_ctx(true), pred).await;
+        assert_eq!(
+            baseline,
+            vec!["svc1".to_string()],
+            "only svc1 has x=v in log_attributes"
+        );
+        assert_eq!(
+            promoted, baseline,
+            "promotion with zero files backfilled must not change the result (#816)"
+        );
+    }
+
+    /// Negation through the promoted-column fallback keeps Kleene absent-key
+    /// semantics: row 3 has no `x` key in `label_x` (NULL, unbackfilled) or
+    /// in `log_attributes` (genuinely absent) — `x != "v"` must exclude it,
+    /// matching `negated_equality_excludes_absent_rows`'s pattern for the
+    /// unpromoted path.
+    #[tokio::test]
+    async fn promoted_column_negation_excludes_absent_key_before_backfill() {
+        let pred = serde_json::json!({ "field": "x", "op": "ne", "value": "v" });
+        let promoted = matching_services(&logs_attr_x_ctx(true), pred.clone()).await;
+        assert_eq!(
+            promoted,
+            vec!["svc2".to_string()],
+            "svc2 (x=other) matches != v; svc1 (x=v) doesn't; svc3's absent key matches neither = nor !="
+        );
+        // Same result whether or not `x` was ever promoted.
+        let baseline = matching_services(&logs_attr_x_ctx(false), pred).await;
+        assert_eq!(promoted, baseline);
+    }
+
+    /// Regression for the gap `728113e` left in `SchemaResolver::df_col`:
+    /// it only matched `Resolved::Column`, so a promoted attribute fell
+    /// through to `safe_ident(logical)` (`"x"`) instead of the real
+    /// materialized column (`"label_x"`) — a column that doesn't exist in
+    /// the scanned schema, so `ORDER BY` on a promoted attribute broke.
+    /// `df_col` must resolve `Resolved::PromotedColumn` to its `name` just
+    /// like it already does for `Resolved::Column`.
+    #[tokio::test]
+    async fn order_by_promoted_attribute_resolves_to_materialized_column() {
+        let ctx = logs_attr_x_ctx(true);
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["service.name"],
+            "pipeline": [{ "order": [{ "of": "x", "dir": "desc" }] }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap_or_else(|e| panic!("plan failed: {e}"))
+            .expect("table is registered");
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains("label_x"),
+            "ORDER BY on a promoted attribute must sort by its materialized column, got:\n{plan}"
+        );
+        // Executing must not error either -- confirms the referenced
+        // column actually exists in the scanned schema.
+        let batches = df
+            .collect()
+            .await
+            .unwrap_or_else(|e| panic!("execute failed: {e}"));
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 3);
     }
 }

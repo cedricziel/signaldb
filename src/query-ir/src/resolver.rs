@@ -46,6 +46,22 @@ pub enum Resolved {
     /// The whole span-events list, read from an events JSON-array column and
     /// normalized to `[{name, timestamp_unix_nano, attributes}]` (String).
     SpanEvents { events_column: String },
+    /// A promoted attribute column (`label_<key>`) that may still be NULL in
+    /// files the compactor hasn't rewritten since promotion — Iceberg schema
+    /// evolution null-fills new columns in pre-existing files, and the
+    /// rewrite-coupled backfill only reaches a file when the compactor next
+    /// compacts its partition (#816). Lowers to
+    /// `COALESCE(<name>, <attribute-map/JSON extraction of key>)` so a query
+    /// gets the same answer whether or not this row's file has been backfilled
+    /// yet. Negation and absent-key (Kleene NULL) semantics fall out of the
+    /// COALESCE automatically: the coalesced value is NULL exactly when the
+    /// key is genuinely absent from both the column and the source containers,
+    /// same as the plain `JsonPath` path today.
+    PromotedColumn {
+        name: String,
+        value_type: ValueType,
+        key: String,
+    },
 }
 
 impl Resolved {
@@ -56,6 +72,7 @@ impl Resolved {
             Resolved::JsonPath { value_type, .. } => value_type,
             Resolved::EventAttribute { value_type, .. } => value_type,
             Resolved::SpanEvents { .. } => &ValueType::String,
+            Resolved::PromotedColumn { value_type, .. } => value_type,
         }
     }
 
@@ -76,11 +93,18 @@ impl Resolved {
     /// by resolution shape, not by inspecting the carried type. A `Column`
     /// (a real physical or promoted field) is authoritative: its type is
     /// this document's actual, load-bearing contract, and coercion there
-    /// stays strict.
+    /// stays strict. A [`Resolved::PromotedColumn`] joins this set too: its
+    /// physical column is always an optional `Utf8`/String (materialized
+    /// labels are always created as optional String columns, see
+    /// `evolution.rs`'s `add_label_columns`), and until the row's file is
+    /// backfilled its value can still come from the untyped JSON fallback —
+    /// no more of a canonical-type guarantee than `JsonPath` has.
     pub fn is_advisory_type(&self) -> bool {
         matches!(
             self,
-            Resolved::JsonPath { .. } | Resolved::EventAttribute { .. }
+            Resolved::JsonPath { .. }
+                | Resolved::EventAttribute { .. }
+                | Resolved::PromotedColumn { .. }
         )
     }
 }
@@ -90,8 +114,13 @@ impl Resolved {
 /// A resolver returns `None` for a field it cannot resolve **or cannot assign a
 /// canonical type to** — the validator turns that into a defined rejection.
 /// Resolution MUST be promotion-invariant in meaning: a field resolves to a
-/// [`Resolved::JsonPath`] when unpromoted and a [`Resolved::Column`] when
-/// promoted, but both denote the same logical field with the same type.
+/// [`Resolved::JsonPath`] when unpromoted and, once its attribute is
+/// promoted to a materialized `label_<key>` column, either a
+/// [`Resolved::Column`] (a first-class physical column, always fully
+/// populated) or a [`Resolved::PromotedColumn`] (a promoted attribute column,
+/// which may still be NULL in files the compactor hasn't backfilled yet and
+/// so keeps coalescing with the JSON fallback — #816). All three denote the
+/// same logical field with the same type.
 pub trait FieldResolver: Send + Sync {
     fn resolve(&self, source: &str, field: &str) -> Option<Resolved>;
 
