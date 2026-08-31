@@ -1046,7 +1046,10 @@ async fn mcp_discover_profile_types_lists_the_ingested_profile_type() {
             Some(&session_id),
             serde_json::json!({
                 "jsonrpc": "2.0", "id": next_id, "method": "tools/call",
-                "params": {"name": "discover_profile_types", "arguments": {}}
+                "params": {
+                    "name": "discover_profile_types",
+                    "arguments": {"tenant": TEST_TENANT, "dataset": TEST_DATASET}
+                }
             }),
         );
         let response = mcp_app

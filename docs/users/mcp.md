@@ -58,17 +58,23 @@ these:
 | `validate_schema_registry` | Validate a registry document without storing it; errors carry document paths (requires `schema:write`).                                                                                                              |
 | `delete_schema_registry`   | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                                                                                  |
 
-Each query tool accepts an optional `dataset` argument. Omit it to use your
-session's default dataset; pass one to target another dataset your tenant may
-access (the router validates access and rejects the rest). Large results are
-capped and returned with a `truncated: true` flag telling the agent to narrow
-the query.
+Each query tool requires a `dataset` argument, targeting the dataset your
+tenant may access (the router validates access and rejects the rest). Large
+results are capped and returned with a `truncated: true` flag telling the
+agent to narrow the query.
 
-Most of these tools also accept an optional `tenant` argument: a confirmation
-check, not a way to switch tenants. It must equal the tenant your credential
-already resolves to (`server_info`, `discover_datasets`) — one credential is
-always bound to exactly one tenant — and a mismatch fails the call with an
-error naming both tenants, before any request reaches the router.
+Most of these tools also require a `tenant` argument: a confirmation check,
+not a way to switch tenants. It must equal the tenant *this specific call's*
+credential resolves to (`server_info`, `discover_datasets`), and a mismatch
+fails the call with an error naming both tenants, before any request reaches
+the router. Both arguments are required rather than optional because one MCP
+session (one `mcp-session-id`) can hold credentials for several tenants and
+datasets across its calls — there is no single implicit session-wide default
+left to fall back to. To reach a second tenant within one session, present a
+different credential (`Authorization` bearer token plus `X-Tenant-ID`) on a
+later call rather than opening a second connection; the router
+independently authenticates each call, up to a bounded number of distinct
+identities per session.
 
 ### Operational control
 

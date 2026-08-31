@@ -422,7 +422,10 @@ async fn custom_registry_via_cli_resolves_over_http_and_mcp_with_precedence() {
     // Resolve through the MCP tool over Streamable HTTP; same envelope.
     let mut mcp = McpHttpClient::connect(&router_url).await;
     let via_mcp = mcp
-        .call_tool("resolve_attribute", json!({"key": "service.name"}))
+        .call_tool(
+            "resolve_attribute",
+            json!({"tenant": TENANT, "key": "service.name"}),
+        )
         .await;
     assert_acme_precedence(&via_mcp);
     assert_eq!(
@@ -437,17 +440,23 @@ async fn custom_registry_via_cli_resolves_over_http_and_mcp_with_precedence() {
     // Entity and metric lookups + prefix search reach the custom definitions
     // through the MCP tools too.
     let entity = mcp
-        .call_tool("resolve_entity", json!({"name": "acme.order"}))
+        .call_tool(
+            "resolve_entity",
+            json!({"tenant": TENANT, "name": "acme.order"}),
+        )
         .await;
     assert_eq!(entity["primary"]["namespace"], "acme");
     let metric = mcp
-        .call_tool("resolve_metric", json!({"name": "acme.checkout.latency"}))
+        .call_tool(
+            "resolve_metric",
+            json!({"tenant": TENANT, "name": "acme.checkout.latency"}),
+        )
         .await;
     assert_eq!(metric["primary"]["instrument"], "histogram");
     let search = mcp
         .call_tool(
             "search_schema",
-            json!({"kind": "attribute", "prefix": "acme.order.", "limit": 10}),
+            json!({"tenant": TENANT, "kind": "attribute", "prefix": "acme.order.", "limit": 10}),
         )
         .await;
     let keys: Vec<&str> = search["hits"]
@@ -462,7 +471,7 @@ async fn custom_registry_via_cli_resolves_over_http_and_mcp_with_precedence() {
     let deleted = mcp
         .call_tool(
             "delete_schema_registry",
-            json!({"namespace": "acme", "version": "1.0.0"}),
+            json!({"tenant": TENANT, "namespace": "acme", "version": "1.0.0"}),
         )
         .await;
     assert_eq!(deleted["deleted"], true);
