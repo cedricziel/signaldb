@@ -8,7 +8,6 @@
 use anyhow::{Context, Result};
 use common::CatalogManager;
 use common::iceberg::sort::{DeclaredSortColumn, UndeclaredFallback, WriteSortKey, write_sort_key};
-use common::schema::materialized_column_name;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::ScalarValue;
 use datafusion::prelude::*;
@@ -534,19 +533,17 @@ impl ParquetRewriter {
                 return outcome;
             }
         };
-        // The table's current label_<key> columns and the pinned allowlist.
-        let label_columns: Vec<String> = table
-            .current_schema()
-            .map(|schema| {
-                schema
-                    .fields()
-                    .iter()
-                    .map(|f| f.name.clone())
-                    .filter(|n| n.starts_with("label_"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let materialized = crate::attr_promotion::materialized_keys_of(&label_columns, &stats);
+        // The table's current schema -- the source of truth for which
+        // keys are already materialized (via each label column's
+        // origin-key `doc`, #814) -- and the pinned allowlist.
+        let mut current_schema = match table.current_schema() {
+            Ok(schema) => schema.clone(),
+            Err(e) => {
+                tracing::warn!(error = %e, table = %table_name, "Failed to resolve current schema for promotion pass");
+                return outcome;
+            }
+        };
+        let materialized = crate::attr_promotion::materialized_keys_of(&current_schema, &stats);
         let tenant_schema = config.get_tenant_schema_config(tenant);
         let m = &tenant_schema.materialized_labels;
         let pinned: &[String] = match signal {
@@ -584,8 +581,9 @@ impl ParquetRewriter {
             )
             .await
             {
-                Ok(_) => {
+                Ok(evolved) => {
                     outcome.evolved = true;
+                    current_schema = evolved;
                     // TODO(#731): set bloom-filter table properties for the
                     // newly promoted label columns once the
                     // `bloom_filter_properties_for_labels` helper lands in
@@ -608,6 +606,21 @@ impl ParquetRewriter {
         // continues — at worst the column lives until the next cycle.
         let mut demoted: Vec<String> = Vec::new();
         if !decision.demote.is_empty() {
+            // Snapshot the pre-call schema so the actually-dropped columns
+            // can be derived by diffing against whatever
+            // `remove_label_columns` returns, rather than independently
+            // re-resolving `decision.demote` against this local snapshot.
+            // `remove_label_columns` reloads the table fresh from the
+            // catalog and resolves columns against that live state; under
+            // concurrent multi-instance compaction another instance may
+            // have already demoted these keys and reused the freed column
+            // name for an unrelated, colliding key (#814) before this call
+            // lands. In that case `remove_label_columns` correctly no-ops
+            // (the schema it returns is unchanged), and diffing yields an
+            // empty `dropped_columns` instead of stale names that would
+            // otherwise cause `rewrite_stream` to drop a live column
+            // belonging to the colliding key.
+            let schema_before_demote = current_schema.clone();
             match common::iceberg::evolution::remove_label_columns(
                 self.catalog_manager.catalog(),
                 table.identifier(),
@@ -615,13 +628,12 @@ impl ParquetRewriter {
             )
             .await
             {
-                Ok(_) => {
-                    outcome.evolved = true;
+                Ok(pruned) => {
+                    let dropped_columns = actually_dropped_columns(&schema_before_demote, &pruned);
+                    outcome.evolved = outcome.evolved || !dropped_columns.is_empty();
                     demoted = decision.demote;
-                    outcome.dropped_columns = demoted
-                        .iter()
-                        .map(|key| materialized_column_name(key))
-                        .collect();
+                    outcome.dropped_columns = dropped_columns;
+                    current_schema = pruned;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -638,8 +650,11 @@ impl ParquetRewriter {
         // whose source key is still known (already-materialized keys from
         // the stats, and the pinned allowlist), minus what was just
         // demoted. Recomputing existing columns heals rows the writer
-        // left null during the transition window. Deduplicated by column
-        // name — the key -> column encoding is lossy.
+        // left null during the transition window. Each key's column is
+        // resolved from the freshly-evolved schema via its origin-key
+        // `doc` (#814); a key with no column yet (e.g. pinned but never
+        // promoted, or an evolution that failed) is skipped rather than
+        // guessing a name. Deduplicated by column name.
         let mut seen_columns = HashSet::new();
         let promoted: &[String] = if outcome.evolved {
             &decision.promote
@@ -652,9 +667,11 @@ impl ParquetRewriter {
             .chain(pinned)
             .filter(|key| !demoted.contains(key))
         {
-            let column = materialized_column_name(key);
-            if seen_columns.insert(column.clone()) {
-                outcome.backfill.push((key.clone(), column));
+            if let Some(column) = common::iceberg::evolution::column_for_key(&current_schema, key) {
+                let column = column.to_string();
+                if seen_columns.insert(column.clone()) {
+                    outcome.backfill.push((key.clone(), column));
+                }
             }
         }
         outcome
@@ -985,6 +1002,38 @@ impl ParquetRewriter {
             }
         }
     }
+}
+
+/// The label columns actually removed by a `remove_label_columns` call,
+/// derived by diffing `before` (the schema snapshot held prior to the
+/// call) against `after` (the schema the call returned) — rather than
+/// independently re-resolving the requested demotion keys against
+/// `before` (see `ParquetRewriter::run_promotion_pass`'s demotion block).
+///
+/// `remove_label_columns` reloads the table fresh from the catalog and
+/// resolves columns against that live state, not `before`. Under
+/// concurrent multi-instance compaction of the same table, another
+/// instance may already have demoted the same keys and reused the freed
+/// column name for an unrelated, colliding key (#814) before this call
+/// lands; `remove_label_columns` then correctly no-ops (`after` is
+/// unchanged from the live schema, still carrying that column name — now
+/// under the colliding key). Diffing by name yields an empty result in
+/// that case, since the column name survives in both `before` and
+/// `after`, instead of the stale pre-call resolution wrongly reporting it
+/// dropped and causing `rewrite_stream` to project away the colliding
+/// key's live, valid data.
+fn actually_dropped_columns(
+    before: &iceberg_rust::spec::schema::Schema,
+    after: &iceberg_rust::spec::schema::Schema,
+) -> Vec<String> {
+    let after_names: HashSet<&str> = after.fields().iter().map(|f| f.name.as_str()).collect();
+    before
+        .fields()
+        .iter()
+        .map(|f| f.name.as_str())
+        .filter(|name| !after_names.contains(name))
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1444,5 +1493,132 @@ mod tests {
             "fixture must actually be the incoherent case"
         );
         ParquetRewriter::warn_on_incoherent_memory_config(&config);
+    }
+
+    /// Unit-level proof of the diff itself: a "before" schema with
+    /// `label_env` (doc `K1`) and an "after" schema that still carries
+    /// `label_env`, unchanged, but now under a colliding key's doc `K2` --
+    /// exactly what a no-op `remove_label_columns` returns when a
+    /// concurrent instance already reused the freed column name (see the
+    /// full end-to-end race reproduced below). The diff must report zero
+    /// dropped columns, not the stale `label_env`.
+    #[test]
+    fn actually_dropped_columns_is_empty_when_the_column_survives_under_a_different_key() {
+        use common::iceberg::evolution::label_doc;
+        use iceberg_rust::spec::schema::Schema as IcebergSchema;
+        use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
+
+        let label_field = |doc_key: &str| StructField {
+            id: 1,
+            name: "label_env".to_string(),
+            required: false,
+            field_type: Type::Primitive(PrimitiveType::String),
+            doc: Some(label_doc(doc_key)),
+            initial_default: None,
+            write_default: None,
+        };
+        let before =
+            IcebergSchema::from_struct_type(StructType::new(vec![label_field("K1")]), 0, None);
+        // No-op removal: same column, same schema shape, but now doc'd to
+        // K2 -- `remove_label_columns` returns the live schema untouched.
+        let after =
+            IcebergSchema::from_struct_type(StructType::new(vec![label_field("K2")]), 0, None);
+
+        assert!(actually_dropped_columns(&before, &after).is_empty());
+    }
+
+    /// End-to-end reproduction of the race against a real in-memory
+    /// catalog: two colliding keys (`http.method` / `http_method`, both
+    /// sanitizing to `label_http_method`) interleaved exactly as described
+    /// for the #814 follow-up. Instance A holds a stale schema snapshot
+    /// from before instance B's demote-then-promote interleaving frees and
+    /// reclaims the same column name for the other key. Diffing against
+    /// what `remove_label_columns` actually returns must yield an empty
+    /// `dropped_columns`, and the colliding key's column must survive.
+    #[tokio::test]
+    async fn demotion_diffs_against_the_post_removal_schema_not_a_stale_snapshot()
+    -> anyhow::Result<()> {
+        use common::iceberg::evolution::{add_label_columns, column_for_key, remove_label_columns};
+        use iceberg_rust::catalog::create::CreateTableBuilder;
+        use iceberg_rust::spec::partition::PartitionSpec;
+        use iceberg_rust::spec::schema::Schema as IcebergSchema;
+        use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
+
+        let manager = common::CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let namespace = common::iceberg::names::build_namespace("race", "test")?;
+        catalog.clone().create_namespace(&namespace, None).await?;
+        let identifier = common::iceberg::names::build_table_identifier("race", "test", "events");
+        let base = IcebergSchema::from_struct_type(
+            StructType::new(vec![StructField {
+                id: 1,
+                name: "timestamp".to_string(),
+                required: true,
+                field_type: Type::Primitive(PrimitiveType::Timestamp),
+                doc: None,
+                initial_default: None,
+                write_default: None,
+            }]),
+            0,
+            None,
+        );
+        let create = CreateTableBuilder::default()
+            .with_name("events".to_string())
+            .with_schema(base)
+            .with_partition_spec(PartitionSpec::default())
+            .with_location(common::iceberg::names::build_table_location(
+                "race", "test", "events",
+            ))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        catalog
+            .clone()
+            .create_table(identifier.clone(), create)
+            .await?;
+
+        // Instance A promotes `http.method`, then holds this schema as its
+        // stale local `current_schema` snapshot going into its demote call.
+        let schema_before_demote =
+            add_label_columns(catalog.clone(), &identifier, &["http.method".to_string()]).await?;
+        assert_eq!(
+            column_for_key(&schema_before_demote, "http.method"),
+            Some("label_http_method")
+        );
+
+        // Meanwhile instance B: demotes `http.method` (freeing
+        // `label_http_method`), then promotes the colliding `http_method`
+        // onto the now-free column name.
+        remove_label_columns(catalog.clone(), &identifier, &["http.method".to_string()]).await?;
+        let live_after_b =
+            add_label_columns(catalog.clone(), &identifier, &["http_method".to_string()]).await?;
+        assert_eq!(
+            column_for_key(&live_after_b, "http_method"),
+            Some("label_http_method"),
+            "the colliding key must reclaim the freed column name"
+        );
+
+        // Instance A now acts on its stale decision to demote
+        // `http.method`. The real call resolves against live state, finds
+        // no column for it anymore, and correctly no-ops.
+        let pruned =
+            remove_label_columns(catalog.clone(), &identifier, &["http.method".to_string()])
+                .await?;
+        assert_eq!(
+            pruned, live_after_b,
+            "a no-op removal must leave the live schema unchanged"
+        );
+
+        let dropped = actually_dropped_columns(&schema_before_demote, &pruned);
+        assert!(
+            dropped.is_empty(),
+            "must not report label_http_method as dropped -- it now legitimately \
+             belongs to http_method: {dropped:?}"
+        );
+        assert_eq!(
+            column_for_key(&pruned, "http_method"),
+            Some("label_http_method"),
+            "the colliding key's column must survive"
+        );
+        Ok(())
     }
 }
