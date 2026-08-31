@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788064119477,
+  "lastUpdate": 1788150675111,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -3515,6 +3515,244 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1073141,
             "range": "± 8648",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5e40e5534381613f44ad80f7f6ba968df5ac3322",
+          "message": "feat(router): provision dataset tables synchronously on creation (#1443)\n\n* feat(router): provision dataset tables synchronously on creation\n\nCreating a dataset used to leave it tableless until the writer's periodic\nreconciler ticked, an on-demand trigger was called, or the first write\nsucceeded, so a freshly created dataset was often unusable right away. Both\ndataset-creation endpoints now call CatalogManager::ensure_dataset_tables for\nthe new dataset right after the row commits.\n\nDataset creation still succeeds regardless of the provisioning outcome: a\nfailure is logged as a warning and the reconciler remains the convergence\nbackstop.\n\n* docs(operations): document synchronous dataset table provisioning\n\nDataset creation now provisions the new dataset's tables before returning;\nthe periodic reconciler is documented as the backstop for whatever that\nsynchronous, best-effort attempt doesn't cover.\n\n* docs: reflect synchronous dataset table provisioning in overview and auth docs\n\nBoth docs described table provisioning as first-write-or-reconciler only;\ndataset creation now provisions synchronously too, with the reconciler as\nthe backstop for whatever that misses.\n\n* docs(architecture): note dataset-creation provisions tables synchronously\n\nCascades from the overview.md update: the architecture skill's table\nreconciler summary named only the reconciler and the on-demand trigger as\nprovisioning paths.",
+          "timestamp": "2026-08-30T22:21:37Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/5e40e5534381613f44ad80f7f6ba968df5ac3322"
+        },
+        "date": 1788150673865,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1653159,
+            "range": "± 21755",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1065582,
+            "range": "± 12428",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 646979,
+            "range": "± 11185",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1328112,
+            "range": "± 18968",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 728408,
+            "range": "± 7005",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1760081,
+            "range": "± 34710",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1113758,
+            "range": "± 16043",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1517546,
+            "range": "± 10898",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2463266,
+            "range": "± 118553",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 10082385,
+            "range": "± 102901",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 93473666,
+            "range": "± 2738622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 3680004,
+            "range": "± 13441",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 7069013,
+            "range": "± 79760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 12452806,
+            "range": "± 60193",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 23945992,
+            "range": "± 228852",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 1029805,
+            "range": "± 5031",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2336412,
+            "range": "± 37908",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3301206,
+            "range": "± 83893",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6102511,
+            "range": "± 96049",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 814570,
+            "range": "± 11217",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 21114118,
+            "range": "± 820256",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 28088947,
+            "range": "± 1165731",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 26346070,
+            "range": "± 402130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 26540479,
+            "range": "± 465076",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 26282059,
+            "range": "± 218398",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 6821620,
+            "range": "± 46836",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 16221419,
+            "range": "± 160353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 34856737,
+            "range": "± 375907",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 30530708,
+            "range": "± 2070074",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 6941522,
+            "range": "± 96399",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 72800500,
+            "range": "± 1661620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 127898053,
+            "range": "± 2340026",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 139437820,
+            "range": "± 2357525",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1209427,
+            "range": "± 29611",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1208328,
+            "range": "± 21309",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1296573,
+            "range": "± 22198",
             "unit": "ns/iter"
           }
         ]
