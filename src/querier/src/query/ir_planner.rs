@@ -1370,13 +1370,18 @@ impl Lowering<'_> {
             Stage::Topk(rank) => self.lower_rank(df, &rank.of, rank.n, false),
             Stage::Bottomk(rank) => self.lower_rank(df, &rank.of, rank.n, true),
             Stage::Order(keys) => {
-                let sort: Vec<_> = keys
+                // `value_expr`, not `df_col`: a promoted-but-not-yet-backfilled
+                // attribute must sort by its coalesced value (the same
+                // COALESCE(column, attribute-map fallback) WHERE/SELECT use),
+                // not the bare column alone, or rows in unrewritten files sort
+                // by NULL instead of their true value (#816 follow-up).
+                let sort = keys
                     .iter()
                     .map(|k| {
                         let ascending = matches!(k.dir, common::query_ir::Direction::Asc);
-                        ident(self.df_col(&k.of)).sort(ascending, true)
+                        Ok(self.value_expr(&k.of)?.sort(ascending, true))
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, QuerierError>>()?;
                 df.sort(sort).map_err(QuerierError::QueryFailed)
             }
             Stage::Limit(n) => df
@@ -1469,7 +1474,8 @@ impl Lowering<'_> {
         n: i64,
         ascending: bool,
     ) -> Result<DataFrame, QuerierError> {
-        df.sort(vec![ident(self.df_col(of)).sort(ascending, false)])
+        // `value_expr`, not `df_col` — see `Stage::Order`'s comment above.
+        df.sort(vec![self.value_expr(of)?.sort(ascending, false)])
             .map_err(QuerierError::QueryFailed)?
             .limit(0, Some(n.max(0) as usize))
             .map_err(QuerierError::QueryFailed)
@@ -6889,16 +6895,39 @@ mod tests {
             .expect("table is registered");
         let plan = format!("{}", df.logical_plan().display_indent());
         assert!(
-            plan.contains("label_x"),
-            "ORDER BY on a promoted attribute must sort by its materialized column, got:\n{plan}"
+            plan.contains("coalesce") && plan.contains("label_x"),
+            "ORDER BY on a promoted-but-unbackfilled attribute must sort by the coalesced \
+             value (column, then attribute-map fallback), not the bare null column alone, got:\n{plan}"
         );
-        // Executing must not error either -- confirms the referenced
-        // column actually exists in the scanned schema.
         let batches = df
             .collect()
             .await
             .unwrap_or_else(|e| panic!("execute failed: {e}"));
-        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
-        assert_eq!(total, 3);
+        let services: Vec<String> = batches
+            .iter()
+            .flat_map(|b| {
+                let col = b
+                    .column_by_name("service_name")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .clone();
+                (0..b.num_rows()).map(move |i| col.value(i).to_string())
+            })
+            .collect();
+        // `label_x` is NULL in every row (nothing backfilled yet); the
+        // fixture's log_attributes hold the real values: svc1 has x="v",
+        // svc2 has x="other", svc3 has no `x` at all. If ordering still
+        // trusted the bare null column, every row would tie and come back
+        // in scan order (svc1, svc2, svc3) regardless of `desc` -- the
+        // exact bug this test guards against. Sorting the coalesced value
+        // descending with nulls first instead gives: absent (svc3), then
+        // "v" > "other".
+        assert_eq!(
+            services,
+            vec!["svc3", "svc1", "svc2"],
+            "order must follow the attribute-map fallback value, not the null column"
+        );
     }
 }
