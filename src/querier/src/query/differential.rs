@@ -1290,8 +1290,9 @@ async fn logql_metric_known_inexpressible_matches_old_path_accepts() {
 /// Promoted attribute, scope-qualified field: `ir_planner::SchemaResolver::column_for`
 /// strips the scope qualifier before materializing a promoted column's name
 /// (D10 of `ir-single-lowering`, task 3.0), so `span.http.method` resolves
-/// to the promoted `label_http_method` column rather than falling back to
-/// `get_field` JSON-path extraction.
+/// to the promoted `label_http_method` column, coalesced with the
+/// `get_field` JSON-path fallback (#816: the column alone isn't trustworthy
+/// until the compactor backfills every file since promotion).
 #[tokio::test]
 async fn promoted_attribute_resolves_to_its_column() {
     let ctx = traces_promoted_fixture();
@@ -1304,8 +1305,8 @@ async fn promoted_attribute_resolves_to_its_column() {
         "must route to the promoted column:\n{plan}"
     );
     assert!(
-        !plan.contains("get_field"),
-        "must not fall back to json-path extraction once a promoted column exists:\n{plan}"
+        plan.contains("get_field"),
+        "must keep the json-path fallback coalesced with the promoted column (#816):\n{plan}"
     );
 }
 

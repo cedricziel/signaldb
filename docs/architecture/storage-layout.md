@@ -976,7 +976,8 @@ Existing tables can gain optional string `label_<key>` columns after creation vi
 - **No data rewrite**: Parquet files written before the flip are never rewritten for it; readers null-fill the new columns for old files. The rewrite-coupled promotion backfills values at the next compaction.
 - **Snapshot-pinned schemas remain reachable**: the previous schema stays in table metadata, so snapshots that pin it keep resolving.
 - **Field ids** continue after the maximum id across the whole schema tree — including nested map key/value and list element ids — so new columns never collide with the attributes map's nested ids.
-- **Idempotent**: keys whose materialized column already exists are skipped; when nothing new remains, no commit is made.
+- **Collision-proof naming**: two attribute keys that sanitize to the same candidate name (e.g. `http.method` and `http_method` both → `label_http_method`) never share a column. Each column's field `doc` records its exact origin key (`"Materialized attribute label '<key>'"`) — the durable, authoritative key→column record, since Arrow/Parquet has no separate registry — and a colliding key is assigned the next free deterministic suffix (`label_http_method_2`). A key already holding a column (found by its origin-key `doc`, not by re-deriving the candidate name) always keeps it across calls, so an assignment is stable even as other keys are promoted or demoted around it.
+- **Idempotent**: keys whose materialized column already exists (per the origin-key lookup above) are skipped; when nothing new remains, no commit is made.
 - **Verified**: the table is reloaded after the commit and the evolved schema checked, because the SQL catalog's compare-and-swap can silently lose a race.
 
 Requires iceberg-rust rev >= 96f28c18; earlier revisions resolved `current_schema` through the current snapshot's pinned schema id, so the flip never took effect (JanKaul/iceberg-rust#378).

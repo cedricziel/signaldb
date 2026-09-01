@@ -26,7 +26,7 @@
 use anyhow::{Context, Result};
 use common::catalog::AttributeStatsRecord;
 use common::config::AttrPromotionConfig;
-use common::schema::materialized_column_name;
+use common::iceberg::evolution;
 use datafusion::arrow::array::{ArrayRef, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
@@ -166,18 +166,28 @@ pub fn log_decision(table_name: &str, decision: &PromotionDecision, dry_run: boo
     );
 }
 
-/// The materialized attribute keys of a table, recovered from its
-/// `label_<key>` column names. The column name is a lossy encoding
-/// (non-alphanumerics become `_`), so keys are matched by re-encoding the
-/// stats keys rather than decoding column names.
+/// The materialized attribute keys of a table, recovered from its label
+/// columns' recorded origin-key `doc` metadata (#814) rather than by
+/// re-encoding each stats key and checking the candidate name against the
+/// table's `label_` columns -- that would misreport a key as already
+/// materialized whenever it sanitizes to the same column name as a
+/// different key that actually owns that column.
+///
+/// Origin keys are collected into a set once, up front, rather than
+/// re-scanning every schema field (base columns included) per stats key.
 pub fn materialized_keys_of(
-    label_columns: &[String],
+    schema: &iceberg_rust::spec::schema::Schema,
     stats: &[AttributeStatsRecord],
 ) -> Vec<String> {
+    let origin_keys: std::collections::HashSet<&str> = schema
+        .fields()
+        .iter()
+        .filter_map(|f| evolution::origin_key_of(f.doc.as_deref()))
+        .collect();
     stats
         .iter()
         .map(|r| r.attr_key.clone())
-        .filter(|key| label_columns.contains(&materialized_column_name(key)))
+        .filter(|key| origin_keys.contains(key.as_str()))
         .collect()
 }
 
@@ -197,11 +207,11 @@ const BACKFILL_SOURCE_COLUMNS: &[&str] = &[
 /// batches from their attribute source columns.
 ///
 /// `pairs` maps attribute keys to their target column names (deduplicated
-/// by column — see [`materialized_column_name`]). Existing Utf8 columns
-/// are overwritten in place (healing rows the writer left null, e.g. data
-/// ingested after an auto-promotion); missing columns are appended in
-/// `pairs` order, matching the evolved schema which appends promoted
-/// columns at the end. Values follow the writer's source precedence
+/// by column — see [`common::schema::materialized_column_name`]). Existing
+/// Utf8 columns are overwritten in place (healing rows the writer left
+/// null, e.g. data ingested after an auto-promotion); missing columns are
+/// appended in `pairs` order, matching the evolved schema which appends
+/// promoted columns at the end. Values follow the writer's source precedence
 /// (resource → scope → record attributes) and rows without the key stay
 /// null — old rows are backfilled by construction since every row is
 /// rewritten.
@@ -282,6 +292,8 @@ fn backfill_batch(batch: RecordBatch, pairs: &[(String, String)]) -> Result<Reco
 mod tests {
     use super::*;
     use datafusion::arrow::array::Array;
+    use iceberg_rust::spec::schema::Schema as IcebergSchema;
+    use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
 
     fn record(key: &str, present: i64, total: i64, hits: i64, streak: i64) -> AttributeStatsRecord {
         AttributeStatsRecord {
@@ -458,16 +470,41 @@ mod tests {
         assert_eq!(out[0], batch);
     }
 
+    /// A single-field schema with one materialized label column,
+    /// carrying `origin_key`'s [`evolution::label_doc`].
+    fn schema_with_label(origin_key: &str, column: &str) -> IcebergSchema {
+        let field = StructField {
+            id: 1,
+            name: column.to_string(),
+            required: false,
+            field_type: Type::Primitive(PrimitiveType::String),
+            doc: Some(evolution::label_doc(origin_key)),
+            initial_default: None,
+            write_default: None,
+        };
+        IcebergSchema::from_struct_type(StructType::new(vec![field]), 0, None)
+    }
+
     #[test]
-    fn materialized_keys_match_via_column_encoding() {
+    fn materialized_keys_match_via_origin_key_doc() {
         let stats = vec![
             record("http.method", 1, 1, 1, 0),
             record("other", 1, 1, 1, 0),
         ];
-        let cols = vec!["label_http_method".to_string()];
+        let schema = schema_with_label("http.method", "label_http_method");
         assert_eq!(
-            materialized_keys_of(&cols, &stats),
+            materialized_keys_of(&schema, &stats),
             vec!["http.method".to_string()]
         );
+    }
+
+    #[test]
+    fn colliding_key_is_not_misreported_as_already_materialized() {
+        // `label_http_method` materializes `http.method`; `http_method`
+        // sanitizes to the same column name but has no column of its own
+        // (#814) -- it must not be reported as already materialized.
+        let stats = vec![record("http_method", 1, 1, 1, 0)];
+        let schema = schema_with_label("http.method", "label_http_method");
+        assert!(materialized_keys_of(&schema, &stats).is_empty());
     }
 }
