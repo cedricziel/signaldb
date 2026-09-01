@@ -104,7 +104,19 @@ fn table_schema() -> IcebergSchema {
             string_field(3, "severity_text"),
             string_field(4, "body"),
             attributes,
-            string_field(8, "label_env"),
+            StructField {
+                id: 8,
+                name: "label_env".to_string(),
+                required: false,
+                field_type: Type::Primitive(PrimitiveType::String),
+                // Origin-key doc, matching exactly what `add_label_columns`
+                // stamps on a real auto-promoted column -- this is the
+                // authoritative key->column record `remove_label_columns`
+                // (#814) looks up by, not the field name.
+                doc: Some(common::iceberg::evolution::label_doc("env")),
+                initial_default: None,
+                write_default: None,
+            },
         ]),
         0,
         None,
