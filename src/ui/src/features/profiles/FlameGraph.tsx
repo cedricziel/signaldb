@@ -63,7 +63,12 @@ function frameColor(frame: FlameFrame): string {
 const FRAME_STYLE = new Map(
   ["--accent", ...PALETTE].map((color) => [
     color,
-    { background: `var(${color})`, borderColor: `var(${color})` },
+    {
+      // A soft fill under a solid edge of the same hue; the mix resolves
+      // against the current theme's surface, so it holds in dark mode too.
+      background: `color-mix(in srgb, var(${color}) 38%, var(--surface))`,
+      borderColor: `var(${color})`,
+    },
   ]),
 );
 

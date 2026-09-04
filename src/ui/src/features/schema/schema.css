@@ -54,12 +54,6 @@
   flex-wrap: wrap;
 }
 
-/* A table wider than the viewport scrolls on its own axis instead of
-   blowing out the page — these tables don't reasonably reflow. */
-.schema-table-scroll {
-  overflow-x: auto;
-}
-
 .schema-title {
   font-size: 18px;
   font-weight: 600;
@@ -219,7 +213,6 @@
 
 .schema-table th,
 .schema-table td {
-  text-align: left;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;

@@ -88,7 +88,7 @@ export function SchemaExplorer() {
                     {fields.length} field{fields.length === 1 ? "" : "s"}
                   </span>
                 </summary>
-                <div className="schema-table-scroll">
+                <div className="table-scroll">
                   <table className="schema-explorer-table">
                     <thead>
                       <tr>
@@ -181,7 +181,7 @@ function PhysicalVersion({ schema }: { schema: PhysicalSchema }) {
           Partitioned by <code>{schema.partition_by.join(", ")}</code>
         </p>
       )}
-      <div className="schema-table-scroll">
+      <div className="table-scroll">
         <table className="schema-explorer-table">
           <thead>
             <tr>
