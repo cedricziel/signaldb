@@ -63,7 +63,7 @@
   margin: 0 0 8px;
 }
 
-.schema-source {
+.schema-source-card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -71,7 +71,7 @@
   overflow: hidden;
 }
 
-.schema-source summary {
+.schema-source-card summary {
   padding: 10px 14px;
   cursor: pointer;
   font-family: var(--mono);
@@ -83,11 +83,11 @@
   gap: 8px;
 }
 
-.schema-source summary::-webkit-details-marker {
+.schema-source-card summary::-webkit-details-marker {
   display: none;
 }
 
-.schema-source[open] summary {
+.schema-source-card[open] summary {
   border-bottom: 1px solid var(--border);
 }
 
@@ -98,7 +98,7 @@
   font-size: 11px;
 }
 
-.schema-badge {
+.schema-explorer-badge {
   font-size: 9.5px;
   font-weight: 650;
   text-transform: uppercase;
@@ -110,13 +110,13 @@
   margin-left: 6px;
 }
 
-.schema-table {
+.schema-explorer-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
 
-.schema-table th {
+.schema-explorer-table th {
   text-align: left;
   font-size: 10px;
   text-transform: uppercase;
@@ -127,13 +127,13 @@
   font-weight: 650;
 }
 
-.schema-table td {
+.schema-explorer-table td {
   padding: 6px 14px;
   border-bottom: 1px solid var(--border);
   font-family: var(--mono);
 }
 
-.schema-table tr:last-child td {
+.schema-explorer-table tr:last-child td {
   border-bottom: none;
 }
 
@@ -141,6 +141,6 @@
   color: var(--dim);
 }
 
-.schema-source p.schema-explorer-section-note {
+.schema-source-card p.schema-explorer-section-note {
   padding: 0 14px;
 }
