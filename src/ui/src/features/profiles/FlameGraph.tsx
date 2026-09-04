@@ -436,10 +436,10 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
             </tbody>
           </table>
           {topRows.length === 0 && (
-            <div className="profiles-note">No functions match.</div>
+            <div className="view-note">No functions match.</div>
           )}
           {topTruncated > 0 && (
-            <div className="profiles-note">
+            <div className="view-note">
               Showing the top {TOP_CAP} of {topFiltered.length} functions by
               self time.
             </div>

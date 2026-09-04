@@ -688,27 +688,27 @@ function GroupList({
         </tbody>
       </table>
       {unresolved && (
-        <div className="traces-note">
+        <div className="view-note">
           &ldquo;{dims.join(", ")}&rdquo; isn&rsquo;t queryable for this tenant
           or window right now — pick a different dimension.
         </div>
       )}
       {done && !unresolved && groups.length === 0 && rootGrainOnly && (
-        <div className="traces-note">
+        <div className="view-note">
           No groups: trace grain only inspects each trace's root span, and one
           of the active filters is on a field that only appears on a child span.
           Switch to span grain to see it.
         </div>
       )}
       {done && !unresolved && groups.length === 0 && !rootGrainOnly && (
-        <div className="traces-note">
+        <div className="view-note">
           No groups in this time range.
           {kindsNarrowed &&
             " Only the selected span kinds are included — Internal spans are off by default; adjust span.kind in the sidebar."}
         </div>
       )}
       {result.data?.truncated && (
-        <div className="traces-note">
+        <div className="view-note">
           Showing the top {GROUP_BUDGET} groups by the current sort — narrow the
           time range or filters to see the rest.
         </div>
@@ -1128,7 +1128,7 @@ function SpanDetail({
       {groups.length === 0 && (
         <>
           <div className="span-detail-sec">Attributes</div>
-          <div className="traces-note">No attributes recorded.</div>
+          <div className="view-note">No attributes recorded.</div>
         </>
       )}
       {groups.map((group) => (

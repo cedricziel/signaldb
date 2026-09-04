@@ -93,7 +93,7 @@ export function CatalogView({ state, update }: Props) {
     // under this entity's name, so it waits instead.
     if (!resolved) {
       return (
-        <div className="traces-note">
+        <div className="view-note">
           {isPending
             ? "Loading entity types…"
             : `Unknown entity type "${state.catalogEntity}".`}
@@ -311,7 +311,7 @@ function EmptyEntityState({
   });
 
   return (
-    <div className="traces-note">
+    <div className="view-note">
       No {entity.label.toLowerCase()} observed in this window — no matching{" "}
       <code>{primary}</code> value seen in {sources.join(" or ")}.
       {sketch.data && (
@@ -526,7 +526,7 @@ export function EntityTable({
         <EmptyEntityState entity={entity} range={range} />
       )}
       {result.data?.truncated && (
-        <div className="traces-note">
+        <div className="view-note">
           Showing the top {GROUP_BUDGET} {entity.label.toLowerCase()} by the
           current sort — narrow the time range to see the rest.
         </div>

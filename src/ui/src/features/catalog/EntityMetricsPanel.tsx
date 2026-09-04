@@ -94,7 +94,7 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
     );
   } else if (observed.length === 0) {
     body = series.isPending ? null : (
-      <div className="traces-note">
+      <div className="view-note">
         No metric data for this {entity.singular} in this window.
       </div>
     );
@@ -111,7 +111,7 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
           ))}
         </div>
         {observed.length > shown.length && (
-          <div className="traces-note">
+          <div className="view-note">
             Showing {shown.length} of {observed.length} metrics.
           </div>
         )}

@@ -31,18 +31,6 @@
   color: var(--text);
 }
 
-.profiles-note {
-  color: var(--faint);
-  padding: 14px 16px;
-  font-size: 12px;
-}
-
-.profiles-note code {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--dim);
-}
-
 .profiles-compare-toggle {
   margin-left: auto;
   cursor: pointer;

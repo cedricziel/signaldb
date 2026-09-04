@@ -232,7 +232,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
         </dl>
       ) : (
         !kpiQuery.isPending && (
-          <div className="traces-note">No matching spans in this window.</div>
+          <div className="view-note">No matching spans in this window.</div>
         )
       )}
 

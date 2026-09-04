@@ -607,6 +607,21 @@ th[aria-sort="descending"] .th-sort::after {
   overflow-x: auto;
 }
 
+/* ---------- view note (features/*: every explore view) ---------- */
+
+/* Explanatory or empty-state note under a view's header. */
+.view-note {
+  color: var(--faint);
+  padding: 14px 16px;
+  font-size: 12px;
+}
+
+.view-note code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
 /* ---------- attribute key combobox (components/AttributeKeyInput.tsx) ---------- */
 
 /* The input with the registry/observed suggestion list anchored below it. */

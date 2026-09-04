@@ -31,12 +31,6 @@
   color: var(--dim);
 }
 
-.metrics-note {
-  color: var(--faint);
-  padding: 14px 16px;
-  font-size: 12px;
-}
-
 /* --- editor mode toggle --- */
 .metrics-modes {
   display: flex;

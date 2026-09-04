@@ -113,7 +113,7 @@ export function MemberTable({
   }
 
   if (rows.length === 0) {
-    return <div className="traces-note">{emptyMessage}</div>;
+    return <div className="view-note">{emptyMessage}</div>;
   }
 
   return (
@@ -147,7 +147,7 @@ export function MemberTable({
           ))}
         </tbody>
       </table>
-      {footnote && <div className="traces-note">{footnote}</div>}
+      {footnote && <div className="view-note">{footnote}</div>}
     </>
   );
 }
