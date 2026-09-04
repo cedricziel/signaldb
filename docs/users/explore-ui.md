@@ -10,14 +10,19 @@ sources:
 
 # Explore UI
 
-SignalDB ships a built-in explore UI for logs, traces, and metrics, served
-by the router at its **root** (`http://<router>:3000/`, as a SPA fallback
-behind the API routes). It consumes the same Loki-, Tempo-, and
-Prometheus-compatible APIs that Grafana uses, so anything visible in the UI is
-equally queryable from Grafana. It also hosts the OAuth connector **consent
-screen** at `/oauth/consent` (see [MCP](mcp.md)).
+SignalDB ships a built-in explore UI for the service catalog, logs, traces,
+metrics, profiles, and errors, plus a native [Query IR](querying-ir.md) tab,
+served by the router at its **root** (`http://<router>:3000/`, as a SPA
+fallback behind the API routes). The logs tab consumes the Loki-compatible
+API that Grafana uses, and the metrics tab the Prometheus-compatible one, so
+what they show is equally queryable from Grafana — with one exception: a
+single builder row with no range function and no formula runs on the Query IR
+(see [Building metric queries](#building-metric-queries)). The other tabs read
+their data through the Query IR; only their attribute and label pickers still
+use the Tempo and Pyroscope discovery endpoints. It also hosts the OAuth
+connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
-![Explore UI logs view: virtualized log list with level colors, volume histogram, and fields sidebar](../assets/screenshots/explore-logs.png)
+![Explore UI logs view: virtualized log list with level colors, a volume histogram with bucket-width and log-scale controls, and the fields sidebar](../assets/screenshots/explore-logs.png)
 
 ## What it does
 
@@ -460,7 +465,7 @@ thin band rather than rounding away.
 
 ![Explore UI trace waterfall with span details and a link to correlated logs](../assets/screenshots/explore-traces.png)
 
-![Explore UI metrics view charting a PromQL range query across two services](../assets/screenshots/explore-metrics.png)
+![Explore UI metrics view charting a PromQL query, one series per service, with the Builder and PromQL tabs](../assets/screenshots/explore-metrics.png)
 
 ![Explore UI profiles flame graph with the highlight box narrowing a CPU profile to SignalDB's own frames](../assets/screenshots/explore-profiles.png)
 
