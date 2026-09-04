@@ -5,6 +5,7 @@ import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { DEFAULT_KIND_FILTERS } from "../../lib/traceFilters";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { resetSemanticsCache } from "../../hooks/useSemantics";
+import { spanDetailWidth } from "../../lib/sidebarWidth";
 import { TracesView } from "./TracesView";
 import * as traceGroupsApi from "../../api/traceGroups";
 import type { TraceGroup } from "../../api/traceGroups";
@@ -47,6 +48,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   localStorage.clear();
+  document.documentElement.style.removeProperty("--span-detail-w");
   resetSemanticsCache();
 });
 
@@ -1263,26 +1265,31 @@ describe("TracesView detail", () => {
 
   it("resizes the span-detail sidebar by dragging the resizer, clamped and persisted", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
+    // The CSS var lives on <html> (shared PanelWidth), applied at startup by
+    // main.tsx; mimic that bootstrap here since this test renders in
+    // isolation.
+    spanDetailWidth.init();
     renderView({ trace: "t1cafe" });
 
     const resizer = await screen.findByRole("separator", {
       name: "Resize span details",
     });
-    const body = resizer.parentElement as HTMLElement;
-    expect(body.style.getPropertyValue("--span-detail-w")).toBe("320px");
+    const cssVar = () =>
+      document.documentElement.style.getPropertyValue("--span-detail-w");
+    expect(cssVar()).toBe("320px");
 
     // Dragging left (negative dx) widens the sidebar, which sits to its right.
     fireEvent.mouseDown(resizer, { clientX: 500 });
     fireEvent.mouseMove(window, { clientX: 400 });
     fireEvent.mouseUp(window);
-    expect(body.style.getPropertyValue("--span-detail-w")).toBe("420px");
-    expect(localStorage.getItem("signaldb.trace.sidebarWidth")).toBe("420");
+    expect(cssVar()).toBe("420px");
+    expect(spanDetailWidth.read()).toBe(420);
 
     // Clamped to the configured max (320 + 1000 would be 1320, way over 640).
     fireEvent.mouseDown(resizer, { clientX: 500 });
     fireEvent.mouseMove(window, { clientX: -500 });
     fireEvent.mouseUp(window);
-    expect(body.style.getPropertyValue("--span-detail-w")).toBe("640px");
+    expect(cssVar()).toBe("640px");
   });
 
   it("pivots to logs filtered by trace_id", async () => {

@@ -5,15 +5,17 @@ import { BrowserRouter } from "react-router";
 import { AppRoutes } from "./routes";
 import { initTelemetry } from "./telemetry";
 import { initTheme } from "./lib/theme";
-import { initSidebarWidth } from "./lib/sidebarWidth";
+import { sidebarWidth, spanDetailWidth } from "./lib/sidebarWidth";
 import "./styles/global.css";
 
 // Restore the saved theme before first paint to avoid a flash of the wrong
 // theme.
 initTheme();
 
-// Same for the facet/field sidebar's saved width.
-initSidebarWidth();
+// Same for the facet/field sidebar's saved width, and the trace waterfall's
+// span-detail pane.
+sidebarWidth.init();
+spanDetailWidth.init();
 
 // Start browser telemetry before anything issues a request, so the fetch
 // instrumentation is patched in and API calls carry a `traceparent`.
