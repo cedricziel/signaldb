@@ -15,7 +15,11 @@ const pkg = require("./package.json") as { version: string };
 //
 // The OAuth endpoints proxy too, EXCEPT `/oauth/consent`, which is the SPA
 // consent route (served by the dev server); its `/oauth/consent/context` API
-// sibling is proxied because it is a distinct, longer prefix.
+// sibling is listed on its own.
+//
+// Every entry matches whole path segments (see proxyKey): a bare prefix
+// would also swallow SPA routes that merely start with it, as `/api` once
+// did to `/api-keys`.
 const PROXIED_PATHS = [
   "/loki",
   "/tempo",
@@ -32,13 +36,20 @@ const PROXIED_PATHS = [
   "/oauth/token",
 ];
 
+/** Vite treats a key starting with `^` as a regex: anchor the path and only
+ * let it continue at a `/`, so `/api` matches `/api/v1/...` but not
+ * `/api-keys`. */
+function proxyKey(path: string): string {
+  return `^${path.replace(/[.]/g, "\\.")}(/|$)`;
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, "SIGNALDB_");
   const target = env.SIGNALDB_TARGET || "http://localhost:3000";
 
   const proxy = Object.fromEntries(
     PROXIED_PATHS.map((path): [string, ProxyOptions] => [
-      path,
+      proxyKey(path),
       {
         target,
         changeOrigin: true,
