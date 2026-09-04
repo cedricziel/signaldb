@@ -231,7 +231,7 @@ function TraceSearch({ state, update }: Props) {
               label="Span latency"
             />
           ) : latencyHeatmap.isPending ? (
-            <div className="trace-heatmap-empty">Loading latency...</div>
+            <div className="trace-heatmap-empty">Loading…</div>
           ) : latencyHeatmap.isError ? (
             <div className="trace-heatmap-empty" role="alert">
               Latency query failed: {(latencyHeatmap.error as Error).message}
@@ -773,7 +773,7 @@ function GroupDetail({
             : undefined
         }
         identityLabel={isSpanGrain ? "Span" : "Root"}
-        emptyMessage={`No ${memberNoun}s for this group in this time range.`}
+        emptyMessage={`No ${memberNoun}s for this group in this window.`}
         // Always true (the query always applies a limit) — states the bound
         // rather than claiming truncation we can't detect here.
         footnote={`Showing up to ${plural(state.limit, memberNoun)}, newest first.`}

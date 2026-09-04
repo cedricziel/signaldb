@@ -139,7 +139,9 @@ export function QueryView({ range }: { range?: TimeRange } = {}) {
 
       <div className="query-ir-result" data-testid={`ir-view-${view}`}>
         {query.isError && <div role="alert">Query failed</div>}
-        {query.isLoading && submitted && <div>Running…</div>}
+        {query.isLoading && submitted && (
+          <div className="view-note">Loading…</div>
+        )}
         {query.data && <QueryWarnings data={query.data} />}
         {query.data && <EnvelopeResult view={view} data={query.data} />}
       </div>

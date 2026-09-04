@@ -14,6 +14,7 @@ import {
   type TimeRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
+import { SkeletonLines } from "../explore/Skeleton";
 import { TimeRangePicker } from "../shell/TimeRangePicker";
 import { FlameGraph, FlamePane } from "./FlameGraph";
 import { decodeFlamebearer } from "../../lib/flamebearer";
@@ -266,14 +267,14 @@ function SingleRangeView({ state, update }: Props) {
 
       {selectedType === "" && !typesQuery.isFetching && (
         <div className="view-note">
-          No profiles in the selected range. Enable{" "}
+          No profiles in this window. Enable{" "}
           <code>[self_monitoring].profiles_enabled</code> to have SignalDB
           profile itself, or send profiles over OTLP.
         </div>
       )}
 
       {renderQuery.isFetching && !renderQuery.data && (
-        <div className="view-note">Loading…</div>
+        <SkeletonLines lines={12} />
       )}
 
       {renderQuery.data?.truncated && (
@@ -353,7 +354,7 @@ function CompareView({ state, update }: Props) {
 
       {selectedType === "" && !typesQuery.isFetching && (
         <div className="view-note">
-          No profiles in the selected range. Enable{" "}
+          No profiles in this window. Enable{" "}
           <code>[self_monitoring].profiles_enabled</code> to have SignalDB
           profile itself, or send profiles over OTLP.
         </div>
@@ -385,7 +386,7 @@ function ComparePane({
     return (
       <div className="profiles-compare-pane">
         <div className="flame-title">{title}</div>
-        <div className="view-note">Loading…</div>
+        <SkeletonLines lines={8} />
       </div>
     );
   }
@@ -442,7 +443,7 @@ function SingleProfileView({
         </div>
       )}
       {renderQuery.isFetching && !renderQuery.data && (
-        <div className="view-note">Loading…</div>
+        <SkeletonLines lines={12} />
       )}
       {renderQuery.data && <FlameGraph render={renderQuery.data} unit="" />}
     </div>

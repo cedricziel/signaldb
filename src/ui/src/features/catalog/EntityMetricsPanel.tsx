@@ -17,6 +17,7 @@ import {
 import type { MetricHit } from "../schema/api";
 import type { EntityTypeDef } from "./entityTypes";
 import { MetricsChart } from "../metrics/MetricsChart";
+import { SkeletonLines } from "../explore/Skeleton";
 import { useEntityMetrics } from "./useEntityMetrics";
 import "./catalog.css";
 
@@ -39,11 +40,11 @@ interface Props {
 }
 
 export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
-  const { metrics, isError: lookupFailed } = useEntityMetrics(
-    entity,
-    range,
-    rangeKey,
-  );
+  const {
+    metrics,
+    isPending: lookupPending,
+    isError: lookupFailed,
+  } = useEntityMetrics(entity, range, rangeKey);
   const names = metrics.map((m) => m.name).join(",");
 
   const series = useQuery({
@@ -76,6 +77,9 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
     );
   }
 
+  // Still asking: an empty list here is not yet an answer.
+  if (lookupPending) return <SkeletonLines lines={4} />;
+
   // Nothing the registry associates with this entity type — so there is no
   // panel to draw, rather than an empty one to explain.
   if (metrics.length === 0) return null;
@@ -93,7 +97,9 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
       </div>
     );
   } else if (observed.length === 0) {
-    body = series.isPending ? null : (
+    body = series.isPending ? (
+      <SkeletonLines lines={4} />
+    ) : (
       <div className="view-note">
         No metric data for this {entity.singular} in this window.
       </div>

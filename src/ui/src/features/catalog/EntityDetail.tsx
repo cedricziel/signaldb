@@ -26,6 +26,7 @@ import {
 } from "../../lib/traceGroups";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { MemberTable } from "../traces/MemberTable";
+import { SkeletonLines } from "../explore/Skeleton";
 import {
   catalogRangeSeconds,
   drillFilters,
@@ -154,6 +155,47 @@ export function EntityDetail({ entity, range, state, update }: Props) {
     ? groupLabel(state.catalogSecondary)
     : groupLabel(state.catalogPrimary);
 
+  const kpiBody = kpiQuery.isError ? (
+    <div className="query-error" role="alert">
+      Failed to load: {(kpiQuery.error as Error).message}
+    </div>
+  ) : kpiQuery.isPending ? (
+    <SkeletonLines lines={6} />
+  ) : kpiRow ? (
+    <dl className="entity-kpis">
+      <div>
+        <dt>Signals</dt>
+        <dd>
+          <Observed observations={kpiRow.observations} />
+        </dd>
+      </div>
+      <div>
+        <dt>Rate</dt>
+        <dd>{redRate(kpiRow.red, rangeSeconds)}</dd>
+      </div>
+      <div>
+        <dt>Errors</dt>
+        <dd className={redErrorClass(kpiRow.red) ? "err-rate" : undefined}>
+          {redErrorRate(kpiRow.red)}
+        </dd>
+      </div>
+      <div>
+        <dt>P50</dt>
+        <dd>{redDuration(kpiRow.red, "p50Ms")}</dd>
+      </div>
+      <div>
+        <dt>P95</dt>
+        <dd>{redDuration(kpiRow.red, "p95Ms")}</dd>
+      </div>
+      <div>
+        <dt>Last seen</dt>
+        <dd>{formatTimestamp(nanosToMs(kpiRow.lastNs))}</dd>
+      </div>
+    </dl>
+  ) : (
+    <div className="view-note">No matching spans in this window.</div>
+  );
+
   return (
     <div className="catalog-main entity-detail">
       <nav className="catalog-breadcrumb" aria-label="Breadcrumb">
@@ -195,46 +237,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
         )}
       </div>
 
-      {kpiQuery.isError ? (
-        <div className="query-error" role="alert">
-          Failed to load: {(kpiQuery.error as Error).message}
-        </div>
-      ) : kpiRow ? (
-        <dl className="entity-kpis">
-          <div>
-            <dt>Signals</dt>
-            <dd>
-              <Observed observations={kpiRow.observations} />
-            </dd>
-          </div>
-          <div>
-            <dt>Rate</dt>
-            <dd>{redRate(kpiRow.red, rangeSeconds)}</dd>
-          </div>
-          <div>
-            <dt>Errors</dt>
-            <dd className={redErrorClass(kpiRow.red) ? "err-rate" : undefined}>
-              {redErrorRate(kpiRow.red)}
-            </dd>
-          </div>
-          <div>
-            <dt>P50</dt>
-            <dd>{redDuration(kpiRow.red, "p50Ms")}</dd>
-          </div>
-          <div>
-            <dt>P95</dt>
-            <dd>{redDuration(kpiRow.red, "p95Ms")}</dd>
-          </div>
-          <div>
-            <dt>Last seen</dt>
-            <dd>{formatTimestamp(nanosToMs(kpiRow.lastNs))}</dd>
-          </div>
-        </dl>
-      ) : (
-        !kpiQuery.isPending && (
-          <div className="view-note">No matching spans in this window.</div>
-        )
-      )}
+      {kpiBody}
 
       {/* Pinned to the entity, never to `currentPinned`: a breakdown row is a
           dimension within the entity, not something a resource attribute

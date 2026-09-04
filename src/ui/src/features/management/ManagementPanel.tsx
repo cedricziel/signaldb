@@ -295,7 +295,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
 
         <section className="tables">
           <h3>Tables</h3>
-          {tables.isLoading && <p>Loading tables…</p>}
+          {tables.isLoading && <p>Loading…</p>}
           {tables.isError && (
             <p className="manage-error">{toErrorMessage(tables.error)}</p>
           )}

@@ -152,6 +152,20 @@ describe("EntityMetricsPanel", () => {
     expect(fetchEntityMetricSeries).not.toHaveBeenCalled();
   });
 
+  it("shows a skeleton while the metric lookup is still pending", () => {
+    useEntityMetrics.mockReturnValue({
+      metrics: [],
+      isPending: true,
+      isError: false,
+    });
+
+    render();
+
+    expect(document.querySelector(".skeleton-lines")).toBeInTheDocument();
+    expect(screen.queryByText("Metrics")).not.toBeInTheDocument();
+    expect(fetchEntityMetricSeries).not.toHaveBeenCalled();
+  });
+
   it("pins every series to the entity's identity", async () => {
     useEntityMetrics.mockReturnValue({
       metrics: [metric("system.cpu.utilization")],
