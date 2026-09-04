@@ -166,7 +166,7 @@ export function ErrorsView({ state, update }: Props) {
             </div>
           )}
           {!pending && !groupsQuery.isError && allGroups.length === 0 && (
-            <div className="traces-note">
+            <div className="view-note">
               No exceptions captured in this window.
             </div>
           )}
@@ -174,7 +174,7 @@ export function ErrorsView({ state, update }: Props) {
             !groupsQuery.isError &&
             allGroups.length > 0 &&
             groups.length === 0 && (
-              <div className="traces-note">
+              <div className="view-note">
                 No exceptions match the active filters.
               </div>
             )}
@@ -256,7 +256,7 @@ export function ErrorsView({ state, update }: Props) {
             </table>
           )}
           {groupsQuery.data?.truncated && (
-            <div className="traces-note">
+            <div className="view-note">
               More exception groups exist than shown; narrow the time range to
               see the rest.
             </div>
@@ -280,7 +280,7 @@ export function ErrorsView({ state, update }: Props) {
                 />
               )}
               {occurrencesQuery.isPending && (
-                <div className="traces-note">Loading…</div>
+                <div className="view-note">Loading…</div>
               )}
               {occurrencesQuery.isError && (
                 <div className="query-error" role="alert">
@@ -289,7 +289,7 @@ export function ErrorsView({ state, update }: Props) {
                 </div>
               )}
               {occurrencesQuery.data?.length === 0 && (
-                <div className="traces-note">
+                <div className="view-note">
                   No occurrences found in this window.
                 </div>
               )}
@@ -341,7 +341,7 @@ export function ErrorsView({ state, update }: Props) {
                               {o.stacktrace ? (
                                 <Stacktrace text={o.stacktrace} />
                               ) : (
-                                <div className="traces-note">
+                                <div className="view-note">
                                   No stacktrace captured for this occurrence.
                                 </div>
                               )}

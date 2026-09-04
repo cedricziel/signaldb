@@ -197,7 +197,7 @@ export function MetricsView({ state, update }: Props) {
       )}
 
       {promql === "" && (
-        <div className="metrics-note">
+        <div className="view-note">
           Build a query above, or switch to PromQL, then Run to chart metrics.
         </div>
       )}
@@ -207,10 +207,10 @@ export function MetricsView({ state, update }: Props) {
         </div>
       )}
       {chart.isFetching && !chart.data && (
-        <div className="metrics-note">Loading…</div>
+        <div className="view-note">Loading…</div>
       )}
       {chart.data && chart.data.length === 0 && (
-        <div className="metrics-note">No series returned.</div>
+        <div className="view-note">No series returned.</div>
       )}
       {chart.data && chart.data.length > 0 && (
         <>

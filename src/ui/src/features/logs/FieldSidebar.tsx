@@ -3,6 +3,7 @@ import { useState } from "react";
 import { lokiLabelValues } from "../../api/loki";
 import { SemanticInfo } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
+import { sidebarWidth } from "../../lib/sidebarWidth";
 import { useSemantics } from "../../hooks/useSemantics";
 import type { LabelFilter } from "../../lib/filters";
 import type { ResolvedRange } from "../../lib/time";
@@ -29,7 +30,7 @@ export function FieldSidebar({ labels, range, rangeKey, onAddFilter }: Props) {
 
   return (
     <aside className="sidebar" aria-label="Fields">
-      <SidebarResizer />
+      <SidebarResizer panel={sidebarWidth} />
       <div className="sidebar-head">Fields</div>
       <input
         type="search"

@@ -277,12 +277,6 @@
   color: var(--dim);
 }
 
-.traces-note {
-  color: var(--faint);
-  padding: 14px 16px;
-  font-size: 12px;
-}
-
 .trace-table {
   border-collapse: collapse;
   width: 100%;

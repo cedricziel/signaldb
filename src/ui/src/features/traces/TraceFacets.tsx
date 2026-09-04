@@ -3,6 +3,7 @@ import { useState } from "react";
 import { fetchFacet, type FacetValue } from "../../api/traceFacets";
 import { SemanticInfo } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
+import { sidebarWidth } from "../../lib/sidebarWidth";
 import { useSemantics } from "../../hooks/useSemantics";
 import type { ResolvedRange } from "../../lib/time";
 import {
@@ -74,7 +75,7 @@ export function TraceFacets({
 
   return (
     <aside className="sidebar" aria-label="Facets">
-      <SidebarResizer />
+      <SidebarResizer panel={sidebarWidth} />
       <div className="sidebar-head">Facets</div>
       <label className="sidebar-toggle">
         <input

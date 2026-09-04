@@ -42,7 +42,7 @@ export function DependencyBreakdown({
   const [active, setActive] = useState<string | null>(null);
 
   if (query.isPending) {
-    return <div className="traces-note">Loading…</div>;
+    return <div className="view-note">Loading…</div>;
   }
   if (query.isError) {
     return (
@@ -56,7 +56,7 @@ export function DependencyBreakdown({
   const total = categories.reduce((sum, c) => sum + c.durationNs, 0);
   if (total === 0) {
     return (
-      <div className="traces-note">
+      <div className="view-note">
         No database, HTTP, RPC, or messaging calls observed for this service in
         this window.
       </div>

@@ -265,7 +265,7 @@ function SingleRangeView({ state, update }: Props) {
       )}
 
       {selectedType === "" && !typesQuery.isFetching && (
-        <div className="profiles-note">
+        <div className="view-note">
           No profiles in the selected range. Enable{" "}
           <code>[self_monitoring].profiles_enabled</code> to have SignalDB
           profile itself, or send profiles over OTLP.
@@ -273,18 +273,18 @@ function SingleRangeView({ state, update }: Props) {
       )}
 
       {renderQuery.isFetching && !renderQuery.data && (
-        <div className="profiles-note">Loading…</div>
+        <div className="view-note">Loading…</div>
       )}
 
       {renderQuery.data?.truncated && (
-        <div className="profiles-note">
+        <div className="view-note">
           Too many matching profiles — showing an aggregate of the first batch
           only. Narrow the range or add a filter for the full picture.
         </div>
       )}
 
       {isEmpty && (
-        <div className="profiles-note">
+        <div className="view-note">
           No profiles in the selected range for this filter.
         </div>
       )}
@@ -352,7 +352,7 @@ function CompareView({ state, update }: Props) {
       )}
 
       {selectedType === "" && !typesQuery.isFetching && (
-        <div className="profiles-note">
+        <div className="view-note">
           No profiles in the selected range. Enable{" "}
           <code>[self_monitoring].profiles_enabled</code> to have SignalDB
           profile itself, or send profiles over OTLP.
@@ -385,7 +385,7 @@ function ComparePane({
     return (
       <div className="profiles-compare-pane">
         <div className="flame-title">{title}</div>
-        <div className="profiles-note">Loading…</div>
+        <div className="view-note">Loading…</div>
       </div>
     );
   }
@@ -393,7 +393,7 @@ function ComparePane({
     return (
       <div className="profiles-compare-pane">
         <div className="flame-title">{title}</div>
-        <div className="profiles-note">No profiles in this window.</div>
+        <div className="view-note">No profiles in this window.</div>
       </div>
     );
   }
@@ -442,7 +442,7 @@ function SingleProfileView({
         </div>
       )}
       {renderQuery.isFetching && !renderQuery.data && (
-        <div className="profiles-note">Loading…</div>
+        <div className="view-note">Loading…</div>
       )}
       {renderQuery.data && <FlameGraph render={renderQuery.data} unit="" />}
     </div>
