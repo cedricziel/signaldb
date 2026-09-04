@@ -90,7 +90,7 @@ function FieldValues({
 
   if (isPending) return <div className="fieldvals-note">Loading…</div>;
   if (isError)
-    return <div className="fieldvals-note">Failed to load values</div>;
+    return <div className="fieldvals-note">Could not load values</div>;
   if (!data || data.length === 0)
     return <div className="fieldvals-note">No values in this window</div>;
 

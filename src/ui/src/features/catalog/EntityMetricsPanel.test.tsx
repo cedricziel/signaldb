@@ -129,12 +129,13 @@ describe("EntityMetricsPanel", () => {
       metrics: [],
       isPending: false,
       isError: true,
+      error: new Error("lookup broke"),
     });
 
     render();
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Could not look up which metrics describe this host",
+      "Could not load this host's metrics: lookup broke",
     );
   });
 

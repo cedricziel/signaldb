@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { runIrQuery } from "../../api/queryIr";
 import { irSeriesToPromSeries } from "../../api/metricsIr";
 import { AttributeValue } from "../../components/AttributeValue";
+import { QueryError } from "../../components/QueryError";
 import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
 import type { PromSeries } from "../../api/prom";
 import { seriesColorVar } from "../../lib/promSeries";
@@ -138,7 +139,7 @@ export function QueryView({ range }: { range?: TimeRange } = {}) {
       </div>
 
       <div className="query-ir-result" data-testid={`ir-view-${view}`}>
-        {query.isError && <div role="alert">Query failed</div>}
+        {query.isError && <QueryError what="results" error={query.error} />}
         {query.isLoading && submitted && (
           <div className="view-note">Loading…</div>
         )}

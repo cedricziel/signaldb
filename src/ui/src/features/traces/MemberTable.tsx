@@ -4,6 +4,7 @@
 // presentational: the caller fetches (`fetchTraceGroupMembers` or similar)
 // and supplies rows, loading/error state, and the copy that differs by
 // context (empty message, footnote, what the identity column is called).
+import { QueryError } from "../../components/QueryError";
 import { SkeletonRows } from "../explore/Skeleton";
 import { SortTh, sortRows, useSort, type SortValue } from "../../lib/sortTable";
 import { formatTimestamp, nanosToMs } from "../../lib/time";
@@ -38,8 +39,12 @@ function memberSortValue(m: TraceGroupMember, key: string): SortValue {
 export interface MemberTableProps {
   /** `undefined` means the query is still pending. */
   members: TraceGroupMember[] | undefined;
-  isError: boolean;
-  errorMessage?: string;
+  /** The query's own error (`null` while it has none), shown via the
+   * shared `QueryError`. */
+  error: unknown;
+  /** What a row is, plural, for the error alert: "traces" for trace-grain
+   * rows, "spans" otherwise. */
+  what: string;
   /** First column's header: "Root" for trace-grain rows (always the root
    * span), "Span" for span-grain or otherwise-unscoped rows (whatever
    * matched, not necessarily the root). */
@@ -54,8 +59,8 @@ export interface MemberTableProps {
 
 export function MemberTable({
   members,
-  isError,
-  errorMessage,
+  error,
+  what,
   identityLabel,
   emptyMessage,
   footnote,
@@ -63,6 +68,7 @@ export function MemberTable({
 }: MemberTableProps) {
   const [sort, toggle] = useSort("time", "desc");
   const rows = members ? sortRows(members, sort, memberSortValue) : [];
+  const isError = error != null;
   const pending = members === undefined && !isError;
 
   const header = (
@@ -94,11 +100,7 @@ export function MemberTable({
   );
 
   if (isError) {
-    return (
-      <div className="query-error" role="alert">
-        {errorMessage ?? "Failed to load."}
-      </div>
-    );
+    return <QueryError what={what} error={error} />;
   }
 
   if (pending) {

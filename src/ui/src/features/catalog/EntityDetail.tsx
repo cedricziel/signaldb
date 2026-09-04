@@ -11,6 +11,7 @@ import {
   type EntityPin,
 } from "../../api/catalog";
 import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
+import { QueryError } from "../../components/QueryError";
 import { DependencyBreakdown } from "./DependencyBreakdown";
 import { EntityMetricsPanel } from "./EntityMetricsPanel";
 import {
@@ -156,9 +157,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
     : groupLabel(state.catalogPrimary);
 
   const kpiBody = kpiQuery.isError ? (
-    <div className="query-error" role="alert">
-      Failed to load: {(kpiQuery.error as Error).message}
-    </div>
+    <QueryError what="this entity" error={kpiQuery.error} />
   ) : kpiQuery.isPending ? (
     <SkeletonLines lines={6} />
   ) : kpiRow ? (
@@ -294,12 +293,8 @@ export function EntityDetail({ entity, range, state, update }: Props) {
       </div>
       <MemberTable
         members={membersQuery.data}
-        isError={membersQuery.isError}
-        errorMessage={
-          membersQuery.isError
-            ? `Failed to load: ${(membersQuery.error as Error).message}`
-            : undefined
-        }
+        error={membersQuery.error}
+        what="spans"
         identityLabel="Span"
         emptyMessage="No matching spans in this window."
         onOpenTrace={(traceId) =>

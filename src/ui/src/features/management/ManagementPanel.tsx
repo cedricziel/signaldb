@@ -16,6 +16,7 @@ import {
   type ManagedTables,
 } from "../../api/management";
 import type { WhoamiResponse } from "../../api/session";
+import { QueryError } from "../../components/QueryError";
 import { toErrorMessage } from "../../api/http";
 import "./management.css";
 
@@ -296,9 +297,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
         <section className="tables">
           <h3>Tables</h3>
           {tables.isLoading && <p>Loading…</p>}
-          {tables.isError && (
-            <p className="manage-error">{toErrorMessage(tables.error)}</p>
-          )}
+          {tables.isError && <QueryError what="tables" error={tables.error} />}
           {tablesByDataset(tables.data).map((group) => (
             <div className="dataset-tables" key={group.dataset}>
               <h4>{group.dataset}</h4>

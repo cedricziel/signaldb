@@ -13,6 +13,7 @@ import {
 } from "./paths";
 import { filterByName, indexRegistry } from "./registryIndex";
 import { useSchemaSession } from "./useSchemaSession";
+import { toErrorMessage } from "../../api/http";
 
 /**
  * `/schema/conventions/:ns/:version[/:kind/:name]` — one registry: a search
@@ -64,7 +65,17 @@ function LatestRedirect({
     staleTime: 60_000,
   });
   if (registries.isPending) return <p className="schema-note">Loading…</p>;
-  const found = registries.data?.find((r) => r.namespace === namespace);
+  if (registries.isError) {
+    return (
+      <div className="schema-page">
+        <p className="schema-error">
+          Could not load registries: {toErrorMessage(registries.error)}
+        </p>
+        <Link to={CONVENTIONS}>Back to conventions</Link>
+      </div>
+    );
+  }
+  const found = registries.data.find((r) => r.namespace === namespace);
   if (!found) {
     return (
       <div className="schema-page">
@@ -110,10 +121,7 @@ function RegistryView({
     return (
       <div className="schema-page">
         <p className="schema-error">
-          Failed to load {namespace}@{version}:{" "}
-          {registry.error instanceof Error
-            ? registry.error.message
-            : String(registry.error)}
+          Could not load {namespace}@{version}: {toErrorMessage(registry.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
       </div>

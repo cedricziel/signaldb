@@ -7,6 +7,7 @@ import {
 } from "../../api/catalog";
 import { GROUP_BUDGET, type GroupSort } from "../../api/traceGroups";
 import { fetchFieldValueSketch } from "../../api/sourceFields";
+import { QueryError } from "../../components/QueryError";
 import { SkeletonRows } from "../explore/Skeleton";
 import { SortTh, useSort } from "../../lib/sortTable";
 import {
@@ -412,11 +413,7 @@ export function EntityTable({
             : ""}
         </span>
       </div>
-      {result.isError && (
-        <div className="query-error" role="alert">
-          Entities failed: {(result.error as Error).message}
-        </div>
-      )}
+      {result.isError && <QueryError what="entities" error={result.error} />}
       <table className="trace-table" aria-busy={pending}>
         <thead>
           <tr>

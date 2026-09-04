@@ -7,6 +7,7 @@ import {
   pyroscopeServices,
 } from "../../api/pyroscope";
 import { fetchFlamegraph, fetchFlamegraphById } from "../../api/profilesIr";
+import { QueryError } from "../../components/QueryError";
 import {
   rangeScopeKey,
   rangeToParam,
@@ -253,16 +254,10 @@ function SingleRangeView({ state, update }: Props) {
       <SelectorControls state={state} update={update} selectors={selectors} />
 
       {(typesQuery.isError || servicesQuery.isError || renderQuery.isError) && (
-        <div className="query-error" role="alert">
-          Query failed:{" "}
-          {
-            (
-              (typesQuery.error ??
-                servicesQuery.error ??
-                renderQuery.error) as Error
-            ).message
-          }
-        </div>
+        <QueryError
+          what="profiles"
+          error={typesQuery.error ?? servicesQuery.error ?? renderQuery.error}
+        />
       )}
 
       {selectedType === "" && !typesQuery.isFetching && (
@@ -346,11 +341,7 @@ function CompareView({ state, update }: Props) {
         <span className="profiles-field">Comparison: current range</span>
       </div>
 
-      {error && (
-        <div className="query-error" role="alert">
-          Query failed: {(error as Error).message}
-        </div>
-      )}
+      {error && <QueryError what="profiles" error={error} />}
 
       {selectedType === "" && !typesQuery.isFetching && (
         <div className="view-note">
@@ -438,9 +429,7 @@ function SingleProfileView({
       </div>
 
       {renderQuery.isError && (
-        <div className="query-error" role="alert">
-          {(renderQuery.error as Error).message}
-        </div>
+        <QueryError what="this profile" error={renderQuery.error} />
       )}
       {renderQuery.isFetching && !renderQuery.data && (
         <SkeletonLines lines={12} />

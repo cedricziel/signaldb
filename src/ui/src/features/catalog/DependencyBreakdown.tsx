@@ -6,6 +6,7 @@
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchDependencyBreakdown } from "../../api/dependencyBreakdown";
+import { QueryError } from "../../components/QueryError";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import type { ResolvedRange } from "../../lib/time";
 import { formatShare, formatValue } from "../../lib/vizFormat";
@@ -46,11 +47,7 @@ export function DependencyBreakdown({
     return <SkeletonLines lines={5} />;
   }
   if (query.isError) {
-    return (
-      <div className="query-error" role="alert">
-        Failed to load: {(query.error as Error).message}
-      </div>
-    );
+    return <QueryError what="dependencies" error={query.error} />;
   }
 
   const categories = query.data;

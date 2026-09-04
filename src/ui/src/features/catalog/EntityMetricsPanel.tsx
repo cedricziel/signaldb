@@ -9,6 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchEntityMetricSeries } from "../../api/entityMetricSeries";
 import { irSeriesToPromSeries } from "../../api/metricsIr";
 import { pinsKey, type EntityPin } from "../../api/catalog";
+import { QueryError } from "../../components/QueryError";
 import {
   durationToSeconds,
   stepForRange,
@@ -44,6 +45,7 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
     metrics,
     isPending: lookupPending,
     isError: lookupFailed,
+    error: lookupError,
   } = useEntityMetrics(entity, range, rangeKey);
   const names = metrics.map((m) => m.name).join(",");
 
@@ -71,9 +73,10 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
   // as "none describe it", and rendering nothing for both hides the breakage.
   if (lookupFailed) {
     return (
-      <div className="query-error" role="alert">
-        Could not look up which metrics describe this {entity.singular}.
-      </div>
+      <QueryError
+        what={`this ${entity.singular}'s metrics`}
+        error={lookupError}
+      />
     );
   }
 
@@ -91,11 +94,7 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
   // this window holds nothing, and charts.
   let body;
   if (series.isError) {
-    body = (
-      <div className="query-error" role="alert">
-        Failed to load: {(series.error as Error).message}
-      </div>
-    );
+    body = <QueryError what="metric series" error={series.error} />;
   } else if (observed.length === 0) {
     body = series.isPending ? (
       <SkeletonLines lines={4} />

@@ -13,6 +13,7 @@ import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
 } from "../../components/MobileSidebarDrawer";
+import { QueryError } from "../../components/QueryError";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import { SkeletonRows } from "../explore/Skeleton";
 import { ErrorFacets } from "./ErrorFacets";
@@ -163,9 +164,7 @@ export function ErrorsView({ state, update }: Props) {
         </MobileSidebarDrawer>
         <div className="errors-main catalog-main">
           {groupsQuery.isError && (
-            <div className="query-error" role="alert">
-              Failed to load: {(groupsQuery.error as Error).message}
-            </div>
+            <QueryError what="exceptions" error={groupsQuery.error} />
           )}
           {!pending && !groupsQuery.isError && allGroups.length === 0 && (
             <div className="view-note">
@@ -286,10 +285,7 @@ export function ErrorsView({ state, update }: Props) {
                 />
               )}
               {occurrencesQuery.isError && (
-                <div className="query-error" role="alert">
-                  Failed to load occurrences:{" "}
-                  {(occurrencesQuery.error as Error).message}
-                </div>
+                <QueryError what="occurrences" error={occurrencesQuery.error} />
               )}
               {occurrencesQuery.isSuccess && occurrences.length === 0 && (
                 <div className="view-note">
