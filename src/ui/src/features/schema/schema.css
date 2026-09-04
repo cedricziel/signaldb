@@ -238,11 +238,6 @@
   border-bottom: none;
 }
 
-.schema-table .num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
 .schema-table a {
   color: var(--text);
   font-weight: 600;
