@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { useEscapeKey } from "./useEscapeKey";
 
 /**
  * Open/close state for the facet/field sidebar's mobile drawer (see
@@ -14,14 +15,7 @@ export function useMobileSidebar() {
   const close = useCallback(() => setOpen(false), []);
   const toggle = useCallback(() => setOpen((prev) => !prev), []);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, close]);
+  useEscapeKey(open, close);
 
   return { open, toggle, close };
 }
