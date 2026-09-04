@@ -219,7 +219,6 @@
 
 .schema-table th,
 .schema-table td {
-  text-align: left;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;

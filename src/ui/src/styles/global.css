@@ -569,11 +569,13 @@ select:focus-visible {
 
 /* ---------- sortable table headers (lib/sortTable.tsx) ---------- */
 
-/* The `table` ancestor lifts these above each table's own `.x-table th`
-   base rule (same specificity, later stylesheet), which would otherwise
-   win the text-align tie and undo the right alignment. */
-table th.num,
-table td.num {
+/* The browser default centres headers; every table here wants them left. */
+th {
+  text-align: left;
+}
+
+th.num,
+td.num {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
