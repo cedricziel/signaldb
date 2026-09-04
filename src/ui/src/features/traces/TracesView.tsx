@@ -778,6 +778,7 @@ function GroupDetail({
 
 function TraceDetail({ state, update }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
+  const mobileDetail = useMobileSidebar();
   // Waterfall hover tooltip: the shared VizTooltip, hosted on the (non-
   // scrolling) trace body so it can overlap the detail pane and isn't
   // affected by the waterfall's own scroll offset.
@@ -882,6 +883,13 @@ function TraceDetail({ state, update }: Props) {
           )}
         </span>
         <span className="trace-id">{traceData.traceId}</span>
+        {selectedRow && (
+          <MobileFiltersToggle
+            open={mobileDetail.open}
+            onToggle={mobileDetail.toggle}
+            label="Details"
+          />
+        )}
       </div>
       {Object.keys(spanKinds).length > 0 && (
         <div className="span-kind-legend" aria-label="Span kind legend">
@@ -953,13 +961,19 @@ function TraceDetail({ state, update }: Props) {
         {selectedRow && (
           <>
             <SidebarResizer panel={spanDetailWidth} />
-            <SpanDetail
-              span={selectedRow.span}
-              traceId={traceData.traceId}
-              profiles={traceData.profiles}
-              kind={spanKinds[selectedRow.span.spanId]}
-              update={update}
-            />
+            <MobileSidebarDrawer
+              open={mobileDetail.open}
+              onClose={mobileDetail.close}
+              side="right"
+            >
+              <SpanDetail
+                span={selectedRow.span}
+                traceId={traceData.traceId}
+                profiles={traceData.profiles}
+                kind={spanKinds[selectedRow.span.spanId]}
+                update={update}
+              />
+            </MobileSidebarDrawer>
           </>
         )}
         {hoveredRow && pointer.anchor && (

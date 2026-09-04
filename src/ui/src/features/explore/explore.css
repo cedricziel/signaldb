@@ -1,3 +1,4 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
 .explore {
   display: flex;
   flex-direction: column;
@@ -405,7 +406,18 @@
     box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
   }
 
-  .mobile-sidebar-drawer.open .sidebar {
+  /* Right-edge variant (the trace waterfall's span-detail pane, which sits
+     to the right of its content on desktop): flip the side and the shadow
+     so it reads as sliding in from the right instead of the left. */
+  .mobile-sidebar-drawer--right.open {
+    left: auto;
+    right: 0;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.35);
+  }
+
+  /* Whatever aside the drawer wraps (a facet/field .sidebar, the trace
+     waterfall's .span-detail) fills it once open. */
+  .mobile-sidebar-drawer.open > aside {
     display: flex;
     width: 100%;
     flex: 1;
