@@ -9,6 +9,7 @@ mod storage_context;
 
 pub use catalog_context::CatalogTestContext;
 pub use retention_context::{
-    DataGeneratorConfig, PartitionGranularity, PartitionInfo, RetentionTestContext, TableInfo,
+    DataGeneratorConfig, PartitionGranularity, PartitionInfo, RetentionTestContext,
+    SequentialLayout, TableInfo,
 };
 pub use storage_context::StorageTestContext;

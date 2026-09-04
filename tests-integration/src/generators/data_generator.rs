@@ -9,7 +9,7 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
 use writer::IcebergTableWriter;
 
-use crate::fixtures::{DataGeneratorConfig, PartitionInfo};
+use crate::fixtures::{DataGeneratorConfig, PartitionInfo, SequentialLayout};
 
 /// Shared body of `generate_traces`/`generate_logs`/`generate_metrics`/
 /// `generate_profiles`: write `config.partition_count` partitions of
@@ -83,6 +83,30 @@ pub async fn generate_trace_files_with_ids(
     for ids in files {
         // start == end → all spans share `base_timestamp`, single partition.
         let batch = create_trace_batch_with_ids(base_timestamp, base_timestamp, ids)?;
+        writer
+            .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
+            .await?;
+    }
+    Ok(())
+}
+
+/// Writes one trace file per file of `layout`, each holding
+/// `layout.rows_per_file` spans spread over that file's time window — the
+/// non-overlapping layout sequential ingest produces, which an ordered query
+/// can answer from the leading files of.
+pub async fn generate_sequential_trace_files(
+    writer: &mut IcebergTableWriter,
+    layout: &SequentialLayout,
+) -> Result<()> {
+    for file in 0..layout.files {
+        let start = layout.base_timestamp + file as i64 * layout.file_span_ms;
+        let batch = create_trace_batch(
+            start,
+            start + layout.file_span_ms,
+            layout.rows_per_file,
+            0,
+            file,
+        )?;
         writer
             .append_batches_with_marker("seed", vec![(uuid::Uuid::new_v4(), batch)])
             .await?;
