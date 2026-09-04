@@ -55,7 +55,7 @@
 }
 
 .metrics-modes button.active {
-  color: var(--fg);
+  color: var(--text);
   background: var(--surface2);
 }
 
@@ -172,7 +172,7 @@
 
 .qrow-warn {
   font-size: 11px;
-  color: var(--warn, #b8860b);
+  color: var(--warn);
   white-space: nowrap;
 }
 

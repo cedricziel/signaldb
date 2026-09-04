@@ -131,7 +131,7 @@
 }
 
 .manage-error {
-  color: var(--danger, #ef7b7b);
+  color: var(--err);
   border-color: currentColor;
 }
 

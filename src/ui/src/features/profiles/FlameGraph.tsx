@@ -118,7 +118,7 @@ const FlameRows = memo(function FlameRows({
                       isOther
                         ? undefined
                         : {
-                            background: `var(${color}-soft, var(${color}))`,
+                            background: `var(${color})`,
                             borderColor: `var(${color})`,
                           }
                     }

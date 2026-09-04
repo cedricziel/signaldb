@@ -485,23 +485,23 @@
 }
 
 .span-bar.kind-server {
-  background: var(--svc-a-soft, var(--svc-a));
+  background: var(--svc-a);
 }
 
 .span-bar.kind-client {
-  background: var(--svc-b-soft, var(--svc-b));
+  background: var(--svc-b);
 }
 
 .span-bar.kind-internal {
-  background: var(--svc-c-soft, var(--svc-c));
+  background: var(--svc-c);
 }
 
 .span-bar.kind-producer {
-  background: var(--svc-d-soft, var(--svc-d));
+  background: var(--svc-d);
 }
 
 .span-bar.kind-consumer {
-  background: var(--svc-e-soft, var(--svc-e));
+  background: var(--svc-e);
 }
 
 .span-bar.error {
@@ -712,7 +712,7 @@
   padding: 6px 8px;
   max-height: 220px;
   overflow: auto;
-  background: var(--bg-inset, rgba(127, 127, 127, 0.08));
+  background: var(--bg-inset);
   border-radius: 4px;
   font-family: var(--mono);
   font-size: 10px;
