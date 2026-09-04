@@ -63,7 +63,7 @@ export function RegistryList() {
           <p className="schema-precedence">
             Precedence: {registries.data.map((r) => r.namespace).join(" → ")}
           </p>
-          <div className="schema-table-scroll">
+          <div className="table-scroll">
             <table className="schema-table">
               <thead>
                 <tr>

@@ -600,3 +600,9 @@ th[aria-sort="ascending"] .th-sort::after {
 th[aria-sort="descending"] .th-sort::after {
   content: " ↓";
 }
+
+/* A table wider than the viewport scrolls on its own axis instead of
+   blowing out the page — these tables don't reasonably reflow. */
+.table-scroll {
+  overflow-x: auto;
+}
