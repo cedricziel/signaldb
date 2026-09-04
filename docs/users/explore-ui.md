@@ -375,8 +375,11 @@ shared between the logs and traces tabs and persists across sessions.
 Below a 900px-wide viewport the facet/field sidebar (Logs, Traces, and
 Errors alike) is hidden by default rather than shown at a squeezed width; a
 **Filters** button reveals it as a dismissible drawer (close button,
-backdrop click, or Escape). The signal tabs at the top also switch to a
-horizontally scrollable strip at that width instead of compressing.
+backdrop click, or Escape). The traces' span-detail panel does the same
+below that width: selecting a span shows a **Details** button in the trace
+header that opens the panel as a drawer from the right. The signal tabs at
+the top also switch to a horizontally scrollable strip at that width instead
+of compressing.
 
 ### The group table
 
