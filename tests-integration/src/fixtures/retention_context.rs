@@ -34,6 +34,7 @@ pub struct SequentialLayout {
 }
 
 impl SequentialLayout {
+    /// Rows across every file of the layout.
     pub fn total_rows(&self) -> usize {
         self.files * self.rows_per_file
     }

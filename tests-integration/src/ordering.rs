@@ -84,6 +84,8 @@ impl SequentialTraces {
         Ok(copy)
     }
 
+    /// A catalog and table for `tenant` with no data yet, plus the writer
+    /// that created the table.
     async fn empty(tenant: &str, layout: &SequentialLayout) -> Result<Self> {
         let config = common::testing::TestConfigBuilder::new()
             .in_memory()
@@ -135,6 +137,7 @@ impl SequentialTraces {
             .collect())
     }
 
+    /// The table with fresh metadata.
     pub async fn table(&self) -> Result<Table> {
         load_table(&self.catalog_manager, &self.tenant, DATASET, TABLE).await
     }
@@ -261,6 +264,8 @@ pub async fn scan_report(
     Ok((report, batches))
 }
 
+/// Fold every node's scan metrics under `plan` into `report`, and collect
+/// the files its scans reached into `files`.
 fn gather_scan_metrics(
     plan: &Arc<dyn ExecutionPlan>,
     report: &mut ScanReport,
@@ -293,6 +298,7 @@ fn gather_scan_metrics(
     }
 }
 
+/// The value of a counter metric, or zero when the node has none by that name.
 fn count(totals: &MetricsSet, name: &str) -> usize {
     match totals.sum_by_name(name) {
         Some(MetricValue::Count { count, .. }) => count.value(),

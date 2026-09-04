@@ -439,6 +439,7 @@ struct OrderedArm {
     results: Vec<(ScanReport, Vec<(i64, String)>)>,
 }
 
+/// Open `population` under one session option and run every shape once.
 async fn ordered_arm(
     name: &'static str,
     population: &SequentialTraces,
@@ -461,6 +462,8 @@ async fn ordered_arm(
     OrderedArm { name, ctx, results }
 }
 
+/// Time the ordered shapes over attested and unattested files, after
+/// printing and asserting what each scan did.
 fn bench_declared_ordering(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let layout = SequentialLayout::two_hours_of_ingest();
