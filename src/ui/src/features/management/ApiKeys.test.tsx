@@ -401,9 +401,10 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("collector-production")).toBeInTheDocument();
     });
 
-    const revokeButtons = screen.getAllByText("Revoke");
+    const revokeButtons = screen.getAllByRole("button", { name: "Revoke" });
     const firstRevoke = revokeButtons[0];
     if (firstRevoke) await userEvent.click(firstRevoke);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     // The DELETE request is dispatched
     await waitFor(() =>

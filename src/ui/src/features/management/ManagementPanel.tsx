@@ -18,6 +18,7 @@ import {
 import type { WhoamiResponse } from "../../api/session";
 import { QueryError } from "../../components/QueryError";
 import { toErrorMessage } from "../../api/http";
+import { ConfirmButton } from "../../components/ConfirmButton";
 import { Dialog } from "../../components/Dialog";
 import "./management.css";
 
@@ -147,15 +148,15 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                   {dataset.is_default && <span>default</span>}
                 </div>
                 {!dataset.is_default && (
-                  <button
-                    onClick={() =>
+                  <ConfirmButton
+                    label="Delete"
+                    prompt={`Delete dataset ${dataset.id}?`}
+                    onConfirm={() =>
                       deleteDataset(tenant, dataset.id)
                         .then(refresh)
                         .catch((value) => setError(toErrorMessage(value)))
                     }
-                  >
-                    Delete
-                  </button>
+                  />
                 )}
               </li>
             ))}
@@ -187,15 +188,15 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                   </span>
                 </div>
                 {!key.revoked && (
-                  <button
-                    onClick={() =>
+                  <ConfirmButton
+                    label="Revoke"
+                    prompt={`Revoke ${key.name || "this key"}?`}
+                    onConfirm={() =>
                       revokeApiKey(tenant, key.id)
                         .then(refresh)
                         .catch((value) => setError(toErrorMessage(value)))
                     }
-                  >
-                    Revoke
-                  </button>
+                  />
                 )}
               </li>
             ))}
@@ -245,15 +246,15 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                 <span>{membership.role}</span>
               </div>
               {membership.user_id !== who.user?.id && (
-                <button
-                  onClick={() =>
+                <ConfirmButton
+                  label="Remove"
+                  prompt={`Remove ${membership.email}?`}
+                  onConfirm={() =>
                     removeMembership(tenant, membership.user_id)
                       .then(refresh)
                       .catch((value) => setError(toErrorMessage(value)))
                   }
-                >
-                  Remove
-                </button>
+                />
               )}
             </li>
           ))}

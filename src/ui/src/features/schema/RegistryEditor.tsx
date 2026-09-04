@@ -8,6 +8,7 @@ import {
   useSearchParams,
 } from "react-router";
 import YAML from "yaml";
+import { ConfirmButton } from "../../components/ConfirmButton";
 import {
   createRegistry,
   deleteRegistry,
@@ -107,7 +108,6 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   const [outcome, setOutcome] = useState<Report | null>(null);
   const [validatedText, setValidatedText] = useState<string | null>(null);
   const [newVersion, setNewVersion] = useState("");
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // "Upload registry" from the list opens the file picker on arrival.
@@ -286,35 +286,13 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
               >
                 Save as new version
               </button>
-              {confirmingDelete ? (
-                <span className="schema-editor-confirm">
-                  Delete {title}?{" "}
-                  <button
-                    type="button"
-                    className="schema-button danger"
-                    disabled={busy}
-                    onClick={() => remove.mutate()}
-                  >
-                    Confirm delete
-                  </button>{" "}
-                  <button
-                    type="button"
-                    className="schema-button"
-                    onClick={() => setConfirmingDelete(false)}
-                  >
-                    Cancel
-                  </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  className="schema-button danger"
-                  disabled={busy}
-                  onClick={() => setConfirmingDelete(true)}
-                >
-                  Delete
-                </button>
-              )}
+              <ConfirmButton
+                className="schema-button danger"
+                label="Delete"
+                prompt={`Delete ${title}?`}
+                disabled={busy}
+                onConfirm={() => remove.mutate()}
+              />
             </>
           )}
         </div>

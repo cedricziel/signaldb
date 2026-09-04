@@ -13,6 +13,7 @@ import {
 } from "../../api/management";
 import { whoami } from "../../api/session";
 import { toErrorMessage } from "../../api/http";
+import { ConfirmButton } from "../../components/ConfirmButton";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { Dialog } from "../../components/Dialog";
 import "./ApiKeys.css";
@@ -249,13 +250,13 @@ export function ApiKeys() {
                   >
                     Edit scopes
                   </button>
-                  <button
+                  <ConfirmButton
                     className="api-key-revoke"
-                    onClick={() => handleRevoke(key.id)}
+                    label="Revoke"
+                    prompt={`Revoke ${key.name || "this key"}?`}
                     disabled={revokeMutation.isPending}
-                  >
-                    Revoke
-                  </button>
+                    onConfirm={() => handleRevoke(key.id)}
+                  />
                 </div>
               )}
             </li>

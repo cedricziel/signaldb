@@ -736,3 +736,13 @@ th[aria-sort="descending"] .th-sort::after {
 .dialog-panel:focus:not(:focus-visible) {
   outline: none;
 }
+
+/* ---------- confirm button (components/ConfirmButton.tsx) ---------- */
+
+.confirm-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dim);
+  font-size: 12px;
+}
