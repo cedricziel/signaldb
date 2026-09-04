@@ -57,6 +57,16 @@ function frameColor(frame: FlameFrame): string {
     : PALETTE[colorBucket(frame.name, PALETTE.length)]!;
 }
 
+/** One style object per colour, built once: the render path visits
+ * thousands of frames and would otherwise allocate a fresh object (and two
+ * identical strings) for each on every hover or search change. */
+const FRAME_STYLE = new Map(
+  ["--accent", ...PALETTE].map((color) => [
+    color,
+    { background: `var(${color})`, borderColor: `var(${color})` },
+  ]),
+);
+
 function frameHoverInfo(frame: FlameFrame): HoverInfo {
   const isOther = frame.name === OTHER_FRAME_NAME;
   return {
@@ -114,14 +124,7 @@ const FlameRows = memo(function FlameRows({
                   <button
                     type="button"
                     className={`flame-frame${dim ? " dim" : ""}${isOther ? " other" : ""}`}
-                    style={
-                      isOther
-                        ? undefined
-                        : {
-                            background: `var(${color})`,
-                            borderColor: `var(${color})`,
-                          }
-                    }
+                    style={isOther ? undefined : FRAME_STYLE.get(color)}
                     aria-label={frame.name}
                     aria-describedby={hovered === frame ? tipId : undefined}
                     onPointerMove={(e) => onHover(frame, e)}
