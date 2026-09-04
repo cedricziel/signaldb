@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 import { configDefaults } from "vitest/config";
+import { proxyKey } from "./src/lib/proxyKey";
 
 const require = createRequire(import.meta.url);
 const pkg = require("./package.json") as { version: string };
@@ -35,13 +36,6 @@ const PROXIED_PATHS = [
   "/oauth/register",
   "/oauth/token",
 ];
-
-/** Vite treats a key starting with `^` as a regex: anchor the path and only
- * let it continue at a `/`, so `/api` matches `/api/v1/...` but not
- * `/api-keys`. */
-function proxyKey(path: string): string {
-  return `^${path.replace(/[.]/g, "\\.")}(/|$)`;
-}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, "SIGNALDB_");
