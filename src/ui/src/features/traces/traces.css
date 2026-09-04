@@ -168,6 +168,9 @@
   gap: 8px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
+  /* Both this row and .group-pickers wrap: the pickers otherwise push the
+     page sideways below ~1100px. */
+  flex-wrap: wrap;
 }
 
 .trace-id-form {
@@ -180,6 +183,7 @@
   display: flex;
   align-items: center;
   gap: 14px;
+  flex-wrap: wrap;
 }
 
 .group-by {
@@ -294,36 +298,6 @@
   padding: 8px 14px;
   border-bottom: 1px solid var(--border);
   font-weight: 650;
-}
-
-.trace-table th.num,
-.trace-table td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.trace-table .th-sort {
-  font: inherit;
-  color: inherit;
-  text-transform: inherit;
-  letter-spacing: inherit;
-  cursor: pointer;
-}
-
-.trace-table .th-sort:hover {
-  color: var(--text);
-}
-
-.trace-table th[aria-sort] .th-sort {
-  color: var(--text);
-}
-
-.trace-table th[aria-sort="ascending"] .th-sort::after {
-  content: " ↑";
-}
-
-.trace-table th[aria-sort="descending"] .th-sort::after {
-  content: " ↓";
 }
 
 .trace-table td {
@@ -515,23 +489,23 @@
 }
 
 .span-bar.kind-server {
-  background: var(--svc-a-soft, var(--svc-a));
+  background: var(--svc-a);
 }
 
 .span-bar.kind-client {
-  background: var(--svc-b-soft, var(--svc-b));
+  background: var(--svc-b);
 }
 
 .span-bar.kind-internal {
-  background: var(--svc-c-soft, var(--svc-c));
+  background: var(--svc-c);
 }
 
 .span-bar.kind-producer {
-  background: var(--svc-d-soft, var(--svc-d));
+  background: var(--svc-d);
 }
 
 .span-bar.kind-consumer {
-  background: var(--svc-e-soft, var(--svc-e));
+  background: var(--svc-e);
 }
 
 .span-bar.error {
@@ -742,7 +716,7 @@
   padding: 6px 8px;
   max-height: 220px;
   overflow: auto;
-  background: var(--bg-inset, rgba(127, 127, 127, 0.08));
+  background: var(--bg-inset);
   border-radius: 4px;
   font-family: var(--mono);
   font-size: 10px;
@@ -802,40 +776,4 @@
 .facet-val:disabled {
   opacity: 0.6;
   cursor: default;
-}
-
-.trace-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px 16px 0;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  font-size: 11.5px;
-  padding: 2px 7px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-}
-
-.chip:hover {
-  border-color: var(--accent);
-}
-
-.chip-k {
-  color: var(--faint);
-}
-
-.chip-v {
-  font-weight: 550;
-}
-
-.chip-x {
-  color: var(--faint);
-  font-size: 13px;
-  line-height: 1;
 }

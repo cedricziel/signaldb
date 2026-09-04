@@ -330,36 +330,6 @@
   font-weight: 650;
 }
 
-.flame-top-table th.num,
-.flame-top-table td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.flame-top-table .th-sort {
-  font: inherit;
-  color: inherit;
-  text-transform: inherit;
-  letter-spacing: inherit;
-  cursor: pointer;
-}
-
-.flame-top-table .th-sort:hover {
-  color: var(--text);
-}
-
-.flame-top-table th[aria-sort] .th-sort {
-  color: var(--text);
-}
-
-.flame-top-table th[aria-sort="ascending"] .th-sort::after {
-  content: " ↑";
-}
-
-.flame-top-table th[aria-sort="descending"] .th-sort::after {
-  content: " ↓";
-}
-
 .flame-top-table td {
   padding: 5px 10px;
   border-bottom: 1px solid var(--border);

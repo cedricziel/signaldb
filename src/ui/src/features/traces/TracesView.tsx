@@ -272,17 +272,17 @@ function TraceSearch({ state, update }: Props) {
         ) : null}
       </div>
       {chips.length > 0 && (
-        <div className="trace-chips" aria-label="Active filters">
+        <div className="filter-chips" aria-label="Active filters">
           {chips.map((f) => (
             <button
-              className="chip"
+              className="filter-chip"
               key={`${f.field}|${f.value}`}
               aria-label={`Remove filter ${f.field} = ${f.value}`}
               onClick={() => removeFilter(f)}
             >
-              <span className="chip-k">{f.field}</span>
-              <span className="chip-v">{f.value}</span>
-              <span className="chip-x">×</span>
+              <span className="filter-chip-k">{f.field}</span>
+              <span className="filter-chip-v">{f.value}</span>
+              <span className="filter-chip-x">×</span>
             </button>
           ))}
         </div>

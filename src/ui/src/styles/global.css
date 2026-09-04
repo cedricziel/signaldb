@@ -29,6 +29,9 @@
      a `color-mix(--warn-bar, --surface)` background, where --warn itself
      falls under WCAG AA (~3.9:1) in the light theme. */
   --warn-banner-text: #7a5f0a;
+  /* Theme-neutral like --mono/--ui below: a grey wash that reads as an
+     inset on both grounds. */
+  --bg-inset: rgba(127, 127, 127, 0.08);
   --mono:
     ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas,
     monospace;
@@ -229,7 +232,7 @@ select:focus-visible {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg-inset, rgba(127, 127, 127, 0.08));
+  background: var(--bg-inset);
   font-family: var(--mono);
   font-size: 10px;
   line-height: 1.45;
@@ -247,7 +250,7 @@ select:focus-visible {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg-inset, rgba(127, 127, 127, 0.08));
+  background: var(--bg-inset);
   font-family: var(--mono);
   font-size: 10px;
   line-height: 1.45;
@@ -562,4 +565,36 @@ select:focus-visible {
   padding-top: 4px;
   border-top: 1px solid var(--border);
   color: var(--dim);
+}
+
+/* ---------- sortable table headers (lib/sortTable.tsx) ---------- */
+
+/* The `table` ancestor lifts these above each table's own `.x-table th`
+   base rule (same specificity, later stylesheet), which would otherwise
+   win the text-align tie and undo the right alignment. */
+table th.num,
+table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.th-sort {
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.th-sort:hover,
+th[aria-sort] .th-sort {
+  color: var(--text);
+}
+
+th[aria-sort="ascending"] .th-sort::after {
+  content: " ↑";
+}
+
+th[aria-sort="descending"] .th-sort::after {
+  content: " ↓";
 }
