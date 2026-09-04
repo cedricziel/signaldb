@@ -13,6 +13,7 @@ import {
   consentContext,
   submitConsentDecision,
 } from "../../api/consent";
+import { Dialog } from "../../components/Dialog";
 import { LoginPanel } from "../shell/LoginPanel";
 import "../shell/LoginPanel.css";
 import "./consent.css";
@@ -98,15 +99,13 @@ export function ConsentView() {
 
   if (!params) {
     return (
-      <div className="login-backdrop">
-        <div className="login-panel">
-          <h2>Invalid authorization request</h2>
-          <p className="login-hint">
-            This page is missing required OAuth parameters. Start the connection
-            again from your client (Claude or ChatGPT).
-          </p>
-        </div>
-      </div>
+      <Dialog label="Invalid authorization request" className="login-panel">
+        <h2>Invalid authorization request</h2>
+        <p className="login-hint">
+          This page is missing required OAuth parameters. Start the connection
+          again from your client (Claude or ChatGPT).
+        </p>
+      </Dialog>
     );
   }
 
@@ -123,16 +122,14 @@ export function ConsentView() {
 
   if (!context) {
     return (
-      <div className="login-backdrop">
-        <div className="login-panel">
-          <p className="login-hint">Loading…</p>
-          {error && (
-            <p className="login-error" role="alert">
-              {error}
-            </p>
-          )}
-        </div>
-      </div>
+      <Dialog label="Authorize access" className="login-panel">
+        <p className="login-hint">Loading…</p>
+        {error && (
+          <p className="login-error" role="alert">
+            {error}
+          </p>
+        )}
+      </Dialog>
     );
   }
 
@@ -169,91 +166,89 @@ export function ConsentView() {
   const single = context.tenants.length === 1 ? context.tenants[0] : null;
 
   return (
-    <div className="login-backdrop" role="dialog" aria-label="Authorize access">
-      <div className="login-panel consent-panel">
-        <div className="consent-header">
-          <span className="consent-badge" aria-hidden="true">
-            <ShieldIcon />
-          </span>
-          <h2>Authorize {clientLabel}</h2>
-          <p className="consent-sub">
-            It's asking to read your observability data in SignalDB.
-          </p>
-        </div>
-
-        <ul className="consent-perms">
-          {scopes.map((s) => (
-            <li key={s}>
-              <EyeIcon />
-              <span>{scopeLabel(s)}</span>
-            </li>
-          ))}
-        </ul>
-
-        <div className="consent-field">
-          <span className="consent-field-label">
-            {single ? "Tenant" : "Grant access to"}
-          </span>
-          {context.tenants.length === 0 ? (
-            <p className="consent-empty">
-              You aren't a member of any tenant, so there's nothing to grant.
-            </p>
-          ) : single ? (
-            <div className="consent-single">
-              <span className="consent-tenant-name">{single.id}</span>
-              <span className="consent-tenant-meta">{single.role}</span>
-            </div>
-          ) : (
-            <ul className="consent-tenants">
-              {context.tenants.map((t) => (
-                <li key={t.id}>
-                  <label>
-                    <input
-                      type="radio"
-                      name="tenant"
-                      value={t.id}
-                      checked={selectedTenant === t.id}
-                      onChange={() => setSelectedTenant(t.id)}
-                    />
-                    <span className="consent-tenant-name">{t.id}</span>
-                    <span className="consent-tenant-meta">{t.role}</span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {error && (
-          <p className="login-error" role="alert">
-            {error}
-          </p>
-        )}
-
-        <div className="consent-actions">
-          <button
-            type="button"
-            className="consent-deny"
-            disabled={busy}
-            onClick={() => decide(false)}
-          >
-            Deny
-          </button>
-          <button
-            type="button"
-            className="consent-approve"
-            disabled={busy || context.tenants.length === 0}
-            onClick={() => decide(true)}
-          >
-            {busy ? "Authorizing…" : "Authorize"}
-          </button>
-        </div>
-
-        <p className="consent-foot">
-          Read-only access to one tenant. You can revoke it anytime.
+    <Dialog label="Authorize access" className="login-panel consent-panel">
+      <div className="consent-header">
+        <span className="consent-badge" aria-hidden="true">
+          <ShieldIcon />
+        </span>
+        <h2>Authorize {clientLabel}</h2>
+        <p className="consent-sub">
+          It's asking to read your observability data in SignalDB.
         </p>
       </div>
-    </div>
+
+      <ul className="consent-perms">
+        {scopes.map((s) => (
+          <li key={s}>
+            <EyeIcon />
+            <span>{scopeLabel(s)}</span>
+          </li>
+        ))}
+      </ul>
+
+      <div className="consent-field">
+        <span className="consent-field-label">
+          {single ? "Tenant" : "Grant access to"}
+        </span>
+        {context.tenants.length === 0 ? (
+          <p className="consent-empty">
+            You aren't a member of any tenant, so there's nothing to grant.
+          </p>
+        ) : single ? (
+          <div className="consent-single">
+            <span className="consent-tenant-name">{single.id}</span>
+            <span className="consent-tenant-meta">{single.role}</span>
+          </div>
+        ) : (
+          <ul className="consent-tenants">
+            {context.tenants.map((t) => (
+              <li key={t.id}>
+                <label>
+                  <input
+                    type="radio"
+                    name="tenant"
+                    value={t.id}
+                    checked={selectedTenant === t.id}
+                    onChange={() => setSelectedTenant(t.id)}
+                  />
+                  <span className="consent-tenant-name">{t.id}</span>
+                  <span className="consent-tenant-meta">{t.role}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {error && (
+        <p className="login-error" role="alert">
+          {error}
+        </p>
+      )}
+
+      <div className="consent-actions">
+        <button
+          type="button"
+          className="consent-deny"
+          disabled={busy}
+          onClick={() => decide(false)}
+        >
+          Deny
+        </button>
+        <button
+          type="button"
+          className="consent-approve"
+          disabled={busy || context.tenants.length === 0}
+          onClick={() => decide(true)}
+        >
+          {busy ? "Authorizing…" : "Authorize"}
+        </button>
+      </div>
+
+      <p className="consent-foot">
+        Read-only access to one tenant. You can revoke it anytime.
+      </p>
+    </Dialog>
   );
 }
 
