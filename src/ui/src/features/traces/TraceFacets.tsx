@@ -210,7 +210,7 @@ function FacetValues({
     return <div className="fieldvals-note">Values not available yet</div>;
   }
   if (result.data.values.length === 0) {
-    return <div className="fieldvals-note">No values in range</div>;
+    return <div className="fieldvals-note">No values in this window</div>;
   }
 
   return (

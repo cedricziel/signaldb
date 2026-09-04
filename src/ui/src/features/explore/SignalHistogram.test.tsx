@@ -128,7 +128,7 @@ describe("SignalHistogram", () => {
 
   it("shows an empty state when nothing is in the window", () => {
     renderChart([]);
-    expect(screen.getByText(/no volume in range/i)).toBeInTheDocument();
+    expect(screen.getByText(/no volume in this window/i)).toBeInTheDocument();
   });
 
   it("compresses the range in log mode", () => {

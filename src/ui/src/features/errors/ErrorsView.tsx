@@ -13,7 +13,9 @@ import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
 } from "../../components/MobileSidebarDrawer";
+import { QueryError } from "../../components/QueryError";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
+import { SkeletonRows } from "../explore/Skeleton";
 import { ErrorFacets } from "./ErrorFacets";
 import { ErrorSparkline } from "./ErrorSparkline";
 import {
@@ -80,6 +82,7 @@ export function ErrorsView({ state, update }: Props) {
     queryFn: () => fetchErrorOccurrences(selected!, range),
     enabled: selected !== null,
   });
+  const occurrences = occurrencesQuery.data ?? [];
 
   const step = stepForRange(range, 20);
   const stepMs = (durationToSeconds(step) ?? 0) * 1000;
@@ -161,9 +164,7 @@ export function ErrorsView({ state, update }: Props) {
         </MobileSidebarDrawer>
         <div className="errors-main catalog-main">
           {groupsQuery.isError && (
-            <div className="query-error" role="alert">
-              Failed to load: {(groupsQuery.error as Error).message}
-            </div>
+            <QueryError what="exceptions" error={groupsQuery.error} />
           )}
           {!pending && !groupsQuery.isError && allGroups.length === 0 && (
             <div className="view-note">
@@ -179,7 +180,7 @@ export function ErrorsView({ state, update }: Props) {
               </div>
             )}
 
-          {groups.length > 0 && (
+          {(pending || groups.length > 0) && (
             <table className="errors-table" aria-busy={pending}>
               <thead>
                 <tr>
@@ -206,52 +207,56 @@ export function ErrorsView({ state, update }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {groups.map((g) => {
-                  const key = groupKey(g);
-                  return (
-                    <tr
-                      key={key}
-                      className="errors-row"
-                      aria-selected={
-                        selected !== null && groupKey(selected) === key
-                      }
-                      onClick={() => selectGroup(g)}
-                    >
-                      <td>
-                        {/* No own onClick: a native button dispatches a
-                            click on Enter/Space too, which bubbles to the
-                            row's handler below — the same
-                            keyboard-accessible-via-bubbling pattern
-                            MemberTable uses. */}
-                        <button type="button" className="trace-open">
-                          {g.exceptionType ?? "—"}
-                        </button>
-                      </td>
-                      <td
-                        className="errors-message"
-                        title={g.exceptionMessage ?? undefined}
+                {pending ? (
+                  <SkeletonRows rows={8} columns={8} />
+                ) : (
+                  groups.map((g) => {
+                    const key = groupKey(g);
+                    return (
+                      <tr
+                        key={key}
+                        className="errors-row"
+                        aria-selected={
+                          selected !== null && groupKey(selected) === key
+                        }
+                        onClick={() => selectGroup(g)}
                       >
-                        {g.exceptionMessage ?? "—"}
-                      </td>
-                      <td>{g.serviceName ?? "—"}</td>
-                      <td>
-                        <span
-                          className={`errors-source errors-source-${g.source}`}
+                        <td>
+                          {/* No own onClick: a native button dispatches a
+                              click on Enter/Space too, which bubbles to the
+                              row's handler below — the same
+                              keyboard-accessible-via-bubbling pattern
+                              MemberTable uses. */}
+                          <button type="button" className="trace-open">
+                            {g.exceptionType ?? "—"}
+                          </button>
+                        </td>
+                        <td
+                          className="errors-message"
+                          title={g.exceptionMessage ?? undefined}
                         >
-                          {g.source}
-                        </span>
-                      </td>
-                      <td>
-                        {g.escaped != null
-                          ? errorFacetValueLabel("escaped", g.escaped)
-                          : "—"}
-                      </td>
-                      <td>{g.count}</td>
-                      <td>{formatTimestamp(nanosToMs(g.firstNs))}</td>
-                      <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
-                    </tr>
-                  );
-                })}
+                          {g.exceptionMessage ?? "—"}
+                        </td>
+                        <td>{g.serviceName ?? "—"}</td>
+                        <td>
+                          <span
+                            className={`errors-source errors-source-${g.source}`}
+                          >
+                            {g.source}
+                          </span>
+                        </td>
+                        <td>
+                          {g.escaped != null
+                            ? errorFacetValueLabel("escaped", g.escaped)
+                            : "—"}
+                        </td>
+                        <td>{g.count}</td>
+                        <td>{formatTimestamp(nanosToMs(g.firstNs))}</td>
+                        <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           )}
@@ -279,21 +284,15 @@ export function ErrorsView({ state, update }: Props) {
                   stepMs={stepMs}
                 />
               )}
-              {occurrencesQuery.isPending && (
-                <div className="view-note">Loading…</div>
-              )}
               {occurrencesQuery.isError && (
-                <div className="query-error" role="alert">
-                  Failed to load occurrences:{" "}
-                  {(occurrencesQuery.error as Error).message}
-                </div>
+                <QueryError what="occurrences" error={occurrencesQuery.error} />
               )}
-              {occurrencesQuery.data?.length === 0 && (
+              {occurrencesQuery.isSuccess && occurrences.length === 0 && (
                 <div className="view-note">
                   No occurrences found in this window.
                 </div>
               )}
-              {occurrencesQuery.data && occurrencesQuery.data.length > 0 && (
+              {(occurrencesQuery.isPending || occurrences.length > 0) && (
                 <table className="errors-occurrences">
                   <thead>
                     <tr>
@@ -302,54 +301,60 @@ export function ErrorsView({ state, update }: Props) {
                     </tr>
                   </thead>
                   <tbody>
-                    {occurrencesQuery.data.map((o, i) => (
-                      <Fragment key={i}>
-                        <tr
-                          className="errors-occurrence-row"
-                          data-testid={`occurrence-row-${i}`}
-                          aria-expanded={expanded === i}
-                          onClick={() => setExpanded(expanded === i ? null : i)}
-                        >
-                          <td>
-                            <button type="button" className="trace-open">
-                              {formatTimestamp(nanosToMs(o.timestampNs))}
-                            </button>
-                          </td>
-                          <td>
-                            {o.traceId ? (
-                              <button
-                                type="button"
-                                className="act"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  update(
-                                    { signal: "traces", trace: o.traceId! },
-                                    { push: true },
-                                  );
-                                }}
-                              >
-                                View trace →
+                    {occurrencesQuery.isPending ? (
+                      <SkeletonRows rows={5} columns={2} />
+                    ) : (
+                      occurrences.map((o, i) => (
+                        <Fragment key={i}>
+                          <tr
+                            className="errors-occurrence-row"
+                            data-testid={`occurrence-row-${i}`}
+                            aria-expanded={expanded === i}
+                            onClick={() =>
+                              setExpanded(expanded === i ? null : i)
+                            }
+                          >
+                            <td>
+                              <button type="button" className="trace-open">
+                                {formatTimestamp(nanosToMs(o.timestampNs))}
                               </button>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                        </tr>
-                        {expanded === i && (
-                          <tr className="errors-occurrence-detail">
-                            <td colSpan={2}>
-                              {o.stacktrace ? (
-                                <Stacktrace text={o.stacktrace} />
+                            </td>
+                            <td>
+                              {o.traceId ? (
+                                <button
+                                  type="button"
+                                  className="act"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    update(
+                                      { signal: "traces", trace: o.traceId! },
+                                      { push: true },
+                                    );
+                                  }}
+                                >
+                                  View trace →
+                                </button>
                               ) : (
-                                <div className="view-note">
-                                  No stacktrace captured for this occurrence.
-                                </div>
+                                "—"
                               )}
                             </td>
                           </tr>
-                        )}
-                      </Fragment>
-                    ))}
+                          {expanded === i && (
+                            <tr className="errors-occurrence-detail">
+                              <td colSpan={2}>
+                                {o.stacktrace ? (
+                                  <Stacktrace text={o.stacktrace} />
+                                ) : (
+                                  <div className="view-note">
+                                    No stacktrace captured for this occurrence.
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      ))
+                    )}
                   </tbody>
                 </table>
               )}

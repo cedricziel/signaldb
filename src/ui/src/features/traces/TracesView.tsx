@@ -8,6 +8,7 @@ import {
 } from "../../api/tempo";
 import { ApiError } from "../../api/http";
 import { fetchTraceDetail } from "../../api/traceDetail";
+import { QueryError } from "../../components/QueryError";
 import {
   STATUS_COLORS,
   STATUS_ORDER,
@@ -231,11 +232,9 @@ function TraceSearch({ state, update }: Props) {
               label="Span latency"
             />
           ) : latencyHeatmap.isPending ? (
-            <div className="trace-heatmap-empty">Loading latency...</div>
+            <div className="trace-heatmap-empty">Loading…</div>
           ) : latencyHeatmap.isError ? (
-            <div className="trace-heatmap-empty" role="alert">
-              Latency query failed: {(latencyHeatmap.error as Error).message}
-            </div>
+            <QueryError what="latency" error={latencyHeatmap.error} />
           ) : null
         ) : volume.data && volumeView === "histogram" ? (
           <SignalHistogram
@@ -579,9 +578,7 @@ function GroupList({
   return (
     <>
       {result.isError && (
-        <div className="query-error" role="alert">
-          Groups failed: {(result.error as Error).message}
-        </div>
+        <QueryError what="trace groups" error={result.error} />
       )}
       <table className="trace-table" aria-busy={pending}>
         <thead>
@@ -695,7 +692,7 @@ function GroupList({
       )}
       {done && !unresolved && groups.length === 0 && !rootGrainOnly && (
         <div className="view-note">
-          No groups in this time range.
+          No groups in this window.
           {kindsNarrowed &&
             " Only the selected span kinds are included — Internal spans are off by default; adjust span.kind in the sidebar."}
         </div>
@@ -766,14 +763,10 @@ function GroupDetail({
       </div>
       <MemberTable
         members={membersQuery.data}
-        isError={membersQuery.isError}
-        errorMessage={
-          membersQuery.isError
-            ? `Search failed: ${(membersQuery.error as Error).message}`
-            : undefined
-        }
+        error={membersQuery.error}
+        what={`${memberNoun}s`}
         identityLabel={isSpanGrain ? "Span" : "Root"}
-        emptyMessage={`No ${memberNoun}s for this group in this time range.`}
+        emptyMessage={`No ${memberNoun}s for this group in this window.`}
         // Always true (the query always applies a limit) — states the bound
         // rather than claiming truncation we can't detect here.
         footnote={`Showing up to ${plural(state.limit, memberNoun)}, newest first.`}
@@ -836,11 +829,7 @@ function TraceDetail({ state, update }: Props) {
         </div>
       );
     }
-    return (
-      <div className="query-error" role="alert">
-        Trace lookup failed: {(trace.error as Error).message}
-      </div>
-    );
+    return <QueryError what="the trace" error={trace.error} />;
   }
   if (trace.isPending) {
     return (

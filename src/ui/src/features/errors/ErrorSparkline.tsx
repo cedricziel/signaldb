@@ -32,7 +32,9 @@ export function ErrorSparkline({ series, rangeMs, stepMs }: Props) {
   }
   if (buckets.length === 0 || buckets.every((b) => b.total === 0)) {
     return (
-      <div className="errors-sparkline-empty">No occurrences in range</div>
+      <div className="errors-sparkline-empty">
+        No occurrences in this window
+      </div>
     );
   }
 

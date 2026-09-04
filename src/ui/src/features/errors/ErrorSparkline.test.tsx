@@ -26,7 +26,9 @@ describe("ErrorSparkline", () => {
         stepMs={60_000}
       />,
     );
-    expect(screen.getByText(/No occurrences in range/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/No occurrences in this window/),
+    ).toBeInTheDocument();
     expect(screen.queryByTestId("sparkline-bar")).not.toBeInTheDocument();
   });
 

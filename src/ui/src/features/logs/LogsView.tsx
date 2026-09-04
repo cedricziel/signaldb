@@ -5,6 +5,7 @@ import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
 } from "../../components/MobileSidebarDrawer";
+import { QueryError } from "../../components/QueryError";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import {
   compileHistogramQL,
@@ -197,11 +198,7 @@ export function LogsView({ state, update }: Props) {
               />
             </div>
           )}
-          {logs.isError && (
-            <div className="query-error" role="alert">
-              Query failed: {(logs.error as Error).message}
-            </div>
-          )}
+          {logs.isError && <QueryError what="logs" error={logs.error} />}
           {logs.isPending && !logs.isError && (
             <div className="loglist-empty">Loading…</div>
           )}

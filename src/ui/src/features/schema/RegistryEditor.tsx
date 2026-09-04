@@ -25,6 +25,7 @@ import {
   type DiffSummary,
 } from "./registryIndex";
 import { useSchemaSession } from "./useSchemaSession";
+import { toErrorMessage } from "../../api/http";
 
 /**
  * `/schema/conventions/new` and `/schema/conventions/:ns/:version/edit` —
@@ -53,10 +54,7 @@ export function RegistryEditor() {
     return (
       <div className="schema-page">
         <p className="schema-error">
-          Failed to load {ns}@{version}:{" "}
-          {stored.error instanceof Error
-            ? stored.error.message
-            : String(stored.error)}
+          Could not load {ns}@{version}: {toErrorMessage(stored.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
       </div>

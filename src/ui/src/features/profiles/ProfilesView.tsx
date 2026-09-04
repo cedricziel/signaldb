@@ -7,6 +7,7 @@ import {
   pyroscopeServices,
 } from "../../api/pyroscope";
 import { fetchFlamegraph, fetchFlamegraphById } from "../../api/profilesIr";
+import { QueryError } from "../../components/QueryError";
 import {
   rangeScopeKey,
   rangeToParam,
@@ -14,6 +15,7 @@ import {
   type TimeRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
+import { SkeletonLines } from "../explore/Skeleton";
 import { TimeRangePicker } from "../shell/TimeRangePicker";
 import { FlameGraph, FlamePane } from "./FlameGraph";
 import { decodeFlamebearer } from "../../lib/flamebearer";
@@ -252,28 +254,22 @@ function SingleRangeView({ state, update }: Props) {
       <SelectorControls state={state} update={update} selectors={selectors} />
 
       {(typesQuery.isError || servicesQuery.isError || renderQuery.isError) && (
-        <div className="query-error" role="alert">
-          Query failed:{" "}
-          {
-            (
-              (typesQuery.error ??
-                servicesQuery.error ??
-                renderQuery.error) as Error
-            ).message
-          }
-        </div>
+        <QueryError
+          what="profiles"
+          error={typesQuery.error ?? servicesQuery.error ?? renderQuery.error}
+        />
       )}
 
       {selectedType === "" && !typesQuery.isFetching && (
         <div className="view-note">
-          No profiles in the selected range. Enable{" "}
+          No profiles in this window. Enable{" "}
           <code>[self_monitoring].profiles_enabled</code> to have SignalDB
           profile itself, or send profiles over OTLP.
         </div>
       )}
 
       {renderQuery.isFetching && !renderQuery.data && (
-        <div className="view-note">Loading…</div>
+        <SkeletonLines lines={12} />
       )}
 
       {renderQuery.data?.truncated && (
@@ -285,7 +281,7 @@ function SingleRangeView({ state, update }: Props) {
 
       {isEmpty && (
         <div className="view-note">
-          No profiles in the selected range for this filter.
+          No profiles in this window for this filter.
         </div>
       )}
 
@@ -345,15 +341,11 @@ function CompareView({ state, update }: Props) {
         <span className="profiles-field">Comparison: current range</span>
       </div>
 
-      {error && (
-        <div className="query-error" role="alert">
-          Query failed: {(error as Error).message}
-        </div>
-      )}
+      {error && <QueryError what="profiles" error={error} />}
 
       {selectedType === "" && !typesQuery.isFetching && (
         <div className="view-note">
-          No profiles in the selected range. Enable{" "}
+          No profiles in this window. Enable{" "}
           <code>[self_monitoring].profiles_enabled</code> to have SignalDB
           profile itself, or send profiles over OTLP.
         </div>
@@ -385,7 +377,7 @@ function ComparePane({
     return (
       <div className="profiles-compare-pane">
         <div className="flame-title">{title}</div>
-        <div className="view-note">Loading…</div>
+        <SkeletonLines lines={8} />
       </div>
     );
   }
@@ -437,12 +429,10 @@ function SingleProfileView({
       </div>
 
       {renderQuery.isError && (
-        <div className="query-error" role="alert">
-          {(renderQuery.error as Error).message}
-        </div>
+        <QueryError what="this profile" error={renderQuery.error} />
       )}
       {renderQuery.isFetching && !renderQuery.data && (
-        <div className="view-note">Loading…</div>
+        <SkeletonLines lines={12} />
       )}
       {renderQuery.data && <FlameGraph render={renderQuery.data} unit="" />}
     </div>

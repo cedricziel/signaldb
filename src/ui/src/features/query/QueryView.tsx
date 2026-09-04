@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { runIrQuery } from "../../api/queryIr";
 import { irSeriesToPromSeries } from "../../api/metricsIr";
 import { AttributeValue } from "../../components/AttributeValue";
+import { QueryError } from "../../components/QueryError";
 import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
 import type { PromSeries } from "../../api/prom";
 import { seriesColorVar } from "../../lib/promSeries";
@@ -138,8 +139,10 @@ export function QueryView({ range }: { range?: TimeRange } = {}) {
       </div>
 
       <div className="query-ir-result" data-testid={`ir-view-${view}`}>
-        {query.isError && <div role="alert">Query failed</div>}
-        {query.isLoading && submitted && <div>Running…</div>}
+        {query.isError && <QueryError what="results" error={query.error} />}
+        {query.isLoading && submitted && (
+          <div className="view-note">Loading…</div>
+        )}
         {query.data && <QueryWarnings data={query.data} />}
         {query.data && <EnvelopeResult view={view} data={query.data} />}
       </div>
@@ -186,6 +189,9 @@ function EnvelopeResult({
 function RowsTable({ data, topN }: { data: QueryIrResponse; topN: boolean }) {
   const columns = data.columns ?? [];
   const rows = data.rows ?? [];
+  if (rows.length === 0) {
+    return <div className="view-note">No rows in this window.</div>;
+  }
   return (
     <table className={topN ? "ir-topn" : "ir-rows"}>
       <thead>

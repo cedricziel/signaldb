@@ -132,7 +132,7 @@ describe("LogsView", () => {
     ]);
     renderView();
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      /Query failed:.*400/,
+      /Could not load logs:.*400/,
     );
   });
 

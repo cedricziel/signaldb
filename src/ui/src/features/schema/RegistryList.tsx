@@ -4,6 +4,7 @@ import { listRegistries } from "./api";
 import { CONVENTIONS, editorPath, registryPath } from "./paths";
 import { RegistryLookup } from "./RegistryLookup";
 import { useSchemaSession } from "./useSchemaSession";
+import { toErrorMessage } from "../../api/http";
 
 function formatUpdated(value: string | null | undefined): string {
   if (!value) return "—";
@@ -51,10 +52,7 @@ export function RegistryList() {
       {registries.isPending && <p className="schema-note">Loading…</p>}
       {registries.isError && (
         <p className="schema-error">
-          Failed to load registries:{" "}
-          {registries.error instanceof Error
-            ? registries.error.message
-            : String(registries.error)}
+          Could not load registries: {toErrorMessage(registries.error)}
         </p>
       )}
 

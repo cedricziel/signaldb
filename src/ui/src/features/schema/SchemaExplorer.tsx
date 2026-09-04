@@ -3,6 +3,7 @@ import { Navigate } from "react-router";
 import { getSchema, type ManagedSchema } from "../../api/management";
 import { whoami } from "../../api/session";
 import "./SchemaExplorer.css";
+import { toErrorMessage } from "../../api/http";
 
 type LogicalField = ManagedSchema["logical"][number];
 type PhysicalSchema = ManagedSchema["physical"][number];
@@ -62,10 +63,7 @@ export function SchemaExplorer() {
       {schema.isPending && <p className="schema-explorer-note">Loading…</p>}
       {schema.isError && (
         <p className="schema-explorer-note schema-explorer-error">
-          Failed to load schema:{" "}
-          {schema.error instanceof Error
-            ? schema.error.message
-            : String(schema.error)}
+          Could not load schema: {toErrorMessage(schema.error)}
         </p>
       )}
 
