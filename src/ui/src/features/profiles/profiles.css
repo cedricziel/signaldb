@@ -36,6 +36,25 @@
   cursor: pointer;
 }
 
+@media (max-width: 600px) {
+  .profiles-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .profiles-field {
+    width: 100%;
+  }
+
+  .profiles-field select {
+    flex: 1;
+  }
+
+  .profiles-compare-toggle {
+    margin-left: 0;
+  }
+}
+
 .profiles-compare-ranges {
   border-top: none;
 }
@@ -120,6 +139,12 @@
   font-size: 11px;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 600px) {
+  .flame-search {
+    flex: 1 1 100%;
+  }
 }
 
 .flame-view-toggle {

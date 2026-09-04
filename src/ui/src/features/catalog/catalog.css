@@ -22,6 +22,12 @@
   padding: 16px 20px;
 }
 
+@media (max-width: 600px) {
+  .catalog-main {
+    padding: 12px;
+  }
+}
+
 .catalog-headline {
   display: flex;
   align-items: baseline;
