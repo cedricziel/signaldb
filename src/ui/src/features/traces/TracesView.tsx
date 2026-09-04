@@ -695,7 +695,7 @@ function GroupList({
       )}
       {done && !unresolved && groups.length === 0 && !rootGrainOnly && (
         <div className="view-note">
-          No groups in this time range.
+          No groups in this window.
           {kindsNarrowed &&
             " Only the selected span kinds are included — Internal spans are off by default; adjust span.kind in the sidebar."}
         </div>

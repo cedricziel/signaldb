@@ -92,7 +92,7 @@ function FieldValues({
   if (isError)
     return <div className="fieldvals-note">Failed to load values</div>;
   if (!data || data.length === 0)
-    return <div className="fieldvals-note">No values in range</div>;
+    return <div className="fieldvals-note">No values in this window</div>;
 
   return (
     <div className="fieldvals">

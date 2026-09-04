@@ -186,6 +186,9 @@ function EnvelopeResult({
 function RowsTable({ data, topN }: { data: QueryIrResponse; topN: boolean }) {
   const columns = data.columns ?? [];
   const rows = data.rows ?? [];
+  if (rows.length === 0) {
+    return <div className="view-note">No rows in this window.</div>;
+  }
   return (
     <table className={topN ? "ir-topn" : "ir-rows"}>
       <thead>

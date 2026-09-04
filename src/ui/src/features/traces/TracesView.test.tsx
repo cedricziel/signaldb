@@ -564,7 +564,7 @@ describe("TracesView group list", () => {
 
   it("does not suggest span grain when nothing is filtered", async () => {
     renderView();
-    await screen.findByText(/no groups in this time range/i);
+    await screen.findByText(/no groups in this window/i);
     expect(screen.queryByText(/span grain/i)).not.toBeInTheDocument();
   });
 
@@ -1580,9 +1580,7 @@ describe("TracesView span-volume chart", () => {
     stubFetchRoutes(routes);
     renderView();
     await screen.findByRole("img", { name: /span volume/i });
-    expect(
-      screen.getByText(/no groups in this time range/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/no groups in this window/i)).toBeInTheDocument();
   });
 });
 

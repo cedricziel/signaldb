@@ -285,7 +285,7 @@ function SingleRangeView({ state, update }: Props) {
 
       {isEmpty && (
         <div className="view-note">
-          No profiles in the selected range for this filter.
+          No profiles in this window for this filter.
         </div>
       )}
 
