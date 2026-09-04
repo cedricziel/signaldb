@@ -694,3 +694,55 @@ th[aria-sort="descending"] .th-sort::after {
   font-size: 11px;
   color: var(--faint);
 }
+
+/* ---------- dialog (components/Dialog.tsx) ---------- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: blur(5px);
+}
+
+.dialog-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+
+/* The sign-in gate must cover whatever dialog the user had open when the
+   session expired, so it stacks above content-layer dialogs by rule, not by
+   mount order. */
+.dialog-backdrop--system {
+  z-index: 100;
+}
+
+@media (max-width: 600px) {
+  .dialog-backdrop {
+    padding: 8px;
+  }
+}
+
+/* The panel itself is only a focus target as a fallback (no focusable
+   child); keep the ring for keyboard users, drop it for a mouse/touch
+   click on the panel background. */
+.dialog-panel:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ---------- confirm button (components/ConfirmButton.tsx) ---------- */
+
+.confirm-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dim);
+  font-size: 12px;
+}

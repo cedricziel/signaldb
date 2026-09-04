@@ -2,12 +2,13 @@
 // theme toggle, navigation items, and sign-out action.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { clearPersistedTenantContext } from "../../api/http";
 import { whoami, deleteSession, type WhoamiResponse } from "../../api/session";
 import type { ExploreState } from "../../lib/urlState";
 import { isDarkTheme, toggleTheme } from "../../lib/theme";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import "./UserMenu.css";
 
 interface Props {
@@ -60,13 +61,7 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
   const backdropRef = useRef<HTMLSpanElement>(null);
 
   // Close on backdrop click or Escape
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose]);
+  useEscapeKey(true, onClose);
 
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === backdropRef.current) onClose();

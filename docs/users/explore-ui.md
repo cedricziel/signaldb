@@ -581,7 +581,9 @@ once), **Members** (add or update a role by email, remove), **Tables**
 per dataset, refetched immediately after provisioning; a **Provision tables**
 action calls the manual-trigger endpoint — see
 [table provisioning](../operations/table-provisioning.md)), and, for
-instance administrators only, **New tenant**. All of it consumes the
+instance administrators only, **New tenant**. Destructive actions (delete a
+dataset, revoke a key, remove a member) swap the button for an inline
+confirmation first; Escape or Cancel backs out. All of it consumes the
 generated client (`src/ui/src/api/management.ts`), never raw `fetch`.
 
 ### Tenant selection (`/select-tenant`)

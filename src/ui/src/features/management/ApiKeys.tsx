@@ -13,7 +13,9 @@ import {
 } from "../../api/management";
 import { whoami } from "../../api/session";
 import { toErrorMessage } from "../../api/http";
+import { ConfirmButton } from "../../components/ConfirmButton";
 import { CopyValueButton } from "../../components/CopyValueButton";
+import { Dialog } from "../../components/Dialog";
 import "./ApiKeys.css";
 
 /** Scopes checked in a form, in vocabulary order. */
@@ -248,13 +250,13 @@ export function ApiKeys() {
                   >
                     Edit scopes
                   </button>
-                  <button
+                  <ConfirmButton
                     className="api-key-revoke"
-                    onClick={() => handleRevoke(key.id)}
+                    label="Revoke"
+                    prompt={`Revoke ${key.name || "this key"}?`}
                     disabled={revokeMutation.isPending}
-                  >
-                    Revoke
-                  </button>
+                    onConfirm={() => handleRevoke(key.id)}
+                  />
                 </div>
               )}
             </li>
@@ -263,21 +265,19 @@ export function ApiKeys() {
       </section>
 
       {secret && (
-        <div
-          className="secret-modal-backdrop"
-          role="dialog"
-          aria-label="API key secret"
+        <Dialog
+          label="API key secret"
+          onClose={() => setSecret(null)}
+          className="secret-modal"
         >
-          <div className="secret-modal">
-            <strong>Copy this key now</strong>
-            <span> — it will not be shown again.</span>
-            <code>{secret}</code>
-            <div className="secret-modal-footer">
-              <CopyValueButton value={secret} label="API key" />
-              <button onClick={() => setSecret(null)}>Done</button>
-            </div>
+          <strong>Copy this key now</strong>
+          <span> — it will not be shown again.</span>
+          <code>{secret}</code>
+          <div className="secret-modal-footer">
+            <CopyValueButton value={secret} label="API key" />
+            <button onClick={() => setSecret(null)}>Done</button>
           </div>
-        </div>
+        </Dialog>
       )}
     </div>
   );

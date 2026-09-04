@@ -1,24 +1,17 @@
-.login-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in srgb, var(--bg) 72%, transparent);
-  backdrop-filter: blur(2px);
-}
-
 .login-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
   width: min(320px, calc(100vw - 32px));
   padding: 20px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+}
+
+/* The sign-in form is a child of .login-panel and lays its fields out the
+   same way the panel lays out its direct children. */
+.login-panel form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .login-panel h2 {
@@ -37,10 +30,6 @@
   gap: 4px;
   font-size: 12px;
   color: var(--dim);
-}
-
-.login-optional {
-  color: var(--faint);
 }
 
 .login-panel input {
