@@ -24,6 +24,7 @@ import {
   fetchTraceVolume,
 } from "../../api/traceVolume";
 import { SignalHistogram } from "../explore/SignalHistogram";
+import { AttributeKeyInput } from "../../components/AttributeKeyInput";
 import { AttributeValue } from "../../components/AttributeValue";
 import {
   MobileFiltersToggle,
@@ -35,9 +36,8 @@ import {
   VizTooltip,
   type VizTooltipRow,
 } from "../../components/VizTooltip";
-import { useAttributeSearch, useSemantics } from "../../hooks/useSemantics";
+import { useSemantics } from "../../hooks/useSemantics";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
-import { mergeLabelSuggestions } from "../../lib/labelSuggestions";
 import { groupBySemanticTitle } from "../../lib/semantics";
 import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
@@ -428,10 +428,13 @@ function DimensionPickers({
  * aggregate with no trace sample to derive attribute names from, so this is
  * how a user reaches a field the built-in dimensions don't cover. Suggests
  * the attribute keys actually observed in the window (`/api/search/tags`,
- * #1073) merged with schema-registry hits, the same
- * `mergeLabelSuggestions`-backed combobox as the logs tab's filter-key
- * input (`FilterChips`).
+ * #1073) merged with schema-registry hits, the same combobox as the logs
+ * tab's filter-key input (`FilterChips`) — see `AttributeKeyInput`.
  */
+// Stable empty list so a pending tag query does not hand the combobox a
+// fresh array (and a fresh suggestion memo) on every render.
+const NO_TAGS: string[] = [];
+
 function CustomDimensionInput({
   range,
   rangeKey,
@@ -441,28 +444,18 @@ function CustomDimensionInput({
   rangeKey: string;
   onSubmit: (dim: string) => void;
 }) {
-  const listId = useId();
   const [value, setValue] = useState("");
-  const [picked, setPicked] = useState<string | null>(null);
   const tags = useQuery({
     queryKey: ["trace-tag-names", rangeKey],
     queryFn: () => tempoSearchTags(range),
     staleTime: 60_000,
   });
-  const hits = useAttributeSearch(value);
-  const suggestions = useMemo(
-    () => mergeLabelSuggestions(value, hits, tags.data ?? []),
-    [value, hits, tags.data],
-  );
-  const open =
-    value.trim() !== "" && picked !== value && suggestions.length > 0;
 
   const submit = (dim: string) => {
     const trimmed = dim.trim();
     if (trimmed === "") return;
     onSubmit(trimmed);
     setValue("");
-    setPicked(null);
   };
 
   return (
@@ -473,56 +466,14 @@ function CustomDimensionInput({
         submit(value);
       }}
     >
-      <span className="chip-label">
-        <input
-          role="combobox"
-          aria-label="Custom dimension"
-          aria-autocomplete="list"
-          aria-expanded={open}
-          aria-controls={open ? listId : undefined}
-          placeholder="Group by attribute…"
-          value={value}
-          onChange={(e) => {
-            setPicked(null);
-            setValue(e.target.value);
-          }}
-        />
-        {open && (
-          <ul
-            id={listId}
-            role="listbox"
-            aria-label="Attribute suggestions"
-            className="chip-suggest"
-          >
-            {suggestions.map((s) => (
-              <li
-                key={s.key}
-                role="option"
-                aria-selected={false}
-                data-key={s.key}
-                className="chip-suggest-item"
-                // Mouse down would blur the input before click lands.
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  setPicked(s.key);
-                  submit(s.key);
-                }}
-              >
-                <span className="chip-suggest-head">
-                  <span className="chip-suggest-key">{s.key}</span>
-                  {s.namespace && (
-                    <span className="chip-suggest-ns">{s.namespace}</span>
-                  )}
-                  {s.seen && <span className="chip-suggest-seen">● seen</span>}
-                </span>
-                {s.brief && (
-                  <span className="chip-suggest-brief">{s.brief}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </span>
+      <AttributeKeyInput
+        value={value}
+        onChange={setValue}
+        onPick={submit}
+        observed={tags.data ?? NO_TAGS}
+        ariaLabel="Custom dimension"
+        placeholder="Group by attribute…"
+      />
     </form>
   );
 }

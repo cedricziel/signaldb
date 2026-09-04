@@ -623,7 +623,7 @@ describe("TracesView group list", () => {
     // list below is read after both have merged in, not just whichever
     // landed first.
     await screen.findByText("The matched route.");
-    const list = screen.getByRole("listbox", { name: "Attribute suggestions" });
+    const list = screen.getByRole("listbox", { name: "Attribute key suggestions" });
     const options = within(list).getAllByRole("option");
     expect(options.map((o) => o.getAttribute("data-key"))).toEqual([
       "http.route",
@@ -638,7 +638,7 @@ describe("TracesView group list", () => {
       group: "",
     });
     expect(
-      screen.queryByRole("listbox", { name: "Attribute suggestions" }),
+      screen.queryByRole("listbox", { name: "Attribute key suggestions" }),
     ).not.toBeInTheDocument();
   });
 
