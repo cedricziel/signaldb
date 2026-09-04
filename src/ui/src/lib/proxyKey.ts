@@ -7,5 +7,6 @@
  * `/api/v1/whoami` and `/api?x=y` but never the SPA route `/api-keys`.
  */
 export function proxyKey(path: string): string {
-  return `^${path.replace(/[.]/g, "\\.")}(/|\\?|$)`;
+  const literal = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `^${literal}(/|\\?|$)`;
 }

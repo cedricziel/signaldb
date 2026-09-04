@@ -18,8 +18,12 @@ describe("proxyKey", () => {
     expect(matches("/oauth/consent/context", "/oauth/consent")).toBe(false);
   });
 
-  it("treats dots in the path literally", () => {
+  it("treats every regex metacharacter in the path literally", () => {
     expect(matches("/runtime-config.js", "/runtime-config.js")).toBe(true);
     expect(matches("/runtime-config.js", "/runtime-configXjs")).toBe(false);
+    for (const path of ["/a+b", "/a(b)", "/a[b]", "/a|b", "/a$b", "/a\\b"]) {
+      expect(matches(path, path)).toBe(true);
+      expect(matches(path, path.replace(/[+()[\]|$\\]/g, ""))).toBe(false);
+    }
   });
 });
