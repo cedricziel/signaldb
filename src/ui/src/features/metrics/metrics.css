@@ -1,3 +1,4 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
 .metricsview {
   display: flex;
   flex-direction: column;
@@ -231,4 +232,28 @@
   height: 3px;
   border-radius: 2px;
   display: inline-block;
+}
+
+@media (max-width: 600px) {
+  /* Ref badge, keyword, metric picker, filters, group-by all stack full
+     width rather than squeeze onto one line. */
+  .qrow > * {
+    flex: 1 1 100%;
+  }
+
+  /* The formula input and query preview otherwise clip their content at
+     this width instead of wrapping to a second line. */
+  .builder-formula {
+    flex-wrap: wrap;
+  }
+
+  .formula-input {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .builder-preview {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }

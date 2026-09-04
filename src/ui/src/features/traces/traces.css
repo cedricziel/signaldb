@@ -1,3 +1,4 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
 .traces-search {
   display: flex;
   flex-direction: column;
@@ -384,17 +385,35 @@
 }
 
 @media (max-width: 900px) {
-  .trace-body {
-    flex-direction: column;
-  }
-
+  /* The resizer only makes sense for a permanently-visible pane; below the
+     tablet breakpoint the span detail moves into the drawer below instead. */
   .trace-resizer {
     display: none;
   }
 
+  /* Hidden until the drawer opens it; explore.css's
+     `.mobile-sidebar-drawer.open > aside` then sizes it. */
   .span-detail {
-    flex: 1 1 auto;
-    width: auto;
+    display: none;
+    flex-direction: column;
+  }
+
+  /* Inside the flex header row the shared block margins don't apply; only
+     the push to the right edge does. */
+  .trace-head .mobile-filters-toggle {
+    margin: 0 0 0 auto;
+  }
+}
+
+@media (max-width: 600px) {
+  .traces-toolbar {
+    gap: 6px;
+    padding: 8px 10px;
+  }
+
+  .trace-head {
+    gap: 8px;
+    padding: 10px 12px 8px;
   }
 }
 

@@ -893,6 +893,25 @@ describe("TracesView detail", () => {
     expect(screen.getByText(/1 error/)).toBeInTheDocument();
   });
 
+  it("opens and closes the mobile span-detail drawer", async () => {
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
+    renderView({ trace: "t1cafe" });
+    await screen.findByRole("list", { name: "Spans" });
+
+    const toggleBtn = screen.getByRole("button", { name: "Details" });
+    expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
+
+    await userEvent.click(toggleBtn);
+    expect(toggleBtn).toHaveAttribute("aria-expanded", "true");
+    const closeBtn = screen.getByRole("button", { name: /close/i });
+
+    await userEvent.click(closeBtn);
+    expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("button", { name: /close/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("colors waterfall bars by span kind and shows a legend, fetched over Query IR", async () => {
     stubFetchRoutes(
       traceRoutes(TRACE_BODY, { root: "SERVER", charge: "CLIENT" }),

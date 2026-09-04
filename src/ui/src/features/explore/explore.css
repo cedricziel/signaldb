@@ -1,3 +1,4 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
 .explore {
   display: flex;
   flex-direction: column;
@@ -131,6 +132,14 @@
   gap: 7px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
+}
+
+@media (max-width: 600px) {
+  /* The search input otherwise shares a row with the chips/qlmode toggle at
+     an unreadably narrow width; give it the full row instead. */
+  .search-form {
+    flex: 1 1 100%;
+  }
 }
 
 .chips {
@@ -405,7 +414,18 @@
     box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
   }
 
-  .mobile-sidebar-drawer.open .sidebar {
+  /* Right-edge variant (the trace waterfall's span-detail pane, which sits
+     to the right of its content on desktop): flip the side and the shadow
+     so it reads as sliding in from the right instead of the left. */
+  .mobile-sidebar-drawer--right.open {
+    left: auto;
+    right: 0;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.35);
+  }
+
+  /* Whatever aside the drawer wraps (a facet/field .sidebar, the trace
+     waterfall's .span-detail) fills it once open. */
+  .mobile-sidebar-drawer.open > aside {
     display: flex;
     width: 100%;
     flex: 1;
@@ -875,6 +895,22 @@ span.level-debug {
   font-variant-numeric: tabular-nums;
   font-family: var(--mono);
   padding: 3px 0 4px 78px;
+}
+
+@media (max-width: 600px) {
+  /* The bucket-width select and log-scale toggle otherwise wrap under each
+     other, mid-row, next to the start/end axis labels — give them their own
+     centered row underneath instead. */
+  .svol-xaxis {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .svol-controls {
+    order: 3;
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 .svol-scale {
