@@ -232,18 +232,40 @@ impl Authenticator {
         // gates what the token may do.
         let role = self.resolve_role(&user, &record.tenant_id).await?;
 
+        // Resolve dataset against the token's restriction (D3/D4), same
+        // order as a database API key.
+        let effective_dataset = match super::resolve_dataset_restriction(
+            record.dataset_ids.as_deref(),
+            dataset_id,
+        ) {
+            Ok(resolved) => resolved,
+            Err(super::DatasetRestrictionError::NotAllowed) => {
+                return Err(AuthError::forbidden(format!(
+                    "access token is not permitted to access dataset '{}'",
+                    dataset_id.unwrap_or_default()
+                )));
+            }
+            Err(super::DatasetRestrictionError::Ambiguous) => {
+                return Err(AuthError::bad_request(format!(
+                    "access token is restricted to multiple datasets in tenant '{}'; specify a dataset explicitly",
+                    record.tenant_id
+                )));
+            }
+        };
+
         let context = self
             .resolve_user_tenant(
                 &record.tenant_id,
-                dataset_id,
+                effective_dataset.as_deref(),
                 user.id,
                 role,
                 user.is_instance_admin,
                 None,
             )
             .await?;
-        // The OAuth grant's scopes are enforced exactly like API-key scopes.
-        Ok(context.with_api_key_restrictions(Some(record.scopes), None))
+        // The OAuth grant's scopes and dataset restriction are enforced
+        // exactly like a database-backed API key's.
+        Ok(context.with_api_key_restrictions(Some(record.scopes), record.dataset_ids))
     }
 
     /// Resolve an instance administrator from an opaque browser session.
@@ -506,11 +528,23 @@ mod tests {
     use crate::config::{ApiKeyConfig, DatasetConfig};
     use chrono::{Duration, Utc};
 
-    /// An authenticator over a database tenant `acme` with dataset `production`,
-    /// a member user, and a stored access token for that user/tenant. Returns
-    /// the authenticator and the raw access token.
+    /// An authenticator over a database tenant `acme` with datasets
+    /// `production` and `staging`, a member user, and a stored access token
+    /// for that user/tenant. Returns the authenticator and the raw access
+    /// token.
     async fn oauth_authenticator(
         scopes: &[String],
+        resource: Option<&str>,
+        expires_at: chrono::DateTime<Utc>,
+    ) -> (Authenticator, String) {
+        oauth_authenticator_with_dataset_restriction(scopes, None, resource, expires_at).await
+    }
+
+    /// Like [`oauth_authenticator`], but the stored access token also
+    /// carries `dataset_ids` (D6/1.5).
+    async fn oauth_authenticator_with_dataset_restriction(
+        scopes: &[String],
+        dataset_ids: Option<&[String]>,
         resource: Option<&str>,
         expires_at: chrono::DateTime<Utc>,
     ) -> (Authenticator, String) {
@@ -520,6 +554,7 @@ mod tests {
             .await
             .unwrap();
         catalog.create_dataset("acme", "production").await.unwrap();
+        catalog.create_dataset("acme", "staging").await.unwrap();
         let user = catalog
             .create_user("agent@example.com", None, "phc", false)
             .await
@@ -536,6 +571,7 @@ mod tests {
                 &user.id,
                 "acme",
                 scopes,
+                dataset_ids,
                 resource,
                 expires_at,
             )
@@ -566,6 +602,65 @@ mod tests {
         assert!(!ctx.can_read("metrics"));
         // No browser session backs an OAuth context.
         assert_eq!(ctx.session_id, None);
+    }
+
+    #[tokio::test]
+    async fn oauth_token_with_dataset_restriction_denies_outside_and_allows_inside() {
+        let scopes = vec!["traces:read".to_string()];
+        let restriction = vec!["production".to_string()];
+        let (auth, token) = oauth_authenticator_with_dataset_restriction(
+            &scopes,
+            Some(&restriction),
+            None,
+            Utc::now() + Duration::hours(1),
+        )
+        .await;
+
+        let allowed = auth
+            .authenticate_oauth_token(&token, Some("production"), None)
+            .await
+            .expect("dataset inside the restriction is allowed");
+        assert_eq!(allowed.dataset_id, "production");
+
+        let denied = auth
+            .authenticate_oauth_token(&token, Some("staging"), None)
+            .await
+            .expect_err("dataset outside the restriction is denied");
+        assert_eq!(denied.status_code, 403);
+    }
+
+    #[tokio::test]
+    async fn oauth_token_without_restriction_reaches_every_dataset() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            oauth_authenticator(&scopes, None, Utc::now() + Duration::hours(1)).await;
+
+        for dataset in ["production", "staging"] {
+            let ctx = auth
+                .authenticate_oauth_token(&token, Some(dataset), None)
+                .await
+                .unwrap_or_else(|e| panic!("unrestricted token must reach '{dataset}': {e:?}"));
+            assert_eq!(ctx.dataset_id, dataset);
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_token_restricted_to_two_datasets_with_no_explicit_dataset_is_rejected() {
+        let scopes = vec!["traces:read".to_string()];
+        let restriction = vec!["production".to_string(), "staging".to_string()];
+        let (auth, token) = oauth_authenticator_with_dataset_restriction(
+            &scopes,
+            Some(&restriction),
+            None,
+            Utc::now() + Duration::hours(1),
+        )
+        .await;
+
+        let err = auth
+            .authenticate_oauth_token(&token, None, None)
+            .await
+            .expect_err("a multi-element restriction with no explicit dataset must be rejected");
+        assert_eq!(err.status_code, 400);
     }
 
     #[tokio::test]
