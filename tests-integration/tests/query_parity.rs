@@ -362,6 +362,11 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
     ),
     // ---- Identity ----
     ("whoami", CliSurface::Path(&["whoami"]), "server_info"),
+    (
+        "connection_info",
+        CliSurface::Path(&["connection"]),
+        "connection_info",
+    ),
     // ---- Pyroscope-compatible profile query (change: pyroscope-openapi-parity) ----
     (
         "pyroscope_render",

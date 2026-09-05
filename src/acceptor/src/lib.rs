@@ -341,7 +341,10 @@ pub fn prometheus_router(
 
     // Use Extension instead of State for simpler type handling
     Router::new()
-        .route("/api/v1/write", post(handle_prometheus_write_with_ext))
+        .route(
+            common::endpoints::PROMETHEUS_REMOTE_WRITE_PATH,
+            post(handle_prometheus_write_with_ext),
+        )
         .layer(Extension(state))
         .layer(middleware::from_fn(move |req, next| {
             let auth = authenticator.clone();
@@ -465,7 +468,7 @@ pub fn traces_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1/traces",
+        common::endpoints::OTLP_HTTP_TRACES_PATH,
         post(handle_http_traces),
         authenticator,
         OtlpHttpState {
@@ -489,7 +492,7 @@ pub fn logs_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1/logs",
+        common::endpoints::OTLP_HTTP_LOGS_PATH,
         post(handle_http_logs),
         authenticator,
         OtlpHttpState {
@@ -513,7 +516,7 @@ pub fn metrics_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1/metrics",
+        common::endpoints::OTLP_HTTP_METRICS_PATH,
         post(handle_http_metrics),
         authenticator,
         OtlpHttpState {
@@ -540,7 +543,7 @@ pub fn profiles_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1development/profiles",
+        common::endpoints::OTLP_HTTP_PROFILES_PATH,
         post(handle_http_profiles),
         authenticator,
         OtlpHttpState {

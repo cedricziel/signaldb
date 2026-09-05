@@ -342,6 +342,25 @@ authorization_code_ttl = "60s"                     # default 60s
 
 Env: `SIGNALDB__MCP__OAUTH__ENABLED`, `SIGNALDB__MCP__OAUTH__ISSUER_URL`, `SIGNALDB__MCP__OAUTH__RESOURCE_URL`. The sidecar advertises the resource via its own `--oauth-resource-url` / `--oauth-issuer-url` flags (env `SIGNALDB__MCP__OAUTH__RESOURCE_URL` / `_ISSUER_URL`).
 
+### Public endpoints (connection self-service)
+
+How the deployment is reached from *outside* (load balancer, reverse proxy,
+TLS terminator) — distinct from the bind addresses above. Answers
+`GET /api/v1/connection` (any tenant key) and the MCP `connection_info` tool,
+feeds the Explore UI's "Send data" snippets and the first-boot banner. All
+fields optional; unset fields fall back to localhost defaults and the
+response carries a note saying so.
+
+```toml
+[public]
+otlp_grpc_url = "https://otlp.example.com:4317"  # default http://localhost:4317
+otlp_http_url = "https://otlp.example.com:4318"  # base; /v1/traces etc. appended. default http://localhost:4318
+api_url = "https://signaldb.example.com"         # router HTTP API base. default http://localhost:3000
+mcp_url = "https://signaldb.example.com/mcp"     # falls back to [mcp.oauth].resource_url, else omitted
+```
+
+Env: `SIGNALDB__PUBLIC__OTLP_GRPC_URL`, `SIGNALDB__PUBLIC__OTLP_HTTP_URL`, `SIGNALDB__PUBLIC__API_URL`, `SIGNALDB__PUBLIC__MCP_URL`. Trailing slashes are trimmed; `https` scheme marks the endpoint as TLS in the response.
+
 ### Self-Monitoring (Dogfooding)
 
 ```toml

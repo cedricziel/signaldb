@@ -74,15 +74,24 @@ pub const INGEST_SCOPES: [&str; 4] = [
     "profiles:write",
 ];
 
+/// Per-signal read scopes, in the traces/logs/metrics/profiles order
+/// `GET /api/v1/connection` and the MCP `connection_info` tool present to
+/// callers (a different order from [`INGEST_SCOPES`], which is
+/// metrics/logs/traces/profiles). Also the source of
+/// `router::endpoints::session::OtlpGrpcEndpoint::signals`, stripped of the
+/// `:read` suffix.
+pub const SIGNAL_READ_SCOPES: [&str; 4] =
+    ["traces:read", "logs:read", "metrics:read", "profiles:read"];
+
 /// Read scopes granted over the query surface (e.g. the MCP read tools) and
 /// grantable through OAuth consent. A token or key carrying `<signal>:read`
 /// may read that signal (see [`TenantContext::can_read`]); `schema:read`
 /// covers the schema registry.
 pub const READ_SCOPES: [&str; 5] = [
-    "traces:read",
-    "logs:read",
-    "metrics:read",
-    "profiles:read",
+    SIGNAL_READ_SCOPES[0],
+    SIGNAL_READ_SCOPES[1],
+    SIGNAL_READ_SCOPES[2],
+    SIGNAL_READ_SCOPES[3],
     SCHEMA_READ_SCOPE,
 ];
 

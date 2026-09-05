@@ -644,6 +644,19 @@ default_tenant = "default"
 # refresh_token_ttl = "30d"                          # issued refresh-token lifetime
 # authorization_code_ttl = "60s"                     # authorization-code lifetime (kept short)
 
+# Public-facing endpoints for this deployment, as reached from outside (e.g.
+# through a load balancer or reverse proxy). Distinct from the bind addresses
+# above, which describe what a service listens on locally. All fields are
+# optional; unset ones fall back to localhost defaults suitable only for local
+# development. Answers `GET /api/v1/connection` and the MCP `connection_info`
+# tool so agents and humans can self-serve connection details.
+# [public]
+# otlp_grpc_url = "https://otlp.example.com:4317"    # public OTLP/gRPC endpoint
+# otlp_http_url = "https://otlp.example.com:4318"    # public OTLP/HTTP base (signal paths appended)
+# api_url = "https://signaldb.example.com"           # public router HTTP API base
+# mcp_url = "https://signaldb.example.com/mcp"       # public MCP endpoint; falls back to
+#                                                     # [mcp.oauth].resource_url when unset
+
 # Environment variable examples:
 # SIGNALDB__MCP__ENABLED=true
 # SIGNALDB__MCP__BIND_ADDRESS=0.0.0.0:8228

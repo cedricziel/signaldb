@@ -842,6 +842,39 @@
         ]
       }
     },
+    "/api/v1/connection": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /api/v1/connection",
+        "description": "Everything needed to send data to and query this deployment from outside:\npublic OTLP gRPC/HTTP and Prometheus remote-write endpoints, the query API\nbase and compatibility-dialect paths, the headers to send (with this\nrequest's tenant/dataset filled in), the API-key scopes ingest and query\neach require, and ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars. Behind\nthe tenant auth middleware, so any valid tenant credential — including an\ningest-only key — may call it.",
+        "operationId": "connection_info",
+        "responses": {
+          "200": {
+            "description": "Connection details for this deployment, scoped to the caller's tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionInfoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credential"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/manage/schema": {
       "get": {
         "tags": [
@@ -4595,6 +4628,212 @@
           }
         }
       },
+      "ConnectionCompat": {
+        "type": "object",
+        "description": "Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility\ndialects, relative to [`ConnectionQuery::api_url`]. External clients only\n— first-party callers use [`ConnectionQuery::query_ir`].",
+        "required": [
+          "tempo",
+          "loki",
+          "prometheus",
+          "pyroscope"
+        ],
+        "properties": {
+          "loki": {
+            "type": "string"
+          },
+          "prometheus": {
+            "type": "string"
+          },
+          "pyroscope": {
+            "type": "string"
+          },
+          "tempo": {
+            "type": "string"
+          }
+        }
+      },
+      "ConnectionHeaders": {
+        "type": "object",
+        "description": "`Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the\nfilled-in credential placeholder, ready to paste into a client config.",
+        "required": [
+          "authorization",
+          "x-tenant-id",
+          "x-dataset-id"
+        ],
+        "properties": {
+          "authorization": {
+            "type": "string"
+          },
+          "x-dataset-id": {
+            "type": "string"
+          },
+          "x-tenant-id": {
+            "type": "string"
+          }
+        }
+      },
+      "ConnectionInfoResponse": {
+        "type": "object",
+        "description": "`GET /api/v1/connection` response: everything needed to send data to and\nquery this deployment from outside, for the caller's own tenant/dataset.",
+        "required": [
+          "tenant_id",
+          "dataset_id",
+          "public_endpoints_configured",
+          "headers",
+          "ingest",
+          "query",
+          "required_scopes",
+          "otel_env",
+          "notes"
+        ],
+        "properties": {
+          "dataset_id": {
+            "type": "string"
+          },
+          "headers": {
+            "$ref": "#/components/schemas/ConnectionHeaders"
+          },
+          "ingest": {
+            "$ref": "#/components/schemas/ConnectionIngest"
+          },
+          "mcp": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectionMcp"
+              }
+            ]
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Operator guidance, e.g. that `[public]` is unset and URLs are\nlocalhost fallbacks. Empty when everything is configured."
+          },
+          "otel_env": {
+            "$ref": "#/components/schemas/ConnectionOtelEnv"
+          },
+          "public_endpoints_configured": {
+            "type": "boolean",
+            "description": "Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has\nbeen explicitly set. `false` means at least one of those URLs below is\na localhost fallback, unlikely to be reachable from outside this\nmachine — see `notes` for which."
+          },
+          "query": {
+            "$ref": "#/components/schemas/ConnectionQuery"
+          },
+          "required_scopes": {
+            "$ref": "#/components/schemas/ConnectionScopes"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ConnectionIngest": {
+        "type": "object",
+        "description": "Every ingest endpoint this deployment exposes.",
+        "required": [
+          "otlp_grpc",
+          "otlp_http",
+          "prometheus_remote_write"
+        ],
+        "properties": {
+          "otlp_grpc": {
+            "$ref": "#/components/schemas/OtlpGrpcEndpoint"
+          },
+          "otlp_http": {
+            "$ref": "#/components/schemas/OtlpHttpEndpoint"
+          },
+          "prometheus_remote_write": {
+            "type": "string",
+            "description": "The Prometheus remote-write ingest URL."
+          }
+        }
+      },
+      "ConnectionMcp": {
+        "type": "object",
+        "description": "The MCP Streamable HTTP endpoint, present only when this deployment has\none configured (directly or via `[mcp.oauth].resource_url`).",
+        "required": [
+          "url",
+          "transport"
+        ],
+        "properties": {
+          "transport": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "ConnectionOtelEnv": {
+        "type": "object",
+        "description": "Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an\nOTel-instrumented application.",
+        "required": [
+          "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "OTEL_EXPORTER_OTLP_PROTOCOL",
+          "OTEL_EXPORTER_OTLP_HEADERS"
+        ],
+        "properties": {
+          "OTEL_EXPORTER_OTLP_ENDPOINT": {
+            "type": "string"
+          },
+          "OTEL_EXPORTER_OTLP_HEADERS": {
+            "type": "string"
+          },
+          "OTEL_EXPORTER_OTLP_PROTOCOL": {
+            "type": "string"
+          }
+        }
+      },
+      "ConnectionQuery": {
+        "type": "object",
+        "description": "The router's query surface: the native Query IR plus the compatibility\ndialects, relative to `api_url`.",
+        "required": [
+          "api_url",
+          "query_ir",
+          "openapi",
+          "compat"
+        ],
+        "properties": {
+          "api_url": {
+            "type": "string"
+          },
+          "compat": {
+            "$ref": "#/components/schemas/ConnectionCompat"
+          },
+          "openapi": {
+            "type": "string"
+          },
+          "query_ir": {
+            "type": "string"
+          }
+        }
+      },
+      "ConnectionScopes": {
+        "type": "object",
+        "description": "The API-key scopes ingest and query each require.",
+        "required": [
+          "ingest",
+          "query"
+        ],
+        "properties": {
+          "ingest": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "query": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "ConsentContextResponse": {
         "type": "object",
         "description": "Context the consent screen renders: the requesting client and the tenants\nthe signed-in user may grant.",
@@ -6317,6 +6556,86 @@
             "items": {
               "$ref": "#/components/schemas/MetricHit"
             }
+          }
+        }
+      },
+      "OtlpGrpcEndpoint": {
+        "type": "object",
+        "description": "The public OTLP/gRPC ingest endpoint.",
+        "required": [
+          "url",
+          "authority",
+          "tls",
+          "protocol",
+          "signals"
+        ],
+        "properties": {
+          "authority": {
+            "type": "string",
+            "description": "`host[:port]`, with the port included only when the configured URL\nstates one explicitly."
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "signals": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tls": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "OtlpHttpEndpoint": {
+        "type": "object",
+        "description": "The public OTLP/HTTP ingest endpoint.",
+        "required": [
+          "url",
+          "tls",
+          "protocol",
+          "paths"
+        ],
+        "properties": {
+          "paths": {
+            "$ref": "#/components/schemas/OtlpHttpPaths"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "tls": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "OtlpHttpPaths": {
+        "type": "object",
+        "description": "Per-signal paths appended to [`OtlpHttpEndpoint::url`].",
+        "required": [
+          "traces",
+          "logs",
+          "metrics",
+          "profiles"
+        ],
+        "properties": {
+          "logs": {
+            "type": "string"
+          },
+          "metrics": {
+            "type": "string"
+          },
+          "profiles": {
+            "type": "string"
+          },
+          "traces": {
+            "type": "string"
           }
         }
       },
