@@ -1558,6 +1558,30 @@ pub fn check_dataset_restriction_rollout_gate(
     Ok(())
 }
 
+/// Reject a non-empty `dataset_ids` OAuth consent decision while the
+/// mixed-version rollout gate (`[auth].dataset_restriction_rollout_complete`,
+/// D2) is not yet `true`. Stricter than
+/// [`check_dataset_restriction_rollout_gate`]'s two-or-more threshold:
+/// OAuth tokens have no legacy `dataset_id` column to fall back to (D2's
+/// "Residual, documented limitation" section), so *any* non-empty
+/// restriction is unsafe until every authenticating node runs the new
+/// binary — including a single-dataset one. Callers only invoke this for an
+/// already non-empty, validated set (the empty case is D1a's separate,
+/// unconditional rejection).
+pub fn check_oauth_dataset_restriction_rollout_gate(
+    dataset_ids: &[String],
+    rollout_complete: bool,
+) -> Result<(), String> {
+    if !dataset_ids.is_empty() && !rollout_complete {
+        return Err(format!(
+            "dataset_ids names {} dataset(s); OAuth dataset restrictions require \
+             [auth].dataset_restriction_rollout_complete = true (currently false)",
+            dataset_ids.len()
+        ));
+    }
+    Ok(())
+}
+
 /// Reject an empty or duplicate-containing dataset-id set (D1a). Shared by
 /// every path that writes a dataset-id set — the API-key create path
 /// (`upsert_scoped_api_key`), the API-key update path
@@ -3050,6 +3074,26 @@ impl Catalog {
                     .collect())
             }
         }
+    }
+
+    /// Find the first element of `dataset_ids` that is not a dataset of
+    /// `tenant_id`, or `None` if every element belongs to the tenant.
+    /// Shared membership check for every surface that validates a
+    /// caller-supplied dataset set against a tenant (API-key admin/management
+    /// create-update, OAuth consent) so the same `get_datasets` lookup and
+    /// membership rule isn't reimplemented at each call site.
+    pub async fn find_dataset_not_in_tenant(
+        &self,
+        tenant_id: &str,
+        dataset_ids: &[String],
+    ) -> Result<Option<String>, sqlx::Error> {
+        let datasets = self.get_datasets(tenant_id).await?;
+        let existing: std::collections::HashSet<&str> =
+            datasets.iter().map(|d| d.name.as_str()).collect();
+        Ok(dataset_ids
+            .iter()
+            .find(|id| !existing.contains(id.as_str()))
+            .cloned())
     }
 
     /// List API keys for a tenant

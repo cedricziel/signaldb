@@ -391,7 +391,13 @@ async fn authorize<S: RouterState>(
 
 /// Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
 /// is authenticated by their session cookie; `tenant` is their chosen grant.
+///
+/// The legacy singular `dataset_id` field is not accepted (removed in the
+/// multi-dataset-key-restriction change, D8): a request body carrying it is
+/// rejected rather than silently ignored, since dropping it would grant
+/// unrestricted access when the caller asked for a restricted one.
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ConsentDecision {
     /// The requesting client's `client_id`.
     client_id: String,
@@ -414,6 +420,17 @@ pub struct ConsentDecision {
     tenant: String,
     /// Whether the user approved (`true`) or denied (`false`).
     approved: bool,
+    /// Dataset set to restrict the grant to (D5/D6). Omitted or `null`
+    /// grants unrestricted access to the tenant — today's only behavior,
+    /// and `#[serde(default)]` so a decision from a client built before
+    /// this change (which omits the field entirely) keeps working
+    /// unmodified. A non-empty array restricts the grant to exactly that
+    /// set; every named dataset must belong to `tenant`. An explicit empty
+    /// array is rejected (D1a), as is any non-empty selection while
+    /// `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+    /// than the API-key rule — OAuth has no legacy column to fall back to).
+    #[serde(default)]
+    dataset_ids: Option<Vec<String>>,
 }
 
 /// Result of a consent decision: the URL the browser should navigate to (the
@@ -568,6 +585,34 @@ pub(crate) async fn authorize_decision<S: RouterState>(
             "requested scope contains no supported read scope",
         )
     })?;
+
+    // Dataset-set restriction (D5/D6): validated before any code is minted,
+    // so a rejected decision never persists one. `None`/omitted is always
+    // unrestricted, unaffected by the rollout gate.
+    if let Some(ids) = d.dataset_ids.as_ref() {
+        common::catalog::check_oauth_dataset_restriction_rollout_gate(
+            ids,
+            state.config().auth.dataset_restriction_rollout_complete,
+        )
+        .map_err(|message| OAuthError::bad_request("invalid_request", message))?;
+        common::catalog::validate_dataset_id_set(ids)
+            .map_err(|e| OAuthError::bad_request("invalid_request", e.to_string()))?;
+        if let Some(missing) = state
+            .catalog()
+            .find_dataset_not_in_tenant(&d.tenant, ids)
+            .await
+            .map_err(|e| OAuthError::server_error(format!("dataset lookup failed: {e}")))?
+        {
+            return Err(OAuthError::bad_request(
+                "invalid_request",
+                format!(
+                    "dataset '{missing}' does not exist in tenant '{}'",
+                    d.tenant
+                ),
+            ));
+        }
+    }
+
     let code = generate_oauth_token(TokenKind::AuthorizationCode);
     let ttl = chrono::Duration::from_std(state.config().mcp.oauth.authorization_code_ttl)
         .map_err(|e| OAuthError::server_error(format!("invalid authorization_code_ttl: {e}")))?;
@@ -579,10 +624,7 @@ pub(crate) async fn authorize_decision<S: RouterState>(
             &user.id,
             &d.tenant,
             &scopes,
-            // Consent-driven dataset-set restriction (D5/D6) is wired up in
-            // a later phase of multi-dataset-key-restriction; every grant
-            // issued today is unrestricted.
-            None,
+            d.dataset_ids.as_deref(),
             &d.redirect_uri,
             &d.code_challenge,
             resource.as_deref(),
@@ -604,6 +646,16 @@ pub(crate) struct ConsentContextQuery {
     client_id: String,
 }
 
+/// A dataset within a tenant the consenting user may restrict a grant to
+/// (D5).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConsentDataset {
+    /// Dataset id.
+    id: String,
+    /// Dataset name.
+    name: String,
+}
+
 /// A tenant the consenting user may grant a connector access to.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConsentTenant {
@@ -611,6 +663,9 @@ pub struct ConsentTenant {
     id: String,
     /// The user's role in the tenant.
     role: common::catalog::MembershipRole,
+    /// Datasets in the tenant, so the consent screen can offer a per-tenant
+    /// "only these datasets" checklist (D5).
+    datasets: Vec<ConsentDataset>,
 }
 
 /// Context the consent screen renders: the requesting client and the tenants
@@ -685,17 +740,14 @@ pub(crate) async fn consent_context<S: RouterState>(
         .map_err(|e| OAuthError::server_error(format!("client lookup failed: {e}")))?
         .ok_or_else(|| OAuthError::bad_request("invalid_client", "unknown client_id"))?;
 
-    let tenants = if user.is_instance_admin {
+    let tenant_roles: Vec<(String, common::catalog::MembershipRole)> = if user.is_instance_admin {
         state
             .catalog()
             .list_tenants()
             .await
             .map_err(|e| OAuthError::server_error(format!("tenant lookup failed: {e}")))?
             .into_iter()
-            .map(|t| ConsentTenant {
-                id: t.id,
-                role: common::catalog::MembershipRole::Admin,
-            })
+            .map(|t| (t.id, common::catalog::MembershipRole::Admin))
             .collect()
     } else {
         state
@@ -704,12 +756,25 @@ pub(crate) async fn consent_context<S: RouterState>(
             .await
             .map_err(|e| OAuthError::server_error(format!("membership lookup failed: {e}")))?
             .into_iter()
-            .map(|m| ConsentTenant {
-                id: m.tenant_id,
-                role: m.role,
-            })
+            .map(|m| (m.tenant_id, m.role))
             .collect()
     };
+
+    let mut tenants = Vec::with_capacity(tenant_roles.len());
+    for (id, role) in tenant_roles {
+        let datasets = state
+            .catalog()
+            .get_datasets(&id)
+            .await
+            .map_err(|e| OAuthError::server_error(format!("dataset lookup failed: {e}")))?
+            .into_iter()
+            .map(|d| ConsentDataset {
+                id: d.id,
+                name: d.name,
+            })
+            .collect();
+        tenants.push(ConsentTenant { id, role, datasets });
+    }
 
     Ok(Json(ConsentContextResponse {
         client_name: client.client_name,
@@ -831,6 +896,7 @@ async fn token_authorization_code<S: RouterState>(
         &grant.user_id,
         &grant.tenant_id,
         &grant.scopes,
+        grant.dataset_ids.as_deref(),
         grant.resource.as_deref(),
     )
     .await
@@ -875,12 +941,16 @@ async fn token_refresh<S: RouterState>(
         .await
         .map_err(|e| OAuthError::server_error(format!("failed to revoke refresh token: {e}")))?;
 
+    // D6: the replacement pair carries the dataset restriction read off the
+    // *presented* refresh-token row, not any access token (which may already
+    // be expired or otherwise unavailable by the time a refresh happens).
     issue_tokens(
         state,
         &grant.client_id,
         &grant.user_id,
         &grant.tenant_id,
         &grant.scopes,
+        grant.dataset_ids.as_deref(),
         grant.resource.as_deref(),
     )
     .await
@@ -894,6 +964,7 @@ async fn issue_tokens<S: RouterState>(
     user_id: &str,
     tenant_id: &str,
     scopes: &[String],
+    dataset_ids: Option<&[String]>,
     resource: Option<&str>,
 ) -> Result<Response, OAuthError> {
     let oauth = &state.config().mcp.oauth;
@@ -910,10 +981,7 @@ async fn issue_tokens<S: RouterState>(
             user_id,
             tenant_id,
             scopes,
-            // See the dataset_ids note on the authorization-code issuance
-            // above: consent-driven restriction propagation is a later
-            // phase of multi-dataset-key-restriction.
-            None,
+            dataset_ids,
             resource,
             now + access_ttl,
         )
@@ -931,7 +999,7 @@ async fn issue_tokens<S: RouterState>(
             user_id,
             tenant_id,
             scopes,
-            None,
+            dataset_ids,
             resource,
             now + refresh_ttl,
         )
@@ -1665,7 +1733,10 @@ mod tests {
         let datasets = acme["datasets"].as_array().unwrap_or_else(|| {
             panic!("expected a `datasets` array on the consent tenant: {acme:?}")
         });
-        let names: Vec<&str> = datasets.iter().map(|d| d["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = datasets
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
         assert!(names.contains(&"production"), "{datasets:?}");
         assert!(names.contains(&"staging"), "{datasets:?}");
         assert!(
@@ -1862,10 +1933,7 @@ mod tests {
             .await
             .unwrap()
             .expect("new refresh token stored");
-        assert_eq!(
-            new_access.dataset_ids,
-            Some(vec!["production".to_string()])
-        );
+        assert_eq!(new_access.dataset_ids, Some(vec!["production".to_string()]));
         assert_eq!(
             new_refresh.dataset_ids,
             Some(vec!["production".to_string()]),
@@ -1909,7 +1977,11 @@ mod tests {
             r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true}"#,
         )
         .await;
-        assert_eq!(res.status(), StatusCode::OK, "unrestricted grant is unaffected by the gate");
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "unrestricted grant is unaffected by the gate"
+        );
 
         let (gated_app, gated_catalog) = app_and_catalog_with_rollout_complete().await;
         seed_client(&gated_catalog).await;
