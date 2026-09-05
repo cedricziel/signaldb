@@ -23,6 +23,15 @@ pub(crate) fn print_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Render an API key's dataset restriction for human display: the
+/// comma-joined set, or `unrestricted` when there is none.
+pub(crate) fn format_dataset_restriction(ids: Option<&[String]>) -> String {
+    match ids {
+        Some(ids) if !ids.is_empty() => ids.join(", "),
+        _ => "unrestricted".to_string(),
+    }
+}
+
 /// SignalDB CLI — manage tenants, API keys, and datasets
 #[derive(Parser)]
 #[command(name = "signaldb-cli", version, about)]

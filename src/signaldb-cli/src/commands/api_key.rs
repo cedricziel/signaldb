@@ -1,17 +1,20 @@
-use clap::Subcommand;
+use clap::{ArgAction, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
-use signaldb_sdk::types::{CreateApiKeyRequest, UpdateApiKeyRequest};
+use signaldb_sdk::types::{ApiKeyResponse, CreateApiKeyRequest, UpdateApiKeyRequest};
 
 use super::completions::tenant_id_completer;
 
 #[derive(Subcommand)]
 pub enum ApiKeyAction {
-    /// List API keys for a tenant (with their scopes)
+    /// List API keys for a tenant (with their scopes and dataset restriction)
     List {
         /// Tenant ID
         #[arg(add = ArgValueCompleter::new(tenant_id_completer))]
         tenant_id: String,
+        /// Print raw JSON instead of the ID/NAME/SCOPES/DATASETS table
+        #[arg(long)]
+        json: bool,
     },
     /// Create a new API key for a tenant
     Create {
@@ -27,9 +30,10 @@ pub enum ApiKeyAction {
         /// tenant:manage (manage this tenant's datasets, keys, and members)
         #[arg(long = "scope", required = true, value_name = "SCOPE")]
         scopes: Vec<String>,
-        /// Restrict the key to one dataset of the tenant
-        #[arg(long)]
-        dataset: Option<String>,
+        /// Restrict the key to these datasets of the tenant (repeatable);
+        /// omit for an unrestricted key
+        #[arg(long = "dataset", action = ArgAction::Append, value_name = "DATASET")]
+        dataset: Option<Vec<String>>,
     },
     /// Update the scopes and/or dataset restriction of a live API key
     Update {
@@ -41,9 +45,14 @@ pub enum ApiKeyAction {
         /// Replacement scope list (repeatable); omit to keep the current scopes
         #[arg(long = "scope", value_name = "SCOPE")]
         scopes: Vec<String>,
-        /// Replacement dataset restriction; omit to keep the current one
-        #[arg(long)]
-        dataset: Option<String>,
+        /// Replacement dataset restriction (repeatable); omit to leave the
+        /// current restriction unchanged
+        #[arg(long = "dataset", action = ArgAction::Append, value_name = "DATASET")]
+        dataset: Option<Vec<String>>,
+        /// Clear an existing dataset restriction back to unrestricted;
+        /// cannot be combined with --dataset
+        #[arg(long, conflicts_with = "dataset")]
+        clear_dataset_restriction: bool,
     },
     /// Revoke an API key
     Revoke {
@@ -55,17 +64,80 @@ pub enum ApiKeyAction {
     },
 }
 
+/// Render `ID  NAME  SCOPES  DATASETS` rows, column-aligned.
+fn format_api_key_list(keys: &[ApiKeyResponse]) -> String {
+    if keys.is_empty() {
+        return "No API keys.".to_string();
+    }
+
+    let rows: Vec<(String, String, String, String)> = keys
+        .iter()
+        .map(|k| {
+            let name = k.name.clone().unwrap_or_else(|| "-".to_string());
+            let scopes = k
+                .scopes
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.join(", "))
+                .unwrap_or_else(|| "-".to_string());
+            let datasets = super::format_dataset_restriction(k.dataset_ids.as_deref());
+            (k.id.clone(), name, scopes, datasets)
+        })
+        .collect();
+
+    let widths = [
+        rows.iter()
+            .map(|(v, ..)| v.len())
+            .chain(std::iter::once("ID".len()))
+            .max()
+            .unwrap_or(0),
+        rows.iter()
+            .map(|(_, v, ..)| v.len())
+            .chain(std::iter::once("NAME".len()))
+            .max()
+            .unwrap_or(0),
+        rows.iter()
+            .map(|(_, _, v, _)| v.len())
+            .chain(std::iter::once("SCOPES".len()))
+            .max()
+            .unwrap_or(0),
+    ];
+
+    let mut out = format!(
+        "{:w0$}  {:w1$}  {:w2$}  DATASETS\n",
+        "ID",
+        "NAME",
+        "SCOPES",
+        w0 = widths[0],
+        w1 = widths[1],
+        w2 = widths[2]
+    );
+    for (id, name, scopes, datasets) in rows {
+        out.push_str(&format!(
+            "{id:w0$}  {name:w1$}  {scopes:w2$}  {datasets}\n",
+            w0 = widths[0],
+            w1 = widths[1],
+            w2 = widths[2]
+        ));
+    }
+    out.trim_end().to_string()
+}
+
 impl ApiKeyAction {
     pub async fn run(self, client: &Client) -> anyhow::Result<()> {
         match self {
-            ApiKeyAction::List { tenant_id } => {
+            ApiKeyAction::List { tenant_id, json } => {
                 let resp = client
                     .list_api_keys()
                     .tenant_id(&tenant_id)
                     .send()
                     .await?
                     .into_inner();
-                crate::commands::print_json(&resp)?;
+                if json {
+                    crate::commands::print_json(&resp)?;
+                } else {
+                    println!("{}", format_api_key_list(&resp.api_keys));
+                }
             }
             ApiKeyAction::Create {
                 tenant_id,
@@ -79,11 +151,7 @@ impl ApiKeyAction {
                     .body(CreateApiKeyRequest {
                         name,
                         scopes,
-                        // TODO(multi-dataset-key-restriction phase 4): `--dataset`
-                        // becomes a repeatable flag; this wraps today's single
-                        // value in a one-element set to keep phase-2 behavior
-                        // unchanged until that lands.
-                        dataset_ids: dataset.map(|d| vec![d]),
+                        dataset_ids: dataset,
                     })
                     .send()
                     .await?
@@ -95,9 +163,12 @@ impl ApiKeyAction {
                 key_id,
                 scopes,
                 dataset,
+                clear_dataset_restriction,
             } => {
-                if scopes.is_empty() && dataset.is_none() {
-                    anyhow::bail!("nothing to update: pass --scope and/or --dataset");
+                if scopes.is_empty() && dataset.is_none() && !clear_dataset_restriction {
+                    anyhow::bail!(
+                        "nothing to update: pass --scope, --dataset, and/or --clear-dataset-restriction"
+                    );
                 }
                 let resp = client
                     .update_api_key()
@@ -105,13 +176,8 @@ impl ApiKeyAction {
                     .key_id(&key_id)
                     .body(UpdateApiKeyRequest {
                         scopes: (!scopes.is_empty()).then_some(scopes),
-                        // TODO(multi-dataset-key-restriction phase 4): `--dataset`
-                        // becomes a repeatable flag plus a dedicated
-                        // `--clear-dataset-restriction`; this wraps today's single
-                        // value in a one-element set (never clearing) to keep
-                        // phase-2 behavior unchanged until that lands.
-                        dataset_ids: dataset.map(|d| vec![d]),
-                        clear_dataset_restriction: None,
+                        dataset_ids: dataset,
+                        clear_dataset_restriction: clear_dataset_restriction.then_some(true),
                     })
                     .send()
                     .await?
@@ -136,7 +202,6 @@ impl ApiKeyAction {
 mod tests {
     use super::*;
     use clap::Parser;
-    use signaldb_sdk::types::ApiKeyResponse;
 
     #[derive(Parser)]
     struct Harness {
