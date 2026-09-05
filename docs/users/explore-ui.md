@@ -655,10 +655,11 @@ response, so a snippet reflects the deployment's real public-facing host,
 port, and TLS setting — honoring `[public]` in `signaldb.toml` — rather than
 guessing from the browser's own hostname; a callout above the snippets flags
 when `[public]` is unset and the reported URLs are localhost fallbacks. If
-the request itself fails (a transient error — the page and the endpoint are
-served by the same router build, so there's no "older server" case), the
-page shows an error message with a retry button instead of a guessed
-snippet. A verification section at the bottom shows ingestion status per
+the request itself fails, the page never falls back to a guessed snippet:
+a `401` hands over to the global sign-in dialog, a `403` shows that the
+current tenant does not grant access to connection details (no retry, since
+retrying cannot change that), and any other failure — a `429`, a network
+error — shows an error message with a retry button. A verification section at the bottom shows ingestion status per
 signal (metrics, logs, traces, profiles) — currently static ("Waiting for
 data"), with real checks planned.
 

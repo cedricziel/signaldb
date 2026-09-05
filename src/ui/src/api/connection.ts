@@ -29,9 +29,12 @@ function unwrap<T>(result: SdkResult<T>): T {
 }
 
 /** Fetch the deployment's real ingest/query/mcp endpoints for the current
- * tenant. Same auth and tenant scoping as `whoami`. Throws `ApiError` on
- * failure — the only failure mode is transient, since this page and the
- * endpoint are served by the same router build. */
+ * tenant. Same auth and tenant scoping as `whoami`. Throws `ApiError` with
+ * the HTTP status: a 401 is picked up by the global login gate, a 403 means
+ * the current tenant does not grant access (the page says so, no retry), and
+ * anything else is retryable. Every `[public]` URL is validated at server
+ * startup, so a request-time 500 from a malformed value is not expected in
+ * practice. */
 export async function connectionInfo(): Promise<ConnectionInfoResponse> {
   return unwrap(await getConnectionInfo());
 }
