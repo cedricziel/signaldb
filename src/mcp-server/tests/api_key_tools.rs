@@ -4,35 +4,10 @@
 //! patches a live key (including clearing its restriction via
 //! `clear_dataset_restriction`), and `list_api_keys` shows scopes.
 
-use rmcp::{ClientHandler, ServiceExt, model::ClientInfo, service::RunningService};
+mod common;
 
+use common::connect;
 use mcp_server::server::McpServer;
-
-#[derive(Clone)]
-struct TestClient;
-
-impl ClientHandler for TestClient {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::default()
-    }
-}
-
-async fn connect() -> RunningService<rmcp::RoleClient, TestClient> {
-    let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(async move {
-        let server = McpServer::new(
-            "http://router.invalid".to_string(),
-            std::time::Duration::from_secs(5),
-        );
-        if let Ok(running) = server.serve(server_transport).await {
-            let _ = running.waiting().await;
-        }
-    });
-    TestClient
-        .serve(client_transport)
-        .await
-        .expect("client connects to the in-memory server")
-}
 
 #[test]
 fn api_key_admin_tools_are_registered() {
