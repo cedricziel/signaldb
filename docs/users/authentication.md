@@ -173,10 +173,16 @@ that it is unrestricted).
 **Legacy field removed.** A create or update request that still sends the
 old, singular `dataset_id` field is rejected outright, naming the field and
 pointing at `dataset_ids` — it is never silently accepted or dropped, since
-silently dropping it would create an *unrestricted* key when the caller
-asked for a restricted one. A key created before this change with a single
-dataset keeps working identically after it, and its restriction is visible
-in `dataset_ids` as a one-element set.
+silently dropping it would create an _unrestricted_ key when the caller
+asked for a restricted one. A key created before multi-dataset restrictions
+existed, with a single dataset, keeps working identically today, and its
+restriction is visible in `dataset_ids` as a one-element set. The singular
+`dataset_id` field is fully gone now, on both sides: no API-key response
+returns it (it was kept, deprecated, for one release after `dataset_ids`
+shipped, purely so an existing reader that only ever expected a single
+dataset saw no shape change — that grace period is over), and storage holds
+no `dataset_id` column at all — `dataset_ids` is the only representation,
+in the database and on the wire.
 
 ### Multi-dataset rollout
 
@@ -186,21 +192,30 @@ operator sets `[auth] dataset_restriction_rollout_complete = true`
 (`SIGNALDB__AUTH__DATASET_RESTRICTION_ROLLOUT_COMPLETE=1`; same
 defaults → TOML → environment precedence as every other setting) — default
 `false`, so a fresh deployment and every deployment upgrading into this
-feature start in the safe state with no action required. This exists
-because the multi-element case can't fall back to the legacy single-dataset
-column an older binary understands: during a rolling upgrade, a node still
-running old code would treat such a key as *unrestricted* rather than
-refusing it, which is the opposite of what the restriction is for. A
-single-dataset restriction has no such precondition — it round-trips
-correctly through old and new code alike, and is always safe to create,
-update, or roll back to.
+feature start in the safe state with no action required. This protects
+against a node still running code that predates dataset-set restrictions
+entirely: such a node has never enforced a dataset restriction and would
+treat a newly-created multi-element restriction as _unrestricted_ rather
+than refusing it, the opposite of what the restriction is for.
 
 The same rollout flag applies, more strictly, to the OAuth connector's
 dataset restriction (see [MCP server](mcp.md#claudeai-and-chatgpt-oauth-connector)):
-since OAuth tokens have no legacy single-dataset column at all, *any*
-non-empty restriction — not only a multi-element one — is refused until the
-flag is set, because an old node has never enforced a dataset restriction
-on an OAuth token and would treat one as unrestricted.
+_any_ non-empty restriction — not only a multi-element one — is refused
+until the flag is set, because an old node has never enforced a dataset
+restriction on an OAuth token and would treat one as unrestricted.
+
+**Upgrading past the legacy `dataset_id` column.** Storage no longer keeps
+the singular `dataset_id` column described above at all — it was dropped,
+not merely stopped-at. Unlike every other schema change this project has
+shipped (which only ever add a column, and are invisible to a node that
+doesn't know about the new one yet), dropping a column that a still-running
+older binary explicitly references in its own queries breaks that binary
+outright — every API-key create, update, list, or auth lookup on it starts
+failing with a database error, not a stale read. Deploy this upgrade as a
+full stop-and-restart of every instance sharing the catalog database
+(acceptor, router, writer, querier, compactor, mcp, or the monolithic
+`signaldb` binary), never as a staggered or rolling upgrade where instances
+on either side of this change serve traffic concurrently.
 
 Tenants and datasets created through the Admin API or CLI are usable for
 both ingest and query the moment they are created — no service restart and
@@ -240,16 +255,16 @@ exposes tenant-scoped endpoints under `/api/v1` (read-only, plus one
 table-creation endpoint). Every row below is in the OpenAPI document, so
 each is reachable through `signaldb-sdk`, not only raw HTTP:
 
-| Method | Path                                        | Returns                                                                          | SDK operation            | CLI / MCP                                                                        |
-| ------ | ------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------------- |
+| Method | Path                                        | Returns                                                                                                                                                                              | SDK operation            | CLI / MCP                                                                        |
+| ------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | -------------------------------------------------------------------------------- |
 | GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset — filtered to the caller's own dataset restriction, if any (`dataset_ids` in the response names it) | `whoami`                 | `signaldb-cli whoami` / `server_info`                                            |
-| GET    | `/api/v1/connection`                        | Public ingest/query endpoints, headers, required scopes, and OTel env vars for this deployment, scoped to the caller's tenant/dataset | `connection_info`        | `signaldb-cli connection` / `connection_info`                                    |
-| GET    | `/api/v1/tenants`                           | All configured tenants, filtered to the caller's own                             | `list_tenants_self`      | `signaldb-cli tenant show` / `tenant_info` (single-item view of the same tenant) |
-| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   | `get_tenant_self`        | `signaldb-cli tenant show` / `tenant_info`                                       |
-| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's provisioned tables, grouped by dataset                              | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                          |
-| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                   | `create_tenant_tables`   | `signaldb-cli tenant table provision` / `tenant_create_tables`                   |
-| GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's configured table schema types                                       | `list_tenant_schemas`    | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`                |
-| GET    | `/api/v1/schemas/available`                 | Every table schema type SignalDB can provision                                   | `list_available_schemas` | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas`   |
+| GET    | `/api/v1/connection`                        | Public ingest/query endpoints, headers, required scopes, and OTel env vars for this deployment, scoped to the caller's tenant/dataset                                                | `connection_info`        | `signaldb-cli connection` / `connection_info`                                    |
+| GET    | `/api/v1/tenants`                           | All configured tenants, filtered to the caller's own                                                                                                                                 | `list_tenants_self`      | `signaldb-cli tenant show` / `tenant_info` (single-item view of the same tenant) |
+| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                                                                                                                       | `get_tenant_self`        | `signaldb-cli tenant show` / `tenant_info`                                       |
+| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's provisioned tables, grouped by dataset                                                                                                                                  | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                          |
+| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                                                                                                                       | `create_tenant_tables`   | `signaldb-cli tenant table provision` / `tenant_create_tables`                   |
+| GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's configured table schema types                                                                                                                                           | `list_tenant_schemas`    | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`                |
+| GET    | `/api/v1/schemas/available`                 | Every table schema type SignalDB can provision                                                                                                                                       | `list_available_schemas` | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas`   |
 
 `GET /tenants` and `GET /tenants/{tenant_id}` return only the caller's own
 tenant — a single-entry view — so both map to `signaldb-cli tenant show` and
