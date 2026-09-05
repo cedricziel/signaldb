@@ -1,8 +1,8 @@
-// The SPA's route tree. `/oauth/consent` is a distinct top-level view that
-// bypasses the explore shell entirely; everything else nests under `App`
-// (the shell), which shares its URL-backed ExploreState with children via
-// outlet context so `/logs`, `/traces`, ... and `/manage` all read/write the
-// same tenant, dataset, and range without re-deriving them.
+// The SPA's route tree. `/oauth/consent` and `/login` are distinct top-level
+// views that bypass the explore shell entirely; everything else nests under
+// `App` (the shell), which shares its URL-backed ExploreState with children
+// via outlet context so `/logs`, `/traces`, ... and `/manage` all read/write
+// the same tenant, dataset, and range without re-deriving them.
 
 import { Navigate, Route, Routes, useLocation, useParams } from "react-router";
 import { App } from "./App";
@@ -12,6 +12,7 @@ import { ApiKeysRoute } from "./features/management/ApiKeysRoute";
 import { InstrumentationRoute } from "./features/management/InstrumentationRoute";
 import { ManagementRoute } from "./features/management/ManagementRoute";
 import { SelectTenantRoute } from "./features/management/SelectTenantRoute";
+import { LoginRoute } from "./features/shell/LoginRoute";
 import { schemaRoutes } from "./features/schema/routes";
 import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
@@ -50,6 +51,7 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/oauth/consent" element={<ConsentView />} />
+      <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<App />}>
         <Route index element={<RedirectToLogs />} />
         <Route path="manage" element={<ManagementRoute />} />

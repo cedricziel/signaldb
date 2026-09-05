@@ -72,7 +72,7 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
       await deleteSession();
       clearPersistedTenantContext();
       client.clear();
-      navigate("/logs");
+      navigate("/login");
       window.location.reload();
     } catch {
       // If session delete fails, still reload to clear stale state

@@ -106,3 +106,15 @@ test("/oauth/consent renders standalone, without the explore shell", async ({
     page.getByRole("heading", { name: "Invalid authorization request" }),
   ).toBeVisible();
 });
+
+test("/login renders standalone, without the explore shell", async ({
+  page,
+}) => {
+  // No mocks: whoami naturally fails without a backend, so the sign-in
+  // form renders.
+  await page.goto("/login");
+  await expect(page).toHaveURL(/\/login$/);
+  // No signal tabs, no top bar — this route bypasses the shell entirely.
+  await expect(page.getByRole("tablist", { name: "Signal" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Sign in" })).toBeVisible();
+});
