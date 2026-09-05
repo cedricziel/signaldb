@@ -4618,9 +4618,27 @@
           }
         }
       },
+      "ConsentDataset": {
+        "type": "object",
+        "description": "A dataset within a tenant the consenting user may restrict a grant to\n(D5).",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Dataset id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Dataset name."
+          }
+        }
+      },
       "ConsentDecision": {
         "type": "object",
-        "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.",
+        "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.\n\nThe legacy singular `dataset_id` field is not accepted (removed in the\nmulti-dataset-key-restriction change, D8): a request body carrying it is\nrejected rather than silently ignored, since dropping it would grant\nunrestricted access when the caller asked for a restricted one.",
         "required": [
           "client_id",
           "redirect_uri",
@@ -4646,6 +4664,16 @@
               "string",
               "null"
             ]
+          },
+          "dataset_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Dataset set to restrict the grant to (D5/D6). Omitted or `null`\ngrants unrestricted access to the tenant — today's only behavior,\nand `#[serde(default)]` so a decision from a client built before\nthis change (which omits the field entirely) keeps working\nunmodified. A non-empty array restricts the grant to exactly that\nset; every named dataset must belong to `tenant`. An explicit empty\narray is rejected (D1a), as is any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to)."
           },
           "redirect_uri": {
             "type": "string",
@@ -4676,7 +4704,8 @@
             "type": "string",
             "description": "The tenant the user grants access to (must be one they belong to)."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "ConsentDecisionResponse": {
         "type": "object",
@@ -4696,9 +4725,17 @@
         "description": "A tenant the consenting user may grant a connector access to.",
         "required": [
           "id",
-          "role"
+          "role",
+          "datasets"
         ],
         "properties": {
+          "datasets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsentDataset"
+            },
+            "description": "Datasets in the tenant, so the consent screen can offer a per-tenant\n\"only these datasets\" checklist (D5)."
+          },
           "id": {
             "type": "string",
             "description": "Tenant id."

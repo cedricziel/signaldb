@@ -714,14 +714,57 @@ pub mod types {
             Default::default()
         }
     }
-    /**Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
-    is authenticated by their session cookie; `tenant` is their chosen grant.*/
+    /**A dataset within a tenant the consenting user may restrict a grant to
+    (D5).*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.",
+    ///  "description": "A dataset within a tenant the consenting user may restrict a grant to\n(D5).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id",
+    ///    "name"
+    ///  ],
+    ///  "properties": {
+    ///    "id": {
+    ///      "description": "Dataset id.",
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "description": "Dataset name.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConsentDataset {
+        ///Dataset id.
+        pub id: ::std::string::String,
+        ///Dataset name.
+        pub name: ::std::string::String,
+    }
+    impl ConsentDataset {
+        pub fn builder() -> builder::ConsentDataset {
+            Default::default()
+        }
+    }
+    /**Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
+    is authenticated by their session cookie; `tenant` is their chosen grant.
+
+    The legacy singular `dataset_id` field is not accepted (removed in the
+    multi-dataset-key-restriction change, D8): a request body carrying it is
+    rejected rather than silently ignored, since dropping it would grant
+    unrestricted access when the caller asked for a restricted one.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.\n\nThe legacy singular `dataset_id` field is not accepted (removed in the\nmulti-dataset-key-restriction change, D8): a request body carrying it is\nrejected rather than silently ignored, since dropping it would grant\nunrestricted access when the caller asked for a restricted one.",
     ///  "type": "object",
     ///  "required": [
     ///    "approved",
@@ -748,6 +791,16 @@ pub mod types {
     ///        "string",
     ///        "null"
     ///      ]
+    ///    },
+    ///    "dataset_ids": {
+    ///      "description": "Dataset set to restrict the grant to (D5/D6). Omitted or `null`\ngrants unrestricted access to the tenant — today's only behavior,\nand `#[serde(default)]` so a decision from a client built before\nthis change (which omits the field entirely) keeps working\nunmodified. A non-empty array restricts the grant to exactly that\nset; every named dataset must belong to `tenant`. An explicit empty\narray is rejected (D1a), as is any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to).",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    },
     ///    "redirect_uri": {
     ///      "description": "The redirect URI to return to (must be registered for the client).",
@@ -778,11 +831,13 @@ pub mod types {
     ///      "description": "The tenant the user grants access to (must be one they belong to).",
     ///      "type": "string"
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct ConsentDecision {
         ///Whether the user approved (`true`) or denied (`false`).
         pub approved: bool,
@@ -792,6 +847,17 @@ pub mod types {
         pub code_challenge: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub code_challenge_method: ::std::option::Option<::std::string::String>,
+        /**Dataset set to restrict the grant to (D5/D6). Omitted or `null`
+        grants unrestricted access to the tenant — today's only behavior,
+        and `#[serde(default)]` so a decision from a client built before
+        this change (which omits the field entirely) keeps working
+        unmodified. A non-empty array restricts the grant to exactly that
+        set; every named dataset must belong to `tenant`. An explicit empty
+        array is rejected (D1a), as is any non-empty selection while
+        `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+        than the API-key rule — OAuth has no legacy column to fall back to).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///The redirect URI to return to (must be registered for the client).
         pub redirect_uri: ::std::string::String,
         ///Requested resource (audience); must match the configured MCP resource.
@@ -852,10 +918,18 @@ pub mod types {
     ///  "description": "A tenant the consenting user may grant a connector access to.",
     ///  "type": "object",
     ///  "required": [
+    ///    "datasets",
     ///    "id",
     ///    "role"
     ///  ],
     ///  "properties": {
+    ///    "datasets": {
+    ///      "description": "Datasets in the tenant, so the consent screen can offer a per-tenant\n\"only these datasets\" checklist (D5).",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ConsentDataset"
+    ///      }
+    ///    },
     ///    "id": {
     ///      "description": "Tenant id.",
     ///      "type": "string"
@@ -869,6 +943,9 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConsentTenant {
+        /**Datasets in the tenant, so the consent screen can offer a per-tenant
+        "only these datasets" checklist (D5).*/
+        pub datasets: ::std::vec::Vec<ConsentDataset>,
         ///Tenant id.
         pub id: ::std::string::String,
         pub role: MembershipRole,
@@ -7555,12 +7632,70 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct ConsentDataset {
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConsentDataset {
+            fn default() -> Self {
+                Self {
+                    id: Err("no value supplied for id".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl ConsentDataset {
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConsentDataset> for super::ConsentDataset {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConsentDataset,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    id: value.id?,
+                    name: value.name?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConsentDataset> for ConsentDataset {
+            fn from(value: super::ConsentDataset) -> Self {
+                Self {
+                    id: Ok(value.id),
+                    name: Ok(value.name),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ConsentDecision {
             approved: ::std::result::Result<bool, ::std::string::String>,
             client_id: ::std::result::Result<::std::string::String, ::std::string::String>,
             code_challenge: ::std::result::Result<::std::string::String, ::std::string::String>,
             code_challenge_method: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             redirect_uri: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -7585,6 +7720,7 @@ pub mod types {
                     client_id: Err("no value supplied for client_id".to_string()),
                     code_challenge: Err("no value supplied for code_challenge".to_string()),
                     code_challenge_method: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     redirect_uri: Err("no value supplied for redirect_uri".to_string()),
                     resource: Ok(Default::default()),
                     scope: Ok(Default::default()),
@@ -7632,6 +7768,18 @@ pub mod types {
                 self.code_challenge_method = value.try_into().map_err(|e| {
                     format!("error converting supplied value for code_challenge_method: {e}")
                 });
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn redirect_uri<T>(mut self, value: T) -> Self
@@ -7695,6 +7843,7 @@ pub mod types {
                     client_id: value.client_id?,
                     code_challenge: value.code_challenge?,
                     code_challenge_method: value.code_challenge_method?,
+                    dataset_ids: value.dataset_ids?,
                     redirect_uri: value.redirect_uri?,
                     resource: value.resource?,
                     scope: value.scope?,
@@ -7710,6 +7859,7 @@ pub mod types {
                     client_id: Ok(value.client_id),
                     code_challenge: Ok(value.code_challenge),
                     code_challenge_method: Ok(value.code_challenge_method),
+                    dataset_ids: Ok(value.dataset_ids),
                     redirect_uri: Ok(value.redirect_uri),
                     resource: Ok(value.resource),
                     scope: Ok(value.scope),
@@ -7760,18 +7910,33 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ConsentTenant {
+            datasets: ::std::result::Result<
+                ::std::vec::Vec<super::ConsentDataset>,
+                ::std::string::String,
+            >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
         }
         impl ::std::default::Default for ConsentTenant {
             fn default() -> Self {
                 Self {
+                    datasets: Err("no value supplied for datasets".to_string()),
                     id: Err("no value supplied for id".to_string()),
                     role: Err("no value supplied for role".to_string()),
                 }
             }
         }
         impl ConsentTenant {
+            pub fn datasets<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ConsentDataset>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.datasets = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for datasets: {e}"));
+                self
+            }
             pub fn id<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -7799,6 +7964,7 @@ pub mod types {
                 value: ConsentTenant,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    datasets: value.datasets?,
                     id: value.id?,
                     role: value.role?,
                 })
@@ -7807,6 +7973,7 @@ pub mod types {
         impl ::std::convert::From<super::ConsentTenant> for ConsentTenant {
             fn from(value: super::ConsentTenant) -> Self {
                 Self {
+                    datasets: Ok(value.datasets),
                     id: Ok(value.id),
                     role: Ok(value.role),
                 }

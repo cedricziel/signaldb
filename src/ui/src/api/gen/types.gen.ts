@@ -182,8 +182,28 @@ export type ConsentContextResponse = {
 };
 
 /**
+ * A dataset within a tenant the consenting user may restrict a grant to
+ * (D5).
+ */
+export type ConsentDataset = {
+    /**
+     * Dataset id.
+     */
+    id: string;
+    /**
+     * Dataset name.
+     */
+    name: string;
+};
+
+/**
  * Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
  * is authenticated by their session cookie; `tenant` is their chosen grant.
+ *
+ * The legacy singular `dataset_id` field is not accepted (removed in the
+ * multi-dataset-key-restriction change, D8): a request body carrying it is
+ * rejected rather than silently ignored, since dropping it would grant
+ * unrestricted access when the caller asked for a restricted one.
  */
 export type ConsentDecision = {
     /**
@@ -199,6 +219,18 @@ export type ConsentDecision = {
      */
     code_challenge: string;
     code_challenge_method?: string | null;
+    /**
+     * Dataset set to restrict the grant to (D5/D6). Omitted or `null`
+     * grants unrestricted access to the tenant — today's only behavior,
+     * and `#[serde(default)]` so a decision from a client built before
+     * this change (which omits the field entirely) keeps working
+     * unmodified. A non-empty array restricts the grant to exactly that
+     * set; every named dataset must belong to `tenant`. An explicit empty
+     * array is rejected (D1a), as is any non-empty selection while
+     * `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+     * than the API-key rule — OAuth has no legacy column to fall back to).
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * The redirect URI to return to (must be registered for the client).
      */
@@ -237,6 +269,11 @@ export type ConsentDecisionResponse = {
  * A tenant the consenting user may grant a connector access to.
  */
 export type ConsentTenant = {
+    /**
+     * Datasets in the tenant, so the consent screen can offer a per-tenant
+     * "only these datasets" checklist (D5).
+     */
+    datasets: Array<ConsentDataset>;
     /**
      * Tenant id.
      */
