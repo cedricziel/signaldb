@@ -49,9 +49,15 @@ export type ApiKeyResponse = {
      */
     created_at: string;
     /**
-     * Dataset the key is restricted to, if any.
+     * Deprecated: see [`CreateApiKeyResponse::dataset_id`].
+     *
+     * @deprecated
      */
     dataset_id?: string | null;
+    /**
+     * Dataset set the key is restricted to, if any; `null` is unrestricted.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * Unique key identifier.
      */
@@ -253,12 +259,21 @@ export type CostMode = 'metadata' | 'sampled_scan' | 'none';
  * explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
  * `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
  * `profiles:read`, `schema:read`, `schema:write`.
+ *
+ * The legacy singular `dataset_id` field is not accepted here (removed in
+ * the multi-dataset-key-restriction change): a request body carrying it is
+ * rejected with a validation error rather than silently ignored, since
+ * dropping it would create an unrestricted key when the caller asked for a
+ * restricted one.
  */
 export type CreateApiKeyRequest = {
     /**
-     * Optional dataset the key is restricted to.
+     * Dataset set the key is restricted to. Omitted or `null` creates an
+     * unrestricted key; a non-empty array restricts it to exactly that set.
+     * An explicit empty array, or a duplicate name within the set, is
+     * rejected.
      */
-    dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     /**
      * Optional human-readable name for the key.
      */
@@ -278,9 +293,18 @@ export type CreateApiKeyResponse = {
      */
     created_at: string;
     /**
-     * Dataset the key is restricted to, if any.
+     * Deprecated: the single dataset the key is restricted to, derived from
+     * `dataset_ids` as `Some` only when it names exactly one dataset (and
+     * `None` for both unrestricted and multi-dataset keys). Response-only —
+     * no request body accepts this field anymore. Prefer `dataset_ids`.
+     *
+     * @deprecated
      */
     dataset_id?: string | null;
+    /**
+     * Dataset set the key is restricted to, if any; `null` is unrestricted.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * Unique key identifier.
      */
@@ -781,15 +805,31 @@ export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_n
 
 export type ManageApiKeyResponse = {
     created_at: string;
+    /**
+     * Deprecated: derived from `dataset_ids`, `Some` only for a
+     * single-dataset restriction. Use `dataset_ids`.
+     *
+     * @deprecated
+     */
     dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     id: string;
     name?: string | null;
     revoked: boolean;
     scopes?: Array<string> | null;
 };
 
+/**
+ * `dataset_ids` mirrors [`signaldb_api::CreateApiKeyRequest`] (D1a): omitted
+ * or `null` creates an unrestricted key, a non-empty array restricts it,
+ * and an explicit empty array or duplicate name is rejected. The legacy
+ * singular `dataset_id` field is not accepted — `deny_unknown_fields`
+ * rejects a request body still sending it, rather than silently dropping
+ * it and creating an unrestricted key when the caller asked for a
+ * restricted one.
+ */
 export type ManageCreateApiKeyRequest = {
-    dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     name?: string | null;
     scopes: Array<string>;
 };
@@ -811,7 +851,13 @@ export type ManageCreateTenantRequest = {
  * absent `name`/`dataset_id`), preserving the wire format.
  */
 export type ManageCreatedApiKey = {
+    /**
+     * Deprecated: see [`ApiKeyResponse::dataset_id`].
+     *
+     * @deprecated
+     */
     dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     id: string;
     key: string;
     name?: string | null;
@@ -888,13 +934,23 @@ export type ManageSchemaResponse = {
 
 /**
  * Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
- * Absent fields are left untouched.
+ * Absent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`
+ * mirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular
+ * `dataset_id` field is rejected via `deny_unknown_fields` rather than
+ * silently dropped.
  */
 export type ManageUpdateApiKeyRequest = {
     /**
-     * Replacement dataset restriction.
+     * Clear an existing dataset restriction back to unrestricted. Must not
+     * be combined with a non-empty `dataset_ids` in the same request.
      */
-    dataset_id?: string | null;
+    clear_dataset_restriction?: boolean;
+    /**
+     * Replacement dataset set (non-empty; an explicit empty array is
+     * rejected). Omitted/`null` leaves the current restriction unchanged.
+     * Mutually exclusive with `clear_dataset_restriction: true`.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * Replacement scope list (non-empty, drawn from the shared vocabulary).
      */
@@ -1475,13 +1531,22 @@ export type Trace = {
 /**
  * Request body for updating a live API key's scopes and/or dataset restriction.
  *
- * Absent fields are left untouched. Revoked keys cannot be updated.
+ * Absent fields are left untouched. Revoked keys cannot be updated. The
+ * legacy singular `dataset_id` field is not accepted (see
+ * [`CreateApiKeyRequest`]).
  */
 export type UpdateApiKeyRequest = {
     /**
-     * New dataset restriction.
+     * Clear an existing dataset restriction back to unrestricted. Must not
+     * be combined with a non-empty `dataset_ids` in the same request.
      */
-    dataset_id?: string | null;
+    clear_dataset_restriction?: boolean;
+    /**
+     * Replacement dataset set (non-empty; an explicit empty array is
+     * rejected). Omitted/`null` leaves the current restriction unchanged.
+     * Mutually exclusive with `clear_dataset_restriction: true`.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * New scope list (replaces the current one; must be non-empty).
      */

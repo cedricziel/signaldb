@@ -4341,7 +4341,18 @@
               "string",
               "null"
             ],
-            "description": "Dataset the key is restricted to, if any."
+            "description": "Deprecated: see [`CreateApiKeyResponse::dataset_id`].",
+            "deprecated": true
+          },
+          "dataset_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Dataset set the key is restricted to, if any; `null` is unrestricted."
           },
           "id": {
             "type": "string",
@@ -4709,17 +4720,20 @@
       },
       "CreateApiKeyRequest": {
         "type": "object",
-        "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`.",
+        "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`.\n\nThe legacy singular `dataset_id` field is not accepted here (removed in\nthe multi-dataset-key-restriction change): a request body carrying it is\nrejected with a validation error rather than silently ignored, since\ndropping it would create an unrestricted key when the caller asked for a\nrestricted one.",
         "required": [
           "scopes"
         ],
         "properties": {
-          "dataset_id": {
+          "dataset_ids": {
             "type": [
-              "string",
+              "array",
               "null"
             ],
-            "description": "Optional dataset the key is restricted to."
+            "items": {
+              "type": "string"
+            },
+            "description": "Dataset set the key is restricted to. Omitted or `null` creates an\nunrestricted key; a non-empty array restricts it to exactly that set.\nAn explicit empty array, or a duplicate name within the set, is\nrejected."
           },
           "name": {
             "type": [
@@ -4735,7 +4749,8 @@
             },
             "description": "Scopes the key carries (required, at least one)."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "CreateApiKeyResponse": {
         "type": "object",
@@ -4756,7 +4771,18 @@
               "string",
               "null"
             ],
-            "description": "Dataset the key is restricted to, if any."
+            "description": "Deprecated: the single dataset the key is restricted to, derived from\n`dataset_ids` as `Some` only when it names exactly one dataset (and\n`None` for both unrestricted and multi-dataset keys). Response-only —\nno request body accepts this field anymore. Prefer `dataset_ids`.",
+            "deprecated": true
+          },
+          "dataset_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Dataset set the key is restricted to, if any; `null` is unrestricted."
           },
           "id": {
             "type": "string",
@@ -5670,7 +5696,18 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Deprecated: derived from `dataset_ids`, `Some` only for a\nsingle-dataset restriction. Use `dataset_ids`.",
+            "deprecated": true
+          },
+          "dataset_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
           },
           "id": {
             "type": "string"
@@ -5697,15 +5734,19 @@
       },
       "ManageCreateApiKeyRequest": {
         "type": "object",
+        "description": "`dataset_ids` mirrors [`signaldb_api::CreateApiKeyRequest`] (D1a): omitted\nor `null` creates an unrestricted key, a non-empty array restricts it,\nand an explicit empty array or duplicate name is rejected. The legacy\nsingular `dataset_id` field is not accepted — `deny_unknown_fields`\nrejects a request body still sending it, rather than silently dropping\nit and creating an unrestricted key when the caller asked for a\nrestricted one.",
         "required": [
           "scopes"
         ],
         "properties": {
-          "dataset_id": {
+          "dataset_ids": {
             "type": [
-              "string",
+              "array",
               "null"
-            ]
+            ],
+            "items": {
+              "type": "string"
+            }
           },
           "name": {
             "type": [
@@ -5719,7 +5760,8 @@
               "type": "string"
             }
           }
-        }
+        },
+        "additionalProperties": false
       },
       "ManageCreateDatasetRequest": {
         "type": "object",
@@ -5766,7 +5808,18 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Deprecated: see [`ApiKeyResponse::dataset_id`].",
+            "deprecated": true
+          },
+          "dataset_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
           },
           "id": {
             "type": "string"
@@ -5961,14 +6014,21 @@
       },
       "ManageUpdateApiKeyRequest": {
         "type": "object",
-        "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched.",
+        "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`\nmirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular\n`dataset_id` field is rejected via `deny_unknown_fields` rather than\nsilently dropped.",
         "properties": {
-          "dataset_id": {
+          "clear_dataset_restriction": {
+            "type": "boolean",
+            "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request."
+          },
+          "dataset_ids": {
             "type": [
-              "string",
+              "array",
               "null"
             ],
-            "description": "Replacement dataset restriction."
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`."
           },
           "scopes": {
             "type": [
@@ -5980,7 +6040,8 @@
             },
             "description": "Replacement scope list (non-empty, drawn from the shared vocabulary)."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "MembershipResponse": {
         "type": "object",
@@ -7090,14 +7151,21 @@
       },
       "UpdateApiKeyRequest": {
         "type": "object",
-        "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated.",
+        "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated. The\nlegacy singular `dataset_id` field is not accepted (see\n[`CreateApiKeyRequest`]).",
         "properties": {
-          "dataset_id": {
+          "clear_dataset_restriction": {
+            "type": "boolean",
+            "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request."
+          },
+          "dataset_ids": {
             "type": [
-              "string",
+              "array",
               "null"
             ],
-            "description": "New dataset restriction."
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`."
           },
           "scopes": {
             "type": [
@@ -7109,7 +7177,8 @@
             },
             "description": "New scope list (replaces the current one; must be non-empty)."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "UpdateTenantRequest": {
         "type": "object",
