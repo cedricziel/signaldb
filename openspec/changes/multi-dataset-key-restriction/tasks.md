@@ -1,6 +1,6 @@
 ## 1. Storage + shared enforcement (common)
 
-- [ ] 1.1 Failing tests in `common::catalog`: creating an API key with
+- [x] 1.1 Failing tests in `common::catalog`: creating an API key with
       `dataset_ids: Some(vec!["a", "b"])` round-trips; `dataset_ids:
       Some(vec![])` is rejected at the catalog layer with a clear error on
       create; `dataset_ids: Some(vec!["production", "production"])` (a
@@ -26,7 +26,7 @@
       both SQLite and Postgres
       branches (`cargo test -p common`, plus the Postgres testcontainer
       suite)
-- [ ] 1.2 Implement: add the `dataset_ids` column on `api_keys` (SQLite
+- [x] 1.2 Implement: add the `dataset_ids` column on `api_keys` (SQLite
       `catalog.rs:198-232`, Postgres `525-546`), following the `scopes`
       JSON-array-in-TEXT pattern (D1) — including how `scopes` is populated
       today: encode with `serde_json::to_string(&[dataset_id])` in Rust and
@@ -65,7 +65,7 @@
       and assert `dataset_ids` now reflects the *new* `dataset_id` value —
       proving the race resolves itself on the next pass rather than
       wedging the row in an inconsistent state
-- [ ] 1.3 Failing tests: `dataset_allowed(None, "x")` is true;
+- [x] 1.3 Failing tests: `dataset_allowed(None, "x")` is true;
       `dataset_allowed(Some(&["a","b"]), "a")` is true,
       `dataset_allowed(Some(&["a","b"]), "c")` is false; a resolution-order
       test proves a request with no explicit dataset and a single-element
@@ -73,7 +73,7 @@
       `dataset_id.or(...)` behavior exactly), and the same with a
       two-element restriction is rejected rather than falling through to
       the tenant default (D4) (`cargo test -p common`)
-- [ ] 1.4 Implement `dataset_allowed` and the D4 resolution order in
+- [x] 1.4 Implement `dataset_allowed` and the D4 resolution order in
       `common::auth` (D3); replace the inline check in
       `Authenticator::authenticate_from_database`
       (`authenticator.rs:391-397`); `TenantContext.api_key_dataset_id` →
@@ -87,13 +87,13 @@
       `router/src/endpoints/discovery.rs` — all pass `None` today and need
       no new logic, only the renamed field/type, but must compile and their
       existing tests must still pass
-- [ ] 1.5 Failing tests: an OAuth-authenticated request whose token carries a
+- [x] 1.5 Failing tests: an OAuth-authenticated request whose token carries a
       dataset restriction is denied for a dataset outside it and allowed for
       one inside it; a token with no restriction (including every token
       issued before this change) reaches every dataset; a token restricted
       to two datasets with no explicit request dataset is rejected, same as
       the API-key case in 1.3 (`cargo test -p common`)
-- [ ] 1.6 Implement: add `dataset_ids` column to `oauth_authorization_codes`,
+- [x] 1.6 Implement: add `dataset_ids` column to `oauth_authorization_codes`,
       `oauth_access_tokens`, `oauth_refresh_tokens` (SQLite `catalog.rs:
       406-482`, Postgres `710-782`); thread through
       `create_authorization_code`/`create_access_token`/
@@ -105,7 +105,7 @@
 
 ## 2. Router: admin + management APIs
 
-- [ ] 2.1 Failing router tests (`cargo test -p router`): create/update an API
+- [x] 2.1 Failing router tests (`cargo test -p router`): create/update an API
       key via the admin API with `dataset_ids: ["a", "b"]`; the key
       authenticates against dataset `a` and `b` but is refused for `c`;
       `dataset_ids: []` is rejected with a validation error on both create
@@ -132,7 +132,7 @@
       clearing, and an unrestricted key are all still accepted; the same
       two-or-more-datasets request succeeds once the test harness sets the
       config key to `true`
-- [ ] 2.2 Implement: `endpoints/admin.rs` (586-620 create, 656-737 update,
+- [x] 2.2 Implement: `endpoints/admin.rs` (586-620 create, 656-737 update,
       752-761 response mapping), `endpoints/management.rs` (403-433 create
       DTOs, 509-536 create handler, 573-580 update DTO, 603-668 update
       handler, and `authorize_tenant`/`can_manage` at 61-80 refusing a
@@ -159,7 +159,7 @@
 
 ## 3. Router: OAuth consent + tokens
 
-- [ ] 3.1 Failing router tests (`cargo test -p router`):
+- [x] 3.1 Failing router tests (`cargo test -p router`):
       `GET /oauth/consent/context` includes each tenant's dataset list;
       `POST /oauth/authorize/decision` accepts `dataset_ids: null`/omitted
       (unrestricted) and a non-empty `dataset_ids` naming only datasets the
@@ -184,7 +184,7 @@
       stricter OAuth rule, since OAuth has no legacy column at all — while
       omitting `dataset_ids` ("all datasets") is still accepted; the same
       restricted decision succeeds once the config key is set to `true`
-- [ ] 3.2 Implement: `ConsentContextResponse`/`ConsentTenant` gain a
+- [x] 3.2 Implement: `ConsentContextResponse`/`ConsentTenant` gain a
       `datasets: Vec<ConsentDataset>` field per tenant (`oauth.rs:605-621`,
       handler 640-715); `ConsentDecision` gains
       `dataset_ids: Option<Vec<String>>` with `#[serde(default)]`
@@ -204,7 +204,7 @@
 
 ## 4. CLI
 
-- [ ] 4.1 Failing test: `admin api-key create acme --name ci --dataset
+- [x] 4.1 Failing test: `admin api-key create acme --name ci --dataset
       production --dataset staging` and `tenant api-key create --dataset
       production --dataset staging` are accepted; `update` accepts the same
       repeated flag to replace a restriction, and a separate
@@ -213,7 +213,7 @@
       `--clear-dataset-restriction` on the same `update` invocation is a
       CLI-level argument error, not merely a server-side rejection; omitting
       both leaves the restriction unchanged
-- [ ] 4.2 Implement: `signaldb-cli/src/commands/api_key.rs` — `--dataset`
+- [x] 4.2 Implement: `signaldb-cli/src/commands/api_key.rs` — `--dataset`
       becomes a repeatable flag (`Vec<String>`) on `Create`/`Update`, a new
       `--clear-dataset-restriction` boolean flag on `Update` only, both
       wired to the regenerated SDK's `dataset_ids`/`clear_dataset_restriction`
@@ -227,7 +227,7 @@
 
 ## 5. MCP
 
-- [ ] 5.1 Failing tests then implement (`cargo test -p mcp-server`):
+- [x] 5.1 Failing tests then implement (`cargo test -p mcp-server`):
       `CreateApiKeyParams`, `TenantCreateApiKeyParams` take
       `dataset_ids: Option<Vec<String>>`; `UpdateApiKeyScopesParams`,
       `TenantUpdateApiKeyParams` take both `dataset_ids: Option<Vec<String>>`
@@ -236,7 +236,7 @@
       `clear_dataset_restriction: true` before making any router request; a
       mock-router test proves the fields are forwarded correctly; tool
       descriptions mention the set restriction and the clear flag
-- [ ] 5.2 Failing tests then implement: `discover_datasets` and
+- [x] 5.2 Failing tests then implement: `discover_datasets` and
       `tenant_list_tables` filter their dataset/table listing to the
       caller's `api_key_dataset_ids`/OAuth restriction when one is present,
       unchanged when absent (D10); a test with a dataset-restricted
@@ -245,12 +245,12 @@
 
 ## 6. UI
 
-- [ ] 6.1 Failing test then implement: the API-key creation/update form's
+- [x] 6.1 Failing test then implement: the API-key creation/update form's
       dataset selector becomes a multi-select with an explicit "clear
       restriction" control distinct from "select no datasets" (`pnpm
       --filter signaldb-ui test`); the key list shows the set (or
       "unrestricted")
-- [ ] 6.2 Failing test then implement: the OAuth consent page shows an
+- [x] 6.2 Failing test then implement: the OAuth consent page shows an
       explicit "all datasets" (default) vs. "only these datasets" choice
       under the selected tenant (D5); the checklist only renders, and the
       submit control is only enabled, in the "only these" state with at
@@ -259,7 +259,7 @@
 
 ## 7. Integration + docs
 
-- [ ] 7.1 tests-integration e2e: an API key restricted to `[production]`
+- [x] 7.1 tests-integration e2e: an API key restricted to `[production]`
       queries `production` successfully and is refused for `staging`; the
       same for an OAuth token issued with a dataset restriction through the
       full DCR flow, including a refresh that preserves the restriction
@@ -288,7 +288,7 @@
       compat endpoint with `X-Dataset-ID: staging` and is refused — proving
       the restriction is enforced in the shared `Authenticator` on the
       acceptor/router HTTP path, not only through the MCP tool wrapper
-- [ ] 7.2 Docs (route via the docs skill): `docs/users/authentication.md`
+- [x] 7.2 Docs (route via the docs skill): `docs/users/authentication.md`
       (dataset-set restriction, both API keys and OAuth, the
       omit/`[]`-is-invalid/explicit-clear contract, and the mixed-version
       rollout constraint from D2 — stated per credential type, since they
@@ -305,7 +305,7 @@
       part of this change) to drop the deprecated `dataset_id` response
       field (D8) and the legacy `dataset_id` column (D2) once callers have
       migrated
-- [ ] 7.3 `cargo fmt`, `cargo clippy --workspace --all-targets
+- [x] 7.3 `cargo fmt`, `cargo clippy --workspace --all-targets
       --all-features`, `cargo machete --with-metadata`; `pnpm --filter
       signaldb-ui lint && test`; `openspec validate
       multi-dataset-key-restriction --type change --strict` (if the
