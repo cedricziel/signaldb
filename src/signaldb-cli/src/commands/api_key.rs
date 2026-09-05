@@ -253,7 +253,13 @@ mod tests {
     #[test]
     fn create_without_dataset_flag_is_unrestricted() {
         let parsed = Harness::try_parse_from([
-            "h", "create", "acme", "--name", "ci", "--scope", "traces:write",
+            "h",
+            "create",
+            "acme",
+            "--name",
+            "ci",
+            "--scope",
+            "traces:write",
         ])
         .expect("parses");
         match parsed.action {
@@ -288,8 +294,9 @@ mod tests {
 
     #[test]
     fn update_without_dataset_flag_leaves_restriction_unchanged() {
-        let parsed = Harness::try_parse_from(["h", "update", "acme", "k1", "--scope", "logs:write"])
-            .expect("parses");
+        let parsed =
+            Harness::try_parse_from(["h", "update", "acme", "k1", "--scope", "logs:write"])
+                .expect("parses");
         match parsed.action {
             ApiKeyAction::Update { dataset, .. } => assert_eq!(dataset, None),
             _ => panic!("expected update"),
@@ -298,14 +305,9 @@ mod tests {
 
     #[test]
     fn update_accepts_clear_dataset_restriction_alone() {
-        let parsed = Harness::try_parse_from([
-            "h",
-            "update",
-            "acme",
-            "k1",
-            "--clear-dataset-restriction",
-        ])
-        .expect("parses");
+        let parsed =
+            Harness::try_parse_from(["h", "update", "acme", "k1", "--clear-dataset-restriction"])
+                .expect("parses");
         match parsed.action {
             ApiKeyAction::Update {
                 dataset,
