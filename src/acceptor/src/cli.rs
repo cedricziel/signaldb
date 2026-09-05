@@ -15,10 +15,18 @@ pub struct Args {
     #[command(subcommand)]
     pub command: Option<AcceptorCommands>,
 
-    #[arg(long, help = "OTLP gRPC server port", default_value = "4317")]
+    #[arg(
+        long,
+        help = "OTLP gRPC server port",
+        default_value_t = common::endpoints::DEFAULT_OTLP_GRPC_PORT
+    )]
     pub grpc_port: u16,
 
-    #[arg(long, help = "OTLP HTTP server port", default_value = "4318")]
+    #[arg(
+        long,
+        help = "OTLP HTTP server port",
+        default_value_t = common::endpoints::DEFAULT_OTLP_HTTP_PORT
+    )]
     pub http_port: u16,
 
     #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
