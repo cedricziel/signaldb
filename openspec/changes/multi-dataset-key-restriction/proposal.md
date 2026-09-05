@@ -130,7 +130,11 @@ migration in `design.md` D2.
   `acceptor/src/lib.rs`, `acceptor/src/handler/prometheus_handler.rs`, every
   `acceptor/src/services/otlp_*_service.rs`, `router/src/read_scope.rs`,
   `router/src/endpoints/query.rs`, and `router/src/endpoints/discovery.rs`
-  (D3) — a rename, not new logic, but real compile-time fan-out.
+  (D3) — a rename, not new logic, but real compile-time fan-out. A new
+  `[auth].dataset_restriction_rollout_complete` config key (default
+  `false`) gates the mixed-version-unsafe cases (D2's operational
+  constraint) at the request boundary rather than relying on operator
+  discipline alone.
 - **router**: `endpoints/admin.rs`, `endpoints/management.rs` (create/update
   API key handlers, response mapping, and `authorize_tenant`/`can_manage`
   refusing a dataset-restricted principal per D9), `endpoints/oauth.rs`

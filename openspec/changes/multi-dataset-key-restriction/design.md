@@ -258,6 +258,26 @@ choice on the consent screen in production, or accept that a
 dataset-restricted connector authorized mid-rollout may reach more than it
 was granted until the rollout finishes.
 
+This constraint is deliberately backed by an enforceable gate, not
+documentation alone: a new `[auth].dataset_restriction_rollout_complete`
+config key (`SIGNALDB_AUTH_DATASET_RESTRICTION_ROLLOUT_COMPLETE`), default
+`false`, following the existing defaults → TOML → environment precedence.
+While `false` — the conservative, safe-by-default state a fresh deploy and
+every existing deployment upgrading into this change start in — the server
+rejects at the request boundary (not merely warns): a `dataset_ids` with
+two or more elements on any API-key create/update, and a `dataset_ids`
+consent decision on the OAuth authorization endpoint (any non-empty
+selection, per the stricter OAuth rule); both surfaces still accept the
+already-safe cases (single-element and unrestricted API keys; "all
+datasets" OAuth consent) regardless of the flag. An operator sets it to
+`true` only once they've confirmed every node that will authenticate that
+credential type is running the new binary — this is an operational
+attestation this change cannot verify automatically (there is no
+cross-node version-negotiation protocol in this codebase to check it
+against), so the gate's job is to make the unsafe path require a
+deliberate, documented, reversible opt-in instead of being reachable by
+default the moment the schema migration lands.
+
 **D2b — The tri-state update at the catalog layer.** Today's
 `update_api_key_scopes` takes `dataset_id: Option<&str>` and writes it with
 `COALESCE(?, dataset_id)` (`catalog.rs:2348-2384`) — a two-state
@@ -505,11 +525,17 @@ CodeRabbit's review read the existing text as implying otherwise).
   low-friction (the default radio choice matches today's only behavior
   exactly), and it only appears after a tenant is already chosen, so
   single-tenant users see one extra, skippable control.
-- [A multi-dataset restriction is unsafe to create mid-rollout] → documented
-  explicitly in D2 as an operational constraint, not silently risked: single
-  -dataset and unrestricted credentials are safe throughout a mixed-version
-  deploy and a rollback at any point; only genuinely new multi-element
-  restrictions require the rollout to finish first.
+- [A dataset restriction is unsafe to create mid-rollout] → documented
+  explicitly in D2 as an operational constraint, not silently risked, and
+  the constraint differs by credential type because only API keys have a
+  legacy column to fall back to: for API keys, single-dataset and
+  unrestricted credentials are safe throughout a mixed-version deploy and a
+  rollback at any point, and only a genuinely new multi-element restriction
+  requires the rollout to finish first; for OAuth tokens, which have no
+  legacy dataset column at all, *any* non-empty restriction — including a
+  single-dataset one — is unsafe until every authenticating node runs the
+  new binary, because no old binary has ever enforced a token's dataset
+  restriction and has nothing to fall back to.
 - [`dataset_id` response field removal breaks an existing reader] → D8's
   deprecated derived field covers every case such a reader already
   understood (single dataset, unrestricted); only a caller that starts
@@ -524,9 +550,24 @@ columns land on next boot; the one-time backfill (D2) only ever touches a
 row untouched since before this change, because new code keeps both
 columns consistent on every write it makes. Rollback = revert to the prior
 binary; because of D2's dual-write, old code's reads of `dataset_id` remain
-correct for every key it created or updated (unrestricted and
+correct for every API key it created or updated (unrestricted and
 single-dataset), and for every key new code touched *unless* it was set to
 a multi-element restriction, per the documented mixed-version limitation
-above. Operators completing a rollout should avoid creating or updating any
-key/token to a multi-element restriction until it is complete; nothing else
-about this migration requires a maintenance window or manual intervention.
+above. OAuth tokens have no such fallback: a rollback while any
+dataset-restricted OAuth token is still valid means every node is now
+running a binary that has never enforced dataset restriction on OAuth
+tokens at all, so such a token is treated as fully unrestricted for the
+rest of its lifetime (until it expires or is revoked) rather than merely
+"stale" — this is the same one-directional risk D2 already documents for
+issuing such a token mid-rollout, and rollback is the same exposure
+working backwards. The enforceable operational gate this change asks
+operators to observe, stated once: don't enable the OAuth consent screen's
+"only these datasets" choice in production, and don't create or update an
+API key to a multi-element restriction, until every node that will
+authenticate that credential type is confirmed running the new binary;
+and don't roll back past that point while a dataset-restricted OAuth token
+issued under new code can still be valid (multi-element API-key
+restrictions are the only API-key case with the same rollback exposure —
+single-dataset and unrestricted API keys have no rollback constraint at
+all). Nothing else about this migration requires a maintenance window or
+manual intervention.

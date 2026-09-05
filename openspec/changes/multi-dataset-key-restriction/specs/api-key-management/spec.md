@@ -63,6 +63,42 @@ concept and are unaffected by this requirement.
   a dataset explicitly, rather than silently resolving to the tenant's
   default dataset
 
+### Requirement: A multi-element restriction is gated behind a rollout-complete flag
+
+Creating or replacing a key's restriction with two or more datasets SHALL
+be rejected unless the `[auth].dataset_restriction_rollout_complete`
+config key is `true`. This key defaults to `false`, so a fresh deployment
+and every existing deployment upgrading into this capability start in the
+safe state without operator action. A single-dataset restriction,
+clearing a restriction, and an unrestricted key are unaffected by this
+flag in either state, since those are the cases a legacy `dataset_id`
+column can represent and are therefore safe throughout a mixed-version
+rollout (see `design.md` D2's operational constraint). An operator sets
+the flag to `true` only after confirming every node that authenticates
+API keys is running code that reads `dataset_ids`.
+
+#### Scenario: A multi-element restriction is refused before rollout is confirmed complete
+
+- **WHEN** `[auth].dataset_restriction_rollout_complete` is `false` (the
+  default) and a request creates or updates a key with `dataset_ids`
+  naming two or more datasets
+- **THEN** the request is rejected with a validation error naming the
+  config key, and no key is created or changed
+
+#### Scenario: The safe cases are unaffected by the flag
+
+- **WHEN** `[auth].dataset_restriction_rollout_complete` is `false` and a
+  request creates or updates a key with a single-element `dataset_ids`,
+  clears an existing restriction, or creates an unrestricted key
+- **THEN** the request succeeds exactly as it would with the flag `true`
+
+#### Scenario: A multi-element restriction succeeds once rollout is confirmed complete
+
+- **WHEN** an operator sets `[auth].dataset_restriction_rollout_complete`
+  to `true` and a request creates or updates a key with `dataset_ids`
+  naming two or more datasets
+- **THEN** the request succeeds
+
 ## MODIFIED Requirements
 
 ### Requirement: Scopes are selectable on every key-management surface

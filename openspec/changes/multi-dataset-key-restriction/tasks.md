@@ -125,12 +125,22 @@
       rejected with a validation error naming the field and pointing at
       `dataset_ids`, on both the admin and management API — it is never
       silently dropped, since a dropped restriction would create an
-      unrestricted key when the caller asked for a restricted one
+      unrestricted key when the caller asked for a restricted one; with
+      `[auth].dataset_restriction_rollout_complete` at its default `false`,
+      a create/update naming two or more datasets is rejected with an
+      error naming the config key, while a single-dataset restriction,
+      clearing, and an unrestricted key are all still accepted; the same
+      two-or-more-datasets request succeeds once the test harness sets the
+      config key to `true`
 - [ ] 2.2 Implement: `endpoints/admin.rs` (586-620 create, 656-737 update,
       752-761 response mapping), `endpoints/management.rs` (403-433 create
       DTOs, 509-536 create handler, 573-580 update DTO, 603-668 update
       handler, and `authorize_tenant`/`can_manage` at 61-80 refusing a
-      dataset-restricted principal per D9), `signaldb-api/src/schemas.rs`
+      dataset-restricted principal per D9), the new
+      `[auth].dataset_restriction_rollout_complete` config key (`common`
+      config struct, defaults → TOML → env precedence per existing
+      pattern) read by both handlers to gate a two-or-more-element
+      `dataset_ids` before any persistence, `signaldb-api/src/schemas.rs`
       DTOs (`CreateApiKeyRequest`, `UpdateApiKeyRequest` gain
       `dataset_ids: Option<Vec<String>>` and, on the update DTO,
       `clear_dataset_restriction: bool`, and both request DTOs get
@@ -168,13 +178,21 @@
       coincidentally passing, and assert the dataset set on the new refresh
       token explicitly (not just the new access token), since a fix that
       only propagates to the access token would pass a test that checks
-      only that token
+      only that token; with `[auth].dataset_restriction_rollout_complete`
+      at its default `false`, a consent decision naming *any* non-empty
+      `dataset_ids` is rejected with an error naming the config key — the
+      stricter OAuth rule, since OAuth has no legacy column at all — while
+      omitting `dataset_ids` ("all datasets") is still accepted; the same
+      restricted decision succeeds once the config key is set to `true`
 - [ ] 3.2 Implement: `ConsentContextResponse`/`ConsentTenant` gain a
       `datasets: Vec<ConsentDataset>` field per tenant (`oauth.rs:605-621`,
       handler 640-715); `ConsentDecision` gains
       `dataset_ids: Option<Vec<String>>` with `#[serde(default)]`
       (`oauth.rs:395-417`), validated against the chosen tenant's datasets
-      and rejecting an empty array; `create_authorization_code`/token
+      and rejecting an empty array, and — before that validation — checked
+      against `[auth].dataset_restriction_rollout_complete` (same config
+      key task 2.2 introduces), rejecting any non-empty selection while
+      the key is `false`; `create_authorization_code`/token
       issuance persist the set; the refresh-grant handler reads the set
       from the presented `oauth_refresh_tokens` row and writes it onto both
       the new access token and the new replacement refresh token it mints

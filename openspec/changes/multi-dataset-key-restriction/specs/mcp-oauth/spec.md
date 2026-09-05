@@ -191,3 +191,36 @@ scope grants tenant self-management to API keys").
 - **WHEN** a user who is a tenant admin authorizes a connector with "all
   datasets" selected, and that connector calls a management-API operation
 - **THEN** the operation succeeds exactly as it does today
+
+### Requirement: A restricted grant is gated behind a rollout-complete flag
+
+A consent decision naming a non-empty `dataset_ids` set SHALL be rejected
+unless the `[auth].dataset_restriction_rollout_complete` config key is
+`true`. This is stricter than the equivalent API-key gate: OAuth tokens
+have no legacy dataset column at all (see `design.md` D2), so no old
+binary has ever enforced a token's dataset restriction — even a
+single-dataset OAuth restriction is unsafe until every node authenticating
+OAuth tokens is running code that enforces `dataset_ids`. Choosing "all
+datasets" is unaffected by this flag in either state.
+
+#### Scenario: A restricted consent decision is refused before rollout is confirmed complete
+
+- **WHEN** `[auth].dataset_restriction_rollout_complete` is `false` (the
+  default) and a consent decision selects "only these datasets" naming one
+  or more datasets
+- **THEN** the decision is rejected with an error naming the config key,
+  and no authorization code is issued
+
+#### Scenario: Choosing all datasets is unaffected by the flag
+
+- **WHEN** `[auth].dataset_restriction_rollout_complete` is `false` and a
+  consent decision selects "all datasets"
+- **THEN** the decision succeeds exactly as it would with the flag `true`
+
+#### Scenario: A restricted consent decision succeeds once rollout is confirmed complete
+
+- **WHEN** an operator sets `[auth].dataset_restriction_rollout_complete`
+  to `true` and a consent decision selects "only these datasets" naming
+  one or more datasets
+- **THEN** the decision succeeds and the issued authorization code carries
+  that restriction
