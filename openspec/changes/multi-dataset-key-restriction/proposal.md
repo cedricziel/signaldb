@@ -39,10 +39,12 @@ tenant.
   same check against the token's stored dataset set. A dataset-restricted
   credential also loses access to the management API entirely (`design.md`
   D9) — a narrower grant does not get a workaround path to widen itself by
-  creating or updating other credentials — and every dataset-listing
-  surface (`discover_datasets`, `whoami`, `manage_list_datasets`) filters to
-  the caller's restriction so a restricted credential can't enumerate
-  datasets it cannot reach (`design.md` D10).
+  creating or updating other credentials — and the tenant self-service
+  dataset-listing surfaces (`discover_datasets`, `whoami`) filter to the
+  caller's restriction so a restricted credential can't enumerate datasets
+  it cannot reach (`design.md` D10; the management API's own dataset
+  listing needs no separate filter, since D9 already refuses it outright to
+  any restricted credential).
 - Config-based (TOML) tenants/keys are unaffected — `ApiKeyConfig` has no
   dataset restriction concept today and this change does not add one there;
   the feature is database-tenant-only, matching the existing scope of
@@ -51,9 +53,16 @@ tenant.
 **This change includes a BREAKING request-schema change**, marked as such
 per OpenSpec convention: the `dataset_id` request field on every
 create/update API-key endpoint and the OAuth `ConsentDecision` becomes
-`dataset_ids`, and any direct HTTP caller or unregenerated SDK build that
-sends the old field name gets rejected or silently ignored, not migrated.
-The blast radius is deliberately narrowed on the read side: responses keep
+`dataset_ids`. This is deliberately a hard break, not a silent one: every
+affected request DTO rejects an unrecognized `dataset_id` field outright
+(a validation error naming the field and pointing at `dataset_ids`) rather
+than deserializing permissively and dropping it — permissive deserialization
+here is actively dangerous, not just an inconvenience, because a caller
+that sent `dataset_id` meaning "restrict this key" would otherwise get an
+**unrestricted** key back with no error at all. Every producer of a
+create/update request must move to `dataset_ids` before this change reaches
+it; there is no silent-fallback path. The blast radius is deliberately
+narrowed on the read side only: responses keep
 a deprecated, best-effort `dataset_id` field for one release (`design.md`
 D8) so an existing reader that only ever saw a single dataset or
 "unrestricted" sees no change; an existing *key's* stored restriction and

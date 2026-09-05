@@ -3,7 +3,12 @@
 - [ ] 1.1 Failing tests in `common::catalog`: creating an API key with
       `dataset_ids: Some(vec!["a", "b"])` round-trips; `dataset_ids:
       Some(vec![])` is rejected at the catalog layer with a clear error on
-      create; an existing key created before this change (legacy
+      create; `dataset_ids: Some(vec!["production", "production"])` (a
+      duplicate name within the same set) is rejected at the catalog layer
+      rather than silently deduplicated — a duplicate that collapsed
+      unnoticed to one element would make a restricted key look
+      unrestricted to the legacy single-`dataset_id` projection (D1a); an
+      existing key created before this change (legacy
       `dataset_id` column populated) reads back as `dataset_ids:
       Some(vec![<value>])`; the `DatasetRestrictionUpdate` tri-state
       (`Keep`/`Clear`/`Set`) is exercised directly against
@@ -17,9 +22,14 @@
       suite)
 - [ ] 1.2 Implement: add the `dataset_ids` column on `api_keys` (SQLite
       `catalog.rs:198-232`, Postgres `525-546`), following the `scopes`
-      JSON-array-in-TEXT pattern (D1); dual-read (`dataset_ids` if non-NULL,
-      else derive from `dataset_id`) and dual-write (every write sets both
-      columns per D2's projection) rather than a one-shot migration off
+      JSON-array-in-TEXT pattern (D1) — including how `scopes` is populated
+      today: encode with `serde_json::to_string(&[dataset_id])` in Rust and
+      bind the result as a parameter, never a SQL-side JSON constructor
+      (e.g. `json_array(...)`), which this codebase does not use anywhere
+      and which is not portable across the SQLite/Postgres backfill
+      branches (D2); dual-read (`dataset_ids` if non-NULL, else derive from
+      `dataset_id`) and dual-write (every write sets both columns per D2's
+      projection) rather than a one-shot migration off
       `dataset_id`; the idempotent backfill only ever touches a row neither
       column has been written to since this change; define
       `enum DatasetRestrictionUpdate { Keep, Clear, Set(Vec<String>) }` in
@@ -83,7 +93,12 @@
       cases through the management API; a key carrying `tenant:manage` and
       a non-empty `dataset_ids` is refused by every management-API endpoint
       (D9) — assert this against at least `manage_create_api_key` and
-      `manage_delete_dataset`, not just one
+      `manage_delete_dataset`, not just one; a create/update request body
+      carrying the legacy `dataset_id` field (instead of `dataset_ids`) is
+      rejected with a validation error naming the field and pointing at
+      `dataset_ids`, on both the admin and management API — it is never
+      silently dropped, since a dropped restriction would create an
+      unrestricted key when the caller asked for a restricted one
 - [ ] 2.2 Implement: `endpoints/admin.rs` (586-620 create, 656-737 update,
       752-761 response mapping), `endpoints/management.rs` (403-433 create
       DTOs, 509-536 create handler, 573-580 update DTO, 603-668 update
@@ -91,7 +106,11 @@
       dataset-restricted principal per D9), `signaldb-api/src/schemas.rs`
       DTOs (`CreateApiKeyRequest`, `UpdateApiKeyRequest` gain
       `dataset_ids: Option<Vec<String>>` and, on the update DTO,
-      `clear_dataset_restriction: bool`; `CreateApiKeyResponse`,
+      `clear_dataset_restriction: bool`, and both request DTOs get
+      `#[serde(deny_unknown_fields)]` (or an equivalent explicit rejection)
+      so a request still sending the removed `dataset_id` field fails
+      deserialization naming that field, per D8/proposal's breaking-change
+      section, rather than silently ignoring it; `CreateApiKeyResponse`,
       `ApiKeyResponse` gain `dataset_ids` and keep a deprecated
       `dataset_id: Option<String>` derived per D8, 86-142); utoipa
       descriptions marking `dataset_id` deprecated on responses and absent
@@ -113,19 +132,26 @@
       set; a decision omitting `dataset_ids` entirely (simulating a client
       built before this change) is accepted and yields an unrestricted
       grant — the `#[serde(default)]` case; refreshing a token preserves its
-      dataset set by reading it from the `oauth_refresh_tokens` row used for
-      the refresh, not from any access token (D6) — construct the test so
-      the original access token is already gone/expired when refresh
-      happens, so a wrong implementation that tries to read it fails
-      loudly instead of coincidentally passing
+      dataset set on **both** of the tokens the refresh grant mints — the
+      new access token and the new replacement refresh token — by reading
+      it from the `oauth_refresh_tokens` row used for the refresh, not from
+      any access token (D6) — construct the test so the original access
+      token is already gone/expired when refresh happens, so a wrong
+      implementation that tries to read it fails loudly instead of
+      coincidentally passing, and assert the dataset set on the new refresh
+      token explicitly (not just the new access token), since a fix that
+      only propagates to the access token would pass a test that checks
+      only that token
 - [ ] 3.2 Implement: `ConsentContextResponse`/`ConsentTenant` gain a
       `datasets: Vec<ConsentDataset>` field per tenant (`oauth.rs:605-621`,
       handler 640-715); `ConsentDecision` gains
       `dataset_ids: Option<Vec<String>>` with `#[serde(default)]`
       (`oauth.rs:395-417`), validated against the chosen tenant's datasets
       and rejecting an empty array; `create_authorization_code`/token
-      issuance persist the set; the refresh-grant handler reads it from the
-      `oauth_refresh_tokens` row (D6); immediately regenerate the OpenAPI
+      issuance persist the set; the refresh-grant handler reads the set
+      from the presented `oauth_refresh_tokens` row and writes it onto both
+      the new access token and the new replacement refresh token it mints
+      (D6); immediately regenerate the OpenAPI
       spec, Rust SDK, and UI TypeScript client (same command as 2.2) — this
       task changes `#[utoipa::path]`-annotated types a second time and the
       golden `openapi_spec_is_up_to_date` test goes red again until it's
@@ -199,11 +225,22 @@
       rather than silently resolving to the tenant default (D4); a key
       carrying `tenant:manage` and a dataset restriction is refused by the
       management API end-to-end (D9); `discover_datasets` for a restricted
-      credential never lists a dataset outside its restriction (D10)
+      credential never lists a dataset outside its restriction (D10); an
+      OAuth access token restricted to `[production]` is presented directly
+      (bearer token, no MCP involved) against a Tempo/Loki/Prometheus
+      compat endpoint with `X-Dataset-ID: staging` and is refused — proving
+      the restriction is enforced in the shared `Authenticator` on the
+      acceptor/router HTTP path, not only through the MCP tool wrapper
 - [ ] 7.2 Docs (route via the docs skill): `docs/users/authentication.md`
       (dataset-set restriction, both API keys and OAuth, the
-      omit/`[]`-is-invalid/explicit-clear contract, and the
-      multi-element-restriction mixed-version rollout constraint from D2);
+      omit/`[]`-is-invalid/explicit-clear contract, and the mixed-version
+      rollout constraint from D2 — stated per credential type, since they
+      differ: an API key is only unsafe mid-rollout once it names *more
+      than one* dataset, because a single-element restriction still has a
+      legacy `dataset_id` column an old node can fall back to, while an
+      OAuth token has no such legacy column at all, so *any* non-empty
+      OAuth dataset restriction is unsafe until every authenticating node
+      runs the new code);
       `docs/users/mcp.md` (`dataset_ids`/`clear_dataset_restriction` on the
       key-management tools, `discover_datasets`/`tenant_list_tables`
       filtering); update the `multi-tenancy` skill (`Optional dataset the

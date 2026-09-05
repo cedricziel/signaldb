@@ -101,14 +101,20 @@ mismatched code.
 
 ### Requirement: Tenant is bound to the token and absent from the agent surface
 
-The authorization server SHALL resolve the tenant for an OAuth-authenticated
-MCP request solely from the presented access token. The tenant SHALL NOT be
-taken from an `X-Tenant-ID` header or any MCP tool argument for OAuth
-sessions, and there SHALL be no request-controllable way to widen a token
-beyond the single tenant it was granted, or — when the token carries a
-dataset restriction — beyond that restriction's dataset set. Reaching a
-second tenant, or a dataset outside a restricted token's set, requires a
-separate authorization (a separate token or a re-consented one).
+The authorization server SHALL resolve the tenant for **every** request
+authenticated by an OAuth access token solely from the presented token —
+this applies uniformly regardless of which surface the request arrives
+through: the MCP tool interface, or a direct HTTP call against the
+Tempo/Loki/Prometheus/Pyroscope-compatible query endpoints using the same
+bearer token (both go through the same `Authenticator`, per `design.md`
+D3, so this is one enforcement point, not one per surface). The tenant
+SHALL NOT be taken from an `X-Tenant-ID` header or any MCP tool argument
+for OAuth sessions, and there SHALL be no request-controllable way to
+widen a token beyond the single tenant it was granted, or — when the token
+carries a dataset restriction — beyond that restriction's dataset set,
+on any surface. Reaching a second tenant, or a dataset outside a
+restricted token's set, requires a separate authorization (a separate
+token or a re-consented one).
 
 #### Scenario: Requests act on the token's tenant regardless of headers
 
@@ -144,6 +150,15 @@ separate authorization (a separate token or a re-consented one).
   tool naming any dataset that exists in the token's tenant
 - **THEN** the call succeeds — identical to this authorization server's
   behavior for every token issued before this requirement existed
+
+#### Scenario: Dataset restriction is enforced on direct HTTP calls, not only MCP tools
+
+- **WHEN** a client holding a token restricted to `["production"]` presents
+  it as a bearer token directly against a Tempo/Loki/Prometheus-compatible
+  HTTP endpoint with `X-Dataset-ID: staging`
+- **THEN** the call is refused with an authorization error, exactly as the
+  equivalent MCP tool call would be — the enforcement point is the shared
+  `Authenticator`, not an MCP-specific check
 
 ## ADDED Requirements
 
