@@ -3470,6 +3470,61 @@ mod tests {
         serde_json::from_str(&text.text).expect("tool result is JSON")
     }
 
+    /// Like [`mock_json_router`], but returns the full raw HTTP request text
+    /// (headers + body) it received instead of only asserting a prefix, so a
+    /// test can inspect the JSON body the client actually sent — e.g. proving
+    /// a parameter was forwarded rather than dropped.
+    async fn mock_capturing_router(
+        expected_prefix: &'static str,
+        response_body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 8192];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            let request = std::str::from_utf8(&request[..request_len])
+                .expect("request is UTF-8")
+                .to_string();
+            assert!(
+                request.starts_with(expected_prefix),
+                "unexpected request, wanted prefix {expected_prefix:?}: {request}"
+            );
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        response_body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write response headers");
+            socket
+                .write_all(response_body.as_bytes())
+                .await
+                .expect("write body");
+            request
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// Extract and parse the JSON body from a request captured by
+    /// [`mock_capturing_router`].
+    fn captured_json_body(request: &str) -> serde_json::Value {
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("request has a body");
+        serde_json::from_str(body).expect("request body is JSON")
+    }
+
     #[tokio::test]
     async fn discover_profile_types_lists_types_via_router() {
         let (base_url, router) = mock_json_router(
@@ -4494,6 +4549,235 @@ mod tests {
         assert!(
             result.completion.values.is_empty(),
             "a downstream failure must degrade to no suggestions, not an error"
+        );
+    }
+
+    // ---- API-key tool dataset_ids / clear_dataset_restriction (phase 5.1
+    // of multi-dataset-key-restriction) ----
+
+    #[tokio::test]
+    async fn create_api_key_forwards_dataset_ids() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/admin/tenants/acme/api-keys",
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","key":"secret","scopes":["traces:read"],"dataset_ids":["production","staging"]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .create_api_key(
+                Extension(valid_parts()),
+                Parameters(CreateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    name: None,
+                    scopes: vec!["traces:read".to_string()],
+                    dataset_ids: Some(vec!["production".to_string(), "staging".to_string()]),
+                }),
+            )
+            .await
+            .expect("create_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production", "staging"]));
+    }
+
+    #[tokio::test]
+    async fn tenant_create_api_key_forwards_dataset_ids() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/manage/tenants/acme/api-keys",
+            r#"{"id":"key-1","key":"secret","scopes":["traces:read"],"dataset_ids":["production"]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_create_api_key(
+                Parameters(TenantCreateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    name: None,
+                    scopes: vec!["traces:read".to_string()],
+                    dataset_ids: Some(vec!["production".to_string()]),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_create_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+    }
+
+    #[tokio::test]
+    async fn update_api_key_scopes_forwards_dataset_ids_and_clear_flag() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["production".to_string()]),
+                    clear_dataset_restriction: false,
+                }),
+            )
+            .await
+            .expect("update_api_key_scopes succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+    }
+
+    #[tokio::test]
+    async fn update_api_key_scopes_forwards_clear_dataset_restriction() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: true,
+                }),
+            )
+            .await
+            .expect("update_api_key_scopes succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["clear_dataset_restriction"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_forwards_dataset_ids_and_clear_flag() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["staging".to_string()]),
+                    clear_dataset_restriction: false,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_update_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["dataset_ids"], serde_json::json!(["staging"]));
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_forwards_clear_dataset_restriction() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: true,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_update_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["clear_dataset_restriction"], serde_json::json!(true));
+    }
+
+    /// D1a: `clear_dataset_restriction: true` together with a non-empty
+    /// `dataset_ids` is contradictory and must be rejected before any router
+    /// request is made — the router base URL is deliberately invalid so the
+    /// test fails loudly if the handler tries to reach it anyway.
+    #[tokio::test]
+    async fn update_api_key_scopes_rejects_contradictory_dataset_update_without_calling_router() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["production".to_string()]),
+                    clear_dataset_restriction: true,
+                }),
+            )
+            .await
+            .expect_err("a contradictory dataset_ids + clear_dataset_restriction must be rejected");
+
+        assert!(
+            err.message.contains("dataset_ids") && err.message.contains("clear_dataset_restriction"),
+            "got {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_rejects_contradictory_dataset_update_without_calling_router() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["production".to_string(), "staging".to_string()]),
+                    clear_dataset_restriction: true,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect_err("a contradictory dataset_ids + clear_dataset_restriction must be rejected");
+
+        assert!(
+            err.message.contains("dataset_ids") && err.message.contains("clear_dataset_restriction"),
+            "got {}",
+            err.message
         );
     }
 }
