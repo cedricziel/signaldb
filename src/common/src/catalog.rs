@@ -1482,38 +1482,89 @@ pub enum DatasetRestrictionUpdate {
 }
 
 impl DatasetRestrictionUpdate {
-    /// Bridge a legacy single-dataset request field to this tri-state,
-    /// matching the old two-state `COALESCE` semantics exactly: `Some`
-    /// sets a single-dataset restriction, `None` leaves the existing
-    /// restriction untouched.
+    /// Construct the tri-state update from an update request's two
+    /// dataset-restriction fields (D1a), validating their combination before
+    /// any catalog call:
     ///
-    /// TODO(multi-dataset-key-restriction phase 2): request DTOs grow a
-    /// `dataset_ids`/`clear_dataset_restriction` pair that constructs the
-    /// full tri-state directly; this bridge goes away once that lands.
-    pub fn from_legacy_single(dataset_id: Option<String>) -> Self {
-        match dataset_id {
-            Some(id) => Self::Set(vec![id]),
-            None => Self::Keep,
+    /// - `dataset_ids: Some(ids)` (non-empty) with `clear_dataset_restriction:
+    ///   false` → [`Self::Set`], replacing the restriction.
+    /// - `dataset_ids: None` with `clear_dataset_restriction: true` →
+    ///   [`Self::Clear`].
+    /// - Both absent/`false` → [`Self::Keep`], leaving the restriction
+    ///   untouched.
+    /// - An explicit empty array or a duplicate name is rejected
+    ///   unconditionally (via [`validate_dataset_id_set`]), regardless of
+    ///   `clear_dataset_restriction`.
+    /// - A non-empty `dataset_ids` combined with `clear_dataset_restriction:
+    ///   true` is rejected as a contradictory request.
+    ///
+    /// This is the single implementation of D1a's rule; the HTTP-layer
+    /// admin and management API handlers both call it rather than
+    /// re-approximating the same combination logic independently.
+    pub fn from_request(
+        dataset_ids: Option<Vec<String>>,
+        clear_dataset_restriction: bool,
+    ) -> Result<Self, sqlx::Error> {
+        match dataset_ids {
+            Some(ids) if !ids.is_empty() && clear_dataset_restriction => Err(sqlx::Error::Protocol(
+                "clear_dataset_restriction cannot be combined with a non-empty dataset_ids in the same request"
+                    .to_string(),
+            )),
+            Some(ids) => {
+                validate_dataset_id_set(&ids)?;
+                Ok(Self::Set(ids))
+            }
+            None if clear_dataset_restriction => Ok(Self::Clear),
+            None => Ok(Self::Keep),
         }
     }
 }
 
-/// Bridge a legacy single-dataset request field to the `Option<&[String]>`
-/// shape [`Catalog::upsert_scoped_api_key`] expects.
-///
-/// TODO(multi-dataset-key-restriction phase 2): request DTOs grow a
-/// `dataset_ids: Vec<String>` field directly; this single-to-slice bridge
-/// goes away once that lands.
-pub fn dataset_ids_from_legacy_single(dataset_id: Option<&String>) -> Option<&[String]> {
-    dataset_id.map(std::slice::from_ref)
+/// Validate a create request's `dataset_ids` field (D1a) ahead of
+/// [`Catalog::upsert_scoped_api_key`]: `None` stays `None` (unrestricted),
+/// `Some` is rejected up front when empty or duplicate-containing, via the
+/// same [`validate_dataset_id_set`] the catalog write path itself applies.
+pub fn validate_create_dataset_ids(
+    dataset_ids: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, sqlx::Error> {
+    match dataset_ids {
+        Some(ids) => {
+            validate_dataset_id_set(&ids)?;
+            Ok(Some(ids))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Reject `dataset_ids` naming two or more datasets while the mixed-version
+/// rollout gate (`[auth].dataset_restriction_rollout_complete`, D2) is not
+/// yet `true`. Single-element and unrestricted sets are unaffected by the
+/// flag; callers only invoke this for a non-empty, already-validated set
+/// (e.g. the `Set` arm of [`DatasetRestrictionUpdate`] or a create request's
+/// `dataset_ids`). Shared by the admin and management API create/update
+/// handlers so the "two or more" threshold and message can't drift between
+/// them.
+pub fn check_dataset_restriction_rollout_gate(
+    dataset_ids: &[String],
+    rollout_complete: bool,
+) -> Result<(), String> {
+    if dataset_ids.len() >= 2 && !rollout_complete {
+        return Err(format!(
+            "dataset_ids names {} datasets; multi-dataset API-key restrictions require \
+             [auth].dataset_restriction_rollout_complete = true (currently false)",
+            dataset_ids.len()
+        ));
+    }
+    Ok(())
 }
 
 /// Reject an empty or duplicate-containing dataset-id set (D1a). Shared by
 /// every path that writes a dataset-id set — the API-key create path
 /// (`upsert_scoped_api_key`), the API-key update path
-/// (`update_api_key_scopes`'s `Set` variant), and the OAuth grant paths —
-/// so none of them can drift into checking a different rule.
-fn validate_dataset_id_set(ids: &[String]) -> Result<(), sqlx::Error> {
+/// (`update_api_key_scopes`'s `Set` variant, via [`DatasetRestrictionUpdate::from_request`]),
+/// and the OAuth grant paths — so none of them can drift into checking a
+/// different rule.
+pub fn validate_dataset_id_set(ids: &[String]) -> Result<(), sqlx::Error> {
     if ids.is_empty() {
         return Err(sqlx::Error::Protocol(
             "dataset_ids must not be empty; omit the field (or send null) for an unrestricted key"
@@ -4559,6 +4610,50 @@ mod multi_tenancy_tests {
             .await
             .unwrap()
             .get("dataset_id")
+    }
+
+    #[test]
+    fn dataset_restriction_update_from_request_covers_every_combination() {
+        // Both absent -> Keep.
+        assert_eq!(
+            DatasetRestrictionUpdate::from_request(None, false).unwrap(),
+            DatasetRestrictionUpdate::Keep
+        );
+        // Non-empty ids, clear false -> Set.
+        assert_eq!(
+            DatasetRestrictionUpdate::from_request(Some(vec!["a".to_string()]), false).unwrap(),
+            DatasetRestrictionUpdate::Set(vec!["a".to_string()])
+        );
+        // No ids, clear true -> Clear.
+        assert_eq!(
+            DatasetRestrictionUpdate::from_request(None, true).unwrap(),
+            DatasetRestrictionUpdate::Clear
+        );
+        // Empty ids is rejected unconditionally, clear flag notwithstanding.
+        assert!(DatasetRestrictionUpdate::from_request(Some(vec![]), false).is_err());
+        assert!(DatasetRestrictionUpdate::from_request(Some(vec![]), true).is_err());
+        // Duplicate name is rejected, same as the catalog write path.
+        assert!(
+            DatasetRestrictionUpdate::from_request(
+                Some(vec!["a".to_string(), "a".to_string()]),
+                false
+            )
+            .is_err()
+        );
+        // Non-empty ids together with clear:true is a contradictory request.
+        assert!(DatasetRestrictionUpdate::from_request(Some(vec!["a".to_string()]), true).is_err());
+    }
+
+    #[test]
+    fn validate_create_dataset_ids_rejects_empty_and_duplicate_but_passes_through_none_and_valid_sets()
+     {
+        assert_eq!(validate_create_dataset_ids(None).unwrap(), None);
+        assert_eq!(
+            validate_create_dataset_ids(Some(vec!["a".to_string(), "b".to_string()])).unwrap(),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert!(validate_create_dataset_ids(Some(vec![])).is_err());
+        assert!(validate_create_dataset_ids(Some(vec!["a".to_string(), "a".to_string()])).is_err());
     }
 
     /// An on-disk SQLite catalog must run in WAL journal mode so that concurrent

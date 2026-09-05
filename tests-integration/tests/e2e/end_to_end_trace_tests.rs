@@ -158,6 +158,7 @@ async fn setup_services() -> TestServices {
         internal_service_key: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
 
     let wal_config = WalConfig {

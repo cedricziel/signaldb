@@ -109,6 +109,7 @@ async fn setup_test_services() -> TestServices {
         internal_service_key: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
 
     let wal_config = WalConfig {
@@ -1076,6 +1077,7 @@ async fn test_tempo_v2_trace_endpoint() {
         internal_service_key: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
     let state = RouterAppState::new(catalog, config);
 
@@ -1191,6 +1193,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         internal_service_key: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
 
     // Create WAL configs for both tenants

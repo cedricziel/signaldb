@@ -179,6 +179,7 @@ async fn setup_prometheus_test_with_wal() -> (axum::Router, Arc<WalManager>, Tem
             schema_config: None,
             limits: None,
         }],
+        dataset_restriction_rollout_complete: false,
     };
 
     // Initialize service bootstrap

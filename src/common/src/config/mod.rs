@@ -916,6 +916,23 @@ pub struct AuthConfig {
     /// network.
     #[serde(default)]
     pub internal_service_key: Option<String>,
+    /// Operational gate for the multi-dataset-key-restriction rollout (D2).
+    ///
+    /// While `false` (the default, safe-by-default for a fresh deploy and
+    /// every existing deployment upgrading into this feature), the server
+    /// rejects at the request boundary any API-key create/update naming two
+    /// or more datasets in `dataset_ids`, and any OAuth consent decision
+    /// naming a non-empty `dataset_ids`. Single-element and unrestricted API
+    /// keys, and "all datasets" OAuth consent, are unaffected either way.
+    ///
+    /// Set to `true` only once every node that will authenticate that
+    /// credential type is confirmed running a binary new enough to enforce a
+    /// multi-element dataset restriction — this is an operational
+    /// attestation the server cannot verify automatically. See
+    /// `docs/users/authentication.md` for the full mixed-version rollout
+    /// constraint.
+    #[serde(default)]
+    pub dataset_restriction_rollout_complete: bool,
 }
 
 fn default_storage_usage_refresh_interval() -> Duration {
@@ -930,6 +947,7 @@ impl Default for AuthConfig {
             tenants: Vec::new(),
             admin_api_key: None,
             internal_service_key: None,
+            dataset_restriction_rollout_complete: false,
         }
     }
 }
