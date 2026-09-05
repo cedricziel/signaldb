@@ -274,10 +274,6 @@ pub enum ApiKeyAction {
 
 /// Render `ID  NAME  SCOPES  DATASETS` rows, column-aligned.
 fn format_tenant_api_key_list(keys: &[ManageApiKeyResponse]) -> String {
-    if keys.is_empty() {
-        return "No API keys.".to_string();
-    }
-
     let rows: Vec<(String, String, String, String)> = keys
         .iter()
         .map(|k| {
@@ -292,43 +288,7 @@ fn format_tenant_api_key_list(keys: &[ManageApiKeyResponse]) -> String {
             (k.id.clone(), name, scopes, datasets)
         })
         .collect();
-
-    let widths = [
-        rows.iter()
-            .map(|(v, ..)| v.len())
-            .chain(std::iter::once("ID".len()))
-            .max()
-            .unwrap_or(0),
-        rows.iter()
-            .map(|(_, v, ..)| v.len())
-            .chain(std::iter::once("NAME".len()))
-            .max()
-            .unwrap_or(0),
-        rows.iter()
-            .map(|(_, _, v, _)| v.len())
-            .chain(std::iter::once("SCOPES".len()))
-            .max()
-            .unwrap_or(0),
-    ];
-
-    let mut out = format!(
-        "{:w0$}  {:w1$}  {:w2$}  DATASETS\n",
-        "ID",
-        "NAME",
-        "SCOPES",
-        w0 = widths[0],
-        w1 = widths[1],
-        w2 = widths[2]
-    );
-    for (id, name, scopes, datasets) in rows {
-        out.push_str(&format!(
-            "{id:w0$}  {name:w1$}  {scopes:w2$}  {datasets}\n",
-            w0 = widths[0],
-            w1 = widths[1],
-            w2 = widths[2]
-        ));
-    }
-    out.trim_end().to_string()
+    crate::commands::format_api_key_table(&rows)
 }
 
 impl ApiKeyAction {

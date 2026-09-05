@@ -32,6 +32,51 @@ pub(crate) fn format_dataset_restriction(ids: Option<&[String]>) -> String {
     }
 }
 
+/// Render `ID  NAME  SCOPES  DATASETS` rows, column-aligned, shared by the
+/// admin and tenant `api-key list` human-readable output.
+pub(crate) fn format_api_key_table(rows: &[(String, String, String, String)]) -> String {
+    if rows.is_empty() {
+        return "No API keys.".to_string();
+    }
+
+    let widths = [
+        rows.iter()
+            .map(|(v, ..)| v.len())
+            .chain(std::iter::once("ID".len()))
+            .max()
+            .unwrap_or(0),
+        rows.iter()
+            .map(|(_, v, ..)| v.len())
+            .chain(std::iter::once("NAME".len()))
+            .max()
+            .unwrap_or(0),
+        rows.iter()
+            .map(|(_, _, v, _)| v.len())
+            .chain(std::iter::once("SCOPES".len()))
+            .max()
+            .unwrap_or(0),
+    ];
+
+    let mut out = format!(
+        "{:w0$}  {:w1$}  {:w2$}  DATASETS\n",
+        "ID",
+        "NAME",
+        "SCOPES",
+        w0 = widths[0],
+        w1 = widths[1],
+        w2 = widths[2]
+    );
+    for (id, name, scopes, datasets) in rows {
+        out.push_str(&format!(
+            "{id:w0$}  {name:w1$}  {scopes:w2$}  {datasets}\n",
+            w0 = widths[0],
+            w1 = widths[1],
+            w2 = widths[2]
+        ));
+    }
+    out.trim_end().to_string()
+}
+
 /// SignalDB CLI — manage tenants, API keys, and datasets
 #[derive(Parser)]
 #[command(name = "signaldb-cli", version, about)]
