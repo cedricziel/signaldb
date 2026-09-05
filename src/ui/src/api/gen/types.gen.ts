@@ -167,6 +167,104 @@ export type CardinalityEstimate = {
 };
 
 /**
+ * Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
+ * dialects, relative to [`ConnectionQuery::api_url`]. External clients only
+ * — first-party callers use [`ConnectionQuery::query_ir`].
+ */
+export type ConnectionCompat = {
+    loki: string;
+    prometheus: string;
+    pyroscope: string;
+    tempo: string;
+};
+
+/**
+ * `Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the
+ * filled-in credential placeholder, ready to paste into a client config.
+ */
+export type ConnectionHeaders = {
+    authorization: string;
+    'x-dataset-id': string;
+    'x-tenant-id': string;
+};
+
+/**
+ * `GET /api/v1/connection` response: everything needed to send data to and
+ * query this deployment from outside, for the caller's own tenant/dataset.
+ */
+export type ConnectionInfoResponse = {
+    dataset_id: string;
+    headers: ConnectionHeaders;
+    ingest: ConnectionIngest;
+    mcp?: null | ConnectionMcp;
+    /**
+     * Operator guidance, e.g. that `[public]` is unset and URLs are
+     * localhost fallbacks. Empty when everything is configured.
+     */
+    notes: Array<string>;
+    otel_env: ConnectionOtelEnv;
+    /**
+     * Whether `[public]` has any explicit value set. `false` means every URL
+     * below is a localhost fallback, unlikely to be reachable from outside
+     * this machine.
+     */
+    public_endpoints_configured: boolean;
+    query: ConnectionQuery;
+    required_scopes: ConnectionScopes;
+    tenant_id: string;
+};
+
+/**
+ * Every ingest endpoint this deployment exposes.
+ */
+export type ConnectionIngest = {
+    otlp_grpc: OtlpGrpcEndpoint;
+    otlp_http: OtlpHttpEndpoint;
+    /**
+     * The Prometheus remote-write ingest URL.
+     */
+    prometheus_remote_write: string;
+};
+
+/**
+ * The MCP Streamable HTTP endpoint, present only when this deployment has
+ * one configured (directly or via `[mcp.oauth].resource_url`).
+ */
+export type ConnectionMcp = {
+    transport: string;
+    url: string;
+};
+
+/**
+ * Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an
+ * OTel-instrumented application.
+ */
+export type ConnectionOtelEnv = {
+    OTEL_EXPORTER_OTLP_ENDPOINT: string;
+    OTEL_EXPORTER_OTLP_HEADERS: string;
+    OTEL_EXPORTER_OTLP_PROTOCOL: string;
+};
+
+/**
+ * The router's query surface: the native Query IR plus the compatibility
+ * dialects, relative to `api_url`.
+ */
+export type ConnectionQuery = {
+    api_url: string;
+    compat: ConnectionCompat;
+    openapi: string;
+    query_ir: string;
+};
+
+/**
+ * The API-key scopes ingest and query each require.
+ */
+export type ConnectionScopes = {
+    ingest: Array<string>;
+    query: Array<string>;
+};
+
+/**
  * Context the consent screen renders: the requesting client and the tenants
  * the signed-in user may grant.
  */
@@ -1080,6 +1178,41 @@ export type MetricResolution = {
 
 export type MetricSearchResponse = {
     hits: Array<MetricHit>;
+};
+
+/**
+ * The public OTLP/gRPC ingest endpoint.
+ */
+export type OtlpGrpcEndpoint = {
+    /**
+     * `host[:port]`, with the port included only when the configured URL
+     * states one explicitly.
+     */
+    authority: string;
+    protocol: string;
+    signals: Array<string>;
+    tls: boolean;
+    url: string;
+};
+
+/**
+ * The public OTLP/HTTP ingest endpoint.
+ */
+export type OtlpHttpEndpoint = {
+    paths: OtlpHttpPaths;
+    protocol: string;
+    tls: boolean;
+    url: string;
+};
+
+/**
+ * Per-signal paths appended to [`OtlpHttpEndpoint::url`].
+ */
+export type OtlpHttpPaths = {
+    logs: string;
+    metrics: string;
+    profiles: string;
+    traces: string;
 };
 
 /**
@@ -2187,6 +2320,52 @@ export type CreateUserResponses = {
 };
 
 export type CreateUserResponse = CreateUserResponses[keyof CreateUserResponses];
+
+export type ConnectionInfoData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/connection';
+};
+
+export type ConnectionInfoErrors = {
+    /**
+     * Invalid or expired credential
+     */
+    401: unknown;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ConnectionInfoError = ConnectionInfoErrors[keyof ConnectionInfoErrors];
+
+export type ConnectionInfoResponses = {
+    /**
+     * Connection details for this deployment, scoped to the caller's tenant
+     */
+    200: ConnectionInfoResponse;
+};
+
+export type ConnectionInfoResponse2 = ConnectionInfoResponses[keyof ConnectionInfoResponses];
 
 export type ManageGetSchemaData = {
     body?: never;

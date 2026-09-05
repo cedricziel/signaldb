@@ -670,6 +670,375 @@ pub mod types {
             Default::default()
         }
     }
+    /**Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
+    dialects, relative to [`ConnectionQuery::api_url`]. External clients only
+    — first-party callers use [`ConnectionQuery::query_ir`].*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility\ndialects, relative to [`ConnectionQuery::api_url`]. External clients only\n— first-party callers use [`ConnectionQuery::query_ir`].",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "loki",
+    ///    "prometheus",
+    ///    "pyroscope",
+    ///    "tempo"
+    ///  ],
+    ///  "properties": {
+    ///    "loki": {
+    ///      "type": "string"
+    ///    },
+    ///    "prometheus": {
+    ///      "type": "string"
+    ///    },
+    ///    "pyroscope": {
+    ///      "type": "string"
+    ///    },
+    ///    "tempo": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionCompat {
+        pub loki: ::std::string::String,
+        pub prometheus: ::std::string::String,
+        pub pyroscope: ::std::string::String,
+        pub tempo: ::std::string::String,
+    }
+    impl ConnectionCompat {
+        pub fn builder() -> builder::ConnectionCompat {
+            Default::default()
+        }
+    }
+    /**`Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the
+    filled-in credential placeholder, ready to paste into a client config.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "`Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the\nfilled-in credential placeholder, ready to paste into a client config.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "authorization",
+    ///    "x-dataset-id",
+    ///    "x-tenant-id"
+    ///  ],
+    ///  "properties": {
+    ///    "authorization": {
+    ///      "type": "string"
+    ///    },
+    ///    "x-dataset-id": {
+    ///      "type": "string"
+    ///    },
+    ///    "x-tenant-id": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionHeaders {
+        pub authorization: ::std::string::String,
+        #[serde(rename = "x-dataset-id")]
+        pub x_dataset_id: ::std::string::String,
+        #[serde(rename = "x-tenant-id")]
+        pub x_tenant_id: ::std::string::String,
+    }
+    impl ConnectionHeaders {
+        pub fn builder() -> builder::ConnectionHeaders {
+            Default::default()
+        }
+    }
+    /**`GET /api/v1/connection` response: everything needed to send data to and
+    query this deployment from outside, for the caller's own tenant/dataset.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "`GET /api/v1/connection` response: everything needed to send data to and\nquery this deployment from outside, for the caller's own tenant/dataset.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "dataset_id",
+    ///    "headers",
+    ///    "ingest",
+    ///    "notes",
+    ///    "otel_env",
+    ///    "public_endpoints_configured",
+    ///    "query",
+    ///    "required_scopes",
+    ///    "tenant_id"
+    ///  ],
+    ///  "properties": {
+    ///    "dataset_id": {
+    ///      "type": "string"
+    ///    },
+    ///    "headers": {
+    ///      "$ref": "#/components/schemas/ConnectionHeaders"
+    ///    },
+    ///    "ingest": {
+    ///      "$ref": "#/components/schemas/ConnectionIngest"
+    ///    },
+    ///    "mcp": {
+    ///      "$ref": "#/components/schemas/ConnectionMcp"
+    ///    },
+    ///    "notes": {
+    ///      "description": "Operator guidance, e.g. that `[public]` is unset and URLs are\nlocalhost fallbacks. Empty when everything is configured.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "otel_env": {
+    ///      "$ref": "#/components/schemas/ConnectionOtelEnv"
+    ///    },
+    ///    "public_endpoints_configured": {
+    ///      "description": "Whether `[public]` has any explicit value set. `false` means every URL\nbelow is a localhost fallback, unlikely to be reachable from outside\nthis machine.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "query": {
+    ///      "$ref": "#/components/schemas/ConnectionQuery"
+    ///    },
+    ///    "required_scopes": {
+    ///      "$ref": "#/components/schemas/ConnectionScopes"
+    ///    },
+    ///    "tenant_id": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionInfoResponse {
+        pub dataset_id: ::std::string::String,
+        pub headers: ConnectionHeaders,
+        pub ingest: ConnectionIngest,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub mcp: ::std::option::Option<ConnectionMcp>,
+        /**Operator guidance, e.g. that `[public]` is unset and URLs are
+        localhost fallbacks. Empty when everything is configured.*/
+        pub notes: ::std::vec::Vec<::std::string::String>,
+        pub otel_env: ConnectionOtelEnv,
+        /**Whether `[public]` has any explicit value set. `false` means every URL
+        below is a localhost fallback, unlikely to be reachable from outside
+        this machine.*/
+        pub public_endpoints_configured: bool,
+        pub query: ConnectionQuery,
+        pub required_scopes: ConnectionScopes,
+        pub tenant_id: ::std::string::String,
+    }
+    impl ConnectionInfoResponse {
+        pub fn builder() -> builder::ConnectionInfoResponse {
+            Default::default()
+        }
+    }
+    ///Every ingest endpoint this deployment exposes.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Every ingest endpoint this deployment exposes.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "otlp_grpc",
+    ///    "otlp_http",
+    ///    "prometheus_remote_write"
+    ///  ],
+    ///  "properties": {
+    ///    "otlp_grpc": {
+    ///      "$ref": "#/components/schemas/OtlpGrpcEndpoint"
+    ///    },
+    ///    "otlp_http": {
+    ///      "$ref": "#/components/schemas/OtlpHttpEndpoint"
+    ///    },
+    ///    "prometheus_remote_write": {
+    ///      "description": "The Prometheus remote-write ingest URL.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionIngest {
+        pub otlp_grpc: OtlpGrpcEndpoint,
+        pub otlp_http: OtlpHttpEndpoint,
+        ///The Prometheus remote-write ingest URL.
+        pub prometheus_remote_write: ::std::string::String,
+    }
+    impl ConnectionIngest {
+        pub fn builder() -> builder::ConnectionIngest {
+            Default::default()
+        }
+    }
+    /**The MCP Streamable HTTP endpoint, present only when this deployment has
+    one configured (directly or via `[mcp.oauth].resource_url`).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The MCP Streamable HTTP endpoint, present only when this deployment has\none configured (directly or via `[mcp.oauth].resource_url`).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "transport",
+    ///    "url"
+    ///  ],
+    ///  "properties": {
+    ///    "transport": {
+    ///      "type": "string"
+    ///    },
+    ///    "url": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionMcp {
+        pub transport: ::std::string::String,
+        pub url: ::std::string::String,
+    }
+    impl ConnectionMcp {
+        pub fn builder() -> builder::ConnectionMcp {
+            Default::default()
+        }
+    }
+    /**Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an
+    OTel-instrumented application.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an\nOTel-instrumented application.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    ///    "OTEL_EXPORTER_OTLP_HEADERS",
+    ///    "OTEL_EXPORTER_OTLP_PROTOCOL"
+    ///  ],
+    ///  "properties": {
+    ///    "OTEL_EXPORTER_OTLP_ENDPOINT": {
+    ///      "type": "string"
+    ///    },
+    ///    "OTEL_EXPORTER_OTLP_HEADERS": {
+    ///      "type": "string"
+    ///    },
+    ///    "OTEL_EXPORTER_OTLP_PROTOCOL": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionOtelEnv {
+        #[serde(rename = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+        pub otel_exporter_otlp_endpoint: ::std::string::String,
+        #[serde(rename = "OTEL_EXPORTER_OTLP_HEADERS")]
+        pub otel_exporter_otlp_headers: ::std::string::String,
+        #[serde(rename = "OTEL_EXPORTER_OTLP_PROTOCOL")]
+        pub otel_exporter_otlp_protocol: ::std::string::String,
+    }
+    impl ConnectionOtelEnv {
+        pub fn builder() -> builder::ConnectionOtelEnv {
+            Default::default()
+        }
+    }
+    /**The router's query surface: the native Query IR plus the compatibility
+    dialects, relative to `api_url`.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The router's query surface: the native Query IR plus the compatibility\ndialects, relative to `api_url`.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "api_url",
+    ///    "compat",
+    ///    "openapi",
+    ///    "query_ir"
+    ///  ],
+    ///  "properties": {
+    ///    "api_url": {
+    ///      "type": "string"
+    ///    },
+    ///    "compat": {
+    ///      "$ref": "#/components/schemas/ConnectionCompat"
+    ///    },
+    ///    "openapi": {
+    ///      "type": "string"
+    ///    },
+    ///    "query_ir": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionQuery {
+        pub api_url: ::std::string::String,
+        pub compat: ConnectionCompat,
+        pub openapi: ::std::string::String,
+        pub query_ir: ::std::string::String,
+    }
+    impl ConnectionQuery {
+        pub fn builder() -> builder::ConnectionQuery {
+            Default::default()
+        }
+    }
+    ///The API-key scopes ingest and query each require.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The API-key scopes ingest and query each require.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "ingest",
+    ///    "query"
+    ///  ],
+    ///  "properties": {
+    ///    "ingest": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "query": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionScopes {
+        pub ingest: ::std::vec::Vec<::std::string::String>,
+        pub query: ::std::vec::Vec<::std::string::String>,
+    }
+    impl ConnectionScopes {
+        pub fn builder() -> builder::ConnectionScopes {
+            Default::default()
+        }
+    }
     /**Context the consent screen renders: the requesting client and the tenants
     the signed-in user may grant.*/
     ///
@@ -4195,6 +4564,146 @@ pub mod types {
             Default::default()
         }
     }
+    ///The public OTLP/gRPC ingest endpoint.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The public OTLP/gRPC ingest endpoint.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "authority",
+    ///    "protocol",
+    ///    "signals",
+    ///    "tls",
+    ///    "url"
+    ///  ],
+    ///  "properties": {
+    ///    "authority": {
+    ///      "description": "`host[:port]`, with the port included only when the configured URL\nstates one explicitly.",
+    ///      "type": "string"
+    ///    },
+    ///    "protocol": {
+    ///      "type": "string"
+    ///    },
+    ///    "signals": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "tls": {
+    ///      "type": "boolean"
+    ///    },
+    ///    "url": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct OtlpGrpcEndpoint {
+        /**`host[:port]`, with the port included only when the configured URL
+        states one explicitly.*/
+        pub authority: ::std::string::String,
+        pub protocol: ::std::string::String,
+        pub signals: ::std::vec::Vec<::std::string::String>,
+        pub tls: bool,
+        pub url: ::std::string::String,
+    }
+    impl OtlpGrpcEndpoint {
+        pub fn builder() -> builder::OtlpGrpcEndpoint {
+            Default::default()
+        }
+    }
+    ///The public OTLP/HTTP ingest endpoint.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The public OTLP/HTTP ingest endpoint.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "paths",
+    ///    "protocol",
+    ///    "tls",
+    ///    "url"
+    ///  ],
+    ///  "properties": {
+    ///    "paths": {
+    ///      "$ref": "#/components/schemas/OtlpHttpPaths"
+    ///    },
+    ///    "protocol": {
+    ///      "type": "string"
+    ///    },
+    ///    "tls": {
+    ///      "type": "boolean"
+    ///    },
+    ///    "url": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct OtlpHttpEndpoint {
+        pub paths: OtlpHttpPaths,
+        pub protocol: ::std::string::String,
+        pub tls: bool,
+        pub url: ::std::string::String,
+    }
+    impl OtlpHttpEndpoint {
+        pub fn builder() -> builder::OtlpHttpEndpoint {
+            Default::default()
+        }
+    }
+    ///Per-signal paths appended to [`OtlpHttpEndpoint::url`].
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Per-signal paths appended to [`OtlpHttpEndpoint::url`].",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "logs",
+    ///    "metrics",
+    ///    "profiles",
+    ///    "traces"
+    ///  ],
+    ///  "properties": {
+    ///    "logs": {
+    ///      "type": "string"
+    ///    },
+    ///    "metrics": {
+    ///      "type": "string"
+    ///    },
+    ///    "profiles": {
+    ///      "type": "string"
+    ///    },
+    ///    "traces": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct OtlpHttpPaths {
+        pub logs: ::std::string::String,
+        pub metrics: ::std::string::String,
+        pub profiles: ::std::string::String,
+        pub traces: ::std::string::String,
+    }
+    impl OtlpHttpPaths {
+        pub fn builder() -> builder::OtlpHttpPaths {
+            Default::default()
+        }
+    }
     /**Summary of a stored profile linked to a trace, without the bulky
     stack/sample payloads.*/
     ///
@@ -7589,6 +8098,674 @@ pub mod types {
                 Self {
                     at_least: Ok(value.at_least),
                     estimate: Ok(value.estimate),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionCompat {
+            loki: ::std::result::Result<::std::string::String, ::std::string::String>,
+            prometheus: ::std::result::Result<::std::string::String, ::std::string::String>,
+            pyroscope: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tempo: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionCompat {
+            fn default() -> Self {
+                Self {
+                    loki: Err("no value supplied for loki".to_string()),
+                    prometheus: Err("no value supplied for prometheus".to_string()),
+                    pyroscope: Err("no value supplied for pyroscope".to_string()),
+                    tempo: Err("no value supplied for tempo".to_string()),
+                }
+            }
+        }
+        impl ConnectionCompat {
+            pub fn loki<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.loki = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for loki: {e}"));
+                self
+            }
+            pub fn prometheus<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.prometheus = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for prometheus: {e}"));
+                self
+            }
+            pub fn pyroscope<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.pyroscope = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for pyroscope: {e}"));
+                self
+            }
+            pub fn tempo<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tempo = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tempo: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionCompat> for super::ConnectionCompat {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionCompat,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    loki: value.loki?,
+                    prometheus: value.prometheus?,
+                    pyroscope: value.pyroscope?,
+                    tempo: value.tempo?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionCompat> for ConnectionCompat {
+            fn from(value: super::ConnectionCompat) -> Self {
+                Self {
+                    loki: Ok(value.loki),
+                    prometheus: Ok(value.prometheus),
+                    pyroscope: Ok(value.pyroscope),
+                    tempo: Ok(value.tempo),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionHeaders {
+            authorization: ::std::result::Result<::std::string::String, ::std::string::String>,
+            x_dataset_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            x_tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionHeaders {
+            fn default() -> Self {
+                Self {
+                    authorization: Err("no value supplied for authorization".to_string()),
+                    x_dataset_id: Err("no value supplied for x_dataset_id".to_string()),
+                    x_tenant_id: Err("no value supplied for x_tenant_id".to_string()),
+                }
+            }
+        }
+        impl ConnectionHeaders {
+            pub fn authorization<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.authorization = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for authorization: {e}"));
+                self
+            }
+            pub fn x_dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.x_dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for x_dataset_id: {e}"));
+                self
+            }
+            pub fn x_tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.x_tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for x_tenant_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionHeaders> for super::ConnectionHeaders {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionHeaders,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    authorization: value.authorization?,
+                    x_dataset_id: value.x_dataset_id?,
+                    x_tenant_id: value.x_tenant_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionHeaders> for ConnectionHeaders {
+            fn from(value: super::ConnectionHeaders) -> Self {
+                Self {
+                    authorization: Ok(value.authorization),
+                    x_dataset_id: Ok(value.x_dataset_id),
+                    x_tenant_id: Ok(value.x_tenant_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionInfoResponse {
+            dataset_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            headers: ::std::result::Result<super::ConnectionHeaders, ::std::string::String>,
+            ingest: ::std::result::Result<super::ConnectionIngest, ::std::string::String>,
+            mcp: ::std::result::Result<
+                ::std::option::Option<super::ConnectionMcp>,
+                ::std::string::String,
+            >,
+            notes: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            otel_env: ::std::result::Result<super::ConnectionOtelEnv, ::std::string::String>,
+            public_endpoints_configured: ::std::result::Result<bool, ::std::string::String>,
+            query: ::std::result::Result<super::ConnectionQuery, ::std::string::String>,
+            required_scopes: ::std::result::Result<super::ConnectionScopes, ::std::string::String>,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionInfoResponse {
+            fn default() -> Self {
+                Self {
+                    dataset_id: Err("no value supplied for dataset_id".to_string()),
+                    headers: Err("no value supplied for headers".to_string()),
+                    ingest: Err("no value supplied for ingest".to_string()),
+                    mcp: Ok(Default::default()),
+                    notes: Err("no value supplied for notes".to_string()),
+                    otel_env: Err("no value supplied for otel_env".to_string()),
+                    public_endpoints_configured: Err(
+                        "no value supplied for public_endpoints_configured".to_string(),
+                    ),
+                    query: Err("no value supplied for query".to_string()),
+                    required_scopes: Err("no value supplied for required_scopes".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                }
+            }
+        }
+        impl ConnectionInfoResponse {
+            pub fn dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
+            pub fn headers<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionHeaders>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.headers = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for headers: {e}"));
+                self
+            }
+            pub fn ingest<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionIngest>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.ingest = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for ingest: {e}"));
+                self
+            }
+            pub fn mcp<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::ConnectionMcp>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.mcp = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for mcp: {e}"));
+                self
+            }
+            pub fn notes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.notes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for notes: {e}"));
+                self
+            }
+            pub fn otel_env<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionOtelEnv>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otel_env = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for otel_env: {e}"));
+                self
+            }
+            pub fn public_endpoints_configured<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.public_endpoints_configured = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for public_endpoints_configured: {e}")
+                });
+                self
+            }
+            pub fn query<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionQuery>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.query = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for query: {e}"));
+                self
+            }
+            pub fn required_scopes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionScopes>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.required_scopes = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for required_scopes: {e}")
+                });
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionInfoResponse> for super::ConnectionInfoResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionInfoResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset_id: value.dataset_id?,
+                    headers: value.headers?,
+                    ingest: value.ingest?,
+                    mcp: value.mcp?,
+                    notes: value.notes?,
+                    otel_env: value.otel_env?,
+                    public_endpoints_configured: value.public_endpoints_configured?,
+                    query: value.query?,
+                    required_scopes: value.required_scopes?,
+                    tenant_id: value.tenant_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionInfoResponse> for ConnectionInfoResponse {
+            fn from(value: super::ConnectionInfoResponse) -> Self {
+                Self {
+                    dataset_id: Ok(value.dataset_id),
+                    headers: Ok(value.headers),
+                    ingest: Ok(value.ingest),
+                    mcp: Ok(value.mcp),
+                    notes: Ok(value.notes),
+                    otel_env: Ok(value.otel_env),
+                    public_endpoints_configured: Ok(value.public_endpoints_configured),
+                    query: Ok(value.query),
+                    required_scopes: Ok(value.required_scopes),
+                    tenant_id: Ok(value.tenant_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionIngest {
+            otlp_grpc: ::std::result::Result<super::OtlpGrpcEndpoint, ::std::string::String>,
+            otlp_http: ::std::result::Result<super::OtlpHttpEndpoint, ::std::string::String>,
+            prometheus_remote_write:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionIngest {
+            fn default() -> Self {
+                Self {
+                    otlp_grpc: Err("no value supplied for otlp_grpc".to_string()),
+                    otlp_http: Err("no value supplied for otlp_http".to_string()),
+                    prometheus_remote_write: Err(
+                        "no value supplied for prometheus_remote_write".to_string()
+                    ),
+                }
+            }
+        }
+        impl ConnectionIngest {
+            pub fn otlp_grpc<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::OtlpGrpcEndpoint>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otlp_grpc = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for otlp_grpc: {e}"));
+                self
+            }
+            pub fn otlp_http<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::OtlpHttpEndpoint>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otlp_http = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for otlp_http: {e}"));
+                self
+            }
+            pub fn prometheus_remote_write<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.prometheus_remote_write = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for prometheus_remote_write: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionIngest> for super::ConnectionIngest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionIngest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    otlp_grpc: value.otlp_grpc?,
+                    otlp_http: value.otlp_http?,
+                    prometheus_remote_write: value.prometheus_remote_write?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionIngest> for ConnectionIngest {
+            fn from(value: super::ConnectionIngest) -> Self {
+                Self {
+                    otlp_grpc: Ok(value.otlp_grpc),
+                    otlp_http: Ok(value.otlp_http),
+                    prometheus_remote_write: Ok(value.prometheus_remote_write),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionMcp {
+            transport: ::std::result::Result<::std::string::String, ::std::string::String>,
+            url: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionMcp {
+            fn default() -> Self {
+                Self {
+                    transport: Err("no value supplied for transport".to_string()),
+                    url: Err("no value supplied for url".to_string()),
+                }
+            }
+        }
+        impl ConnectionMcp {
+            pub fn transport<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.transport = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for transport: {e}"));
+                self
+            }
+            pub fn url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for url: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionMcp> for super::ConnectionMcp {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionMcp,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    transport: value.transport?,
+                    url: value.url?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionMcp> for ConnectionMcp {
+            fn from(value: super::ConnectionMcp) -> Self {
+                Self {
+                    transport: Ok(value.transport),
+                    url: Ok(value.url),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionOtelEnv {
+            otel_exporter_otlp_endpoint:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+            otel_exporter_otlp_headers:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+            otel_exporter_otlp_protocol:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionOtelEnv {
+            fn default() -> Self {
+                Self {
+                    otel_exporter_otlp_endpoint: Err(
+                        "no value supplied for otel_exporter_otlp_endpoint".to_string(),
+                    ),
+                    otel_exporter_otlp_headers: Err(
+                        "no value supplied for otel_exporter_otlp_headers".to_string(),
+                    ),
+                    otel_exporter_otlp_protocol: Err(
+                        "no value supplied for otel_exporter_otlp_protocol".to_string(),
+                    ),
+                }
+            }
+        }
+        impl ConnectionOtelEnv {
+            pub fn otel_exporter_otlp_endpoint<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otel_exporter_otlp_endpoint = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for otel_exporter_otlp_endpoint: {e}")
+                });
+                self
+            }
+            pub fn otel_exporter_otlp_headers<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otel_exporter_otlp_headers = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for otel_exporter_otlp_headers: {e}")
+                });
+                self
+            }
+            pub fn otel_exporter_otlp_protocol<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otel_exporter_otlp_protocol = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for otel_exporter_otlp_protocol: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionOtelEnv> for super::ConnectionOtelEnv {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionOtelEnv,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    otel_exporter_otlp_endpoint: value.otel_exporter_otlp_endpoint?,
+                    otel_exporter_otlp_headers: value.otel_exporter_otlp_headers?,
+                    otel_exporter_otlp_protocol: value.otel_exporter_otlp_protocol?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionOtelEnv> for ConnectionOtelEnv {
+            fn from(value: super::ConnectionOtelEnv) -> Self {
+                Self {
+                    otel_exporter_otlp_endpoint: Ok(value.otel_exporter_otlp_endpoint),
+                    otel_exporter_otlp_headers: Ok(value.otel_exporter_otlp_headers),
+                    otel_exporter_otlp_protocol: Ok(value.otel_exporter_otlp_protocol),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionQuery {
+            api_url: ::std::result::Result<::std::string::String, ::std::string::String>,
+            compat: ::std::result::Result<super::ConnectionCompat, ::std::string::String>,
+            openapi: ::std::result::Result<::std::string::String, ::std::string::String>,
+            query_ir: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionQuery {
+            fn default() -> Self {
+                Self {
+                    api_url: Err("no value supplied for api_url".to_string()),
+                    compat: Err("no value supplied for compat".to_string()),
+                    openapi: Err("no value supplied for openapi".to_string()),
+                    query_ir: Err("no value supplied for query_ir".to_string()),
+                }
+            }
+        }
+        impl ConnectionQuery {
+            pub fn api_url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.api_url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for api_url: {e}"));
+                self
+            }
+            pub fn compat<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionCompat>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.compat = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for compat: {e}"));
+                self
+            }
+            pub fn openapi<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.openapi = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for openapi: {e}"));
+                self
+            }
+            pub fn query_ir<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.query_ir = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for query_ir: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionQuery> for super::ConnectionQuery {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionQuery,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    api_url: value.api_url?,
+                    compat: value.compat?,
+                    openapi: value.openapi?,
+                    query_ir: value.query_ir?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionQuery> for ConnectionQuery {
+            fn from(value: super::ConnectionQuery) -> Self {
+                Self {
+                    api_url: Ok(value.api_url),
+                    compat: Ok(value.compat),
+                    openapi: Ok(value.openapi),
+                    query_ir: Ok(value.query_ir),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionScopes {
+            ingest: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            query: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ConnectionScopes {
+            fn default() -> Self {
+                Self {
+                    ingest: Err("no value supplied for ingest".to_string()),
+                    query: Err("no value supplied for query".to_string()),
+                }
+            }
+        }
+        impl ConnectionScopes {
+            pub fn ingest<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.ingest = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for ingest: {e}"));
+                self
+            }
+            pub fn query<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.query = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for query: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionScopes> for super::ConnectionScopes {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionScopes,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    ingest: value.ingest?,
+                    query: value.query?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionScopes> for ConnectionScopes {
+            fn from(value: super::ConnectionScopes) -> Self {
+                Self {
+                    ingest: Ok(value.ingest),
+                    query: Ok(value.query),
                 }
             }
         }
@@ -12486,6 +13663,269 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct OtlpGrpcEndpoint {
+            authority: ::std::result::Result<::std::string::String, ::std::string::String>,
+            protocol: ::std::result::Result<::std::string::String, ::std::string::String>,
+            signals: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            tls: ::std::result::Result<bool, ::std::string::String>,
+            url: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for OtlpGrpcEndpoint {
+            fn default() -> Self {
+                Self {
+                    authority: Err("no value supplied for authority".to_string()),
+                    protocol: Err("no value supplied for protocol".to_string()),
+                    signals: Err("no value supplied for signals".to_string()),
+                    tls: Err("no value supplied for tls".to_string()),
+                    url: Err("no value supplied for url".to_string()),
+                }
+            }
+        }
+        impl OtlpGrpcEndpoint {
+            pub fn authority<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.authority = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for authority: {e}"));
+                self
+            }
+            pub fn protocol<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.protocol = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for protocol: {e}"));
+                self
+            }
+            pub fn signals<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.signals = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for signals: {e}"));
+                self
+            }
+            pub fn tls<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tls = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tls: {e}"));
+                self
+            }
+            pub fn url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for url: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<OtlpGrpcEndpoint> for super::OtlpGrpcEndpoint {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: OtlpGrpcEndpoint,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    authority: value.authority?,
+                    protocol: value.protocol?,
+                    signals: value.signals?,
+                    tls: value.tls?,
+                    url: value.url?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::OtlpGrpcEndpoint> for OtlpGrpcEndpoint {
+            fn from(value: super::OtlpGrpcEndpoint) -> Self {
+                Self {
+                    authority: Ok(value.authority),
+                    protocol: Ok(value.protocol),
+                    signals: Ok(value.signals),
+                    tls: Ok(value.tls),
+                    url: Ok(value.url),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct OtlpHttpEndpoint {
+            paths: ::std::result::Result<super::OtlpHttpPaths, ::std::string::String>,
+            protocol: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tls: ::std::result::Result<bool, ::std::string::String>,
+            url: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for OtlpHttpEndpoint {
+            fn default() -> Self {
+                Self {
+                    paths: Err("no value supplied for paths".to_string()),
+                    protocol: Err("no value supplied for protocol".to_string()),
+                    tls: Err("no value supplied for tls".to_string()),
+                    url: Err("no value supplied for url".to_string()),
+                }
+            }
+        }
+        impl OtlpHttpEndpoint {
+            pub fn paths<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::OtlpHttpPaths>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.paths = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for paths: {e}"));
+                self
+            }
+            pub fn protocol<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.protocol = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for protocol: {e}"));
+                self
+            }
+            pub fn tls<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tls = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tls: {e}"));
+                self
+            }
+            pub fn url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for url: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<OtlpHttpEndpoint> for super::OtlpHttpEndpoint {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: OtlpHttpEndpoint,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    paths: value.paths?,
+                    protocol: value.protocol?,
+                    tls: value.tls?,
+                    url: value.url?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::OtlpHttpEndpoint> for OtlpHttpEndpoint {
+            fn from(value: super::OtlpHttpEndpoint) -> Self {
+                Self {
+                    paths: Ok(value.paths),
+                    protocol: Ok(value.protocol),
+                    tls: Ok(value.tls),
+                    url: Ok(value.url),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct OtlpHttpPaths {
+            logs: ::std::result::Result<::std::string::String, ::std::string::String>,
+            metrics: ::std::result::Result<::std::string::String, ::std::string::String>,
+            profiles: ::std::result::Result<::std::string::String, ::std::string::String>,
+            traces: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for OtlpHttpPaths {
+            fn default() -> Self {
+                Self {
+                    logs: Err("no value supplied for logs".to_string()),
+                    metrics: Err("no value supplied for metrics".to_string()),
+                    profiles: Err("no value supplied for profiles".to_string()),
+                    traces: Err("no value supplied for traces".to_string()),
+                }
+            }
+        }
+        impl OtlpHttpPaths {
+            pub fn logs<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.logs = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for logs: {e}"));
+                self
+            }
+            pub fn metrics<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.metrics = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for metrics: {e}"));
+                self
+            }
+            pub fn profiles<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.profiles = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for profiles: {e}"));
+                self
+            }
+            pub fn traces<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.traces = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for traces: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<OtlpHttpPaths> for super::OtlpHttpPaths {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: OtlpHttpPaths,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    logs: value.logs?,
+                    metrics: value.metrics?,
+                    profiles: value.profiles?,
+                    traces: value.traces?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::OtlpHttpPaths> for OtlpHttpPaths {
+            fn from(value: super::OtlpHttpPaths) -> Self {
+                Self {
+                    logs: Ok(value.logs),
+                    metrics: Ok(value.metrics),
+                    profiles: Ok(value.profiles),
+                    traces: Ok(value.traces),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ProfileSummary {
             duration_nano: ::std::result::Result<::std::string::String, ::std::string::String>,
             profile_id: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -16071,6 +17511,26 @@ impl Client {
     pub fn create_user(&self) -> builder::CreateUser<'_> {
         builder::CreateUser::new(self)
     }
+    /**GET /api/v1/connection
+
+    Everything needed to send data to and query this deployment from outside:
+    public OTLP gRPC/HTTP and Prometheus remote-write endpoints, the query API
+    base and compatibility-dialect paths, the headers to send (with this
+    request's tenant/dataset filled in), the API-key scopes ingest and query
+    each require, and ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars. Behind
+    the tenant auth middleware, so any valid tenant credential — including an
+    ingest-only key — may call it.
+
+    Sends a `GET` request to `/api/v1/connection`
+
+    ```ignore
+    let response = client.connection_info()
+        .send()
+        .await;
+    ```*/
+    pub fn connection_info(&self) -> builder::ConnectionInfo<'_> {
+        builder::ConnectionInfo::new(self)
+    }
     /**GET /api/v1/manage/schema
 
     The registered logical (OTel-native, client-visible) schema and the
@@ -18164,6 +19624,51 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::connection_info`]
+
+    [`Client::connection_info`]: super::Client::connection_info*/
+    #[derive(Debug, Clone)]
+    pub struct ConnectionInfo<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> ConnectionInfo<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/connection`
+        pub async fn send(self) -> Result<ResponseValue<types::ConnectionInfoResponse>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/connection", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "connection_info",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -23065,6 +24570,7 @@ pub mod prelude {
 /// Every operation id declared in the OpenAPI document, alphabetized.
 /// Regenerated by `cargo xtask generate`; see `client-surface-parity`.
 pub const OPERATIONS: &[&str] = &[
+    "connection_info",
     "create_api_key",
     "create_dataset",
     "create_tenant",
