@@ -23,16 +23,12 @@ concurrency:
 jobs:
   # Detect whether anything outside the Grafana plugin changed. The plugin
   # is a standalone workspace with its own CI (grafana-plugin-*.yml); the
-  # jobs below are skipped for plugin-only changes on non-main targets. A
-  # workflow-level paths-ignore must NOT be used for this: the ruleset
-  # requires "Check & Lint" and "Test Suite (stable)", and a path-filtered
-  # workflow never reports those contexts, deadlocking plugin-only PRs.
-  # Skipped jobs, by contrast, satisfy required checks — except when the
-  # skip-cause job is itself skipped (matrix jobs skipped via `needs:` don't
-  # expand, so their context name never matches what's required); to avoid
-  # that failure mode entirely, anything targeting main always runs full CI
-  # regardless of what changed. See the "always run full CI on main" branch
-  # in the filter step below.
+  # jobs below are skipped for plugin-only changes on non-main targets, and
+  # for openspec-only changes on any target. A workflow-level paths-ignore
+  # must NOT be used for this: the ruleset requires "Check & Lint", "Test
+  # Suite (stable)" and "UI", and a path-filtered workflow never reports
+  # those contexts, deadlocking the PR. Skipped jobs, by contrast, satisfy
+  # required checks — as long as the job's name is literal (see `test`).
   changes:
     name: Detect changed areas
     runs-on: ubuntu-latest
@@ -51,15 +47,13 @@ jobs:
         env:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
-          # The path-filter skip below is a cost optimization for PRs stacked
+          # The plugin/UI skip below is a cost optimization for PRs stacked
           # on top of each other (e.g. gh-stack layers), where an
-          # intermediate layer's diff genuinely is plugin/UI-only. It must
-          # NOT apply to anything landing on main: main is the actual merge
-          # gate, and skipped jobs whose skip-cause is itself skipped report
-          # under a name that never matches the matrix-expanded required-check
-          # context (e.g. "Test Suite" instead of "Test Suite (stable)"),
-          # deadlocking the PR forever. Always run full CI when the target
-          # is main.
+          # intermediate layer's diff genuinely is plugin/UI-only. It does
+          # not apply to anything landing on main: main is the actual merge
+          # gate, so it always runs full CI. The one exception is a diff
+          # confined to openspec/ (proposals, specs, archives): no job reads
+          # those, so there is nothing to build or test on any target.
           #
           # `images` is independent of that rule: it gates the release-mode
           # musl/glibc builds and the docker image jobs, none of which is a
@@ -80,7 +74,16 @@ jobs:
           base=$(git rev-parse HEAD^1)
           changed=$(git diff --name-only "$base" HEAD)
 
-          images_changed=$(echo "$changed" | grep -E '^(Dockerfile|\.dockerignore|Cargo\.lock|Cargo\.toml|\.cargo/|rust-toolchain|\.github/workflows/ci\.yml)' || true)
+          buildable=$(echo "$changed" | grep -vE '^openspec/' || true)
+          if [ -n "$changed" ] && [ -z "$buildable" ]; then
+            echo "core=false" >> "$GITHUB_OUTPUT"
+            echo "ui=false" >> "$GITHUB_OUTPUT"
+            echo "images=false" >> "$GITHUB_OUTPUT"
+            echo "Only openspec/ files changed; CI will be skipped."
+            exit 0
+          fi
+
+          images_changed=$(echo "$buildable" | grep -E '^(Dockerfile|\.dockerignore|Cargo\.lock|Cargo\.toml|\.cargo/|rust-toolchain|\.github/workflows/ci\.yml)' || true)
           if [ -n "$images_changed" ] || echo " $PR_LABELS " | grep -q ' build-images '; then
             echo "images=true" >> "$GITHUB_OUTPUT"
           else
@@ -95,8 +98,8 @@ jobs:
           fi
           # UI and plugin are standalone npm workspaces with their own CI;
           # skip (not path-filter) the Rust jobs for changes contained there.
-          core_changed=$(echo "$changed" | grep -vE '^src/grafana-plugin/|^src/ui/|^\.github/workflows/grafana-plugin-' || true)
-          ui_changed=$(echo "$changed" | grep -E '^src/ui/|^pnpm-lock\.yaml$|^pnpm-workspace\.yaml$|^\.github/workflows/ci\.yml$' || true)
+          core_changed=$(echo "$buildable" | grep -vE '^src/grafana-plugin/|^src/ui/|^\.github/workflows/grafana-plugin-' || true)
+          ui_changed=$(echo "$buildable" | grep -E '^src/ui/|^pnpm-lock\.yaml$|^pnpm-workspace\.yaml$|^\.github/workflows/ci\.yml$' || true)
           if [ -n "$core_changed" ]; then
             echo "core=true" >> "$GITHUB_OUTPUT"
           else
