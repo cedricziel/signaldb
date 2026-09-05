@@ -89,20 +89,39 @@ pub fn mcp_request_with_key(
 
 /// Reads a Streamable HTTP response (JSON or SSE) until the JSON-RPC message
 /// with `id` arrives, then stops — the SSE stream may outlive the response.
+///
+/// Bytes are buffered raw and decoded with [`std::str::from_utf8`] rather
+/// than [`String::from_utf8_lossy`] per chunk: a multi-byte UTF-8 sequence
+/// split across a chunk boundary would otherwise be replaced with U+FFFD,
+/// corrupting the JSON payload. An incomplete trailing sequence is left in
+/// the buffer and completed by the next chunk.
 pub async fn read_jsonrpc_response(response: Response, id: u64) -> serde_json::Value {
     let mut stream = response.into_body().into_data_stream();
-    let mut buffered = String::new();
+    let mut raw: Vec<u8> = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         let chunk = tokio::time::timeout_at(deadline, stream.next())
             .await
             .expect("response arrives before the deadline");
         let Some(chunk) = chunk else {
+            let buffered = String::from_utf8_lossy(&raw);
             panic!("response stream ended without a reply for id {id}: {buffered}");
         };
         let chunk = chunk.expect("read response chunk");
-        buffered.push_str(&String::from_utf8_lossy(&chunk));
-        for line in buffered.lines() {
+        raw.extend_from_slice(&chunk);
+
+        let text = match std::str::from_utf8(&raw) {
+            Ok(text) => text,
+            Err(err) if err.error_len().is_none() => {
+                // Incomplete trailing sequence: decode the valid prefix and
+                // wait for the next chunk to complete it.
+                std::str::from_utf8(&raw[..err.valid_up_to()])
+                    .expect("prefix up to a UTF-8 error's valid_up_to is valid UTF-8")
+            }
+            Err(err) => panic!("response chunk is not valid UTF-8: {err}"),
+        };
+
+        for line in text.lines() {
             let candidate = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate)
                 && value.get("id").and_then(|v| v.as_u64()) == Some(id)
