@@ -20,7 +20,11 @@ import { QueryError } from "../../components/QueryError";
 import { toErrorMessage } from "../../api/http";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { Dialog } from "../../components/Dialog";
-import { DatasetPicker, datasetRestrictionLabel } from "./DatasetPicker";
+import {
+  DatasetPicker,
+  datasetRestrictionLabel,
+  selectedDatasetIds,
+} from "./DatasetPicker";
 import "./management.css";
 
 /** `ManagedTables["tables"]`'s element type. */
@@ -206,7 +210,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
             onSubmit={(event) => {
               event.preventDefault();
               const data = new FormData(event.currentTarget);
-              const datasetIds = data.getAll("dataset").map(String);
+              const datasetIds = selectedDatasetIds(data);
               keyMutation.mutate({
                 name: String(data.get("name") ?? "").trim() || undefined,
                 dataset_ids: datasetIds.length > 0 ? datasetIds : undefined,

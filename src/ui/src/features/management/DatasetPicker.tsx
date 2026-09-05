@@ -28,6 +28,12 @@ export function datasetRestrictionLabel(key: RestrictedByDataset): string {
   return ids.length > 0 ? ids.join(", ") : "unrestricted";
 }
 
+/** Datasets checked in a submitted form, via the shared `dataset` checkbox
+ * name every `DatasetPicker` instance uses. */
+export function selectedDatasetIds(data: FormData): string[] {
+  return data.getAll("dataset").map(String);
+}
+
 /** Multi-select dataset picker: zero or more checkboxes, one per tenant
  * dataset. Selecting none means "unrestricted" on create, and "leave the
  * current restriction unchanged" on update (D1a) — clearing an existing

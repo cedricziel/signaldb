@@ -20,17 +20,13 @@ import {
   DatasetPicker,
   datasetRestrictionLabel,
   restrictionSet,
+  selectedDatasetIds,
 } from "./DatasetPicker";
 import "./ApiKeys.css";
 
 /** Scopes checked in a form, in vocabulary order. */
 function selectedScopes(data: FormData): ApiKeyScope[] {
   return ALL_SCOPES.filter((scope) => data.has(scope));
-}
-
-/** Datasets checked in a form, via the shared `dataset` checkbox name. */
-function selectedDatasetIds(data: FormData): string[] {
-  return data.getAll("dataset").map(String);
 }
 
 /** The grouped scope picker (Ingestion / Schema / Management) shared by the create form
