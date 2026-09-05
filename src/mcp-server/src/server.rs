@@ -235,9 +235,10 @@ struct CreateApiKeyParams {
     /// tenant — datasets, API keys, memberships, schema — through the
     /// management API; explicit only, never implied by an unscoped key).
     scopes: Vec<String>,
-    /// Optional dataset the key is restricted to.
+    /// Dataset set the key is restricted to (non-empty; a bare empty array
+    /// is rejected). Omitted or `null` creates an unrestricted key.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
 }
 
 /// Parameters for `update_api_key_scopes`.
@@ -251,9 +252,15 @@ struct UpdateApiKeyScopesParams {
     /// Replacement scope list (non-empty). Omit to keep the current scopes.
     #[serde(default)]
     scopes: Option<Vec<String>>,
-    /// Replacement dataset restriction. Omit to keep the current one.
+    /// Replacement dataset set (non-empty; a bare empty array is rejected).
+    /// Omit to keep the current restriction. Mutually exclusive with
+    /// `clear_dataset_restriction: true`.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
+    /// Clear an existing dataset restriction back to unrestricted. Must not
+    /// be combined with a non-empty `dataset_ids`.
+    #[serde(default)]
+    clear_dataset_restriction: bool,
 }
 
 /// Parameters for `get_profile`.
@@ -901,15 +908,35 @@ fn require_nonempty_scopes(scopes: &[String]) -> Result<(), ErrorData> {
     Ok(())
 }
 
-/// Reject an API-key update with neither `scopes` nor `dataset_id` set
-/// (platform-admin and tenant-management variants share this validation).
+/// Reject an API-key update with none of `scopes`, `dataset_ids`, or
+/// `clear_dataset_restriction` set (platform-admin and tenant-management
+/// variants share this validation).
 fn require_any_update(
     scopes: &Option<Vec<String>>,
-    dataset_id: &Option<String>,
+    dataset_ids: &Option<Vec<String>>,
+    clear_dataset_restriction: bool,
 ) -> Result<(), ErrorData> {
-    if scopes.is_none() && dataset_id.is_none() {
+    if scopes.is_none() && dataset_ids.is_none() && !clear_dataset_restriction {
         return Err(ErrorData::invalid_params(
-            "nothing to update: pass `scopes` and/or `dataset_id`",
+            "nothing to update: pass `scopes`, `dataset_ids`, and/or `clear_dataset_restriction`",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Reject `clear_dataset_restriction: true` combined with a non-empty
+/// `dataset_ids` in the same update request (D1a) — checked before any
+/// router request is made, since the server-side validation this mirrors
+/// would otherwise be the only thing catching a contradictory request the
+/// client should never have sent in the first place.
+fn require_no_contradictory_dataset_update(
+    dataset_ids: &Option<Vec<String>>,
+    clear_dataset_restriction: bool,
+) -> Result<(), ErrorData> {
+    if clear_dataset_restriction && dataset_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+        return Err(ErrorData::invalid_params(
+            "`clear_dataset_restriction: true` cannot be combined with a non-empty `dataset_ids`",
             None,
         ));
     }
@@ -1070,9 +1097,10 @@ struct TenantCreateApiKeyParams {
     /// `schema:read`, `schema:write`, `tenant:manage` (manage this tenant's
     /// datasets, API keys, memberships, and schema view; explicit only).
     scopes: Vec<String>,
-    /// Optional dataset the key is restricted to.
+    /// Dataset set the key is restricted to (non-empty; a bare empty array
+    /// is rejected). Omitted or `null` creates an unrestricted key.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
 }
 
 /// Parameters for `tenant_revoke_api_key`.
@@ -1098,9 +1126,15 @@ struct TenantUpdateApiKeyParams {
     /// Replacement scope list (non-empty). Omit to keep the current scopes.
     #[serde(default)]
     scopes: Option<Vec<String>>,
-    /// Replacement dataset restriction. Omit to keep the current one.
+    /// Replacement dataset set (non-empty; a bare empty array is rejected).
+    /// Omit to keep the current restriction. Mutually exclusive with
+    /// `clear_dataset_restriction: true`.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
+    /// Clear an existing dataset restriction back to unrestricted. Must not
+    /// be combined with a non-empty `dataset_ids`.
+    #[serde(default)]
+    clear_dataset_restriction: bool,
 }
 
 /// Tenant membership role, shared by `tenant_upsert_membership`.
@@ -1956,7 +1990,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read) and optionally restricted to `dataset_id` (admin API; requires administrative credentials). The raw secret is returned once."
+        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read) and optionally restricted to a set of datasets via `dataset_ids` (admin API; requires administrative credentials). The raw secret is returned once."
     )]
     async fn create_api_key(
         &self,
@@ -1971,11 +2005,7 @@ impl McpServer {
             .body(signaldb_sdk::types::CreateApiKeyRequest {
                 name: p.name,
                 scopes: p.scopes,
-                // TODO(multi-dataset-key-restriction phase 5): this tool's
-                // `dataset_id` param becomes `dataset_ids: Vec<String>`; this
-                // wraps today's single value in a one-element set to keep
-                // phase-2 behavior unchanged until that lands.
-                dataset_ids: p.dataset_id.map(|d| vec![d]),
+                dataset_ids: p.dataset_ids,
             })
             .send()
             .await
@@ -1984,14 +2014,15 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Update the scopes and/or dataset restriction of a live API key without rotating its secret (admin API; requires administrative credentials). Revoked keys cannot be updated; the change applies to the key's next request."
+        description = "Update the scopes and/or dataset restriction of a live API key without rotating its secret (admin API; requires administrative credentials). `dataset_ids` replaces the restriction (non-empty, or omit to leave it unchanged); `clear_dataset_restriction: true` removes it back to unrestricted and must not be combined with a non-empty `dataset_ids`. Revoked keys cannot be updated; the change applies to the key's next request."
     )]
     async fn update_api_key_scopes(
         &self,
         Extension(parts): Extension<Parts>,
         Parameters(p): Parameters<UpdateApiKeyScopesParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        require_any_update(&p.scopes, &p.dataset_id)?;
+        require_no_contradictory_dataset_update(&p.dataset_ids, p.clear_dataset_restriction)?;
+        require_any_update(&p.scopes, &p.dataset_ids, p.clear_dataset_restriction)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .update_api_key()
@@ -1999,12 +2030,8 @@ impl McpServer {
             .key_id(&p.key_id)
             .body(signaldb_sdk::types::UpdateApiKeyRequest {
                 scopes: p.scopes,
-                // TODO(multi-dataset-key-restriction phase 5): this tool
-                // grows `dataset_ids`/`clear_dataset_restriction`; this wraps
-                // today's single value in a one-element set (never clearing)
-                // to keep phase-2 behavior unchanged until that lands.
-                dataset_ids: p.dataset_id.map(|d| vec![d]),
-                clear_dataset_restriction: None,
+                dataset_ids: p.dataset_ids,
+                clear_dataset_restriction: Some(p.clear_dataset_restriction),
             })
             .send()
             .await
@@ -2319,7 +2346,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to `dataset_id` (management API; tenant-admin session or an API key carrying `tenant:manage`). The raw secret is returned once."
+        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to a set of datasets via `dataset_ids` (management API; tenant-admin session or an API key carrying `tenant:manage`). The raw secret is returned once."
     )]
     async fn tenant_create_api_key(
         &self,
@@ -2334,11 +2361,7 @@ impl McpServer {
             .body(signaldb_sdk::types::ManageCreateApiKeyRequest {
                 name: p.name,
                 scopes: p.scopes,
-                // TODO(multi-dataset-key-restriction phase 5): this tool's
-                // `dataset_id` param becomes `dataset_ids: Vec<String>`; this
-                // wraps today's single value in a one-element set to keep
-                // phase-2 behavior unchanged until that lands.
-                dataset_ids: p.dataset_id.map(|d| vec![d]),
+                dataset_ids: p.dataset_ids,
             })
             .send()
             .await
@@ -2368,14 +2391,15 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; tenant-admin session or an API key carrying `tenant:manage`)."
+        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; tenant-admin session or an API key carrying `tenant:manage`). `dataset_ids` replaces the restriction (non-empty, or omit to leave it unchanged); `clear_dataset_restriction: true` removes it back to unrestricted and must not be combined with a non-empty `dataset_ids`."
     )]
     async fn tenant_update_api_key(
         &self,
         Parameters(p): Parameters<TenantUpdateApiKeyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        require_any_update(&p.scopes, &p.dataset_id)?;
+        require_no_contradictory_dataset_update(&p.dataset_ids, p.clear_dataset_restriction)?;
+        require_any_update(&p.scopes, &p.dataset_ids, p.clear_dataset_restriction)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .manage_update_api_key()
@@ -2383,12 +2407,8 @@ impl McpServer {
             .key_id(&p.key_id)
             .body(signaldb_sdk::types::ManageUpdateApiKeyRequest {
                 scopes: p.scopes,
-                // TODO(multi-dataset-key-restriction phase 5): this tool
-                // grows `dataset_ids`/`clear_dataset_restriction`; this wraps
-                // today's single value in a one-element set (never clearing)
-                // to keep phase-2 behavior unchanged until that lands.
-                dataset_ids: p.dataset_id.map(|d| vec![d]),
-                clear_dataset_restriction: None,
+                dataset_ids: p.dataset_ids,
+                clear_dataset_restriction: Some(p.clear_dataset_restriction),
             })
             .send()
             .await
@@ -3476,6 +3496,7 @@ mod tests {
     /// a parameter was forwarded rather than dropped.
     async fn mock_capturing_router(
         expected_prefix: &'static str,
+        status: u16,
         response_body: &'static str,
     ) -> (String, tokio::task::JoinHandle<String>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3499,7 +3520,7 @@ mod tests {
             socket
                 .write_all(
                     format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                         response_body.len()
                     )
                     .as_bytes(),
@@ -4559,6 +4580,7 @@ mod tests {
     async fn create_api_key_forwards_dataset_ids() {
         let (base_url, router) = mock_capturing_router(
             "POST /api/v1/admin/tenants/acme/api-keys",
+            201,
             r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","key":"secret","scopes":["traces:read"],"dataset_ids":["production","staging"]}"#,
         )
         .await;
@@ -4579,13 +4601,17 @@ mod tests {
 
         let request = router.await.expect("mock router task panicked");
         let body = captured_json_body(&request);
-        assert_eq!(body["dataset_ids"], serde_json::json!(["production", "staging"]));
+        assert_eq!(
+            body["dataset_ids"],
+            serde_json::json!(["production", "staging"])
+        );
     }
 
     #[tokio::test]
     async fn tenant_create_api_key_forwards_dataset_ids() {
         let (base_url, router) = mock_capturing_router(
             "POST /api/v1/manage/tenants/acme/api-keys",
+            201,
             r#"{"id":"key-1","key":"secret","scopes":["traces:read"],"dataset_ids":["production"]}"#,
         )
         .await;
@@ -4613,6 +4639,7 @@ mod tests {
     async fn update_api_key_scopes_forwards_dataset_ids_and_clear_flag() {
         let (base_url, router) = mock_capturing_router(
             "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            200,
             r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
         )
         .await;
@@ -4641,6 +4668,7 @@ mod tests {
     async fn update_api_key_scopes_forwards_clear_dataset_restriction() {
         let (base_url, router) = mock_capturing_router(
             "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            200,
             r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
         )
         .await;
@@ -4669,6 +4697,7 @@ mod tests {
     async fn tenant_update_api_key_forwards_dataset_ids_and_clear_flag() {
         let (base_url, router) = mock_capturing_router(
             "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
+            200,
             r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
         )
         .await;
@@ -4697,6 +4726,7 @@ mod tests {
     async fn tenant_update_api_key_forwards_clear_dataset_restriction() {
         let (base_url, router) = mock_capturing_router(
             "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
+            200,
             r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
         )
         .await;
@@ -4747,7 +4777,8 @@ mod tests {
             .expect_err("a contradictory dataset_ids + clear_dataset_restriction must be rejected");
 
         assert!(
-            err.message.contains("dataset_ids") && err.message.contains("clear_dataset_restriction"),
+            err.message.contains("dataset_ids")
+                && err.message.contains("clear_dataset_restriction"),
             "got {}",
             err.message
         );
@@ -4775,7 +4806,8 @@ mod tests {
             .expect_err("a contradictory dataset_ids + clear_dataset_restriction must be rejected");
 
         assert!(
-            err.message.contains("dataset_ids") && err.message.contains("clear_dataset_restriction"),
+            err.message.contains("dataset_ids")
+                && err.message.contains("clear_dataset_restriction"),
             "got {}",
             err.message
         );
