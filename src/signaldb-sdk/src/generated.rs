@@ -6499,6 +6499,16 @@ pub mod types {
     ///    "dataset": {
     ///      "type": "string"
     ///    },
+    ///    "dataset_ids": {
+    ///      "description": "The credential's own dataset-set restriction, if any; `null`/absent\nmeans unrestricted. See [`WhoamiResponse::dataset_ids`].",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
     ///    "tenant": {
     ///      "$ref": "#/components/schemas/WhoamiTenant"
     ///    },
@@ -6513,6 +6523,10 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct WhoamiIdentityResponse {
         pub dataset: ::std::string::String,
+        /**The credential's own dataset-set restriction, if any; `null`/absent
+        means unrestricted. See [`WhoamiResponse::dataset_ids`].*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub tenant: WhoamiTenant,
         ///Stable authenticated user ID. Empty for API key credentials.
         pub user_id: ::std::string::String,
@@ -15616,6 +15630,10 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct WhoamiIdentityResponse {
             dataset: ::std::result::Result<::std::string::String, ::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             tenant: ::std::result::Result<super::WhoamiTenant, ::std::string::String>,
             user_id: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
@@ -15623,6 +15641,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     dataset: Err("no value supplied for dataset".to_string()),
+                    dataset_ids: Ok(Default::default()),
                     tenant: Err("no value supplied for tenant".to_string()),
                     user_id: Err("no value supplied for user_id".to_string()),
                 }
@@ -15637,6 +15656,18 @@ pub mod types {
                 self.dataset = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn tenant<T>(mut self, value: T) -> Self
@@ -15667,6 +15698,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     dataset: value.dataset?,
+                    dataset_ids: value.dataset_ids?,
                     tenant: value.tenant?,
                     user_id: value.user_id?,
                 })
@@ -15676,6 +15708,7 @@ pub mod types {
             fn from(value: super::WhoamiIdentityResponse) -> Self {
                 Self {
                     dataset: Ok(value.dataset),
+                    dataset_ids: Ok(value.dataset_ids),
                     tenant: Ok(value.tenant),
                     user_id: Ok(value.user_id),
                 }

@@ -1668,6 +1668,11 @@ export type ValueOrigin = 'registry' | 'statistics' | 'sampled';
  */
 export type WhoamiIdentityResponse = {
     dataset: string;
+    /**
+     * The credential's own dataset-set restriction, if any; `null`/absent
+     * means unrestricted. See [`WhoamiResponse::dataset_ids`].
+     */
+    dataset_ids?: Array<string> | null;
     tenant: WhoamiTenant;
     /**
      * Stable authenticated user ID. Empty for API key credentials.

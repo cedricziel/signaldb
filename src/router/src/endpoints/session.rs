@@ -344,6 +344,13 @@ pub struct WhoamiResponse {
     pub dataset: String,
     pub datasets: Vec<WhoamiDataset>,
     pub default_dataset: Option<String>,
+    /// The credential's own dataset-set restriction (`TenantContext::
+    /// api_key_dataset_ids`), if any; `null`/absent means unrestricted.
+    /// Callers that need to know which of `datasets` they may actually
+    /// query (e.g. the MCP `discover_datasets`/`tenant_list_tables` tools)
+    /// read this rather than assuming every listed dataset is reachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -367,6 +374,10 @@ pub struct WhoamiIdentityResponse {
     pub dataset: String,
     /// Stable authenticated user ID. Empty for API key credentials.
     pub user_id: String,
+    /// The credential's own dataset-set restriction, if any; `null`/absent
+    /// means unrestricted. See [`WhoamiResponse::dataset_ids`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
 }
 
 /// GET /api/v1/whoami
@@ -495,6 +506,7 @@ pub async fn whoami<S: RouterState>(
             dataset: ctx.dataset_id.clone(),
             datasets,
             default_dataset,
+            dataset_ids: ctx.api_key_dataset_ids.clone(),
         };
         return Json(response).into_response();
     }
@@ -538,6 +550,7 @@ pub async fn whoami<S: RouterState>(
             })
             .collect(),
         default_dataset: tenant.default_dataset,
+        dataset_ids: ctx.api_key_dataset_ids.clone(),
     };
     Json(response).into_response()
 }
@@ -1311,6 +1324,64 @@ mod tests {
         assert_eq!(datasets[1]["is_default"], false);
         // No cross-tenant data leaks into the response.
         assert!(!body.to_string().contains("globex"));
+    }
+
+    #[tokio::test]
+    async fn whoami_omits_dataset_ids_for_an_unrestricted_credential() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        let body = json_body(res).await;
+        assert!(
+            body.get("dataset_ids").is_none() || body["dataset_ids"].is_null(),
+            "unrestricted credential must not report a dataset_ids restriction: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn whoami_reports_the_credentials_dataset_restriction() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true), ("staging", false)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &common::auth::Authenticator::hash_api_key("restricted-key"),
+                Some("restricted"),
+                Some(&["production".to_string()]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer restricted-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
     }
 
     #[tokio::test]

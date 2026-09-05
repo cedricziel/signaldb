@@ -828,7 +828,13 @@ async fn validate_dataset_restriction_gate_and_membership<S: RouterState>(
         dataset_ids,
         state.config().auth.dataset_restriction_rollout_complete,
     )
-    .map_err(|message| Box::new(api_error(StatusCode::BAD_REQUEST, "validation_error", message)))?;
+    .map_err(|message| {
+        Box::new(api_error(
+            StatusCode::BAD_REQUEST,
+            "validation_error",
+            message,
+        ))
+    })?;
     validate_datasets_exist(state, tenant_id, dataset_ids).await
 }
 

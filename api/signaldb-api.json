@@ -7363,6 +7363,16 @@
           "dataset": {
             "type": "string"
           },
+          "dataset_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The credential's own dataset-set restriction, if any; `null`/absent\nmeans unrestricted. See [`WhoamiResponse::dataset_ids`]."
+          },
           "tenant": {
             "$ref": "#/components/schemas/WhoamiTenant"
           },
