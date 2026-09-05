@@ -165,23 +165,38 @@ boundary, not just stale unread data. The fix:
   writes `dataset_ids = NULL, dataset_id = NULL` — both columns, so there is
   nothing left for a later backfill to resurrect from.
 - **Backfill** (one-time per row, run from `Catalog::init()`, already
-  idempotent by construction): select every `api_keys` row where
-  `dataset_id IS NOT NULL AND dataset_ids IS NULL`, and for each, `UPDATE`
-  it with `dataset_ids` bound to `serde_json::to_string(&[dataset_id])` —
-  the same pattern this codebase already uses everywhere else it writes a
-  JSON-array-in-TEXT column (e.g. `scopes`, `catalog.rs:2202-2207,3459`):
-  encode the array in Rust and bind it as a plain string parameter, never
-  an in-SQL JSON constructor function. (An earlier draft of this design
-  used a SQL-side `json_array(...)` call, which doesn't match this
-  repo's `scopes` precedent and would need version-specific handling
-  between SQLite's and Postgres's differing JSON function surfaces to work
-  at all — reusing the existing Rust-side encoding sidesteps that entirely
-  and keeps one code path for every JSON-array column in this table.) This
-  only ever touches a row untouched since before this change (new code
-  always leaves both columns consistent, so the `WHERE` clause never
-  matches a key new code has written), which is what makes it safe to
-  leave unconditional rather than gating it behind a one-shot marker this
-  repo has no mechanism for.
+  idempotent by construction): select every `api_keys` row's `id` and
+  `dataset_id` where `dataset_id IS NOT NULL AND dataset_ids IS NULL`, and
+  for each, `UPDATE api_keys SET dataset_ids = ? WHERE id = ? AND
+  dataset_id = ? AND dataset_ids IS NULL`, with `dataset_ids` bound to
+  `serde_json::to_string(&[dataset_id])` and the second `dataset_id = ?`
+  bound to the exact value just read (in addition to the primary-key
+  match) — the same pattern this codebase already uses everywhere else it
+  writes a JSON-array-in-TEXT column (e.g. `scopes`, `catalog.rs:
+  2202-2207,3459`): encode the array in Rust and bind it as a plain
+  string parameter, never an in-SQL JSON constructor function. (An earlier
+  draft of this design used a SQL-side `json_array(...)` call, which
+  doesn't match this repo's `scopes` precedent and would need
+  version-specific handling between SQLite's and Postgres's differing
+  JSON function surfaces to work at all — reusing the existing Rust-side
+  encoding sidesteps that entirely and keeps one code path for every
+  JSON-array column in this table.) The repeated `dataset_id = ?` in the
+  `WHERE` clause is a compare-and-swap guard, not redundant with the
+  `SELECT`: without it, an old-code node's concurrent write to
+  `dataset_id` between this backfill's `SELECT` and `UPDATE` (both run
+  outside a single transaction, since `Catalog::init()`'s startup pass and
+  a live request are different connections) could otherwise let the
+  backfill persist a `dataset_ids` value encoding the *stale* `dataset_id`
+  it read, becoming authoritative over the newer value the old-code node
+  just wrote and silently reverting that write from every new-code node's
+  point of view. With the guard, that race instead makes the `UPDATE`
+  match zero rows — a correct no-op, since `dataset_id IS NOT NULL AND
+  dataset_ids IS NULL` still matches the row on the next boot's backfill
+  pass, which then reads the up-to-date value. This only ever touches a
+  row untouched since before this change (new code always leaves both
+  columns consistent, so the `WHERE` clause never matches a key new code
+  has written), which is what makes it safe to leave unconditional rather
+  than gating it behind a one-shot marker this repo has no mechanism for.
 
 **Residual, documented limitation — and it is wider than API keys alone.**
 The legacy `dataset_id` column structurally cannot represent a
@@ -195,9 +210,27 @@ multi-element restriction, and dual-write only helps a credential type that
   restricted to two or more datasets is seen as **unrestricted** by an
   old-code node, because `dataset_id` for such a key is `NULL` and old
   code has no other column to consult. Single-dataset and unrestricted
-  keys are safe throughout a mixed-version rollout and safe to roll back
-  at any point; only a genuinely new multi-element restriction requires
-  the rollout to finish first.
+  keys never become *more* permissive than intended throughout a
+  mixed-version rollout and are safe to roll back at any point — that
+  security property (a restricted key is never silently widened) holds
+  unconditionally for them. There is a separate, narrower, non-widening
+  staleness case worth naming precisely rather than folding into "safe":
+  if a key already carries a new-code-written `dataset_ids` (e.g.
+  restricted to `["a"]`), and an *old*-code node then updates that same
+  key (old code only ever sets `dataset_id` via `COALESCE`, since it has
+  no `dataset_ids` column or "clear" concept), the old node's write
+  changes `dataset_id` but leaves `dataset_ids` — still authoritative
+  under D2's read rule — untouched. A new-code node then keeps enforcing
+  the restriction `dataset_ids` still names, not the value the old node's
+  caller believed it had just set. This is a stuck-restriction problem
+  (the key stays *more* restrictive than the old-code caller's most recent
+  write intended), the opposite direction from a security leak, and it
+  resolves itself the moment the key is next written by new code (or once
+  the rollout completes and no old-code node can write `dataset_id`
+  independently of `dataset_ids` again) — but it is real enough that an
+  operator relying on an old-code admin UI to change a key's single
+  dataset mid-rollout should not assume the change took effect until
+  confirming against a new-code node.
 - **OAuth tokens:** there is no legacy `dataset_id` column on
   `oauth_access_tokens`/`oauth_refresh_tokens`/`oauth_authorization_codes`
   to dual-write against, because dataset restriction never existed for

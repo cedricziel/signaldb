@@ -17,7 +17,13 @@
       just `dataset_ids` — this is the specific case a naive
       `COALESCE`-based update can't express and the first draft missed),
       `Set(["a"])` writes the derived single value to `dataset_id` too,
-      `Set(["a","b"])` writes `dataset_id = NULL`; both SQLite and Postgres
+      `Set(["a","b"])` writes `dataset_id = NULL`; critically,
+      `Set(vec![])` and `Set(vec!["a", "a"])` (duplicate) are rejected by
+      `update_api_key_scopes` with the same error as the create path —
+      the empty/duplicate validation is one shared function called from
+      both `upsert_scoped_api_key` and `update_api_key_scopes`, not
+      duplicated logic that the update path could independently forget;
+      both SQLite and Postgres
       branches (`cargo test -p common`, plus the Postgres testcontainer
       suite)
 - [ ] 1.2 Implement: add the `dataset_ids` column on `api_keys` (SQLite
@@ -35,9 +41,21 @@
       `enum DatasetRestrictionUpdate { Keep, Clear, Set(Vec<String>) }` in
       `common::catalog` and change `update_api_key_scopes`'s signature to
       take it in place of `dataset_id: Option<&str>`, replacing the
-      `COALESCE`-based SQL with a branch per variant (D2b); update
-      `ApiKeyRecord`/`ApiKeyAuthRecord`, `upsert_scoped_api_key`,
-      `validate_api_key`
+      `COALESCE`-based SQL with a branch per variant (D2b) — the `Set`
+      branch validates its `Vec<String>` (reject empty, reject duplicates)
+      through the same helper `upsert_scoped_api_key`'s create path calls,
+      so the two entry points can't drift into checking different rules;
+      update `ApiKeyRecord`/`ApiKeyAuthRecord`, `upsert_scoped_api_key`,
+      `validate_api_key`; the backfill's read-then-write is made
+      compare-and-swap safe against a concurrent legacy write: the
+      `UPDATE ... SET dataset_ids = ?` statement includes `AND dataset_id =
+      ?` bound to the exact value the backfill's `SELECT` just read (in
+      addition to the existing `dataset_ids IS NULL` guard), so a
+      concurrent old-code write to `dataset_id` between the read and the
+      write makes the backfill's `UPDATE` match zero rows instead of
+      persisting a `dataset_ids` value derived from data that is already
+      stale — the row is picked up correctly by the next boot's backfill
+      pass instead
 - [ ] 1.3 Failing tests: `dataset_allowed(None, "x")` is true;
       `dataset_allowed(Some(&["a","b"]), "a")` is true,
       `dataset_allowed(Some(&["a","b"]), "c")` is false; a resolution-order
@@ -225,8 +243,11 @@
       rather than silently resolving to the tenant default (D4); a key
       carrying `tenant:manage` and a dataset restriction is refused by the
       management API end-to-end (D9); `discover_datasets` for a restricted
-      credential never lists a dataset outside its restriction (D10); an
-      OAuth access token restricted to `[production]` is presented directly
+      credential never lists a dataset outside its restriction (D10);
+      `GET /api/v1/whoami` for a credential restricted to `[production]`
+      excludes `staging` from its dataset list, exercising the same D10
+      filter on its other named call site, not only `discover_datasets`;
+      an OAuth access token restricted to `[production]` is presented directly
       (bearer token, no MCP involved) against a Tempo/Loki/Prometheus
       compat endpoint with `X-Dataset-ID: staging` and is refused — proving
       the restriction is enforced in the shared `Authenticator` on the
