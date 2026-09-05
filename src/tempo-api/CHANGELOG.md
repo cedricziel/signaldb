@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.3](https://github.com/cedricziel/signaldb/compare/tempo-api-v0.1.2...tempo-api-v0.1.3) (2026-09-05)
+
+
+### Code Refactoring
+
+* make query-ir and tempo-api standalone, and cover the parser crates ([#1369](https://github.com/cedricziel/signaldb/issues/1369)) ([1a4d78f](https://github.com/cedricziel/signaldb/commit/1a4d78f077616a9c4846cb6c02715b147b5ad1c2))
+
+
+### Continuous Integration
+
+* **ql:** publish the parser crates on their own release train ([#1362](https://github.com/cedricziel/signaldb/issues/1362)) ([bfc2162](https://github.com/cedricziel/signaldb/commit/bfc216206d779b5a556b7513a882e06dc77bf116))
+
 ## [0.1.2](https://github.com/cedricziel/signaldb/compare/tempo-api-v0.1.1...tempo-api-v0.1.2) (2026-08-17)
 
 

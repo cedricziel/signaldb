@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.4.0](https://github.com/cedricziel/signaldb/compare/acceptor-v0.3.0...acceptor-v0.4.0) (2026-09-05)
+
+
+### Features
+
+* implement multi-dataset restriction for API keys and OAuth grants ([#1475](https://github.com/cedricziel/signaldb/issues/1475)) ([11deba9](https://github.com/cedricziel/signaldb/commit/11deba995c6937324576f87e87284a1580faa624))
+
+
+### Bug Fixes
+
+* **acceptor:** accept gzip/zstd OTLP/HTTP bodies and cap request size ([#1383](https://github.com/cedricziel/signaldb/issues/1383)) ([f90b163](https://github.com/cedricziel/signaldb/commit/f90b163185cd903d085351359b338f35d668a423))
+* **acceptor:** capture trailer-carried grpc-status for streaming calls ([#1435](https://github.com/cedricziel/signaldb/issues/1435)) ([efe84a7](https://github.com/cedricziel/signaldb/commit/efe84a70a3fd6365e4345c1f838efad4e777c926))
+* **acceptor:** classify conversion vs durability ingest failures ([#1385](https://github.com/cedricziel/signaldb/issues/1385)) ([993c542](https://github.com/cedricziel/signaldb/commit/993c5424d662b4b2284cfc75d5738485c7272310))
+* **acceptor:** M6 log-level cleanup and low-severity findings ([#1390](https://github.com/cedricziel/signaldb/issues/1390)) ([0a11370](https://github.com/cedricziel/signaldb/commit/0a11370343a65170d04058df3217a669f6735c2b))
+* **acceptor:** remove metrics_partition's four unwraps, add regrouping tests (M5) ([#1389](https://github.com/cedricziel/signaldb/issues/1389)) ([87456d8](https://github.com/cedricziel/signaldb/commit/87456d80348f5f1b512946b3cdcbc11e7e9e9aa0))
+* **acceptor:** replace blocking gRPC auth interceptor with an async layer (M2) ([#1388](https://github.com/cedricziel/signaldb/issues/1388)) ([da21f7a](https://github.com/cedricziel/signaldb/commit/da21f7a68272d363008cf57f2858e2c16858d841))
+* **acceptor:** unify profiles HTTP handler, fix response-encoding bug ([#1386](https://github.com/cedricziel/signaldb/issues/1386)) ([922d2fe](https://github.com/cedricziel/signaldb/commit/922d2feb6c790c2c73833d2d88281c6b6ddfc104))
+* **wal:** cap concurrently active WAL instances against RLIMIT_NOFILE ([#1437](https://github.com/cedricziel/signaldb/issues/1437)) ([2c14e7e](https://github.com/cedricziel/signaldb/commit/2c14e7e203c114572bd786a835802512ac7e1067))
+* **wal:** reclaim processed segments from the service drain loops ([#1338](https://github.com/cedricziel/signaldb/issues/1338)) ([e2b3da6](https://github.com/cedricziel/signaldb/commit/e2b3da636d773b20457e92e2a9938da68d14b712))
+* **writer:** give each tenant its own WAL instead of one global WAL ([#1299](https://github.com/cedricziel/signaldb/issues/1299)) ([830900e](https://github.com/cedricziel/signaldb/commit/830900ebaddf46dff5ac9eb0748d8fb63e7b35b2))
+
+
+### Code Refactoring
+
+* dedupe quality cleanups in compactor, router, and acceptor ([#1326](https://github.com/cedricziel/signaldb/issues/1326)) ([beaeff3](https://github.com/cedricziel/signaldb/commit/beaeff3e405b87405ef722b5158d1af99f51b7b0))
+
 ## [0.3.0](https://github.com/cedricziel/signaldb/compare/acceptor-v0.2.1...acceptor-v0.3.0) (2026-08-17)
 
 

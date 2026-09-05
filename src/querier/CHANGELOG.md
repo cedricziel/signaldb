@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.4.0](https://github.com/cedricziel/signaldb/compare/querier-v0.3.0...querier-v0.4.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **querier:** irVersion 5 is the new maximum. Every v1-v4 document keeps its exact meaning; documents using stddev/stdvar/first/last or a divisor below v5 are rejected naming the version they need, never silently coerced.
+* **ql-ir:** irVersion 5 is the new maximum. Every v1-v4 document keeps its exact meaning; documents using stddev/stdvar/first/last or a divisor below v5 are rejected naming the version they need, never silently coerced.
+* **traceql:** GET /api/search now answers 400 instead of 501 for a q that cannot be parsed as TraceQL (notbraces, { foo }, { zzz = 1 }). Splitting the parser forced the question of where the rejection line sits, and answering 'not implemented' to a malformed query left clients unable to distinguish a wrong query from one SignalDB cannot yet run. Valid TraceQL using an unimplemented construct (||, !=, =~, duration) still answers 501, and no rejection moved the other way.
+
+### Features
+
+* **ql-ir:** lower LogQL and TraceQL onto the query IR ([#1378](https://github.com/cedricziel/signaldb/issues/1378)) ([96a7fd6](https://github.com/cedricziel/signaldb/commit/96a7fd61364c617d952ad2670db4433957df7171))
+* **querier:** expose plan_document and land the compat-vs-IR differential harness ([#1387](https://github.com/cedricziel/signaldb/issues/1387)) ([08e7448](https://github.com/cedricziel/signaldb/commit/08e74485e510608d18e45a8f9b79946576c113ac)), closes [#1382](https://github.com/cedricziel/signaldb/issues/1382)
+* **querier:** route LogQL through the IR planner behind a rollout switch ([#1393](https://github.com/cedricziel/signaldb/issues/1393)) ([1e98695](https://github.com/cedricziel/signaldb/commit/1e98695cdd737d7b33f82046035f115ef8fcfd5a))
+* **querier:** route trace search through the IR planner behind a rollout switch ([#1391](https://github.com/cedricziel/signaldb/issues/1391)) ([9e68c5d](https://github.com/cedricziel/signaldb/commit/9e68c5df947d5ef378c99297940e4dde0fea8c4d)), closes [#1382](https://github.com/cedricziel/signaldb/issues/1382)
+* **query-ir:** add a describe stage and metadata envelope for discovery ([#1309](https://github.com/cedricziel/signaldb/issues/1309)) ([b1d521c](https://github.com/cedricziel/signaldb/commit/b1d521c4151efae251e208a0dc11af08f3d6332f))
+* **query-ir:** register a logical timestamp field for metrics and profiles ([#1293](https://github.com/cedricziel/signaldb/issues/1293)) ([256053c](https://github.com/cedricziel/signaldb/commit/256053ce3653c43121827985e13ea6fc7672561a)), closes [#1205](https://github.com/cedricziel/signaldb/issues/1205)
+* sort every producer's rows by the declared key and attest it per file ([#1313](https://github.com/cedricziel/signaldb/issues/1313)) ([c667eda](https://github.com/cedricziel/signaldb/commit/c667eda0c05752ff51fb1ad6ba37cf4594455c6f))
+
+
+### Bug Fixes
+
+* collision-proof attribute-label naming and promotion-boundary query correctness ([#1447](https://github.com/cedricziel/signaldb/issues/1447)) ([fe4fc5c](https://github.com/cedricziel/signaldb/commit/fe4fc5c049a6a0ec4ed43ba7a3bdbb04ca607781))
+* **ql-ir:** four lowering bugs found in review of [#1379](https://github.com/cedricziel/signaldb/issues/1379) ([#1381](https://github.com/cedricziel/signaldb/issues/1381)) ([91384d3](https://github.com/cedricziel/signaldb/commit/91384d35ad008cb884b505ced1e91b3dbbce798b))
+* **querier,router:** decode JSON-quoted log bodies on read ([#1432](https://github.com/cedricziel/signaldb/issues/1432)) ([8f22ec8](https://github.com/cedricziel/signaldb/commit/8f22ec8b24e3436c54d9f4289654c555c59765d8))
+* **querier:** close IR aggregate gaps the compat rollout exposed ([#1403](https://github.com/cedricziel/signaldb/issues/1403)) ([1a9da61](https://github.com/cedricziel/signaldb/commit/1a9da61b4c30e9363b48dde210d1f3a9e3de511d))
+* **querier:** collapse an ungrouped sum(...) over a LogQL range aggregation ([#1419](https://github.com/cedricziel/signaldb/issues/1419)) ([e76086e](https://github.com/cedricziel/signaldb/commit/e76086ed068895623003a34dac904fb06b2440b1))
+* **querier:** resolve mixed-case materialized labels in LogQL execute_plan grouping ([#1429](https://github.com/cedricziel/signaldb/issues/1429)) ([05d16ee](https://github.com/cedricziel/signaldb/commit/05d16eed8a210a82c96b6bc98e19e0c93f736994)), closes [#1392](https://github.com/cedricziel/signaldb/issues/1392)
+* **querier:** union metric tables on an identical scan schema ([#1351](https://github.com/cedricziel/signaldb/issues/1351)) ([29994a1](https://github.com/cedricziel/signaldb/commit/29994a1d88bface511f7480dfb1b3232c087984f))
+* **query-ir:** stop an unknown group-by field from answering silently ([#1301](https://github.com/cedricziel/signaldb/issues/1301)) ([b4f8464](https://github.com/cedricziel/signaldb/commit/b4f8464f71192f80d407f81e8bd837efd8fafd79))
+
+
+### Performance Improvements
+
+* **querier:** cache Parquet footers for repeated trace lookups ([#1310](https://github.com/cedricziel/signaldb/issues/1310)) ([cb71029](https://github.com/cedricziel/signaldb/commit/cb71029ce24cf0140b5bed920910569fcc893eff))
+
+
+### Code Refactoring
+
+* make query-ir and tempo-api standalone, and cover the parser crates ([#1369](https://github.com/cedricziel/signaldb/issues/1369)) ([1a4d78f](https://github.com/cedricziel/signaldb/commit/1a4d78f077616a9c4846cb6c02715b147b5ad1c2))
+* **querier:** dedupe query-path helpers and cut avoidable allocations ([#1325](https://github.com/cedricziel/signaldb/issues/1325)) ([54cf2a8](https://github.com/cedricziel/signaldb/commit/54cf2a8b3bfc5f8c7211818c449f184e4e1ba9a3))
+* **querier:** delete the duplicated TraceQL/LogQL lowering ([#1406](https://github.com/cedricziel/signaldb/issues/1406)) ([db9e492](https://github.com/cedricziel/signaldb/commit/db9e4924a2c2ebaa184541545b7a51850ffc6b1f))
+* **querier:** extract per-signal ticket dispatch out of do_get ([#1337](https://github.com/cedricziel/signaldb/issues/1337)) ([a98359f](https://github.com/cedricziel/signaldb/commit/a98359f4ee89c1f1f730de9592af093a7ce29389))
+* **querier:** move ticket tenant and query-type classification onto TicketRequest ([#1336](https://github.com/cedricziel/signaldb/issues/1336)) ([de78a69](https://github.com/cedricziel/signaldb/commit/de78a6911bd6052d1ba08cdbd5386b811027e2f3))
+* **traceql:** extract the TraceQL parser into a standalone crate ([#1361](https://github.com/cedricziel/signaldb/issues/1361)) ([62e33e0](https://github.com/cedricziel/signaldb/commit/62e33e08c55e6cf24fe97049e19c2d91709236ee))
+
+
+### Tests
+
+* **querier:** pin ql-ir's field mapping against the real logical schema ([#1379](https://github.com/cedricziel/signaldb/issues/1379)) ([92d165f](https://github.com/cedricziel/signaldb/commit/92d165fb14494ed97bc49bc90b19af1d1341a596))
+
+
+### Continuous Integration
+
+* **ql:** publish the parser crates on their own release train ([#1362](https://github.com/cedricziel/signaldb/issues/1362)) ([bfc2162](https://github.com/cedricziel/signaldb/commit/bfc216206d779b5a556b7513a882e06dc77bf116))
+
 ## [0.3.0](https://github.com/cedricziel/signaldb/compare/querier-v0.2.1...querier-v0.3.0) (2026-08-17)
 
 
