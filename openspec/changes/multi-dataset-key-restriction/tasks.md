@@ -55,7 +55,16 @@
       write makes the backfill's `UPDATE` match zero rows instead of
       persisting a `dataset_ids` value derived from data that is already
       stale — the row is picked up correctly by the next boot's backfill
-      pass instead
+      pass instead; a deterministic regression test proves this
+      compare-and-swap guard, on both SQLite and Postgres: run the
+      backfill's `SELECT`, then — before its `UPDATE` executes — perform a
+      legacy `dataset_id` write against the same row through the old
+      `COALESCE`-based write path (simulating the old-code race), then let
+      the backfill's `UPDATE` proceed and assert it affects zero rows and
+      leaves `dataset_ids` NULL; then run the backfill pass a second time
+      and assert `dataset_ids` now reflects the *new* `dataset_id` value —
+      proving the race resolves itself on the next pass rather than
+      wedging the row in an inconsistent state
 - [ ] 1.3 Failing tests: `dataset_allowed(None, "x")` is true;
       `dataset_allowed(Some(&["a","b"]), "a")` is true,
       `dataset_allowed(Some(&["a","b"]), "c")` is false; a resolution-order
@@ -242,11 +251,20 @@
       restricted to two datasets with no `X-Dataset-ID` header is rejected
       rather than silently resolving to the tenant default (D4); a key
       carrying `tenant:manage` and a dataset restriction is refused by the
-      management API end-to-end (D9); `discover_datasets` for a restricted
-      credential never lists a dataset outside its restriction (D10);
-      `GET /api/v1/whoami` for a credential restricted to `[production]`
-      excludes `staging` from its dataset list, exercising the same D10
-      filter on its other named call site, not only `discover_datasets`;
+      management API end-to-end (D9); an OAuth session for a tenant-admin
+      user, authorized with a non-empty dataset restriction (`tenant:manage`
+      itself is never grantable through OAuth consent — this exercises the
+      *role*-based `can_manage` path a tenant-admin session reaches
+      management through, which D9 closes the same way), is likewise
+      refused by the management API end-to-end, proving D9 covers both the
+      scope-carrying API-key case and the role-carrying OAuth case;
+      `discover_datasets` for a restricted
+      credential never lists a dataset outside its restriction, and
+      `tenant_list_tables` for the same restricted credential neither
+      exposes nor accepts `staging` (D10 covers both call sites, not only
+      `discover_datasets`); `GET /api/v1/whoami` for a credential restricted
+      to `[production]` excludes `staging` from its dataset list,
+      exercising the same D10 filter on its other named call site;
       an OAuth access token restricted to `[production]` is presented directly
       (bearer token, no MCP involved) against a Tempo/Loki/Prometheus
       compat endpoint with `X-Dataset-ID: staging` and is refused — proving
