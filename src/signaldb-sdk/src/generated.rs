@@ -800,7 +800,8 @@ pub mod types {
     ///      ],
     ///      "items": {
     ///        "type": "string"
-    ///      }
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "redirect_uri": {
     ///      "description": "The redirect URI to return to (must be registered for the client).",
@@ -1064,7 +1065,8 @@ pub mod types {
     ///      ],
     ///      "items": {
     ///        "type": "string"
-    ///      }
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "name": {
     ///      "description": "Optional human-readable name for the key.",
@@ -3114,7 +3116,8 @@ pub mod types {
     ///      ],
     ///      "items": {
     ///        "type": "string"
-    ///      }
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "name": {
     ///      "type": [
@@ -3621,7 +3624,8 @@ pub mod types {
     ///      ],
     ///      "items": {
     ///        "type": "string"
-    ///      }
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "scopes": {
     ///      "description": "Replacement scope list (non-empty, drawn from the shared vocabulary).",
@@ -6121,7 +6125,8 @@ pub mod types {
     ///      ],
     ///      "items": {
     ///        "type": "string"
-    ///      }
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "scopes": {
     ///      "description": "New scope list (replaces the current one; must be non-empty).",

@@ -439,6 +439,7 @@ pub(crate) async fn delete_dataset<S: RouterState>(
 #[serde(deny_unknown_fields)]
 pub(crate) struct CreateApiKeyRequest {
     name: Option<String>,
+    #[schema(min_items = 1)]
     dataset_ids: Option<Vec<String>>,
     scopes: Vec<String>,
 }
@@ -665,6 +666,7 @@ pub(crate) struct UpdateApiKeyRequest {
     /// Replacement dataset set (non-empty; an explicit empty array is
     /// rejected). Omitted/`null` leaves the current restriction unchanged.
     /// Mutually exclusive with `clear_dataset_restriction: true`.
+    #[schema(min_items = 1)]
     dataset_ids: Option<Vec<String>>,
     /// Clear an existing dataset restriction back to unrestricted. Must not
     /// be combined with a non-empty `dataset_ids` in the same request.

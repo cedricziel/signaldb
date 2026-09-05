@@ -429,6 +429,7 @@ pub struct ConsentDecision {
     /// array is rejected (D1a), as is any non-empty selection while
     /// `[auth].dataset_restriction_rollout_complete` is `false` (stricter
     /// than the API-key rule — OAuth has no legacy column to fall back to).
+    #[schema(min_items = 1)]
     #[serde(default)]
     dataset_ids: Option<Vec<String>>,
 }
@@ -760,21 +761,23 @@ pub(crate) async fn consent_context<S: RouterState>(
             .collect()
     };
 
-    let mut tenants = Vec::with_capacity(tenant_roles.len());
-    for (id, role) in tenant_roles {
-        let datasets = state
-            .catalog()
-            .get_datasets(&id)
-            .await
-            .map_err(|e| OAuthError::server_error(format!("dataset lookup failed: {e}")))?
-            .into_iter()
-            .map(|d| ConsentDataset {
-                id: d.id,
-                name: d.name,
-            })
-            .collect();
-        tenants.push(ConsentTenant { id, role, datasets });
-    }
+    let tenants = futures::future::try_join_all(tenant_roles.into_iter().map(|(id, role)| {
+        let catalog = state.catalog();
+        async move {
+            let datasets = catalog
+                .get_datasets(&id)
+                .await
+                .map_err(|e| OAuthError::server_error(format!("dataset lookup failed: {e}")))?
+                .into_iter()
+                .map(|d| ConsentDataset {
+                    id: d.id,
+                    name: d.name,
+                })
+                .collect();
+            Ok::<_, OAuthError>(ConsentTenant { id, role, datasets })
+        }
+    }))
+    .await?;
 
     Ok(Json(ConsentContextResponse {
         client_name: client.client_name,

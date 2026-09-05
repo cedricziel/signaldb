@@ -100,6 +100,7 @@ pub struct CreateApiKeyRequest {
     /// unrestricted key; a non-empty array restricts it to exactly that set.
     /// An explicit empty array, or a duplicate name within the set, is
     /// rejected.
+    #[schema(min_items = 1)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_ids: Option<Vec<String>>,
 }
@@ -118,6 +119,7 @@ pub struct UpdateApiKeyRequest {
     /// Replacement dataset set (non-empty; an explicit empty array is
     /// rejected). Omitted/`null` leaves the current restriction unchanged.
     /// Mutually exclusive with `clear_dataset_restriction: true`.
+    #[schema(min_items = 1)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_ids: Option<Vec<String>>,
     /// Clear an existing dataset restriction back to unrestricted. Must not

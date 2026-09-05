@@ -4673,7 +4673,8 @@
             "items": {
               "type": "string"
             },
-            "description": "Dataset set to restrict the grant to (D5/D6). Omitted or `null`\ngrants unrestricted access to the tenant — today's only behavior,\nand `#[serde(default)]` so a decision from a client built before\nthis change (which omits the field entirely) keeps working\nunmodified. A non-empty array restricts the grant to exactly that\nset; every named dataset must belong to `tenant`. An explicit empty\narray is rejected (D1a), as is any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to)."
+            "description": "Dataset set to restrict the grant to (D5/D6). Omitted or `null`\ngrants unrestricted access to the tenant — today's only behavior,\nand `#[serde(default)]` so a decision from a client built before\nthis change (which omits the field entirely) keeps working\nunmodified. A non-empty array restricts the grant to exactly that\nset; every named dataset must belong to `tenant`. An explicit empty\narray is rejected (D1a), as is any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to).",
+            "minItems": 1
           },
           "redirect_uri": {
             "type": "string",
@@ -4770,7 +4771,8 @@
             "items": {
               "type": "string"
             },
-            "description": "Dataset set the key is restricted to. Omitted or `null` creates an\nunrestricted key; a non-empty array restricts it to exactly that set.\nAn explicit empty array, or a duplicate name within the set, is\nrejected."
+            "description": "Dataset set the key is restricted to. Omitted or `null` creates an\nunrestricted key; a non-empty array restricts it to exactly that set.\nAn explicit empty array, or a duplicate name within the set, is\nrejected.",
+            "minItems": 1
           },
           "name": {
             "type": [
@@ -5783,7 +5785,8 @@
             ],
             "items": {
               "type": "string"
-            }
+            },
+            "minItems": 1
           },
           "name": {
             "type": [
@@ -6065,7 +6068,8 @@
             "items": {
               "type": "string"
             },
-            "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`."
+            "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`.",
+            "minItems": 1
           },
           "scopes": {
             "type": [
@@ -7202,7 +7206,8 @@
             "items": {
               "type": "string"
             },
-            "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`."
+            "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`.",
+            "minItems": 1
           },
           "scopes": {
             "type": [
