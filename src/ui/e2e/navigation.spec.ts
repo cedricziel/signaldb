@@ -53,6 +53,13 @@ test("an unknown path redirects to /logs, preserving the query string", async ({
   await expect(page).toHaveURL(/\/logs\?range=15m$/);
 });
 
+test("/ redirects to /logs, preserving the query string", async ({
+  page,
+}) => {
+  await page.goto("/?tenant=homelab&dataset=default");
+  await expect(page).toHaveURL(/\/logs\?tenant=homelab&dataset=default$/);
+});
+
 test("/manage redirects unauthenticated visitors to /logs", async ({
   page,
 }) => {
@@ -98,4 +105,16 @@ test("/oauth/consent renders standalone, without the explore shell", async ({
   await expect(
     page.getByRole("heading", { name: "Invalid authorization request" }),
   ).toBeVisible();
+});
+
+test("/login renders standalone, without the explore shell", async ({
+  page,
+}) => {
+  // No mocks: whoami naturally fails without a backend, so the sign-in
+  // form renders.
+  await page.goto("/login");
+  await expect(page).toHaveURL(/\/login$/);
+  // No signal tabs, no top bar — this route bypasses the shell entirely.
+  await expect(page.getByRole("tablist", { name: "Signal" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Sign in" })).toBeVisible();
 });

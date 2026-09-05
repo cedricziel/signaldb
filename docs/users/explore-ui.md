@@ -538,6 +538,21 @@ directly in it (on its default dataset); accounts spanning several tenants
 pick one from a selector listing each membership by name and role. See
 [the authentication reference](authentication.md).
 
+The same form is also reachable directly at `/login` — a standalone,
+linkable sign-in screen (no top bar, no signal tabs) for bookmarking or
+sharing, rather than only appearing reactively after a failed query. It
+accepts an optional `?redirect=<path>` to return to a specific page after
+signing in (only a same-app path is honored; anything else falls back to
+`/logs`), and redirects an already-authenticated visitor straight to that
+target without showing the form. Signing out (see [User menu](#user-menu))
+lands here.
+
+Any URL — including the site root (`/`) with `?tenant=&dataset=`
+attached — that doesn't match a known route redirects to `/logs`,
+preserving its query string, so a tenant/dataset carried on a deep link or
+external redirect survives the trip instead of landing on an empty,
+tenant-less page.
+
 ![The post-login tenant selector listing each membership with its name and role](../assets/screenshots/login-tenant-selector.png)
 
 Signing in calls `POST /ui/session`, which validates the credentials and
@@ -569,7 +584,7 @@ Once signed in, a user menu appears in the top bar showing an avatar
 - **Docs** — opens the SignalDB documentation in a new tab.
 - **Switch tenant** — opens the Tenant Selection page (see below).
 - **Sign out** — deletes the session, clears the query cache, and
-  reloads the page.
+  reloads on the [`/login`](#signing-in) screen.
 
 The menu closes on Escape or backdrop click.
 
