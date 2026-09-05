@@ -41,7 +41,7 @@ const API_KEYS = [
   {
     id: "key-1",
     name: "collector-production",
-    dataset_id: "production",
+    dataset_ids: ["production"],
     scopes: ["metrics:write", "logs:write"],
     created_at: "2026-08-01T00:00:00Z",
     revoked: false,
@@ -49,7 +49,7 @@ const API_KEYS = [
   {
     id: "key-2",
     name: "staging-deploy",
-    dataset_id: "staging",
+    dataset_ids: ["staging"],
     scopes: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
     created_at: "2026-07-15T00:00:00Z",
     revoked: false,
@@ -57,7 +57,7 @@ const API_KEYS = [
   {
     id: "key-3",
     name: "old-key",
-    dataset_id: null,
+    dataset_ids: null,
     scopes: [],
     created_at: "2026-07-01T00:00:00Z",
     revoked: true,
@@ -65,7 +65,7 @@ const API_KEYS = [
   {
     id: "key-4",
     name: "ci-provisioner",
-    dataset_id: null,
+    dataset_ids: null,
     scopes: ["tenant:manage"],
     created_at: "2026-08-10T00:00:00Z",
     revoked: false,
@@ -185,7 +185,9 @@ describe("ApiKeys page", () => {
       expect(
         screen.getByPlaceholderText("collector-production"),
       ).toBeInTheDocument();
-      expect(screen.getByRole("group", { name: "Datasets" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("group", { name: "Datasets" }),
+      ).toBeInTheDocument();
       expect(screen.getByLabelText("production")).toBeInTheDocument();
       expect(screen.getByLabelText("staging")).toBeInTheDocument();
       expect(screen.getByLabelText("production")).not.toBeChecked();
