@@ -254,11 +254,7 @@ impl Catalog {
                         .execute(pool)
                         .await?;
                 }
-                if !has_api_key_column("dataset_ids") {
-                    query("ALTER TABLE api_keys ADD COLUMN dataset_ids TEXT")
-                        .execute(pool)
-                        .await?;
-                }
+                ensure_sqlite_text_column(pool, "api_keys", "dataset_ids").await?;
 
                 let create_datasets = r#"
                 CREATE TABLE IF NOT EXISTS datasets (
@@ -1460,8 +1456,6 @@ pub struct ApiKeyRecord {
 pub struct ApiKeyAuthRecord {
     pub tenant_id: String,
     pub name: Option<String>,
-    /// Legacy single-dataset column; see [`ApiKeyRecord::dataset_id`].
-    pub dataset_id: Option<String>,
     /// Dataset-set restriction; see [`ApiKeyRecord::dataset_ids`].
     pub dataset_ids: Option<Vec<String>>,
     /// Explicit scopes, or `None` for a legacy unrestricted key.
@@ -1485,6 +1479,33 @@ pub enum DatasetRestrictionUpdate {
     /// way as the create path (`upsert_scoped_api_key`): an empty or
     /// duplicate-containing set is rejected.
     Set(Vec<String>),
+}
+
+impl DatasetRestrictionUpdate {
+    /// Bridge a legacy single-dataset request field to this tri-state,
+    /// matching the old two-state `COALESCE` semantics exactly: `Some`
+    /// sets a single-dataset restriction, `None` leaves the existing
+    /// restriction untouched.
+    ///
+    /// TODO(multi-dataset-key-restriction phase 2): request DTOs grow a
+    /// `dataset_ids`/`clear_dataset_restriction` pair that constructs the
+    /// full tri-state directly; this bridge goes away once that lands.
+    pub fn from_legacy_single(dataset_id: Option<String>) -> Self {
+        match dataset_id {
+            Some(id) => Self::Set(vec![id]),
+            None => Self::Keep,
+        }
+    }
+}
+
+/// Bridge a legacy single-dataset request field to the `Option<&[String]>`
+/// shape [`Catalog::upsert_scoped_api_key`] expects.
+///
+/// TODO(multi-dataset-key-restriction phase 2): request DTOs grow a
+/// `dataset_ids: Vec<String>` field directly; this single-to-slice bridge
+/// goes away once that lands.
+pub fn dataset_ids_from_legacy_single(dataset_id: Option<&String>) -> Option<&[String]> {
+    dataset_id.map(std::slice::from_ref)
 }
 
 /// Reject an empty or duplicate-containing dataset-id set (D1a). Shared by
@@ -1543,6 +1564,22 @@ fn decode_dataset_id_set(
         Some(json) => decode_json_vec(json).map(Some),
         None => Ok(legacy_dataset_id.map(|id| vec![id.to_string()])),
     }
+}
+
+/// Read the `dataset_id`/`dataset_ids` pair off a fetched `api_keys` row and
+/// apply the [`decode_dataset_id_set`] dual-read. Generic over the row type
+/// so the same code serves both the SQLite and PostgreSQL branches of each
+/// caller.
+fn decode_dataset_fields<R: Row>(
+    row: &R,
+) -> Result<(Option<String>, Option<Vec<String>>), sqlx::Error>
+where
+    for<'a> &'a str: sqlx::ColumnIndex<R>,
+    for<'a> Option<String>: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+{
+    let dataset_id: Option<String> = row.get("dataset_id");
+    let dataset_ids = decode_dataset_id_set(row.get("dataset_ids"), dataset_id.as_deref())?;
+    Ok((dataset_id, dataset_ids))
 }
 
 /// Dataset record from database
@@ -2459,13 +2496,10 @@ impl Catalog {
                     .await?;
 
                 row.map(|r| {
-                    let dataset_id: Option<String> = r.get("dataset_id");
-                    let dataset_ids =
-                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
+                    let (_, dataset_ids) = decode_dataset_fields(&r)?;
                     Ok(ApiKeyAuthRecord {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        dataset_id,
                         dataset_ids,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                     })
@@ -2479,13 +2513,10 @@ impl Catalog {
                     .await?;
 
                 row.map(|r| {
-                    let dataset_id: Option<String> = r.get("dataset_id");
-                    let dataset_ids =
-                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
+                    let (_, dataset_ids) = decode_dataset_fields(&r)?;
                     Ok(ApiKeyAuthRecord {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        dataset_id,
                         dataset_ids,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                     })
@@ -2984,9 +3015,7 @@ impl Catalog {
                 rows.iter()
                     .map(|r| {
                         let revoked_at: Option<String> = r.get("revoked_at");
-                        let dataset_id: Option<String> = r.get("dataset_id");
-                        let dataset_ids =
-                            decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
+                        let (dataset_id, dataset_ids) = decode_dataset_fields(r)?;
                         Ok(ApiKeyRecord {
                             id: r.get("id"),
                             tenant_id: r.get("tenant_id"),
@@ -3011,9 +3040,7 @@ impl Catalog {
 
                 rows.iter()
                     .map(|r| {
-                        let dataset_id: Option<String> = r.get("dataset_id");
-                        let dataset_ids =
-                            decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
+                        let (dataset_id, dataset_ids) = decode_dataset_fields(r)?;
                         Ok(ApiKeyRecord {
                             id: r.get("id"),
                             tenant_id: r.get("tenant_id"),
@@ -3044,9 +3071,7 @@ impl Catalog {
 
                 row.map(|r| {
                     let revoked_at: Option<String> = r.get("revoked_at");
-                    let dataset_id: Option<String> = r.get("dataset_id");
-                    let dataset_ids =
-                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
+                    let (dataset_id, dataset_ids) = decode_dataset_fields(&r)?;
                     Ok(ApiKeyRecord {
                         id: r.get("id"),
                         tenant_id: r.get("tenant_id"),
@@ -3070,9 +3095,7 @@ impl Catalog {
                 .await?;
 
                 row.map(|r| {
-                    let dataset_id: Option<String> = r.get("dataset_id");
-                    let dataset_ids =
-                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
+                    let (dataset_id, dataset_ids) = decode_dataset_fields(&r)?;
                     Ok(ApiKeyRecord {
                         id: r.get("id"),
                         tenant_id: r.get("tenant_id"),
@@ -4523,6 +4546,21 @@ mod multi_tenancy_tests {
         hex::encode(hasher.finalize())
     }
 
+    /// Read the raw legacy `dataset_id` column for a key, bypassing
+    /// [`ApiKeyAuthRecord`] (which no longer carries that field) — for
+    /// asserting the column's on-disk state directly.
+    async fn raw_api_key_dataset_id(catalog: &Catalog, key_hash: &str) -> Option<String> {
+        let Catalog::Sqlite(pool) = catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        query("SELECT dataset_id FROM api_keys WHERE key_hash = ?")
+            .bind(key_hash)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+            .get("dataset_id")
+    }
+
     /// An on-disk SQLite catalog must run in WAL journal mode so that concurrent
     /// writers don't serialize behind an exclusive rollback lock.
     #[tokio::test]
@@ -4628,8 +4666,8 @@ mod multi_tenancy_tests {
         let validation = validation.unwrap();
         assert_eq!(validation.tenant_id, "acme");
         assert_eq!(validation.name, Some("test-key".to_string()));
-        assert_eq!(validation.dataset_id, None);
         assert_eq!(validation.scopes, None);
+        assert_eq!(raw_api_key_dataset_id(&catalog, &key_hash).await, None);
 
         // Try to create the same key again (should return existing ID)
         let duplicate_id = catalog
@@ -4736,8 +4774,11 @@ mod multi_tenancy_tests {
             .unwrap();
 
         let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
-        assert_eq!(auth.dataset_id.as_deref(), Some("production"));
         assert_eq!(auth.scopes, Some(scopes.clone()));
+        assert_eq!(
+            raw_api_key_dataset_id(&catalog, &key_hash).await.as_deref(),
+            Some("production")
+        );
 
         let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
         assert_eq!(record.dataset_id.as_deref(), Some("production"));
@@ -4780,7 +4821,7 @@ mod multi_tenancy_tests {
             auth.scopes,
             Some(vec!["schema:read".to_string(), "schema:write".to_string()])
         );
-        assert_eq!(auth.dataset_id, None);
+        assert_eq!(raw_api_key_dataset_id(&catalog, &key_hash).await, None);
 
         // Dataset only: scopes untouched.
         let updated = catalog
@@ -4793,10 +4834,13 @@ mod multi_tenancy_tests {
             .unwrap();
         assert!(updated);
         let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
-        assert_eq!(auth.dataset_id.as_deref(), Some("production"));
         assert_eq!(
             auth.scopes,
             Some(vec!["schema:read".to_string(), "schema:write".to_string()])
+        );
+        assert_eq!(
+            raw_api_key_dataset_id(&catalog, &key_hash).await.as_deref(),
+            Some("production")
         );
 
         // Nothing to change is a no-op success.
@@ -4875,12 +4919,11 @@ mod multi_tenancy_tests {
 
         let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
         assert_eq!(auth.dataset_ids, Some(ids.clone()));
-        // The legacy single-value column can't represent a multi-element
-        // set, so it stays NULL (D2's projection).
-        assert_eq!(auth.dataset_id, None);
 
         let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
         assert_eq!(record.dataset_ids, Some(ids));
+        // The legacy single-value column can't represent a multi-element
+        // set, so it stays NULL (D2's projection).
         assert_eq!(record.dataset_id, None);
     }
 

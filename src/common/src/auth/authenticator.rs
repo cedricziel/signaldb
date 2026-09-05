@@ -10,6 +10,36 @@ use crate::config::{AuthConfig, TenantConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Translate a [`super::DatasetRestrictionError`] into the [`AuthError`] a
+/// caller should return, given which kind of credential produced it.
+/// `credential_kind` is `"access token"` for an OAuth grant or `"API key"`
+/// for a database API key; the two credentials point callers at different
+/// mechanisms for naming a dataset explicitly, so the `Ambiguous` hint
+/// differs accordingly.
+fn dataset_restriction_error(
+    err: super::DatasetRestrictionError,
+    credential_kind: &str,
+    dataset_id: Option<&str>,
+    tenant_id: &str,
+) -> AuthError {
+    match err {
+        super::DatasetRestrictionError::NotAllowed => AuthError::forbidden(format!(
+            "{credential_kind} is not permitted to access dataset '{}'",
+            dataset_id.unwrap_or_default()
+        )),
+        super::DatasetRestrictionError::Ambiguous => {
+            let hint = if credential_kind == "access token" {
+                "specify a dataset explicitly"
+            } else {
+                "specify X-Dataset-ID"
+            };
+            AuthError::bad_request(format!(
+                "{credential_kind} is restricted to multiple datasets in tenant '{tenant_id}'; {hint}"
+            ))
+        }
+    }
+}
+
 /// Core authenticator for multi-tenant API key validation
 pub struct Authenticator {
     /// Database catalog for dynamic tenant lookups
@@ -234,24 +264,10 @@ impl Authenticator {
 
         // Resolve dataset against the token's restriction (D3/D4), same
         // order as a database API key.
-        let effective_dataset = match super::resolve_dataset_restriction(
-            record.dataset_ids.as_deref(),
-            dataset_id,
-        ) {
-            Ok(resolved) => resolved,
-            Err(super::DatasetRestrictionError::NotAllowed) => {
-                return Err(AuthError::forbidden(format!(
-                    "access token is not permitted to access dataset '{}'",
-                    dataset_id.unwrap_or_default()
-                )));
-            }
-            Err(super::DatasetRestrictionError::Ambiguous) => {
-                return Err(AuthError::bad_request(format!(
-                    "access token is restricted to multiple datasets in tenant '{}'; specify a dataset explicitly",
-                    record.tenant_id
-                )));
-            }
-        };
+        let effective_dataset =
+            super::resolve_dataset_restriction(record.dataset_ids.as_deref(), dataset_id).map_err(
+                |err| dataset_restriction_error(err, "access token", dataset_id, &record.tenant_id),
+            )?;
 
         let context = self
             .resolve_user_tenant(
@@ -396,28 +412,20 @@ impl Authenticator {
             .ok_or_else(|| AuthError::forbidden(format!("Tenant '{tenant_id}' not found")))?;
 
         // Resolve dataset against the key's restriction (D3/D4).
-        let resolved_dataset = match super::resolve_dataset_restriction(
-            api_key.dataset_ids.as_deref(),
-            dataset_id,
-        ) {
-            Ok(Some(dataset)) => dataset,
-            Ok(None) => tenant_record.default_dataset.clone().ok_or_else(|| {
-                AuthError::bad_request(
-                    "X-Dataset-ID header required (tenant has no default dataset)",
-                )
-            })?,
-            Err(super::DatasetRestrictionError::NotAllowed) => {
-                return Err(AuthError::forbidden(format!(
-                    "API key is not permitted to access dataset '{}'",
-                    dataset_id.unwrap_or_default()
-                )));
-            }
-            Err(super::DatasetRestrictionError::Ambiguous) => {
-                return Err(AuthError::bad_request(format!(
-                    "API key is restricted to multiple datasets in tenant '{tenant_id}'; specify X-Dataset-ID"
-                )));
-            }
-        };
+        let resolved_dataset =
+            match super::resolve_dataset_restriction(api_key.dataset_ids.as_deref(), dataset_id) {
+                Ok(Some(dataset)) => dataset,
+                Ok(None) => tenant_record.default_dataset.clone().ok_or_else(|| {
+                    AuthError::bad_request(
+                        "X-Dataset-ID header required (tenant has no default dataset)",
+                    )
+                })?,
+                Err(err) => {
+                    return Err(dataset_restriction_error(
+                        err, "API key", dataset_id, tenant_id,
+                    ));
+                }
+            };
 
         // Verify dataset exists for tenant
         let datasets = self
