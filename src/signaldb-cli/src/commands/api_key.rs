@@ -136,6 +136,7 @@ impl ApiKeyAction {
 mod tests {
     use super::*;
     use clap::Parser;
+    use signaldb_sdk::types::ApiKeyResponse;
 
     #[derive(Parser)]
     struct Harness {
@@ -166,6 +167,8 @@ mod tests {
             "schema:read",
             "--dataset",
             "production",
+            "--dataset",
+            "staging",
         ])
         .expect("parses");
         match parsed.action {
@@ -173,26 +176,115 @@ mod tests {
                 scopes, dataset, ..
             } => {
                 assert_eq!(scopes, vec!["traces:write", "schema:read"]);
-                assert_eq!(dataset.as_deref(), Some("production"));
+                assert_eq!(
+                    dataset,
+                    Some(vec!["production".to_string(), "staging".to_string()])
+                );
             }
             _ => panic!("expected create"),
         }
     }
 
+    #[test]
+    fn create_without_dataset_flag_is_unrestricted() {
+        let parsed = Harness::try_parse_from([
+            "h", "create", "acme", "--name", "ci", "--scope", "traces:write",
+        ])
+        .expect("parses");
+        match parsed.action {
+            ApiKeyAction::Create { dataset, .. } => assert_eq!(dataset, None),
+            _ => panic!("expected create"),
+        }
+    }
+
+    #[test]
+    fn update_accepts_repeated_dataset_flag() {
+        let parsed = Harness::try_parse_from([
+            "h",
+            "update",
+            "acme",
+            "k1",
+            "--dataset",
+            "production",
+            "--dataset",
+            "staging",
+        ])
+        .expect("parses");
+        match parsed.action {
+            ApiKeyAction::Update { dataset, .. } => {
+                assert_eq!(
+                    dataset,
+                    Some(vec!["production".to_string(), "staging".to_string()])
+                );
+            }
+            _ => panic!("expected update"),
+        }
+    }
+
+    #[test]
+    fn update_without_dataset_flag_leaves_restriction_unchanged() {
+        let parsed = Harness::try_parse_from(["h", "update", "acme", "k1", "--scope", "logs:write"])
+            .expect("parses");
+        match parsed.action {
+            ApiKeyAction::Update { dataset, .. } => assert_eq!(dataset, None),
+            _ => panic!("expected update"),
+        }
+    }
+
+    #[test]
+    fn update_accepts_clear_dataset_restriction_alone() {
+        let parsed = Harness::try_parse_from([
+            "h",
+            "update",
+            "acme",
+            "k1",
+            "--clear-dataset-restriction",
+        ])
+        .expect("parses");
+        match parsed.action {
+            ApiKeyAction::Update {
+                dataset,
+                clear_dataset_restriction,
+                ..
+            } => {
+                assert_eq!(dataset, None);
+                assert!(clear_dataset_restriction);
+            }
+            _ => panic!("expected update"),
+        }
+    }
+
+    #[test]
+    fn update_rejects_dataset_and_clear_dataset_restriction_together() {
+        let parsed = Harness::try_parse_from([
+            "h",
+            "update",
+            "acme",
+            "k1",
+            "--dataset",
+            "production",
+            "--clear-dataset-restriction",
+        ]);
+        assert!(
+            parsed.is_err(),
+            "--dataset and --clear-dataset-restriction must conflict at the CLI level"
+        );
+    }
+
     #[tokio::test]
-    async fn create_sends_scopes_and_dataset_to_admin_api() {
+    async fn create_sends_scopes_and_multiple_datasets_to_admin_api() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/api/v1/admin/tenants/acme/api-keys")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "name": "ci",
                 "scopes": ["traces:write", "schema:read"],
-                "dataset_ids": ["production"]
+                "dataset_ids": ["production", "staging"]
             })))
             .with_status(201)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"k1","key":"sk-acme-1","name":"ci","scopes":["traces:write","schema:read"],"dataset_ids":["production"],"dataset_id":"production","created_at":"2026-01-01T00:00:00Z"}"#,
+                r#"{"id":"k1","key":"sk-acme-1","name":"ci","scopes":["traces:write","schema:read"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z"}"#,
             )
             .create_async()
             .await;
@@ -201,7 +293,7 @@ mod tests {
             tenant_id: "acme".into(),
             name: Some("ci".into()),
             scopes: vec!["traces:write".into(), "schema:read".into()],
-            dataset: Some("production".into()),
+            dataset: Some(vec!["production".into(), "staging".into()]),
         }
         .run(&sdk_client(&server))
         .await
@@ -210,17 +302,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_patches_scopes_and_dataset() {
+    async fn update_patches_scopes_and_dataset_set() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("PATCH", "/api/v1/admin/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "scopes": ["schema:read", "schema:write"]
+                "scopes": ["schema:read", "schema:write"],
+                "dataset_ids": ["production", "staging"]
             })))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"k1","name":"ci","scopes":["schema:read","schema:write"],"created_at":"2026-01-01T00:00:00Z"}"#,
+                r#"{"id":"k1","name":"ci","scopes":["schema:read","schema:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z"}"#,
             )
             .create_async()
             .await;
@@ -229,7 +322,37 @@ mod tests {
             tenant_id: "acme".into(),
             key_id: "k1".into(),
             scopes: vec!["schema:read".into(), "schema:write".into()],
+            dataset: Some(vec!["production".into(), "staging".into()]),
+            clear_dataset_restriction: false,
+        }
+        .run(&sdk_client(&server))
+        .await
+        .expect("update succeeds");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn update_clears_dataset_restriction() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("PATCH", "/api/v1/admin/tenants/acme/api-keys/k1")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "clear_dataset_restriction": true
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"k1","name":"ci","scopes":["schema:read"],"created_at":"2026-01-01T00:00:00Z"}"#,
+            )
+            .create_async()
+            .await;
+
+        ApiKeyAction::Update {
+            tenant_id: "acme".into(),
+            key_id: "k1".into(),
+            scopes: vec![],
             dataset: None,
+            clear_dataset_restriction: true,
         }
         .run(&sdk_client(&server))
         .await
@@ -245,9 +368,51 @@ mod tests {
             key_id: "k1".into(),
             scopes: vec![],
             dataset: None,
+            clear_dataset_restriction: false,
         }
         .run(&sdk_client(&server))
         .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_defaults_to_a_human_readable_table_with_dataset_restriction() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/api/v1/admin/tenants/acme/api-keys")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"api_keys":[
+                    {"id":"k1","name":"ci","scopes":["traces:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z"},
+                    {"id":"k2","name":"full","scopes":["schema:read"],"dataset_ids":null,"created_at":"2026-01-01T00:00:00Z"}
+                ]}"#,
+            )
+            .create_async()
+            .await;
+
+        ApiKeyAction::List {
+            tenant_id: "acme".into(),
+            json: false,
+        }
+        .run(&sdk_client(&server))
+        .await
+        .expect("list succeeds");
+    }
+
+    #[test]
+    fn format_api_key_list_shows_dataset_restriction_or_unrestricted() {
+        let keys: Vec<ApiKeyResponse> = serde_json::from_str(
+            r#"[
+                {"id":"k1","name":"ci","scopes":["traces:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z"},
+                {"id":"k2","name":"full","scopes":["schema:read"],"dataset_ids":null,"created_at":"2026-01-01T00:00:00Z"}
+            ]"#,
+        )
+        .unwrap();
+
+        let rendered = format_api_key_list(&keys);
+
+        assert!(rendered.contains("production, staging"));
+        assert!(rendered.contains("unrestricted"));
     }
 }
