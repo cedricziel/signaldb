@@ -379,6 +379,12 @@ async fn mcp_auth_middleware(
     parts
         .extensions
         .insert(audit::CallerTenant(identity.tenant.id.clone()));
+    // Likewise the credential's own dataset-set restriction (D10): tools
+    // that list datasets/tables filter their result against this rather
+    // than assuming every dataset the router knows about is reachable.
+    parts
+        .extensions
+        .insert(audit::CallerDatasetIds(identity.dataset_ids.clone()));
 
     // Record this identity against the session. A session may accumulate
     // several distinct, independently router-authenticated identities

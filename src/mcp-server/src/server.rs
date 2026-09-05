@@ -896,6 +896,20 @@ fn check_tenant_scope(parts: &Parts, expected: &str) -> Result<(), ErrorData> {
     }
 }
 
+/// Whether `dataset` is visible to a credential carrying `restriction`
+/// (`None` = unrestricted, every dataset visible) — design D10. Local to
+/// this crate rather than reusing `common::auth::dataset_allowed`: this
+/// server holds no auth dependency (see the `common` dependency comment in
+/// `Cargo.toml`), it only forwards the caller's credential to the router.
+/// This filters an already-authorized listing for display; it enforces
+/// nothing the router itself does not already enforce on the data path.
+fn dataset_visible(restriction: Option<&[String]>, dataset: &str) -> bool {
+    match restriction {
+        None => true,
+        Some(allowed) => allowed.iter().any(|d| d == dataset),
+    }
+}
+
 /// Reject an empty `scopes` list on API-key creation (platform-admin and
 /// tenant-management variants share this validation).
 fn require_nonempty_scopes(scopes: &[String]) -> Result<(), ErrorData> {
@@ -1877,14 +1891,24 @@ impl McpServer {
             }
         };
 
+        // D10: a dataset-restricted credential must not see the name (or
+        // table count) of a dataset outside its restriction, not even one
+        // that is otherwise provisioned and empty.
+        let restriction = identity.dataset_ids.as_deref();
+        let visible_datasets: Vec<_> = tables
+            .datasets
+            .iter()
+            .filter(|dataset| dataset_visible(restriction, &dataset.dataset))
+            .collect();
+
         let mut markdown = format!(
             "- Tenant: **{}** (`{}`)\n",
             identity.tenant.name, identity.tenant.id
         );
-        if tables.datasets.is_empty() {
+        if visible_datasets.is_empty() {
             markdown.push_str("  - (no datasets provisioned yet)\n");
         } else {
-            for dataset in &tables.datasets {
+            for dataset in visible_datasets {
                 let current = if dataset.dataset == identity.dataset {
                     " (current)"
                 } else {
@@ -2520,7 +2544,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the caller's own tenant's provisioned signal tables (tenant self-service API; the caller's tenant credential).",
+        description = "List the caller's own tenant's provisioned signal tables (tenant self-service API; the caller's tenant credential). Filtered to the caller's own dataset restriction, if any (D10): a dataset outside it never appears here.",
         annotations(read_only_hint = true)
     )]
     async fn tenant_list_tables(
@@ -2529,13 +2553,31 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, None)?;
-        let resp = client
+        let mut tables = client
             .list_tenant_tables()
             .tenant_id(&p.tenant_id)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_list_tables"))?;
-        json_result(&resp.into_inner())
+            .map_err(|e| map_sdk_err(e, "tenant_list_tables"))?
+            .into_inner();
+        // D10: hide any dataset outside the caller's own restriction — set
+        // once per request by the auth middleware alongside
+        // `audit::CallerTenant`. `dataset_visible` no-ops both `retain`
+        // calls below when the caller is unrestricted.
+        let restriction = parts
+            .extensions
+            .get::<audit::CallerDatasetIds>()
+            .and_then(|r| r.0.as_deref());
+        tables
+            .datasets
+            .retain(|dataset| dataset_visible(restriction, &dataset.dataset));
+        tables.tables.retain(|table| {
+            table
+                .dataset
+                .as_deref()
+                .is_none_or(|dataset| dataset_visible(restriction, dataset))
+        });
+        json_result(&tables)
     }
 
     #[tool(
@@ -3982,6 +4024,161 @@ mod tests {
             "wrong staging table count: {}",
             text.text
         );
+        router.await.expect("mock router task panicked");
+    }
+
+    /// D10: a dataset-restricted credential's `discover_datasets` listing
+    /// never names a dataset outside its restriction, even one that is
+    /// provisioned in the tenant.
+    #[tokio::test]
+    async fn discover_datasets_hides_datasets_outside_the_callers_restriction() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept whoami request");
+            let mut request = [0_u8; 4096];
+            let _request_len = socket.read(&mut request).await.expect("read request");
+            let body = br#"{"user_id":"","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production","dataset_ids":["production"]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write whoami response headers");
+            socket.write_all(body).await.expect("write whoami body");
+            drop(socket);
+
+            let (mut socket, _) = listener.accept().await.expect("accept tables request");
+            let mut request = [0_u8; 4096];
+            let _request_len = socket.read(&mut request).await.expect("read request");
+            let body = br#"{"tenant_id":"acme","tables":[],"datasets":[{"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d"}]},{"dataset":"staging","tables":[{"name":"logs","schema_type":"logs","description":"d"}]}]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write tables response headers");
+            socket.write_all(body).await.expect("write tables body");
+        });
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_datasets(Extension(valid_parts()))
+            .await
+            .expect("discover_datasets succeeds");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("discover_datasets returns a text result");
+        };
+        assert!(
+            text.text.contains("`production`"),
+            "the restricted dataset must still be listed: {}",
+            text.text
+        );
+        assert!(
+            !text.text.contains("staging"),
+            "a dataset outside the restriction must not appear, even by name: {}",
+            text.text
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    /// D10: `tenant_list_tables` filters both the flat `tables` list and the
+    /// per-dataset `datasets` grouping to the caller's restriction — an
+    /// unlisted dataset must not appear in either shape.
+    #[tokio::test]
+    async fn tenant_list_tables_hides_datasets_outside_the_callers_restriction() {
+        let (base_url, router) = mock_json_router(
+            "GET /api/v1/tenants/acme/tables",
+            r#"{"tenant_id":"acme","tables":[
+                {"name":"traces","schema_type":"traces","description":"d","dataset":"production"},
+                {"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}
+            ],"datasets":[
+                {"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d","dataset":"production"}]},
+                {"dataset":"staging","tables":[{"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}]}
+            ]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+        let mut parts = valid_parts();
+        parts.extensions.insert(audit::CallerDatasetIds(Some(vec![
+            "production".to_string(),
+        ])));
+
+        let result = server
+            .tenant_list_tables(
+                Parameters(TenantOnlyParams {
+                    tenant_id: "acme".to_string(),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect("tenant_list_tables succeeds");
+
+        let body = text_json(&result);
+        let datasets: Vec<&str> = body["datasets"]
+            .as_array()
+            .expect("datasets array")
+            .iter()
+            .map(|d| d["dataset"].as_str().expect("dataset name"))
+            .collect();
+        assert_eq!(datasets, vec!["production"], "got {body}");
+        let tables: Vec<&str> = body["tables"]
+            .as_array()
+            .expect("tables array")
+            .iter()
+            .map(|t| t["dataset"].as_str().expect("table dataset"))
+            .collect();
+        assert_eq!(tables, vec!["production"], "got {body}");
+        router.await.expect("mock router task panicked");
+    }
+
+    /// An unrestricted credential's `tenant_list_tables` result is unchanged
+    /// — every dataset the router reports is still listed.
+    #[tokio::test]
+    async fn tenant_list_tables_is_unfiltered_for_an_unrestricted_credential() {
+        let (base_url, router) = mock_json_router(
+            "GET /api/v1/tenants/acme/tables",
+            r#"{"tenant_id":"acme","tables":[
+                {"name":"traces","schema_type":"traces","description":"d","dataset":"production"},
+                {"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}
+            ],"datasets":[
+                {"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d","dataset":"production"}]},
+                {"dataset":"staging","tables":[{"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}]}
+            ]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .tenant_list_tables(
+                Parameters(TenantOnlyParams {
+                    tenant_id: "acme".to_string(),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_list_tables succeeds");
+
+        let body = text_json(&result);
+        assert_eq!(
+            body["datasets"].as_array().expect("datasets array").len(),
+            2
+        );
+        assert_eq!(body["tables"].as_array().expect("tables array").len(), 2);
         router.await.expect("mock router task panicked");
     }
 
