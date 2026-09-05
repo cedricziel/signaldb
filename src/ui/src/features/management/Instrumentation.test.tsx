@@ -236,4 +236,26 @@ describe("Instrumentation page", () => {
       expect(fn.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
     });
   });
+
+  it("shows a tenant-scoped message with no retry button on a 403", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/connection",
+        body: { error: "forbidden" },
+        status: 403,
+      },
+    ]);
+    renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          /current tenant does not grant access to connection details/i,
+        ),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole("button", { name: "Retry" }),
+    ).not.toBeInTheDocument();
+  });
 });

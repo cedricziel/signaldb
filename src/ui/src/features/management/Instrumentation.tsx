@@ -5,7 +5,7 @@ import {
   connectionInfo,
   type ConnectionInfoResponse,
 } from "../../api/connection";
-import { toErrorMessage } from "../../api/http";
+import { ApiError, toErrorMessage } from "../../api/http";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { SkeletonLines } from "../explore/Skeleton";
 import "./Instrumentation.css";
@@ -312,16 +312,26 @@ export function Instrumentation({ state }: Props) {
             )}
             {connection.isError ? (
               <div className="instrumentation-error" role="alert">
-                <p>
-                  Could not load connection details:{" "}
-                  {toErrorMessage(connection.error)}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void connection.refetch()}
-                >
-                  Retry
-                </button>
+                {connection.error instanceof ApiError &&
+                connection.error.status === 403 ? (
+                  <p>
+                    The current tenant does not grant access to connection
+                    details.
+                  </p>
+                ) : (
+                  <>
+                    <p>
+                      Could not load connection details:{" "}
+                      {toErrorMessage(connection.error)}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void connection.refetch()}
+                    >
+                      Retry
+                    </button>
+                  </>
+                )}
               </div>
             ) : (
               <>
