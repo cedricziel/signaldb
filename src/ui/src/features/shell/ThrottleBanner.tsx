@@ -29,7 +29,11 @@ export function ThrottleBanner() {
       ? ""
       : ` (waiting ${formatWait(state.lastWaitMs)})`;
   return (
-    <div className="throttle-banner" role="status" aria-live="polite">
+    <div
+      className="warn-callout throttle-banner"
+      role="status"
+      aria-live="polite"
+    >
       Some requests are being retried after throttling…{detail}
     </div>
   );

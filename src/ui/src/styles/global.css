@@ -125,6 +125,17 @@
   --warn-banner-text: #7a5f0a;
 }
 
+/* Shared warn-tint callout (ThrottleBanner, Instrumentation's "public
+   endpoints not configured" note): colour + background only, so each caller
+   adds its own padding/border.
+   Not --warn: on this tinted background --warn falls under WCAG AA (~3.9:1)
+   in the light theme. --warn-banner-text is darker there and matches --warn
+   in the dark theme, where it already clears 4.5:1. */
+.warn-callout {
+  color: var(--warn-banner-text);
+  background: color-mix(in srgb, var(--warn-bar) 14%, var(--surface));
+}
+
 * {
   box-sizing: border-box;
 }

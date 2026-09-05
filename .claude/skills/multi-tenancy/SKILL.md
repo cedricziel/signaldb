@@ -270,6 +270,7 @@ mutating one, which treats API-key possession as sufficient trust):
 | Endpoint                             | Methods | Description                                                                                                                                                   | SDK operation            |
 | ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
 | `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`)                                                                   | `whoami`                 |
+| `/api/v1/connection`                 | GET     | Public ingest/query endpoints (`[public]` config), headers with the caller's tenant/dataset filled in, required scopes, OTel env vars (`endpoints/session.rs`); MCP `connection_info` | `connection_info`        |
 | `/api/v1/tenants`                    | GET     | List tenants visible to the caller — single-entry view of the caller's own tenant; `tenant show` / `tenant_info`                                              | `list_tenants_self`      |
 | `/api/v1/tenants/{id}`               | GET     | Tenant details — `tenant show` / `tenant_info`                                                                                                                | `get_tenant_self`        |
 | `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables from the Iceberg catalog, grouped by dataset (`dataset` on each `TableInfo`, plus a `datasets` grouping alongside the flat `tables` list)  | `list_tenant_tables`     |
@@ -328,7 +329,9 @@ and `docs/users/authentication.md#tenant-management-api`.
 Subcommands: `query` (one required language flag —
 `--sql`/`--promql`/`--logql`/`--traceql`/`--ir`, plus `--trace-id` for a
 single trace by ID, and `--start`/`--end`/`--step` on `--promql`/`--logql`
-for a range query), `whoami`, `discover`, `schema`
+for a range query), `whoami`, `connection` (this deployment's public
+ingest/query/mcp endpoints, headers, scopes, and OTel env vars —
+`GET /api/v1/connection` / MCP `connection_info`), `discover`, `schema`
 (`registry`/`attribute`/`entity`/`metric` lookup with a tenant key holding
 `schema:read`), `admin` (`tenant`/`api-key`/`dataset`, plus `schema`
 create/replace/delete/validate with a tenant key holding `schema:write`),
@@ -349,6 +352,7 @@ signaldb-cli admin schema create --file conventions.yaml --api-key <schema:write
 signaldb-cli schema attribute get k8s.pod.uid --api-key <schema:read key> --tenant-id acme
 signaldb-cli tenant table provision --api-key <any tenant key> --tenant-id acme
 signaldb-cli whoami --api-key <tenant key> --tenant-id acme
+signaldb-cli connection --api-key <tenant key> --tenant-id acme
 signaldb-cli query --sql "SELECT ..."   # also --promql/--logql/--traceql/--ir/--trace-id
 signaldb-cli tui                         # Interactive terminal UI
 ```

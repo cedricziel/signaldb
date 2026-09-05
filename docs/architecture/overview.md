@@ -216,8 +216,11 @@ carries the user's memberships so the UI can offer a picker (a sole
 membership is auto-selected); each request then re-validates the
 `X-Tenant-ID` header against those memberships. `GET /api/v1/whoami`
 returns the human identity and memberships plus the selected tenant's
-datasets for the UI's tenant selector. API-key authentication remains
-available for machine clients and ingestion.
+datasets for the UI's tenant selector. `GET /api/v1/connection` (same
+middleware, any tenant key) returns the deployment's public ingest and query
+endpoints from `[public]` config with the caller's tenant/dataset filled in,
+so agents and the UI's "Send data" page never guess hosts or ports.
+API-key authentication remains available for machine clients and ingestion.
 
 **Tempo API Endpoints**:
 

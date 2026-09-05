@@ -6,6 +6,8 @@
 //!
 //! Tools (every authenticated tenant session, no role gating):
 //! - `server_info` — connectivity + resolved tenant
+//! - `connection_info` — this deployment's public ingest/query endpoints,
+//!   headers, required API-key scopes, and ready-to-paste OTel env vars
 //! - `discover_datasets` — the tenant and datasets your credential can
 //!   access, as a nested Markdown list, marking the session's current
 //!   default dataset
@@ -1347,6 +1349,23 @@ impl McpServer {
             "dataset": identity.dataset,
         });
         json_result(&info)
+    }
+
+    #[tool(
+        description = "Return everything needed to send data to and query this SignalDB deployment: public OTLP gRPC/HTTP endpoints, Prometheus remote-write, the query API base, required headers with your tenant and dataset filled in, the API-key scopes ingest needs, and ready-to-paste OTEL_EXPORTER_* env vars. Call this first when configuring or auto-instrumenting an application; then mint an ingest credential with `tenant_create_api_key` (scopes traces:write, logs:write, metrics:write, profiles:write) and substitute it for `<api-key>`.",
+        annotations(read_only_hint = true)
+    )]
+    async fn connection_info(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let resp = self
+            .router_client(&parts, None)?
+            .connection_info()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "connection_info"))?;
+        json_result(&resp.into_inner())
     }
 
     #[tool(

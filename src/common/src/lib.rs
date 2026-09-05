@@ -8,6 +8,7 @@ pub mod cli;
 pub mod config;
 pub mod datafusion_runtime;
 pub mod discovery;
+pub mod endpoints;
 pub mod error;
 pub mod flight;
 pub mod iceberg;

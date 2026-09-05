@@ -100,6 +100,54 @@
   line-height: 1.5;
 }
 
+.instrumentation-note {
+  margin: 0 0 20px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+}
+
+.instrumentation-note p {
+  margin: 0;
+}
+
+.instrumentation-note p + p {
+  margin-top: 4px;
+}
+
+.instrumentation-error {
+  margin: 0 0 20px;
+  padding: 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  color: var(--err);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.instrumentation-error p {
+  margin: 0;
+}
+
+.instrumentation-error button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.instrumentation-error button:hover {
+  background: var(--surface3);
+}
+
 .code-snippet {
   margin: 24px 0 0;
 }

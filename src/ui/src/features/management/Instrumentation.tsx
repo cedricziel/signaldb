@@ -1,17 +1,36 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ExploreState } from "../../lib/urlState";
-import { whoami } from "../../api/session";
+import {
+  connectionInfo,
+  type ConnectionInfoResponse,
+} from "../../api/connection";
+import { ApiError, toErrorMessage } from "../../api/http";
 import { CopyValueButton } from "../../components/CopyValueButton";
+import { SkeletonLines } from "../explore/Skeleton";
 import "./Instrumentation.css";
 
-// The acceptor's OTLP ports (see docs/users/sending-otlp.md); distinct from
-// the router's HTTP port, which only serves queries. Snippets append the
-// protocol-appropriate port to a bare host themselves, rather than baking a
-// single "host:port" string that some templates would then append a second
-// port to.
-const OTLP_GRPC_PORT = 4317;
-const OTLP_HTTP_PORT = 4318;
+/** YAML `tls:` block for a collector-style OTLP exporter, indented to match
+ * the surrounding `endpoint:`/`headers:` lines. Omitted entirely for a TLS
+ * endpoint — the exporter's default (verify) is what you want there. */
+function tlsBlock(tls: boolean, indent: string): string {
+  if (tls) return "";
+  return `\n${indent}tls:\n${indent}  insecure: true`;
+}
+
+/** Go SDK line pairing a plaintext gRPC endpoint with `WithInsecure()`;
+ * empty for a TLS endpoint, where the exporter's default (verify) applies. */
+function grpcInsecureLine(tls: boolean): string {
+  if (tls) return "";
+  return "\n        otlptracegrpc.WithInsecure(),";
+}
+
+/** The credential a client config's `credentials:`/`Bearer `-style fields
+ * take, extracted from the server's `Authorization: Bearer <placeholder>`
+ * header contract. */
+function bearerCredential(authorization: string): string {
+  return authorization.replace(/^Bearer\s+/, "");
+}
 
 type SourceId =
   | "otel-sdk"
@@ -27,8 +46,7 @@ interface Source {
   title: string;
   description: string;
   steps: string[];
-  /** `host` is a bare hostname (no port) — the acceptor's ingest host. */
-  snippet: (tenant: string, dataset: string, host: string) => string;
+  snippet: (info: ConnectionInfoResponse) => string;
 }
 
 const SOURCES: Source[] = [
@@ -42,7 +60,7 @@ const SOURCES: Source[] = [
       "Configure the OTLP exporter to point to SignalDB",
       "Set authentication and tenant headers",
     ],
-    snippet: (tenant, dataset, host) => `// Example for Go
+    snippet: (info) => `// Example for Go
 package main
 
 import (
@@ -55,11 +73,11 @@ import (
 func main() {
     ctx := context.Background()
     exp, err := otlptracegrpc.New(ctx,
-        otlptracegrpc.WithEndpoint("${host}:${OTLP_GRPC_PORT}"),
+        otlptracegrpc.WithEndpoint("${info.ingest.otlp_grpc.authority}"),${grpcInsecureLine(info.ingest.otlp_grpc.tls)}
         otlptracegrpc.WithHeaders(map[string]string{
-            "Authorization": "Bearer YOUR_API_KEY",
-            "X-Tenant-ID":   "${tenant}",
-            "X-Dataset-ID":  "${dataset}",
+            "Authorization": "${info.headers.authorization}",
+            "X-Tenant-ID":   "${info.headers["x-tenant-id"]}",
+            "X-Dataset-ID":  "${info.headers["x-dataset-id"]}",
         }),
     )
     if err != nil {
@@ -71,8 +89,8 @@ func main() {
 }
 
 // Environment variables (equivalent to the code above):
-export OTEL_EXPORTER_OTLP_ENDPOINT="http://${host}:${OTLP_GRPC_PORT}"
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer YOUR_API_KEY,X-Tenant-ID=${tenant},X-Dataset-ID=${dataset}"`,
+export OTEL_EXPORTER_OTLP_ENDPOINT="${info.otel_env.OTEL_EXPORTER_OTLP_ENDPOINT}"
+export OTEL_EXPORTER_OTLP_HEADERS="${info.otel_env.OTEL_EXPORTER_OTLP_HEADERS}"`,
   },
   {
     id: "otel-collector",
@@ -84,7 +102,7 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer YOUR_API_KEY,X-Tenant-ID
       "Configure OTLP exporter pointing to SignalDB",
       "Set authentication headers",
     ],
-    snippet: (tenant, dataset, host) => `# otel-collector-config.yaml
+    snippet: (info) => `# otel-collector-config.yaml
 receivers:
   otlp:
     protocols:
@@ -93,13 +111,11 @@ receivers:
 
 exporters:
   otlp:
-    endpoint: ${host}:${OTLP_GRPC_PORT}
-    tls:
-      insecure: true
+    endpoint: ${info.ingest.otlp_grpc.authority}${tlsBlock(info.ingest.otlp_grpc.tls, "    ")}
     headers:
-      Authorization: "Bearer YOUR_API_KEY"
-      X-Tenant-ID: "${tenant}"
-      X-Dataset-ID: "${dataset}"
+      Authorization: "${info.headers.authorization}"
+      X-Tenant-ID: "${info.headers["x-tenant-id"]}"
+      X-Dataset-ID: "${info.headers["x-dataset-id"]}"
 
 service:
   pipelines:
@@ -123,11 +139,7 @@ service:
       "Configure OTLP exporter to SignalDB",
       "Set authentication and tenant headers",
     ],
-    snippet: (
-      tenant,
-      dataset,
-      host,
-    ) => `# values.yaml for opentelemetry-collector Helm chart
+    snippet: (info) => `# values.yaml for opentelemetry-collector Helm chart
 config:
   receivers:
     otlp:
@@ -136,13 +148,11 @@ config:
         http:
   exporters:
     otlp:
-      endpoint: ${host}:${OTLP_GRPC_PORT}
-      tls:
-        insecure: true
+      endpoint: ${info.ingest.otlp_grpc.authority}${tlsBlock(info.ingest.otlp_grpc.tls, "      ")}
       headers:
-        Authorization: "Bearer YOUR_API_KEY"
-        X-Tenant-ID: "${tenant}"
-        X-Dataset-ID: "${dataset}"
+        Authorization: "${info.headers.authorization}"
+        X-Tenant-ID: "${info.headers["x-tenant-id"]}"
+        X-Dataset-ID: "${info.headers["x-dataset-id"]}"
   service:
     pipelines:
       traces:
@@ -166,20 +176,20 @@ config:
       "Configure OTLP exporter to SignalDB",
       "Pass environment variables to application",
     ],
-    snippet: (tenant, dataset, host) => `# docker-compose.yml
+    snippet: (info) => `# docker-compose.yml
 version: '3'
 services:
   app:
     image: myapp:latest
     environment:
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://${host}:${OTLP_GRPC_PORT}
-      OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer YOUR_API_KEY,X-Tenant-ID=${tenant},X-Dataset-ID=${dataset}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${info.otel_env.OTEL_EXPORTER_OTLP_ENDPOINT}
+      OTEL_EXPORTER_OTLP_HEADERS: "${info.otel_env.OTEL_EXPORTER_OTLP_HEADERS}"
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     volumes:
       - ./otel-config.yaml:/etc/otel/config.yaml
     ports:
-      - "${OTLP_GRPC_PORT}:${OTLP_GRPC_PORT}"`,
+      - "4317:4317"`,
   },
   {
     id: "journald",
@@ -191,7 +201,7 @@ services:
       "Configure the journald receiver and an OTLP exporter to SignalDB",
       "Set authentication and tenant headers",
     ],
-    snippet: (tenant, dataset, host) => `# otel-collector-config.yaml
+    snippet: (info) => `# otel-collector-config.yaml
 receivers:
   journald:
     directory: /var/log/journal
@@ -201,13 +211,11 @@ receivers:
 
 exporters:
   otlp:
-    endpoint: ${host}:${OTLP_GRPC_PORT}
-    tls:
-      insecure: true
+    endpoint: ${info.ingest.otlp_grpc.authority}${tlsBlock(info.ingest.otlp_grpc.tls, "    ")}
     headers:
-      Authorization: "Bearer YOUR_API_KEY"
-      X-Tenant-ID: "${tenant}"
-      X-Dataset-ID: "${dataset}"
+      Authorization: "${info.headers.authorization}"
+      X-Tenant-ID: "${info.headers["x-tenant-id"]}"
+      X-Dataset-ID: "${info.headers["x-dataset-id"]}"
 
 service:
   pipelines:
@@ -225,18 +233,18 @@ service:
       "Set authentication headers",
       "Optional: use Prometheus Agent mode",
     ],
-    snippet: (tenant, dataset, host) => `# prometheus.yml
+    snippet: (info) => `# prometheus.yml
 global:
   scrape_interval: 15s
 
 remote_write:
-  - url: http://${host}:${OTLP_HTTP_PORT}/api/v1/write
+  - url: ${info.ingest.prometheus_remote_write}
     authorization:
       type: Bearer
-      credentials: YOUR_API_KEY
+      credentials: ${bearerCredential(info.headers.authorization)}
     headers:
-      X-Tenant-ID: ${tenant}
-      X-Dataset-ID: ${dataset}
+      X-Tenant-ID: ${info.headers["x-tenant-id"]}
+      X-Dataset-ID: ${info.headers["x-dataset-id"]}
 
 scrape_configs:
   - job_name: node
@@ -252,21 +260,19 @@ interface Props {
 
 export function Instrumentation({ state }: Props) {
   const [selectedSource, setSelectedSource] = useState<SourceId>("otel-sdk");
-  const { data: who } = useQuery({
-    queryKey: ["whoami", state.tenant, state.dataset],
-    queryFn: () => whoami(),
+  const connection = useQuery({
+    queryKey: ["connection", state.tenant, state.dataset],
+    queryFn: () => connectionInfo(),
+    staleTime: 5 * 60_000,
+    retry: false,
   });
 
-  const tenant = who?.tenant.id ?? state.tenant;
-  const dataset = state.dataset;
-  // The acceptor (ingest) typically shares a host with the router (this
-  // page) but listens on different ports — see OTLP_GRPC_PORT/OTLP_HTTP_PORT
-  // above. Default to the browser's current hostname rather than an
-  // internal-looking service name; users on a different ingest host can
-  // substitute their own.
-  const host = window.location.hostname;
-
+  const notes = connection.data?.notes ?? [];
   const source = SOURCES.find((s) => s.id === selectedSource)!;
+  const snippet = useMemo(
+    () => (connection.data ? source.snippet(connection.data) : ""),
+    [source, connection.data],
+  );
 
   return (
     <div className="instrumentation-page">
@@ -297,43 +303,78 @@ export function Instrumentation({ state }: Props) {
                 <li key={idx}>{step}</li>
               ))}
             </ol>
-            <div className="code-snippet">
-              <div className="code-header">
-                <span>Configuration snippet</span>
-                <CopyValueButton
-                  value={source.snippet(tenant, dataset, host)}
-                  label="Copy snippet"
-                />
+            {notes.length > 0 && (
+              <div className="warn-callout instrumentation-note" role="note">
+                {notes.map((note, idx) => (
+                  <p key={idx}>{note}</p>
+                ))}
               </div>
-              <pre>
-                <code>{source.snippet(tenant, dataset, host)}</code>
-              </pre>
-            </div>
-            <div className="verification">
-              <h3>Verification</h3>
-              <div className="status-list">
-                <div className="status-item">
-                  <span className="status-icon waiting">·</span>
-                  <span>Traces</span>
-                  <span className="status-text">Waiting for data</span>
-                </div>
-                <div className="status-item">
-                  <span className="status-icon waiting">·</span>
-                  <span>Logs</span>
-                  <span className="status-text">Waiting for data</span>
-                </div>
-                <div className="status-item">
-                  <span className="status-icon waiting">·</span>
-                  <span>Metrics</span>
-                  <span className="status-text">Waiting for data</span>
-                </div>
-                <div className="status-item">
-                  <span className="status-icon waiting">·</span>
-                  <span>Profiles</span>
-                  <span className="status-text">Waiting for data</span>
-                </div>
+            )}
+            {connection.isError ? (
+              <div className="instrumentation-error" role="alert">
+                {connection.error instanceof ApiError &&
+                connection.error.status === 403 ? (
+                  <p>
+                    The current tenant does not grant access to connection
+                    details.
+                  </p>
+                ) : (
+                  <>
+                    <p>
+                      Could not load connection details:{" "}
+                      {toErrorMessage(connection.error)}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void connection.refetch()}
+                    >
+                      Retry
+                    </button>
+                  </>
+                )}
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="code-snippet">
+                  <div className="code-header">
+                    <span>Configuration snippet</span>
+                    <CopyValueButton value={snippet} label="Copy snippet" />
+                  </div>
+                  {connection.isLoading ? (
+                    <SkeletonLines lines={8} />
+                  ) : (
+                    <pre>
+                      <code>{snippet}</code>
+                    </pre>
+                  )}
+                </div>
+                <div className="verification">
+                  <h3>Verification</h3>
+                  <div className="status-list">
+                    <div className="status-item">
+                      <span className="status-icon waiting">·</span>
+                      <span>Traces</span>
+                      <span className="status-text">Waiting for data</span>
+                    </div>
+                    <div className="status-item">
+                      <span className="status-icon waiting">·</span>
+                      <span>Logs</span>
+                      <span className="status-text">Waiting for data</span>
+                    </div>
+                    <div className="status-item">
+                      <span className="status-icon waiting">·</span>
+                      <span>Metrics</span>
+                      <span className="status-text">Waiting for data</span>
+                    </div>
+                    <div className="status-item">
+                      <span className="status-icon waiting">·</span>
+                      <span>Profiles</span>
+                      <span className="status-text">Waiting for data</span>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </main>
       </div>

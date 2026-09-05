@@ -6,6 +6,8 @@ sources:
   - src/acceptor/src/lib.rs
   - src/acceptor/src/cli.rs
   - src/acceptor/src/middleware/grpc_auth.rs
+  - src/router/src/endpoints/session.rs
+  - src/common/src/config/mod.rs
 ---
 
 # Send OTLP data to SignalDB
@@ -44,6 +46,15 @@ http://<acceptor-host>:4318/v1/traces
 http://<acceptor-host>:4318/v1/logs
 http://<acceptor-host>:4318/v1/metrics
 ```
+
+`<acceptor-host>` above is a placeholder — for a real deployment, ask the
+deployment itself: `GET /api/v1/connection` (any tenant API key) returns this
+deployment's actual public OTLP gRPC/HTTP endpoints, ready-to-paste
+`OTEL_EXPORTER_OTLP_*` env vars, and the headers below filled in for your
+tenant/dataset. The same information is available through the MCP
+`connection_info` tool. Operators set these endpoints in `[public]` in
+`signaldb.toml`; unset, both `GET /api/v1/connection` and this doc fall back
+to the localhost defaults above.
 
 ### 2. Attach the auth metadata
 
